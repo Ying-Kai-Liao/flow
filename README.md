@@ -2,7 +2,7 @@
 
 Standalone orchestration for software development, as a Claude Code plugin. Hand Claude Code a
 batch of tasks and it runs them through managers, workers that each build in a git worktree of
-their own, and one merge queue, all inside your session. Nothing else to install.
+their own, and one reviewer, all inside your session. Nothing else to install.
 
 Your attention goes only to decisions: one pre-flight round of questions before work starts, a
 decision inbox, and standing answers for what you would answer the same way again. Every PR
@@ -16,7 +16,7 @@ you ── main session (super manager)
          │     └── worker: csv-button
          ├── manager: login-redirect
          │     └── worker: redirect-fix
-         └── merge queue                  merges handed-over PRs, runs the full check, deploys
+         └── reviewer                  merges handed-over PRs, runs the full check, deploys
 ```
 
 ## Quick start
@@ -38,16 +38,16 @@ change, "start a worker to fix X" is enough.
 
 ## How it works
 
-Sections below, in order: roles, dependencies, what you see, pre-flight, questions and the inbox, person checks, continuing work, merge mode, cleanup, guards, merge queue rules, deploying, verification, workers in other harnesses.
+Sections below, in order: roles, dependencies, what you see, pre-flight, questions and the inbox, person checks, continuing work, merge mode, cleanup, guards, reviewer rules, deploying, verification, workers in other harnesses.
 
 ## Roles
 
 | Role | What it is | Job |
 |---|---|---|
 | Super manager | your main session, with the `dispatch` skill | splits your request into tasks, starts one manager per task, relays questions and answers |
-| `flow:manager` | background agent, named after its task | writes briefs, starts workers, reviews their PRs, hands approved ones to the queue; refused if it tries to edit code; hands off to a `-2` manager at the context limit |
+| `flow:manager` | background agent, named after its task | writes briefs, starts workers, reviews their PRs, hands approved ones to the reviewer; refused if it tries to edit code; hands off to a `-2` manager at the context limit |
 | `flow:worker` | background agent in a worktree of its own | builds one brief, pushes `flow/<name>`, opens a PR, reports or asks; at the context limit it pushes its work and writes a handoff note |
-| `flow:queue` | background agent, started by the plugin | merges handed-over PRs in batches, runs the full check once per batch, pushes, deploys, reports back |
+| `flow:reviewer` | background agent, started by the plugin | merges handed-over PRs in batches, runs the full check once per batch, pushes, deploys, releases, fast-forwards the main checkout, reports back |
 
 Reports and questions travel up the tree on their own: a worker's report wakes its manager, a
 manager's wakes the main session. Answers go down by message. Only the main session asks you
@@ -79,7 +79,7 @@ add login-redirect  after: csv-export
 ## What you see
 
 - **The Flow pane** (`/flow`): the tree rooted at your main session (the super manager), with
-  the managers, what needs you first, and the PRs handed to the queue under it. Every agent is
+  the managers, what needs you first, and the PRs handed to the reviewer under it. Every agent is
   a card: a status glyph, the bold name with `(+N)` for the agents under it, the role dimmed, one
   short activity line (what it is doing, or the question it asks; the description only while
   there is no activity yet), and the meter below with elapsed time and tokens. Only top-level
@@ -92,7 +92,7 @@ add login-redirect  after: csv-export
   `/flow inbox` lists the open questions (see Questions and the inbox), `/flow checks` lists the after-deploy checks that need a person (see Person checks), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
-  `c` collapses or expands the highlighted card, `q` the Merge queue section. In an agent's detail, `b` goes back and `m` starts a message.
+  `c` collapses or expands the highlighted card, `q` the Reviewer section. In an agent's detail, `b` goes back and `m` starts a message.
   Arrow keys, Tab and Enter go through the pane's focus ring, and the highlight follows it. Esc
   can't be caught inside a pane. `g` switches between the tree and the graph view (below).
 - **The graph view** (`g`): the plan's dependency graph instead of the cards. At the top level it
@@ -106,9 +106,9 @@ add login-redirect  after: csv-export
   too narrow for columns falls back to a list with `after:` lines; a graph taller than the pane
   scrolls with `↑ N more` / `↓ N more`.
 - **Collapsible cards**: `c` collapses or expands the highlighted card; clicking a card's ▸/▾
-  toggles it, clicking elsewhere on the card opens it. Managers and the merge queue start collapsed
+  toggles it, clicking elsewhere on the card opens it. Managers and the reviewer start collapsed
   (one line each, with asks and handoff shown, including for hidden workers); workers start
-  expanded. `q` toggles the Merge queue section. Your choices stick while the pane is open.
+  expanded. `q` toggles the Reviewer section. Your choices stick while the pane is open.
 - **Many agents**: with 10 to 20 managers the tree shows one line per collapsed manager,
   `↑ N above` and `+N more` for rows out of the window, and scrolls to keep the highlight in view.
 - **Following the chat view**: plugins can't switch the transcript, so the pane follows it. Open an
@@ -123,8 +123,8 @@ add login-redirect  after: csv-export
   `[1m]` model).
   On a short terminal the cards shrink to one-line rows (just `42%`), and `+N more` stands in
   for rows that don't fit.
-- **Unhanded PRs**: open, non-draft `flow/*` PRs with no handover (or a returned one) and no live worker show as "⚠ N PRs nobody handed over" under the pane header and under "Needs attention:" in `status`. Checked with `gh pr list` every 5 minutes; a worker that ended less than 20 minutes ago gets a grace period. Off when the merge queue is off.
-- **The status line**: `flow: 2 managers · 3 workers · queue: 1 PR · /flow`.
+- **Unhanded PRs**: open, non-draft `flow/*` PRs with no handover (or a returned one) and no live worker show as "⚠ N PRs nobody handed over" under the pane header and under "Needs attention:" in `status`. Checked with `gh pr list` every 5 minutes; a worker that ended less than 20 minutes ago gets a grace period. Off when the reviewer is off.
+- **The status line**: `flow: 2 managers · 3 workers · reviewer: 1 PR · /flow`.
 - **Toasts** when an agent finishes, asks a question, or a PR merges or comes back.
 
 ## Pre-flight
@@ -230,13 +230,13 @@ id to revoke.
 
 An after-deploy check that needs a person (a browser look, a real conversation, a judgment call) becomes a durable item instead of a line in a chat report. Checks are separate from inbox questions and shown alongside them.
 
-- **What creates one.** Each `needs a person: PR #<n>: <steps>` line in the merge queue's done report for a PR. The same PR and steps never get two checks. The check's version is read from `.claude-plugin/plugin.json` at the merged sha; when that is unreadable (not a plugin repo), it falls back to a version named in the steps ("install 0.3.31", else any `X.Y.Z`). Handovers that were already done before this existed are backfilled once at session start.
+- **What creates one.** Each `needs a person: PR #<n>: <steps>` line in the reviewer's done report for a PR. The same PR and steps never get two checks. The check's version is read from `.claude-plugin/plugin.json` at the merged sha; when that is unreadable (not a plugin repo), it falls back to a version named in the steps ("install 0.3.31", else any `X.Y.Z`). Handovers that were already done before this existed are backfilled once at session start.
 - **Where.** `<state dir>/checks.json`. A check has an id (`c1`, `c2`, ...), the PR, its steps, an optional version and an optional verify command. State is `open`, `passed` or `failed`; a failed check also carries a follow-up that is `open` or `started`.
 - **`/flow checks`** lists the open checks grouped by what they need: "Needs install of X and a restart" (one group per version, ascending), "Ready on the installed version", "No version", and "Version unknown" (a versioned check when the installed version cannot be read). Open follow-ups are listed after them. `/flow inbox` has a "Checks" section with the count, the pane has a `Checks: n open` line, and `/flow resume` lists open checks (for the user, nothing to start) and open follow-ups (for main to start).
 - **Pass and fail.** `/flow checks pass <id...>` closes checks as passed. `/flow checks fail <id> <note>` fails one check; the note (what went wrong) is required. A failed check creates a follow-up for main: main starts a manager on it with the PR, the steps and the note, then marks it with `mcp__flow__check` `started` (id and manager name). Closing a closed or unknown id is refused.
-- **Who closes.** The user with `/flow checks`, or main with `mcp__flow__check` on the user's word. The merge queue may close only a check that carries a verify command, see below.
+- **Who closes.** The user with `/flow checks`, or main with `mcp__flow__check` on the user's word. The reviewer may close only a check that carries a verify command, see below.
 - **After an update.** Once per installed version, when an update installs the version some open checks were waiting for, main gets one prompt listing the checks that can now be done. Main tells the user; it starts no managers for them.
-- **Scripted checks.** A manager can pass `verify_command` (a shell command, such as an e2e or smoke run) on `mcp__flow__handover` when the after-deploy check can be scripted. If the check still needs a person, the queue runs the command at the merged main and closes the check itself: pass on exit 0, fail otherwise. The file-only `verify_paths` setting limits this: when set and the PR changes no matching file, the command is skipped and the check stays open for a person, with a note saying so.
+- **Scripted checks.** A manager can pass `verify_command` (a shell command, such as an e2e or smoke run) on `mcp__flow__handover` when the after-deploy check can be scripted. If the check still needs a person, the reviewer runs the command at the merged main and closes the check itself: pass on exit 0, fail otherwise. The file-only `verify_paths` setting limits this: when set and the PR changes no matching file, the command is skipped and the check stays open for a person, with a note saying so.
 
 Not to be confused with the check-only verify worker (for after-deploy checks an agent can do, see Deploying), FYIs and standing answers (see Questions and the inbox).
 
@@ -255,7 +255,7 @@ images and files to managers as paths under an `Attachments:` heading. Workers s
 
 ## Continuing work
 
-**Handoff.** When a worker or manager reaches the limit (once per agent; the queue never gets it),
+**Handoff.** When a worker or manager reaches the limit (once per agent; the reviewer never gets it),
 the plugin tells it to wrap up and shows a toast. The limit is `context_warn_percent` (default 40) of the agent's window, or
 `context_warn_percent_1m` (default 35) on a 1M window, so a 1M model hands off at 350k tokens and a
 200k model at 80k. `context_warn_tokens` (default 0, off) is an optional absolute cap over both. The wrap-up reaches the agent two ways: a message (read
@@ -293,7 +293,7 @@ at a time). Work owned by a live agent, or already resumed in this session, is n
 
 ## Merge mode
 
-By default the queue merges every PR a manager hands over. Set `merge_mode` to `confirm` and it
+By default the reviewer merges every PR a manager hands over. Set `merge_mode` to `confirm` and it
 holds each one until you approve it. A PR's effective mode comes from, in order:
 
 1. Its labels: `flow:confirm` or `flow:auto` (with both, `confirm` wins).
@@ -306,10 +306,10 @@ refused, so only you can add `flow:auto` there. Managers mark a PR `confirm` whe
 migrations or data rewrites, deploy/CI/infra config, auth/permissions/secrets, deletions of
 things users rely on, or irreversible operations.
 
-A PR waiting for you has status `awaiting`: no queue is started for it, and it shows in the pane,
+A PR waiting for you has status `awaiting`: no reviewer is started for it, and it shows in the pane,
 in `status` and in `/flow resume`. Run `/flow approve <n>` (yours only; it works on awaiting PRs
-and nothing else) to put it in the queue. The approval is tied to the head commit: if the
-branch moves and the manager hands it over again, you approve again. The queue re-reads the labels
+and nothing else) to put it in the reviewer. The approval is tied to the head commit: if the
+branch moves and the manager hands it over again, you approve again. The reviewer re-reads the labels
 and head when it takes a PR; a PR still unapproved answers "Held:" and is skipped, and if `gh` fails
 the labels count as none, so it never merges something it could not check.
 
@@ -317,8 +317,8 @@ the labels count as none, so it never merges something it could not check.
 
 With `release` on, no PR touches the version, so parallel PRs never collide on a version number or a dated changelog section.
 - Workers add their changelog lines under `## [Unreleased]` in `changelog_file` and never change the version. Managers check that when they review, and pass `release: "minor"` on the handover for a new feature users see (or put the `flow:minor` label on the PR; `flow:major` / `"major"` only when the task asks). Everything else is a patch.
-- After the full check passes and before the push, the queue calls `release` once per batch: it moves the Unreleased lines into a new `## [x.y.z] - date` section (a PR title per merged PR when Unreleased is empty) and bumps the version in each `release_files` entry by the highest bump asked in the batch. The queue commits "Release x.y.z" and pushes it with the merges. A retried push does not release twice.
-- The release refuses (and the queue says so) when the setting is off, no version file is found, or the changelog is missing.
+- After the full check passes and before the push, the reviewer calls `release` once per batch: it moves the Unreleased lines into a new `## [x.y.z] - date` section (a PR title per merged PR when Unreleased is empty) and bumps the version in each `release_files` entry by the highest bump asked in the batch. The reviewer commits "Release x.y.z" and pushes it with the merges. A retried push does not release twice.
+- The release refuses (and the reviewer says so) when the setting is off, no version file is found, or the changelog is missing.
 - Recommended for repos that turn it on: a `.gitattributes` line `CHANGELOG.md merge=union`, so Unreleased lines added side by side merge without conflicts.
 
 ## Cleanup
@@ -337,7 +337,7 @@ lock names an agent that has ended or a process that is gone. It goes with `git 
 branch when it is not checked out anywhere (a worktree removed in the same sweep doesn't count),
 is not the base, has no open PR, and its tip is on `origin/<base>` or is the head of a merged PR
 of that branch (or contained in it). It goes with `git branch -D`. Remote branches are never
-deleted: the queue's `gh pr merge --delete-branch` does that.
+deleted: the reviewer's `gh pr merge --delete-branch` does that.
 
 **What stays, listed for a person.** Uncommitted changes (the files named), unpushed commits,
 locked worktrees, a closed PR's branch, a worktree or branch a live agent uses, an open PR's
@@ -350,8 +350,8 @@ origin --prune` and one `gh pr list --state all` per sweep; when gh fails the sw
 goes by ancestry only. Every sweep that removed something adds a `clean` line to `log.jsonl`.
 
 **The automatic sweep** (`cleanup` = `auto`, the default) runs the same safe sweep in the
-background after each PR the queue marks done, and when a queue agent ends (its worktree, detached
-at the base, goes once the queue is gone). Never two sweeps at once; errors go to the log. With
+background after each PR the reviewer marks done, and when a reviewer agent ends (its worktree, detached
+at the base, goes once the reviewer is gone). Never two sweeps at once; errors go to the log. With
 `cleanup` = `off` nothing runs by itself, the tool's `apply` runs dry and says so, and only
 `/flow clean --yes` removes. The pane and `status` show one dim line while there are leftovers,
 e.g. `3 leftover worktrees · 12 branches · 1 needs a look · /flow clean`, from a dry sweep
@@ -380,27 +380,28 @@ session included. A rule in a prompt can be skipped; a refused tool call can't.
   session and managers, and by any `cd` or `git -C` in the command; a worker's relative paths
   land in its own worktree and pass. Turn it off with `main_checkout_guard`.
 
-## Merge queue rules
+## Reviewer rules
 
-Beyond merging, checking and deploying, the queue handles four things on its own:
+Beyond merging, checking and deploying, the reviewer handles five things on its own:
 
-- **Migration clashes** (when `migrations_dir` is set). After taking a PR and checking its head, the queue calls `mcp__flow__migrations` with the PR and the earlier PRs of the batch. If a migration of the PR has the same number as one on the base branch, at HEAD or in an earlier PR of the batch, or is at or below the highest on the base branch, the queue renumbers it in a temporary worktree on the PR's head: `git mv` to the next free number the tool reports (highest + 1, no gaps), updates the PR's own mechanical references to the old number (the paired down migration, a journal or index entry, a file name in a list), commits "Renumber migration <old> to <new> (merge queue)" and pushes to the PR's branch (never forced), then merges the new head. The batch's full check covers it. The done line and the report to the manager say so. When the number is referenced in a way it cannot update safely (code constants, generated checksums or snapshots, data that records the version) or the branch moved meanwhile, the PR goes back with the reason. Two packages that both add migrations can therefore run in parallel.
+- **Migration clashes** (when `migrations_dir` is set). After taking a PR and checking its head, the reviewer calls `mcp__flow__migrations` with the PR and the earlier PRs of the batch. If a migration of the PR has the same number as one on the base branch, at HEAD or in an earlier PR of the batch, or is at or below the highest on the base branch, the reviewer renumbers it in a temporary worktree on the PR's head: `git mv` to the next free number the tool reports (highest + 1, no gaps), updates the PR's own mechanical references to the old number (the paired down migration, a journal or index entry, a file name in a list), commits "Renumber migration <old> to <new> (reviewer)" and pushes to the PR's branch (never forced), then merges the new head. The batch's full check covers it. The done line and the report to the manager say so. When the number is referenced in a way it cannot update safely (code constants, generated checksums or snapshots, data that records the version) or the branch moved meanwhile, the PR goes back with the reason. Two packages that both add migrations can therefore run in parallel.
 - **Infrastructure flakes.** A push that fails with a server or network error (5xx, timeout, connection reset; a rejection keeps the fetch, merge, check rule) is retried with backoff (30s, 1m, 2m, 4m, then every 4m) for at most 20 minutes, as is any `gh` call of the batch; the retry count goes in the done line. After that the batch's PRs go back with "push to <base> failed for 20 minutes (infrastructure); PR unchanged, hand it over again" and main is told. Health checks get 30 seconds before the first fetch and 10 minutes of retries.
 - **Flaky tests.** With `flaky_tests` set, a full check whose failing tests are all in those files is rerun once for those files (through `test_command` with `{files}` if it has that slot, else the full check once more). If they pass, the batch passes and the report says "flaky rerun: <file> failed, passed on rerun". Any other failure, or a second one, is real.
 - **Both-sides additions.** A merge conflict where both sides added lines at the same place (imports, list entries, registry entries, README table rows, CHANGELOG entries) keeps both, drops exact duplicates and keeps sorted lists sorted; the full check covers it and the report says "kept both sides in <files>". The same line changed differently, or a deletion against an edit, goes back to the worker.
+- **Fast-forwarding the main checkout.** After a merge batch, when the main checkout is clean and on the base branch, the reviewer fast-forwards it (`git pull --ff-only`) so merged `.claude/flow.json` settings take effect. Otherwise it leaves the checkout alone and says in its report that it was not updated, and why.
 
 ## Deploying
 
-`deploy_targets` is an ordered list. Per target, the queue runs `backup` commands (every batch, checking their output is sane), then the `deploy` commands, then fetches `health_url` until it contains the short sha just pushed (it waits 30 seconds after the deploy, then retries with backoff for up to 10 minutes; a failed fetch inside that window is not a failure), then follows the free-text `verify` notes. A target that fails stops the ones after it and is reported, e.g. `deployed: demo ✓, production ✗ at health: ...`. The PRs are already merged by then; they are marked done with the failure in the report.
+`deploy_targets` is an ordered list. Per target, the reviewer runs `backup` commands (every batch, checking their output is sane), then the `deploy` commands, then fetches `health_url` until it contains the short sha just pushed (it waits 30 seconds after the deploy, then retries with backoff for up to 10 minutes; a failed fetch inside that window is not a failure), then follows the free-text `verify` notes. A target that fails stops the ones after it and is reported, e.g. `deployed: demo ✓, production ✗ at health: ...`. The PRs are already merged by then; they are marked done with the failure in the report.
 
-Each target has a `mode`: `auto` (the default; deployed every batch) or `confirm`. Any other value is treated as `confirm` and the settings warning says so. Before each target the queue calls `mcp__flow__deploy` `gate` with the target and the short sha, and gets `Go`, `Held: <why>` or `Awaits approval: <qid>`; a held or awaiting target is skipped for that batch and the next target goes on (only a failed one stops the rest). The queue records each result with `deployed`, and reports per target, e.g. `deployed: demo ✓, production ⏸ awaits approval (q12)`.
+Each target has a `mode`: `auto` (the default; deployed every batch) or `confirm`. Any other value is treated as `confirm` and the settings warning says so. Before each target the reviewer calls `mcp__flow__deploy` `gate` with the target and the short sha, and gets `Go`, `Held: <why>` or `Awaits approval: <qid>`; a held or awaiting target is skipped for that batch and the next target goes on (only a failed one stops the rest). The reviewer records each result with `deployed`, and reports per target, e.g. `deployed: demo ✓, production ⏸ awaits approval (q12)`.
 
-- **Confirm targets.** The gate opens one blocking inbox item for you ("Deploy production at abc12345?", options `deploy` / `not now`, default `not now`, with the commits since that target's last deploy). Repeat gates reuse the open item and move it to the newest sha. Answering `deploy` approves exactly that sha and starts a deploy-only queue run (no merge, no full check, the approved sha); a later batch with a newer sha needs a new approval. `not now` leaves the target behind and the next batch asks again. Standing answers never answer a deploy approval (a rule would have to name `"kinds": ["deploy"]`), and `always` on one makes no rule.
+- **Confirm targets.** The gate opens one blocking inbox item for you ("Deploy production at abc12345?", options `deploy` / `not now`, default `not now`, with the commits since that target's last deploy). Repeat gates reuse the open item and move it to the newest sha. Answering `deploy` approves exactly that sha and starts a deploy-only reviewer run (no merge, no full check, the approved sha); a later batch with a newer sha needs a new approval. `not now` leaves the target behind and the next batch asks again. Standing answers never answer a deploy approval (a rule would have to name `"kinds": ["deploy"]`), and `always` on one makes no rule.
 - **Holds.** `/flow hold <target> [batch|released]` (default `released`) keeps a target from deploying: `batch` stops only the next gate call for it, `released` stays until `/flow release <target>`. Releasing an auto target starts a deploy-only run that catches it up. Main does the same with `mcp__flow__deploy` `hold` / `release` when you say "demo only, hold production"; agents cannot.
-- **Behind count.** `mcp__flow__status` and the Flow pane's merge queue section show `production behind by N commits` (commits between the target's last deployed sha and `origin/<base>`, refreshed with the PR list, never on every render), or `production: no deploy recorded` for a target flow has not deployed. `mcp__flow__deploy` `list` shows every target with mode, hold, last sha and approval. The state is in `deploys.json` next to `inbox.json`.
+- **Behind count.** `mcp__flow__status` and the Flow pane's reviewer section show `production behind by N commits` (commits between the target's last deployed sha and `origin/<base>`, refreshed with the PR list, never on every render), or `production: no deploy recorded` for a target flow has not deployed. `mcp__flow__deploy` `list` shows every target with mode, hold, last sha and approval. The state is in `deploys.json` next to `inbox.json`.
 
 - **Env and secret changes.** A PR that needs a server environment variable or a secret changed on a target declares it in the `env` field of its handover (see the `handover` reference below). Each change becomes blocking inbox items for you, addressed to main and never answered by a standing answer (a rule would have to name `"kinds": ["env"]`; `always` on one makes no rule). A non-secret change reads `Set NAME=value on production? (why)` with `yes` / `no` (default `no`). A secret reads `Secret NAME on production is set by you (why). Set it, then answer done` with `done` / `not yet`: flow never has its value, there is no field for it, and nothing is ever written to the log, the PR text or a state file. A `login` step ("log in to the cloud CLI") is its own item, `Do this yourself: ...`, and the change waits for it. The inbox labels them ENV CHANGE, SECRET and DO YOURSELF.
-- **How the gate treats them.** For a target, the gate checks the env changes of handed-over PRs that are taken or done and not yet recorded for it, after the hold and before the deploy approval (so you are not asked to approve a deploy that cannot go yet). Any item still open: `Awaits env: <qids>`, and the target is skipped for that batch. An item answered `not yet` (a secret, a login step, an apply item) is still waiting: the gate opens a fresh item for it, answers `Awaits env: <qid>`, and skips the target for that batch; a change always has one open item. Only `no` on a non-secret change counts as declined: `Held: env change NAME declined`, until main runs `release` on the target, which drops the declined (`no`) changes only (recorded as dropped). When everything is answered yes or done, a non-secret change is applied only through the target's `env_command`, a template with `{name}` and `{value}` such as `fly secrets set {name}={value} -a myapp` (the value is shell-quoted; never put quotes around the placeholders; never used for secrets). The gate then answers `Go, first apply env:` with the exact command per change; the queue runs them (a non-zero exit fails the target), calls `mcp__flow__deploy` `env-applied` with the target and names, then deploys. A target without `env_command` gets one more item, `Apply NAME=value on production yourself, answer done`, and waits for it. The queue records each change in the status file entry by name and target: applied by command, applied by you, secret set by you, declined or dropped. Two PRs changing the same NAME on one target: the later handover's value wins, the earlier is recorded as superseded; you still answer both items. A returned PR's env items are closed. The same PR handed over again reuses its open items instead of duplicating them. `mcp__flow__queue` `list` shows each handover's env changes and `mcp__flow__deploy` `list` the pending ones per target.
+- **How the gate treats them.** For a target, the gate checks the env changes of handed-over PRs that are taken or done and not yet recorded for it, after the hold and before the deploy approval (so you are not asked to approve a deploy that cannot go yet). Any item still open: `Awaits env: <qids>`, and the target is skipped for that batch. An item answered `not yet` (a secret, a login step, an apply item) is still waiting: the gate opens a fresh item for it, answers `Awaits env: <qid>`, and skips the target for that batch; a change always has one open item. Only `no` on a non-secret change counts as declined: `Held: env change NAME declined`, until main runs `release` on the target, which drops the declined (`no`) changes only (recorded as dropped). When everything is answered yes or done, a non-secret change is applied only through the target's `env_command`, a template with `{name}` and `{value}` such as `fly secrets set {name}={value} -a myapp` (the value is shell-quoted; never put quotes around the placeholders; never used for secrets). The gate then answers `Go, first apply env:` with the exact command per change; the reviewer runs them (a non-zero exit fails the target), calls `mcp__flow__deploy` `env-applied` with the target and names, then deploys. A target without `env_command` gets one more item, `Apply NAME=value on production yourself, answer done`, and waits for it. The reviewer records each change in the status file entry by name and target: applied by command, applied by you, secret set by you, declined or dropped. Two PRs changing the same NAME on one target: the later handover's value wins, the earlier is recorded as superseded; you still answer both items. A returned PR's env items are closed. The same PR handed over again reuses its open items instead of duplicating them. `mcp__flow__reviewer` `list` shows each handover's env changes and `mcp__flow__deploy` `list` the pending ones per target.
 
 ```json
 {
@@ -414,9 +415,9 @@ Each target has a `mode`: `auto` (the default; deployed every batch) or `confirm
 }
 ```
 
-`state_file` (set it per repo, see Settings per repo): after deploying, the queue adds one entry at the top of the file (date, PRs with titles, deployed sha and targets, verified, not verified, pending decisions), moves entries beyond `keep` (default 10) to the end of the archive (default `<stem>-archive.md` next to it, oldest last), and commits and pushes "Status: <PRs> deployed <sha>" without deploying again. Workers are told never to edit it.
+`state_file` (set it per repo, see Settings per repo): after deploying, the reviewer adds one entry at the top of the file (date, PRs with titles, deployed sha and targets, verified, not verified, pending decisions), moves entries beyond `keep` (default 10) to the end of the archive (default `<stem>-archive.md` next to it, oldest last), and commits and pushes "Status: <PRs> deployed <sha>" without deploying again. Workers are told never to edit it.
 
-After deploying, a PR whose `after_deploy` an agent can check gets a check-only worker (`<queue>-verify-<pr>`); one that needs a person is reported as `needs a person: PR #<n>: ...` and recorded as a check (see Person checks). A PR's `pending` decisions go into the reports and the status entry as `pending decisions: PR #<n>: ...`.
+After deploying, a PR whose `after_deploy` an agent can check gets a check-only worker (`<reviewer>-verify-<pr>`); one that needs a person is reported as `needs a person: PR #<n>: ...` and recorded as a check (see Person checks). A PR's `pending` decisions go into the reports and the status entry as `pending decisions: PR #<n>: ...`.
 
 ## Verification
 Ran:
@@ -429,8 +430,8 @@ Not verified:
   `Ran` needs at least one entry and must include every `worker_checks` and `always_tests`
   command (backticks optional). `Exercised` and `Not verified` must be non-empty; a bare
   "Not verified: nothing" and a bare "n/a" are refused. The section is stored on the handover and
-  shown in `queue list`, in the queue's report, in the status file entry and in `status`.
-- `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
+  shown in `reviewer list`, in the reviewer's report, in the status file entry and in `status`.
+- `reviewer`: the reviewer's worklist (`list`, `take`, `done`, `back`).
 - `plan`: dependencies between tasks or packages (see Dependencies).
 - `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
 - `preflight`: a manager files its pre-flight before starting workers (see Pre-flight).
@@ -438,7 +439,7 @@ Not verified:
 - `fyi`: records a decision the agent took itself, non-blocking and overturnable (see Questions and the inbox).
 - `answer`: answers inbox questions (and acks or overturns FYIs) by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
 - `standing`: main only: list, add and remove standing answers.
-- `check`: main only (the merge queue may close checks that carry a verify command): `list`, `pass` (`ids`, optional `note`), `fail` (`id`, required `note`) and `started` (`id`, `manager`) for a failed check's follow-up (see Person checks).
+- `check`: main only (the reviewer may close checks that carry a verify command): `list`, `pass` (`ids`, optional `note`), `fail` (`id`, required `note`) and `started` (`id`, `manager`) for a failed check's follow-up (see Person checks).
 - `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
   `text` it returns the notes.
 - `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.
@@ -538,16 +539,16 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | Option | Default | Set in | Used by |
 |---|---|---|---|
 | `test_command` | tests covering the changed files | `/config`, file | workers |
-| `full_check_command` | none (the queue says so) | `/config`, file | the queue, once per batch |
-| `deploy_command` | none (no deploy) | `/config`, file | the queue, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
-| `deploy_targets` | none | file only | the queue: ordered deploy targets, each with an optional `mode` of `auto` (default) or `confirm` (see Deploying). A JSON array or a JSON string; wins over `deploy_command` |
-| `state_file` | none | file only | the queue: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
-| `merge_queue` | on | `/config`, file | off: managers merge themselves with `merge_method` |
-| `merge_method` | `squash` | `/config`, file | managers, when there is no queue |
+| `full_check_command` | none (the reviewer says so) | `/config`, file | the reviewer, once per batch |
+| `deploy_command` | none (no deploy) | `/config`, file | the reviewer, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
+| `deploy_targets` | none | file only | the reviewer: ordered deploy targets, each with an optional `mode` of `auto` (default) or `confirm` (see Deploying). A JSON array or a JSON string; wins over `deploy_command` |
+| `state_file` | none | file only | the reviewer: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
+| `reviewer` | on | `/config`, file | off: managers merge themselves with `merge_method` |
+| `merge_method` | `squash` | `/config`, file | managers, when there is no reviewer |
 | `merge_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` holds every handed-over PR until you run `/flow approve <n>` (see Merge mode) |
 | `preflight` | `on` | `/config`, file | `off`: managers are not gated and no round is sent (see Pre-flight) |
 | `preflight_wait` | 10 | `/config`, file | minutes the main session waits for managers to file before sending the round |
-| `release` | `off` | `/config`, file | `on`: release at merge, the queue bumps the version once per batch (see Releases) |
+| `release` | `off` | `/config`, file | `on`: release at merge, the reviewer bumps the version once per batch (see Releases) |
 | `release_files` | none (`package.json` at the repo root when there is one) | file only | repo-relative JSON or TOML files whose version the release bumps, a list; the first one gives the current version |
 | `changelog_file` | `CHANGELOG.md` | `/config`, file | the changelog the release cuts and workers add their lines to |
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
@@ -556,17 +557,17 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `test_slots` | 1 | `/config`, file | how many heavy test runs may run at once across all agents (minimum 1) |
 | `worker_model` | `sonnet[1m]` | `/config`, file | workers. Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
 | `manager_model` | `opus` | `/config`, file | managers |
-| `queue_model` | `opus` | `/config`, file | the merge queue |
+| `reviewer_model` | `opus` | `/config`, file | the reviewer |
 | `language` | `English` | `/config`, file | the language agents write reports and PR text in |
 | `big_files` | none | file only | files workers grep and never read whole (a list) |
 | `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
-| `migrations_dir` | none | file only | the directory of migrations: workers number new ones after the highest on the base branch, and the merge queue renumbers a clash (see Merge queue rules) |
+| `migrations_dir` | none | file only | the directory of migrations: workers number new ones after the highest on the base branch, and the reviewer renumbers a clash (see Reviewer rules) |
 | `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |
 | `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
 | `verify_paths` | none | file only | path globs (a list): a handover's `verify_command` runs only when the PR changes a matching file, e.g. only PRs touching migrations or code with outbound effects; otherwise the check stays open for a person. Unset: the command always runs (see Person checks) |
 | `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
-| `flaky_tests` | none | file only | test files known to fail now and then: when they are the only failures of the full check, the queue reruns them once (a list) |
+| `flaky_tests` | none | file only | test files known to fail now and then: when they are the only failures of the full check, the reviewer reruns them once (a list) |
 | `guard_tests` | none | file only | path globs mapped to repo-wide tests a worker must run when its diff touches a matching path, e.g. `{"src/routes/**": ["test/admin.test.ts"]}` (see Guard tests) |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
 | `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
@@ -574,7 +575,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `handoff` | on | `/config`, file | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
 | `base_branch` | the remote's default branch | `/config`, file | everyone |
 | `main_checkout_guard` | on | `/config`, file | every agent and the main session: writes to the main checkout are refused (see Guards) |
-| `cleanup` | `auto` | `/config`, file | `auto`: the plugin removes finished, clean worktrees and branches after each merge and when the queue ends (see Cleanup). `off`: only `/flow clean --yes` |
+| `cleanup` | `auto` | `/config`, file | `auto`: the plugin removes finished, clean worktrees and branches after each merge and when the reviewer ends (see Cleanup). `off`: only `/flow clean --yes` |
 | `worker_harness` | `agent` | `/config`, file | managers: `agent` starts `flow:worker` agents; a harness name (`codex`, …) starts every worker in a terminal instead (see Workers in other harnesses) |
 | `session_host` | `auto` | `/config`, file | where session workers run: `auto` (Orca when it runs, else tmux), `orca`, `tmux` |
 | `harnesses` | the four built-ins | `/config` (JSON string), file | harness name to a start line or `{start, resume?, program?, quota?, digest?}`, over the built-ins; `""` removes one |
@@ -584,6 +585,8 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 `decision_phrases` (deprecated in favour of `mcp__flow__ask`, still honoured; the settings loader warns): a report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it.
 
 An unset full check or deploy is a step that's skipped and reported, never improvised.
+
+The reviewer was called the merge queue before. For older setups the agent type `flow:queue`, the tool `mcp__flow__queue` and the settings `merge_queue` and `queue_model` still work as aliases of `flow:reviewer`, `mcp__flow__reviewer`, `reviewer` and `reviewer_model`; the old settings names are deprecated and warn once.
 
 Sub-agents don't run on Fable: a Fable model is refused in settings (a warning, the default applies) and denied at spawn, for flow agents and for anything a flow agent starts.
 
@@ -611,17 +614,17 @@ The files are checked every few seconds by modification time. New settings apply
 
 ## Tools the agents use
 
-- `migrations` (read-only; used by the merge queue): `prs` (PR numbers in merge order) and `ref` (default HEAD). It reports the highest migration number on the base branch and at `ref`, each PR's added migrations as ok, clash or at-or-below, the next free number with its zero padding kept, the suggested `git mv`, and where the PR references the old number.
-- `release`: the merge queue, once per batch before the push (release on): cuts the changelog, bumps the version files, returns the commit command (see Releases).
-- `handover`: a manager hands a reviewed PR over (optional `release`: `patch`, `minor` or `major`; optional `env`: a list of `{target, name, value | secret: true, why, login?}` env changes, one inbox item each, see Deploying; `target` must be a configured deploy target, `name` an env variable name, an entry with both `value` and `secret: true` is refused without repeating the value, and a non-empty `env` is refused when no deploy target is configured; a secret has no value in flow; optional `verify_command`, a shell command the queue runs after merge to close a needs-a-person check, see Person checks); the plugin records its head and starts
-  a queue if none is running. `report_to` is optional and defaults to the caller's own name
+- `migrations` (read-only; used by the reviewer): `prs` (PR numbers in merge order) and `ref` (default HEAD). It reports the highest migration number on the base branch and at `ref`, each PR's added migrations as ok, clash or at-or-below, the next free number with its zero padding kept, the suggested `git mv`, and where the PR references the old number.
+- `release`: the reviewer, once per batch before the push (release on): cuts the changelog, bumps the version files, returns the commit command (see Releases).
+- `handover`: a manager hands a reviewed PR over (optional `release`: `patch`, `minor` or `major`; optional `env`: a list of `{target, name, value | secret: true, why, login?}` env changes, one inbox item each, see Deploying; `target` must be a configured deploy target, `name` an env variable name, an entry with both `value` and `secret: true` is refused without repeating the value, and a non-empty `env` is refused when no deploy target is configured; a secret has no value in flow; optional `verify_command`, a shell command the reviewer runs after merge to close a needs-a-person check, see Person checks); the plugin records its head and starts
+  a reviewer if none is running. `report_to` is optional and defaults to the caller's own name
   (`main` for the main session). A name that matches no agent of the session is refused, naming
   the caller's own name; the caller's own worker's name is corrected to the caller's, with a note.
-  When the queue messages a `report_to` manager that has already finished, the plugin does not wake
+  When the reviewer messages a `report_to` manager that has already finished, the plugin does not wake
   it: it adds the report to that manager's notes and sends it to main. A manager that someone other
-  than main woke (queue, worker) has its turn-end report forwarded to main as well.
+  than main woke (reviewer, worker) has its turn-end report forwarded to main as well.
   It refuses a PR whose description has no valid `## Verification` section (checked after the
-  closed and draft checks), records nothing and starts no queue, and lists every problem with the
+  closed and draft checks), records nothing and starts no reviewer, and lists every problem with the
   expected format. Fix with `gh pr edit <n> --body-file <file>` and call again. The format:
 
 ```
@@ -629,7 +632,7 @@ The files are checked every few seconds by modification time. New settings apply
 
 Six worktrees running the whole suite at once can exhaust memory and time out the real check.
 Workers call `test_slot` `acquire` before a heavy run (a whole suite, anything over about a
-minute) and `release` after it; the queue does the same around the full check. At most
+minute) and `release` after it; the reviewer does the same around the full check. At most
 `test_slots` runs hold a slot; the rest wait first come, first served. A hook has a 10 second
 budget, so `acquire` waits at most a few seconds and then answers "queued, position N". The
 head of the line is granted a free slot at once and told two ways: a file
@@ -653,7 +656,7 @@ worker must run only when its diff touches a matching path.
   them under `test_slot` and lists each under `Ran:`.
 - `handover` reads the PR's files with `gh pr diff <n> --name-only` and refuses a PR whose `Ran:`
   lacks a required test, naming the glob. If `gh` fails, handover refuses with its error.
-- When the queue sends a PR back for a failing test (`queue back` with `failed_tests`) and no glob
+- When the reviewer sends a PR back for a failing test (`reviewer back` with `failed_tests`) and no glob
   requires that test for the PR's files, main gets one non-blocking inbox question suggesting a
   mapping (the deepest common directory of the changed files, as `dir/**`). Answering "Add it to my
   personal flow config" writes it to `<git-common-dir>/flow/config.json`; copy it into
@@ -710,7 +713,7 @@ when `.claude-plugin/types` is missing, symlinks it to the main checkout's copy.
 those type definitions itself (gitignored, per Claude Code version) when it loads the plugin from a
 folder you own, so open a session in the main checkout with `claude --plugin-dir .` once. Flow
 ignores and removes such links when it cleans a worktree. The repo's `.claude/flow.json` makes
-`npm run typecheck` and `npm run validate` worker checks and `npm run check` the merge queue's full check, so no PR merges
+`npm run typecheck` and `npm run validate` worker checks and `npm run check` the reviewer's full check, so no PR merges
 with type errors.
 
-Do not change `version` in `.claude-plugin/plugin.json`: this repo has `release` on, so add your changelog lines under `## [Unreleased]` in `CHANGELOG.md` and the merge queue bumps the version and cuts the release at merge (that is what `claude plugin update flow@flow` picks up).
+Do not change `version` in `.claude-plugin/plugin.json`: this repo has `release` on, so add your changelog lines under `## [Unreleased]` in `CHANGELOG.md` and the reviewer bumps the version and cuts the release at merge (that is what `claude plugin update flow@flow` picks up).
