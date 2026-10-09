@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-09
+
 ### Changed
 
 - The README is now a short guide for people: what flow is, install, a first run, the commands you use and the few settings you change. The detailed sections moved to `docs/how-it-works.md` and `docs/reference.md`, unchanged in substance.
