@@ -6,6 +6,7 @@ import {
   fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT,
 } from './prompts'
 import type { Settings } from './prompts'
+import { deployTargetsOf, stateFileOf } from './prompts'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
@@ -154,6 +155,8 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     testCommand: str('test_command', ''),
     fullCheck: str('full_check_command', ''),
     deployCommand: str('deploy_command', ''),
+    deployTargets: deployTargetsOf(options.deploy_targets),
+    stateFile: stateFileOf(options.state_file),
     mergeMethod: str('merge_method', 'squash'),
     useQueue: options.merge_queue !== false,
     maxWorkers: num('max_workers', 3),
@@ -413,8 +416,8 @@ export const register: Register = (on, options) => {
         properties: {
           pr: { type: 'number', description: 'The PR number' },
           verified: { type: 'string', description: 'What the worker ran, and that the full check was not run' },
-          pending: { type: 'string', description: '"none", or decisions the user still has to make' },
-          after_deploy: { type: 'string', description: '"none", or what to check after deploy' },
+          pending: { type: 'string', description: '"none", or decisions the user still has to make; the queue puts them in its report and the status file' },
+          after_deploy: { type: 'string', description: '"none", or what to check after deploy; the queue starts a check-only worker for what an agent can check and reports the rest as "needs a person"' },
           report_to: { type: 'string', description: 'Your agent name, so the queue reports back to you' },
         },
         required: ['pr', 'verified', 'report_to'],
