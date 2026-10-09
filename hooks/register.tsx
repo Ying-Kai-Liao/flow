@@ -1362,7 +1362,20 @@ async function gatherClean($: EngineInterface, base: string): Promise<CleanGathe
   // Only trusted with a roster that lists agents at all; an unreadable pid means no lock is broken.
   if (roster.some(a => a.id !== 'main')) {
     const ppid = Number((await run(['sh', '-c', 'echo $PPID'])).stdout.trim())
-    if (Number.isInteger(ppid) && ppid > 1) partial.ownPid = ppid
+    if (Number.isInteger(ppid) && ppid > 1) {
+      partial.ownPid = ppid
+      // A fresh agent's worktree is locked before the roster lists it; only an old lock is judged.
+      // Unknown age (no admin dir, no lock file) counts as young.
+      const oldLocks = new Set<string>()
+      for (const w of worktrees.slice(1)) {
+        if (w.locked === undefined || !/\bpid (\d+)\b/.test(w.locked) || !w.locked.includes(`pid ${ppid}`)) continue
+        const dir = await run(['git', '-C', w.path, 'rev-parse', '--absolute-git-dir'])
+        if (dir.exitCode !== 0) continue
+        const old = await run(['find', `${dir.stdout.trim()}/locked`, '-mmin', '+10'])
+        if (old.exitCode === 0 && old.stdout.trim() !== '') oldLocks.add(w.path)
+      }
+      partial.oldLocks = oldLocks
+    }
   }
   const ancestry = new Set<string>()
   for (const q of ancestryQueries(partial)) {

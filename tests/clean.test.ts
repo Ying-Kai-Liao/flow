@@ -19,7 +19,7 @@ const porcelain = (wts: Wt[]) => wts.map(w => [
 function inputs(o: {
   wts?: Wt[]; status?: Record<string, string>; branches?: Record<string, string>; onBase?: string[]
   remote?: Record<string, string>; prs?: PrRow[] | undefined; roster?: CleanInputs['roster']; ancestry?: string[]
-  deadPids?: number[]; waiting?: string[]; contained?: Record<string, string[]>; ownPid?: number
+  deadPids?: number[]; waiting?: string[]; contained?: Record<string, string[]>; ownPid?: number; oldLocks?: Set<string>
 }): CleanInputs {
   const wts = [{ path: MAIN, head: BASE, branch: 'main' }, ...(o.wts ?? [])]
   const status: Record<string, string> = {}
@@ -29,7 +29,7 @@ function inputs(o: {
     branches: { main: BASE, ...o.branches }, onBase: new Set([BASE, ...(o.onBase ?? [])]),
     remote: { main: BASE, ...o.remote }, prs: 'prs' in o ? o.prs : [], roster: o.roster ?? [],
     ancestry: new Set(o.ancestry ?? []), deadPids: new Set(o.deadPids ?? []), waiting: new Set(o.waiting ?? []),
-    ...(o.contained && { contained: o.contained }), ...(o.ownPid !== undefined && { ownPid: o.ownPid }),
+    ...(o.contained && { contained: o.contained }), ...(o.oldLocks && { oldLocks: o.oldLocks }), ...(o.ownPid !== undefined && { ownPid: o.ownPid }),
   }
 }
 
@@ -242,16 +242,19 @@ test('a handoff waits for its successor, unless its branch has a merged PR', () 
 test('a lock from this very process goes when its agent is not in the roster; others stay', () => {
   const lock = 'claude agent agent-q1 (pid 33643 start Fri Oct  9 12:54:11 2026)'
   const w = [{ path: WT('agent-q1'), head: BASE, locked: lock }]
-  const own = selectCleanup(inputs({ wts: w, ownPid: 33643 }))
+  // A young lock (or one of unknown age) may be an agent still starting: it stays.
+  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 33643 })), WT('agent-q1'))?.reason).toBe('locked')
+  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 33643, oldLocks: new Set() })), WT('agent-q1'))?.reason).toBe('locked')
+  const own = selectCleanup(inputs({ wts: w, ownPid: 33643, oldLocks: new Set([WT('agent-q1')]) }))
   expect(own.remove.worktrees).toEqual([WT('agent-q1')])
   expect(own.unlock).toEqual([WT('agent-q1')])
   // A live agent of this session keeps its lock.
-  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 33643, roster: [{ id: 'q1', live: true }] })), WT('agent-q1'))?.reason).toBe('in use by q1')
+  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 33643, oldLocks: new Set([WT('agent-q1')]), roster: [{ id: 'q1', live: true }] })), WT('agent-q1'))?.reason).toBe('in use by q1')
   // Another process's lock, an unreadable own pid, and a lock naming no agent all stay.
-  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 99 })), WT('agent-q1'))?.reason).toBe('locked')
+  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 99, oldLocks: new Set([WT('agent-q1')]) })), WT('agent-q1'))?.reason).toBe('locked')
   expect(kept(selectCleanup(inputs({ wts: w })), WT('agent-q1'))?.reason).toBe('locked')
   const anon = [{ path: WT('x'), head: BASE, locked: 'pid 33643' }]
-  expect(kept(selectCleanup(inputs({ wts: anon, ownPid: 33643 })), WT('x'))?.reason).toBe('locked')
+  expect(kept(selectCleanup(inputs({ wts: anon, ownPid: 33643, oldLocks: new Set([WT('x')]) })), WT('x'))?.reason).toBe('locked')
 })
 
 // --- The hooks: /flow clean and mcp__flow__clean against a scripted git ---

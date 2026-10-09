@@ -89,6 +89,9 @@ export type CleanInputs = {
   // The pid of the Claude process running this plugin; absent when it could not be told. A lock
   // that names it was made in this session, so $.agent.list() knows its agent.
   ownPid?: number
+  // Worktrees whose lock file is older than 10 minutes; a younger or unaged lock may belong to an
+  // agent that is still starting and not yet in the roster.
+  oldLocks?: Set<string>
 }
 
 export type Kept = { kind: 'worktree' | 'branch'; name: string; reason: string; needsLook: boolean }
@@ -192,14 +195,14 @@ const LOCK_PID = /\bpid (\d+)\b/
 
 // A lock is stale when the agent it names ended in this session's roster, is unknown to it while
 // the lock is this session's own, or its process is gone.
-function staleLock(i: CleanInputs, reason: string): boolean {
+function staleLock(i: CleanInputs, reason: string, path: string): boolean {
   const id = LOCK_AGENT.exec(reason)?.[1]
   const pid = Number(LOCK_PID.exec(reason)?.[1] ?? NaN)
   const agent = id === undefined ? undefined : i.roster.find(a => a.id === id)
   if (agent !== undefined) return !agent.live
   // Same process, same session: the roster lists every agent it started, nested ones included
   // (AgentInfo.parentId), so an agent missing from it is gone. Another pid proves nothing.
-  if (id !== undefined && Number.isInteger(pid) && pid === i.ownPid) return true
+  if (id !== undefined && Number.isInteger(pid) && pid === i.ownPid) return i.oldLocks?.has(path) === true
   return id !== undefined && Number.isInteger(pid) && i.deadPids?.has(pid) === true
 }
 
@@ -250,7 +253,7 @@ export function selectCleanup(i: CleanInputs): Sweep {
       continue
     }
     if (w.locked !== undefined) {
-      if (!staleLock(i, w.locked)) {
+      if (!staleLock(i, w.locked, w.path)) {
         keep('worktree', w.path, 'locked', true)
         hold()
         continue
