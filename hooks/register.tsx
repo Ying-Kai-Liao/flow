@@ -127,6 +127,11 @@ const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 const prCache = atom({ plugin: 'flow', key: 'prCache' } as const, { prs: [], fetchedAt: 0 } as PrCache)
 // The last dry cleanup sweep, refreshed with the PR list so a render never runs git.
 const sessions = atom({ plugin: 'flow', key: 'sessions' } as const, {} as Record<string, Session>)
+// What the reviewer routing already sent main, so a retried or repeated report reaches it once:
+// `keys` maps "manager|PR numbers" to the needs-a-person / pending-decisions lines forwarded for it,
+// `lines` is every line forwarded (normalized). Persisted: plugins reload mid-session.
+type Forwarded = { keys: Record<string, string[]>; lines: string[] }
+const forwarded = atom({ plugin: 'flow', key: 'forwarded' } as const, { keys: {}, lines: [] } as Forwarded)
 const harnessLimits = atom({ plugin: 'flow', key: 'harnessLimits' } as const, [] as Limit[])
 const armed = atom({ plugin: 'flow', key: 'armed' } as const, null as { key: string; at: number } | null)
 const leftovers = atom({ plugin: 'flow', key: 'leftovers' } as const, { worktrees: 0, branches: 0, needsLook: 0 } as Leftovers)
@@ -1664,6 +1669,28 @@ const wokenByOthers = new Set<string>()
 
 const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
 
+const normText = (t: string): string => t.replace(/\s+/g, ' ').trim()
+const RELAY_DELAY_MS = 3000
+const FORWARDED_MAX = 400
+
+// The host may already hand a woken manager's answer to main as a task notification. Main's transcript
+// shows whether it did; when it cannot be read, say "not there" so the report is relayed, never lost.
+async function mainHasAnswer($: EngineInterface, answer: string): Promise<boolean> {
+  try {
+    const msgs = await $.session.messages()
+    if ('deny' in msgs) return false
+    const snippet = normText(answer).slice(0, 80)
+    return snippet !== '' && msgs.slice(-60).some(m => m.role === 'user' && normText(m.text).includes(snippet))
+  } catch {
+    return false
+  }
+}
+
+// The lines of a report that need main's eye: "needs a person: ..." and "pending decisions: ...",
+// each cut at the next " | " field, so a whole done line and a lone line compare equal.
+const needLines = (text: string): string[] =>
+  [...text.matchAll(/(needs a person:[^|\n]*|pending decisions:[^\n]*)/gi)].map(m => normText(m[1] ?? '')).filter(l => l !== '')
+
 // Where a handover's report goes. Absent -> the caller's own name. A name no agent carries is refused,
 // naming the caller; the caller's own worker is corrected to the caller. An ended agent that exists is
 // accepted: the reviewer routing (reviewerSendGuard) handles it.
@@ -1713,12 +1740,29 @@ async function reviewerSendGuard($: EngineInterface, to: string, text: string): 
   if (hits.length > 0 && !hits.every(a => ENDED.has(a.status))) {
     if (!idle || !(await managerFinished($, hits.map(a => a.id), name, rows))) return undefined
   }
+  // One outcome reaches main once: key on the manager and the PRs the text names (the text itself when
+  // it names none). A repeat forwards only needs-a-person / pending-decisions lines not sent before.
+  const prs = [...new Set([...text.matchAll(/#(\d+)/g)].map(m => m[1]))].sort().join(',')
+  const key = `${name}|${prs !== '' ? prs : normText(text)}`
+  const seen = await read($, forwarded)
+  const before = seen.keys[key]
+  const needs = needLines(text)
+  const fresh = before === undefined ? undefined : needs.filter(l => !before.includes(l))
+  const status = hits.length > 0 ? 'has finished' : 'matches no agent'
+  if (fresh !== undefined && fresh.length === 0) {
+    return `Not sent: ${name} ${status}. This report was already forwarded to main, with ${name}'s note: do not message ${name} again and do not repeat it to main.`
+  }
+  const body = fresh === undefined ? text : fresh.join('\n')
   let noted = false
   if (hits.length > 0) {
-    noted = await appendNote($, name, `- ${await today($)} progress: reviewer report: ${text.replace(/\s+/g, ' ').trim()}`)
+    noted = await appendNote($, name, `- ${await today($)} progress: reviewer report: ${normText(body)}`)
   }
-  toMain($, `Report for ${hits.length > 0 ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the reviewer:\n${text}`)
-  return `Not sent: ${name} ${hits.length > 0 ? 'has finished' : 'matches no agent'}, so messaging it would only wake it. The plugin ${noted ? `noted the report for ${name} and ` : ''}sent it to main. Do not message ${name} again, and do not repeat this report to main.`
+  await update($, forwarded, f => ({
+    keys: { ...Object.fromEntries(Object.entries(f.keys).slice(-FORWARDED_MAX)), [key]: [...(f.keys[key] ?? []), ...(fresh ?? needs)] },
+    lines: [...f.lines, ...body.split('\n').map(normText).filter(l => l !== ''), ...(fresh ?? needs)].slice(-FORWARDED_MAX),
+  }))
+  toMain($, `Report for ${hits.length > 0 ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the reviewer:\n${body}`)
+  return `Not sent: ${name} ${status}, so messaging it would only wake it. The plugin ${noted ? `noted the report for ${name} and ` : ''}sent ${fresh === undefined ? 'it' : 'the new lines'} to main. Do not message ${name} again, and do not repeat this report to main.`
 }
 
 // A worker's HANDOFF: write the digest, log it, remember where its worktree is, and warn the owner when the
@@ -3759,6 +3803,14 @@ export const register: Register = (on, options) => {
         let handled: string | undefined
         await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard($, to, text) })
         if (handled !== undefined) return { result: handled }
+        if (to === 'main') {
+          // Lines the guard already sent main need no second copy; anything new goes through.
+          const lines = text.split('\n').map(normText).filter(l => l !== '')
+          const sent = (await read($, forwarded)).lines
+          if (lines.length > 0 && lines.every(l => sent.includes(l) || (needLines(l).length > 0 && needLines(l).every(n => sent.includes(n))))) {
+            return { result: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
+          }
+        }
       }
       await best($, 'marking a wake-up', async () => {
         const target = (await $.agent.list()).find(a => a.id === to || a.name === to)
@@ -4551,7 +4603,12 @@ export const register: Register = (on, options) => {
       // A manager someone other than main woke: the host returned its answer to that agent, so main
       // gets it here (once; main's own wake-ups never set the mark).
       if (me?.type === MANAGER && wokenByOthers.delete(id) && e.answer.trim() !== '') {
-        toMain($, `Report from manager ${me.name}:\n${e.answer.trim()}`)
+        const answer = e.answer.trim()
+        // The host may deliver the answer to main itself (a task notification): give it a moment to land,
+        // then relay only when main's transcript lacks it.
+        $.clock.after(RELAY_DELAY_MS, () => void (async () => {
+          if (!(await mainHasAnswer($, answer))) toMain($, `Report from manager ${me.name}:\n${answer}`)
+        })().catch(() => undefined))
       }
       // `HANDOFF: manager <name>` is a manager's own note, not a worker's branch.
       const handedOff = /^HANDOFF:\s*(?!manager\b)(\S+)\s*$/.exec(e.answer.trim().split('\n').pop() ?? '')

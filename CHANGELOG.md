@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Main gets each outcome once: a woken manager's turn-end report is relayed only when main's transcript lacks it, the reviewer's repeated reports for a finished manager are forwarded once per manager and PR (a repeat forwards only new needs-a-person or pending-decisions lines), a reviewer message to main that repeats forwarded lines is dropped, and the reviewer prompt no longer tells it to SendMessage those lines to main.
+
 ## [0.4.3] - 2026-10-09
 
 ### Changed
