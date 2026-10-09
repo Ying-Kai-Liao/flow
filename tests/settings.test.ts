@@ -221,7 +221,7 @@ test('a reload re-registers the agents with the new models and applies the new l
   const call = (input: Record<string, unknown>) => $.tool.call(input as never).then(r => String(r.result))
   expect(w.last('manager')!.model).toBe('opus')
   expect(await call({ tool: 'mcp__flow__status' })).toContain('managers 0/7')
-  expect(await call({ tool: 'mcp__flow__handover', pr: 5, verified: 'x', report_to: 'm' })).not.toContain('no merge queue')
+  expect(await call({ tool: 'mcp__flow__handover', pr: 5, verified: 'x' })).not.toContain('no merge queue')
 
   // Same mtime: nothing is read again.
   const before = w.registered.length
@@ -234,7 +234,7 @@ test('a reload re-registers the agents with the new models and applies the new l
   await w.clock.settle()
   expect(w.registered.length).toBeGreaterThan(before)
   expect(w.last('manager')!.model).toBe('sonnet')
-  expect(await call({ tool: 'mcp__flow__handover', pr: 6, verified: 'x', report_to: 'm' })).toContain('no merge queue')
+  expect(await call({ tool: 'mcp__flow__handover', pr: 6, verified: 'x' })).toContain('no merge queue')
   expect(await call({ tool: 'mcp__flow__status' })).toContain('managers 0/2')
 })
 

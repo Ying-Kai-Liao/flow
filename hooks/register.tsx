@@ -1128,6 +1128,69 @@ async function ownerNameOf($: EngineInterface, id: string | undefined): Promise<
   return (await $.agent.list()).find(a => a.id === id)?.name ?? 'main'
 }
 
+// Managers a non-main agent woke (queue, worker): the host sends such a turn's final answer back to
+// whoever woke it, so the plugin forwards it to main at turn end. Main's own SendMessage clears the mark.
+const wokenByOthers = new Set<string>()
+
+const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
+
+// Where a handover's report goes. Absent -> the caller's own name. A name no agent carries is refused,
+// naming the caller; the caller's own worker is corrected to the caller. An ended agent that exists is
+// accepted: the queue routing (queueSendGuard) handles it.
+async function resolveReportTo($: EngineInterface, given: unknown, callerId: string | undefined): Promise<{ name: string; note?: string } | { refuse: string }> {
+  const rows = await $.agent.list()
+  const me = callerId === undefined ? 'main' : (rows.find(a => a.id === callerId)?.name ?? 'main')
+  const asked = typeof given === 'string' ? given.trim() : ''
+  if (asked === '' || asked === me || asked === 'main') return { name: asked === '' ? me : asked }
+  const hits = rows.filter(a => a.name === asked || isManagerOf(asked, a.name))
+  if (hits.length === 0) {
+    return { refuse: `Refused: report_to "${asked}" matches no agent of this session. Your own name is "${me}"; pass that, or leave report_to out and it defaults to it.` }
+  }
+  if (callerId !== undefined && hits.every(a => a.parentId === callerId && WORKERS.has(a.type))) {
+    return { name: me, note: ` report_to "${asked}" is your own worker, so the report goes to you ("${me}") instead.` }
+  }
+  return { name: asked }
+}
+
+async function managerFinished($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[]): Promise<boolean> {
+  // A child is live only while running or pending: workers sit 'idle' after their final report. A child
+  // active more recently than the manager may have reported without the manager hearing it yet.
+  const acts = await read($, activity)
+  const mineAt = Math.max(0, ...ids.map(i => acts[i]?.lastAt ?? 0))
+  const kids = rows.filter(a => a.parentId !== undefined && ids.includes(a.parentId))
+  if (kids.some(a => a.status === 'running' || a.status === 'pending' || (acts[a.id]?.lastAt ?? 0) > mineAt)) return false
+  const open = new Set(['pending', 'awaiting', 'taken', 'returned'])
+  if (Object.values(await read($, handovers)).some(h => open.has(h.status) && isManagerOf(name.replace(/-\d+$/, ''), h.reportTo))) return false
+  const plans = await read($, plan)
+  if (Object.values(plans[planOwner(plans, name)] ?? {}).some(n => n.state === 'waiting' || n.state === 'ready' || n.state === 'running')) return false
+  if ((await read($, inbox)).items.some(q => q.state === 'open' && q.blocking && isManagerOf(name.replace(/-\d+$/, ''), q.owner))) return false
+  return true
+}
+
+// The queue's SendMessage to a manager that has ended would resume it just to say "noted", and its
+// final answer would go back to the queue. Instead the report is noted for that manager and sent to
+// main. Returns the tool result when it handled the call; undefined passes the call on.
+async function queueSendGuard($: EngineInterface, to: string, text: string): Promise<string | undefined> {
+  if (to === '' || to === 'main' || to === '*') return undefined
+  const rows = await $.agent.list()
+  const hits = rows.filter(a => a.id === to || a.name === to)
+  if (hits.length > 0 && !hits.some(a => a.type === MANAGER)) return undefined
+  const name = hits[0]?.name ?? to
+  const idle = hits.length > 0 && !hits.some(a => a.status !== 'idle' && !ENDED.has(a.status))
+  // A host leaves a manager that finished its work 'idle', not completed. It counts as finished only
+  // when nothing is left for it: no live child, no other open or returned handover, no open plan
+  // node, no open blocking ask. Otherwise the message wakes it as today.
+  if (hits.length > 0 && !hits.every(a => ENDED.has(a.status))) {
+    if (!idle || !(await managerFinished($, hits.map(a => a.id), name, rows))) return undefined
+  }
+  let noted = false
+  if (hits.length > 0) {
+    noted = await appendNote($, name, `- ${await today($)} progress: queue report: ${text.replace(/\s+/g, ' ').trim()}`)
+  }
+  toMain($, `Report for ${hits.length > 0 ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the merge queue:\n${text}`)
+  return `Not sent: ${name} ${hits.length > 0 ? 'has finished' : 'matches no agent'}, so messaging it would only wake it. The plugin ${noted ? `noted the report for ${name} and ` : ''}sent it to main. Do not message ${name} again, and do not repeat this report to main.`
+}
+
 // A worker's HANDOFF: write the digest, log it, remember where its worktree is, and warn the owner when the
 // package keeps handing off. Best-effort throughout: a missing digest still leaves the record.
 async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, owner: string, maxContinues: number): Promise<void> {
@@ -2454,10 +2517,10 @@ export const register: Register = (on, options) => {
           verified: { type: 'string', description: 'Optional: your own one-line summary of the review. The proof itself is read from the PR\'s ## Verification section.' },
           pending: { type: 'string', description: '"none", or decisions the user still has to make; the queue puts them in its report and the status file' },
           after_deploy: { type: 'string', description: '"none", or what to check after deploy; the queue starts a check-only worker for what an agent can check and reports the rest as "needs a person"' },
-          report_to: { type: 'string', description: 'Your agent name, so the queue reports back to you' },
+          report_to: { type: 'string', description: 'Optional. Your own agent name (the default), so the queue reports back to you. A name that matches no agent is refused; your own worker\'s name is corrected to yours.' },
           mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: it waits for the user\'s /flow approve before the queue merges it. "auto" only marks it safe to merge directly and is refused when the merge_mode setting is confirm. Omit to use the setting.' },
         },
-        required: ['pr', 'report_to'],
+        required: ['pr'],
       },
       isDeferred: false,
     })
@@ -2953,6 +3016,22 @@ export const register: Register = (on, options) => {
       const why = await mainCheckoutGuard($, e as unknown as Record<string, unknown>, cwd, settings.mainAllow)
       if (why !== undefined) return { deny: why }
     }
+    if (e.tool === 'SendMessage') {
+      const input = e as unknown as Record<string, unknown>
+      const to = String(input.to ?? '')
+      const text = String(input.message ?? input.text ?? '')
+      if (id !== undefined && (await whoAmI())?.type === QUEUE) {
+        let handled: string | undefined
+        await best($, 'routing a queue message', async () => { handled = await queueSendGuard($, to, text) })
+        if (handled !== undefined) return { result: handled }
+      }
+      await best($, 'marking a wake-up', async () => {
+        const target = (await $.agent.list()).find(a => a.id === to || a.name === to)
+        if (target === undefined || target.type !== MANAGER) return
+        if (id === undefined) wokenByOthers.delete(target.id)
+        else if (target.status !== 'running') wokenByOthers.add(target.id)
+      })
+    }
     if (id !== undefined) {
       const t = await $.clock.now()
       const line = describeCall(e as unknown as Record<string, unknown>)
@@ -2981,12 +3060,14 @@ export const register: Register = (on, options) => {
     const info = JSON.parse(view.stdout) as { state: string; isDraft: boolean; headRefOid: string; headRefName: string; title: string; body?: string; labels?: { name: string }[] }
     if (info.state !== 'OPEN') return { result: `Refused: PR #${pr} is ${info.state}.` }
     if (info.isDraft) return { result: `Refused: PR #${pr} is a draft. Mark it ready (gh pr ready ${pr}) first.` }
+    const dest = await resolveReportTo($, input.report_to, e.agentId)
+    if ('refuse' in dest) return { result: dest.refuse }
     const checked = checkEvidence(info.body ?? '', [...settings.workerChecks, ...settings.alwaysTests])
     if ('problems' in checked) return { result: evidenceRefusal(pr, checked.problems) }
     const t = await $.clock.now()
     const h: Handover = {
       pr, title: info.title, head: info.headRefOid, branch: info.headRefName,
-      reportTo: String(input.report_to ?? 'main'), verified: String(input.verified ?? ''),
+      reportTo: dest.name, verified: String(input.verified ?? ''),
       pending: String(input.pending ?? 'none'), afterDeploy: String(input.after_deploy ?? 'none'),
       evidence: checked.evidence, status: 'pending', at: t, ...(asked !== undefined ? { mode: asked } : {}),
     }
@@ -3014,7 +3095,7 @@ export const register: Register = (on, options) => {
     }
     const queue = await ensureQueue($)
     await refresh($)
-    return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.${labelNote}` }
+    return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.${dest.note ?? ''}${labelNote}` }
   })
 
   on('tool.call', { tool: 'mcp__flow__queue' }, async ($, e) => {
@@ -3575,6 +3656,11 @@ export const register: Register = (on, options) => {
           const last = e.answer.trim().split('\n').pop() ?? ''
           await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: last })
         })
+      }
+      // A manager someone other than main woke: the host returned its answer to that agent, so main
+      // gets it here (once; main's own wake-ups never set the mark).
+      if (me?.type === MANAGER && wokenByOthers.delete(id) && e.answer.trim() !== '') {
+        toMain($, `Report from manager ${me.name}:\n${e.answer.trim()}`)
       }
       // `HANDOFF: manager <name>` is a manager's own note, not a worker's branch.
       const handedOff = /^HANDOFF:\s*(?!manager\b)(\S+)\s*$/.exec(e.answer.trim().split('\n').pop() ?? '')

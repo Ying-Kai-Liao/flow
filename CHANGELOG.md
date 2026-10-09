@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.38] - 2026-10-10
+
+### Changed
+
+- `handover`: `report_to` is optional and defaults to the caller's own agent name. A name that
+  matches no agent is refused (naming the right value) and nothing is recorded; the caller's own
+  worker's name is corrected to the caller's, with a note.
+- A manager's turn-end report is forwarded to main when the turn was started by the queue or a
+  worker, so nobody has to relay it by hand. Main's own wake-ups are not forwarded twice.
+- The merge queue no longer wakes a finished manager: a SendMessage from the queue to an ended
+  manager (or an unknown name) is answered "Not sent", the report is added to the manager's notes
+  and sent to main. A live manager is still messaged.
+
 ## [0.3.37] - 2026-10-10
 
 ### Added
