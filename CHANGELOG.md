@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.24] - 2026-10-10
+
+### Added
+
+- `merge_mode` (`auto` default, or `confirm`): `confirm` holds handed-over PRs until you run
+  `/flow approve <n>`. PR labels `flow:confirm` / `flow:auto` override it (both: confirm), and
+  `mcp__flow__handover` takes an optional `mode` (managers can only raise to `confirm`).
+- Awaiting PRs show in the pane, `status` and `/flow resume`. The queue re-checks labels and the
+  approved head when it takes a PR and skips one that answers "Held:".
+- Managers mark risky PRs (migrations, deploy/infra config, auth, deletions, irreversible
+  operations) `confirm`.
+
 ## [0.3.23] - 2026-10-10
 
 ### Fixed

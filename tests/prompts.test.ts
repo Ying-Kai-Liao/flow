@@ -62,3 +62,10 @@ test('the manager, the no-queue rule and the queue call the cleanup sweep', () =
   expect(fill(NO_QUEUE_RULE, base)).toContain('`mcp__flow__clean` with apply true')
   expect(m).toContain('Do not remove the old worktree')
 })
+
+test('the manager hands over mode confirm for risky PRs and the queue skips a Held take', () => {
+  const [, m, q] = all(base)
+  expect(m).toContain('Pass mode "confirm" for a risky PR')
+  expect(m).toContain('/flow approve <n>')
+  expect(q).toContain('If "take" answers "Held:"')
+})
