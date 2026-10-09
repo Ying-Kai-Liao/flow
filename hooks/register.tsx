@@ -220,11 +220,12 @@ export type TreeItem = { a: AgentRow; depth: number; kids: number; collapsed: bo
 // wins over it. `at` is the highlight, moved up to the nearest row that is drawn.
 export function treeItems(
   list: AgentRow[], fold: Record<string, boolean>, cur: string | null | undefined, auto: boolean,
+  acts: Record<string, Activity> = {},
 ): { items: TreeItem[]; at: string | undefined } {
   const ids = new Set(list.map(a => a.id))
   const kids = (id: string | undefined) => list
     .filter(a => (id === undefined ? a.parentId === undefined || !ids.has(a.parentId) : a.parentId === id))
-    .sort((a, b) => rank(a.status) - rank(b.status))
+    .sort((a, b) => rankOf(a, acts) - rankOf(b, acts))
   const path = new Set<string>()
   for (let a = list.find(x => x.id === cur); a !== undefined && !path.has(a.id); a = list.find(x => x.id === a!.parentId)) path.add(a.id)
   const items: TreeItem[] = []
@@ -379,6 +380,33 @@ function meterColor(percent: number, warn: number): string | undefined {
 function rank(status: string): number {
   const i = ORDER.indexOf(status)
   return i === -1 ? ORDER.length : i
+}
+
+// An agent told to wrap up sorts with what needs a person, ahead of plain running.
+function rankOf(a: AgentRow, acts: Record<string, Activity>): number {
+  return handoffOf(a, acts[a.id])?.kind === 'wrapping' ? Math.min(rank(a.status), rank('idle')) : rank(a.status)
+}
+
+// Where an agent is in its handoff: told to wrap up and still live, or ended (idle counts) on a
+// report whose last line is `HANDOFF: <branch>` (a manager's is `HANDOFF: manager <name>`).
+// Old rows without the fields give undefined.
+export function handoffOf(a: AgentRow, act: Activity | undefined):
+  { kind: 'wrapping'; percent?: number; reminders: number } | { kind: 'done'; to: string } | undefined {
+  if (act === undefined) return undefined
+  if (ENDED.has(a.status) || a.status === 'idle') {
+    const last = (act.answer ?? '').trim().split('\n').pop()?.trim() ?? ''
+    if (last.startsWith('HANDOFF:')) return { kind: 'done', to: last.slice('HANDOFF:'.length).trim() }
+  }
+  if (!ENDED.has(a.status) && act.handoffNotifiedAt !== undefined) {
+    return { kind: 'wrapping', percent: act.handoffPercent, reminders: act.remindersSent ?? 0 }
+  }
+  return undefined
+}
+
+function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
+  return h.kind === 'done'
+    ? `handed off${h.to ? ` → ${h.to}` : ''}`
+    : `wrapping up${h.percent === undefined ? '' : ` (told at ${h.percent}%)`}${h.reminders > 1 ? ` · ${h.reminders} reminders` : ''}`
 }
 
 // The pane's context meter marks this percent; the rest of the settings go into the prompts.
@@ -1046,13 +1074,13 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     // Handovers a restart would lose: merge what is on disk under this session's own records.
-    let startQueue = false
+    let queueDue = false
     await best($, 'loading handovers', async () => {
       resetStateDir()
       const disk = await loadHandovers($)
       if (Object.keys(disk).length === 0) return
       await update($, handovers, hs => ({ ...disk, ...hs }))
-      startQueue = Object.values(disk).some(h => h.status === 'pending')
+      queueDue = Object.values(disk).some(h => h.status === 'pending')
     })
     // The base branch: the option, else the remote's default branch, else main.
     // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
@@ -1230,7 +1258,7 @@ export const register: Register = (on, options) => {
     // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
     $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
     // The queue agent type exists only now, and a spawn needs the session bound: start it after the hook.
-    if (startQueue) $.clock.after(0, () => void best($, 'starting the queue', async () => void (await ensureQueue($))))
+    if (queueDue) $.clock.after(0, () => void best($, 'starting the queue', async () => void (await ensureQueue($))))
     return next(e)
   })
 
@@ -1580,7 +1608,9 @@ export const register: Register = (on, options) => {
     const ids = new Set(rows.map(a => a.id))
     const walk = (a: AgentRow, depth: number) => {
       const answer = (acts[a.id]?.answer ?? '').trim().split('\n').pop() ?? ''
-      lines.push(`${'  '.repeat(depth)}- ${ROLE[a.type] ?? a.type} ${labelOf(a)}: ${a.status}${answer ? ` | last: ${answer.slice(0, 160)}` : ''}`)
+      const h = handoffOf(a, acts[a.id])
+      const hand = h === undefined ? '' : h.kind === 'done' ? ` | ${handoffText(h)}` : ` | handoff: wrapping up${h.percent === undefined ? '' : ` (${h.percent}%)`}`
+      lines.push(`${'  '.repeat(depth)}- ${ROLE[a.type] ?? a.type} ${labelOf(a)}: ${a.status}${hand}${answer ? ` | last: ${answer.slice(0, 160)}` : ''}`)
       for (const c of byParent.get(a.id) ?? []) walk(c, depth + 1)
     }
     for (const a of rows.filter(r => r.parentId === undefined || !ids.has(r.parentId))) walk(a, 0)
@@ -1778,7 +1808,8 @@ export const register: Register = (on, options) => {
     }
     const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, chev = '') => {
       const act = acts[a.id]
-      const dim = ENDED.has(a.status)
+      const hand = handoffOf(a, act)
+      const dim = ENDED.has(a.status) && hand?.kind !== 'done'
       const asks = asksQuestion(act?.answer) && !['running', 'pending'].includes(a.status)
       const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
       const u = usageOf(a)
@@ -1787,9 +1818,12 @@ export const register: Register = (on, options) => {
         {chev}<Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold inverse={hot}>{labelOf(a)}</Text>
         {under > 0 && <Text dimColor> (+{under})</Text>}
         <Text dimColor>  {ROLE[a.type] ?? a.type}</Text>
+        {hand?.kind === 'wrapping' && <Text bold color="warning">  handoff</Text>}
       </Text>
       // The description shows only while there is nothing done to show; the detail view has it.
-      const second = doing !== undefined && doing !== ''
+      const second = hand !== undefined && !asks
+        ? <Text color={hand.kind === 'wrapping' ? 'warning' : undefined}>{handoffText(hand)}</Text>
+        : doing !== undefined && doing !== ''
         ? <Text color={asks ? 'warning' : undefined} dimColor={!asks}>{doing.slice(0, 60)}</Text>
         : <Text dimColor>{a.description.slice(0, 60)}</Text>
       return (
@@ -1814,7 +1848,7 @@ export const register: Register = (on, options) => {
     if (agent !== undefined) {
       const act = acts[agent.id]
       const answer = (act?.answer ?? '').trim()
-      const children = list.filter(a => a.parentId === agent.id).sort((a, b) => rank(a.status) - rank(b.status))
+      const children = list.filter(a => a.parentId === agent.id).sort((a, b) => rankOf(a, acts) - rankOf(b, acts))
       const fullChildren = children.length * CARD_ROWS <= rows - 15
       const room = Math.max(3, rows - 12 - (fullChildren ? children.length * (CARD_ROWS - 1) : 0))
       // The parent chain is the history: Back climbs one level, an orphan or top-level agent goes to the tree.
@@ -1832,6 +1866,9 @@ export const register: Register = (on, options) => {
             {act ? ` · ${runTime(act, ENDED.has(agent.status))} · last active ${ago(t - act.lastAt)} ago` : ''}{children.length ? ` · ${children.length} under it` : ''}</Text>
           </Text>
           <Text dimColor>{agent.description}</Text>
+          {act?.handoffNotifiedAt !== undefined && <Text color="warning">
+            Handoff: told {ago(t - act.handoffNotifiedAt)} ago{act.handoffPercent === undefined ? '' : ` at ${act.handoffPercent}%`}, {act.remindersSent ?? 0} reminders
+          </Text>}
           {shown && <Text dimColor>To see its chat: ← then pick {labelOf(agent)}</Text>}
           {children.length > 0 && <Text bold>Under it</Text>}
           {children.map(c => card(c, 0, fullChildren, true))}
@@ -1847,7 +1884,7 @@ export const register: Register = (on, options) => {
     }
 
     // The tree: each agent under the one that started it, what needs a person first.
-    const first = treeItems(list, fold, undefined, false).items[0]?.a.id
+    const first = treeItems(list, fold, undefined, false, acts).items[0]?.a.id
     const prs = Object.values(hs).sort((a, b) => b.at - a.at)
     const live = list.filter(a => !ENDED.has(a.status)).length
     // Header, the PR lines and the hint row are fixed; the root and the agents share what is left.
@@ -1855,9 +1892,9 @@ export const register: Register = (on, options) => {
     // path) in a window that follows the highlight.
     const prRows = prs.length > 0 ? 1 + Math.min(prs.length, 5) : 0
     const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0)
-    const wide = treeItems(list, fold, cur ?? first, false)
+    const wide = treeItems(list, fold, cur ?? first, false, acts)
     const fullTree = (wide.items.length + 1) * CARD_ROWS <= avail
-    const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true)
+    const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
     const rootFull = fullTree || avail >= CARD_ROWS + items.length
     const left = avail - (rootFull ? CARD_ROWS : 1)
     const cut = !fullTree && items.length > left

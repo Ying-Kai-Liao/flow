@@ -16,6 +16,7 @@ test('the pane lists workers, shows what one did, and goes back', async ($, on) 
   on('agent.spawn', ($, e) => ({ model: 'sonnet', agentId: e.description === 'Update docs' ? 'w2' : 'w1' }))
   on('tool.call', () => ({ result: 'ok' }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('session.send', () => ({ isDelivered: true as const }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
@@ -360,4 +361,50 @@ test('usage unknown shows context ? and no tokens', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /context \?/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /tokens/ })).toBeUndefined()
   await ui.unmount()
+})
+
+// An agent past its threshold is told to wrap up by its next turn.step (84k of 200k is past 40%).
+const wrapUp = async ($: Dollar, on: On) => {
+  await step($, 'w1')
+}
+const finish = ($: Dollar, answer: string) =>
+  $.turn.complete({ answer, agentId: 'w1', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as never)
+const statusText = async ($: Dollar) => String((await $.tool.call({ tool: 'mcp__flow__status' } as never)).result)
+
+test('a live agent told to wrap up shows a handoff badge and "wrapping up (told at N%)"', async ($, on) => {
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('session.send', () => ({ isDelivered: true as const }))
+  await setup($, on, 84_000)
+  const ui = await mount($, 40)
+  expect(await ui.find({ type: 'Text', text: /wrapping up/ })).toBeUndefined()
+  await ui.unmount()
+  await wrapUp($, on)
+  const ui2 = await mount($, 40)
+  expect(await ui2.find({ type: 'Text', text: /handoff/ })).toBeDefined()
+  expect(await ui2.find({ type: 'Text', text: /wrapping up \(told at \d+%\)/ })).toBeDefined()
+  await ui2.press({ key: 'w1' })
+  expect(await ui2.find({ type: 'Text', text: /Handoff: told .* ago at \d+%, \d+ reminders/ })).toBeDefined()
+  await ui2.unmount()
+})
+
+test('a completed agent whose report ends with HANDOFF shows "handed off", others do not', async ($, on) => {
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('session.send', () => ({ isDelivered: true as const }))
+  await setup($, on, 84_000)
+  await finish($, 'All done.')
+  const plain = await mount($, 40)
+  expect(await plain.find({ type: 'Text', text: /handed off|wrapping up/ })).toBeUndefined()
+  await plain.unmount()
+  expect(await statusText($)).not.toMatch(/handoff|handed off/)
+  await wrapUp($, on)
+  expect(await statusText($)).toMatch(/fix-login.*\| handoff: wrapping up \(\d+%\)/)
+  TREE[1]!.status = 'completed'
+  try {
+    await finish($, 'Stopped early.\nHANDOFF: flow/fix-login')
+    const ui = await mount($, 40)
+    expect(await ui.find({ type: 'Text', text: /handed off → flow\/fix-login/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /wrapping up/ })).toBeUndefined()
+    await ui.unmount()
+    expect(await statusText($)).toMatch(/fix-login.*\| handed off → flow\/fix-login/)
+  } finally { TREE[1]!.status = 'running' }
 })
