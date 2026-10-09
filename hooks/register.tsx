@@ -575,7 +575,7 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'test_slot',
       description: 'A lock on heavy test runs, so only test_slots of them run at once across all worktrees of this session. ' +
-        'action "acquire" before a whole suite or any run over about a minute (waits a few seconds; if it says queued, call acquire again), ' +
+        'action "acquire" before a whole suite or any run over about a minute (waits a few seconds; if it says queued, wait as the answer tells you (grant file or grant message), then call acquire once to confirm), ' +
         '"release" when the run is over or failed, "status" to see holders and waiters.',
       inputSchema: {
         type: 'object',
