@@ -640,8 +640,9 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'status',
-      description: 'The flow at a glance: every manager, worker and queue of this session with its status and last report, and every handed-over PR.',
-      inputSchema: { type: 'object', properties: {} },
+      description: 'The flow at a glance: every manager, worker and queue of this session with its status and last report, and every handed-over PR. ' +
+        'With pr, who owns that PR and its log lines.',
+      inputSchema: { type: 'object', properties: { pr: { type: 'number', description: 'A PR number, to see who owns it' } } },
       isDeferred: false,
     })
 
@@ -711,6 +712,11 @@ export const register: Register = (on, options) => {
       }))
       await refresh($)
       void openPane($)
+      if (FLOW_TYPES.has(e.subagentType)) {
+        await best($, 'logging a spawn', async () => {
+          await appendLog($, { event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerOf($, e.parentAgentId) })
+        })
+      }
     }
     return started
   }).catch(($, e, next) => next(e))
@@ -757,6 +763,10 @@ export const register: Register = (on, options) => {
       status: 'pending', at: t,
     }
     await update($, handovers, hs => ({ ...hs, [String(pr)]: h }))
+    await best($, 'saving a handover', async () => {
+      await saveHandover($, h)
+      await appendLog($, { event: 'handover', owner: h.reportTo, pr, branch: h.branch, text: h.title })
+    })
     const queue = await ensureQueue($)
     await refresh($)
     return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.` }
@@ -784,12 +794,43 @@ export const register: Register = (on, options) => {
       : h
     if (next === h) return { result: `Unknown action "${action}".` }
     await update($, handovers, hs => ({ ...hs, [key]: next }))
+    await best($, 'saving a handover', async () => {
+      await saveHandover($, next)
+      const text = action === 'done' ? next.report : action === 'back' ? next.reason : undefined
+      await appendLog($, { event: action as 'take' | 'done' | 'back', owner: next.reportTo, pr: next.pr, branch: next.branch, text })
+    })
     if (action !== 'take') void $.ui.toast(`PR #${key} ${next.status === 'done' ? `merged ${next.sha ?? ''}` : `returned: ${next.reason ?? ''}`}`)
     await refresh($)
     return { result: `PR #${key}: ${next.status}.` }
   })
 
-  on('tool.call', { tool: 'mcp__flow__status' }, async $ => {
+  on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const manager = String(input.manager ?? '').trim()
+    if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
+    const text = typeof input.text === 'string' ? input.text.trim() : ''
+    if (text === '') {
+      const notes = await readNotes($, manager)
+      return { result: notes === '' ? 'No notes yet.' : notes }
+    }
+    const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
+    const line = input.kind === 'decision' ? `- ${date} decision: "${text}"` : `- ${date} progress: ${text}`
+    if (!await appendNote($, manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
+    await best($, 'logging a note', () => appendLog($, { event: 'note', owner: noteKey(manager), text }))
+    return { result: `Noted in ${await notesPath($, manager)}.` }
+  })
+
+  on('tool.call', { tool: 'mcp__flow__status' }, async ($, e) => {
+    const asked = Number((e as unknown as Record<string, unknown>).pr)
+    if (Number.isInteger(asked) && asked > 0) {
+      const h = (await read($, handovers))[String(asked)]
+      const events = await readLog($)
+      const owner = ownerFor(events, { pr: asked, branch: h?.branch }) ?? h?.reportTo ?? 'unknown'
+      const mine = events.filter(l => l.pr === asked || (h !== undefined && l.branch === h.branch))
+      return {
+        result: [`Owner of PR #${asked}: ${owner}`, ...mine.map(l => `${l.ts} ${l.event}${l.agent ? ` ${l.agent}` : ''}${l.text ? `: ${l.text}` : ''}`)].join('\n'),
+      }
+    }
     const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
     const lines: string[] = []
     const byParent = new Map<string | undefined, AgentRow[]>()
@@ -806,6 +847,7 @@ export const register: Register = (on, options) => {
       result: [
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
         list.length ? 'Handed-over PRs:' : 'No PRs handed over.', ...list.map(handoverLine),
+        `State: ${await stateDir($) ?? 'none (not a git repo)'}`,
       ].join('\n'),
     }
   })
@@ -857,7 +899,14 @@ export const register: Register = (on, options) => {
         return { ...acts, [id]: { ...a, lastAt: t, answer: e.answer } }
       })
       // A queue that ended while PRs were still pending: start a fresh one for them.
-      const me = (await refresh($)).find(a => a.id === id)
+      const rows = await refresh($)
+      const me = rows.find(a => a.id === id)
+      if (me !== undefined && FLOW_TYPES.has(me.type)) {
+        await best($, 'logging a report', async () => {
+          const last = e.answer.trim().split('\n').pop() ?? ''
+          await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: last })
+        })
+      }
       if (me?.type === QUEUE) await ensureQueue($)
     }
     return next(e)
