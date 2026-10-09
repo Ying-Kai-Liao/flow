@@ -2,6 +2,8 @@
 // real, and what was not verified. `handover` refuses a PR without it; the parsed record travels with the
 // handover into the queue report and the status file. Pure, so it is tested without the plugin runtime.
 
+import type { GuardHit } from './guardtests'
+
 export type Evidence = { ran: string[]; exercised: string; notVerified: string[] }
 
 export const EVIDENCE_FORMAT = [
@@ -61,8 +63,9 @@ export function parseVerification(section: string): Partial<Evidence> {
 const unticked = (s: string) => s.replace(/`/g, '')
 
 // Evidence when the body qualifies, else every reason it does not. `required` are the settings' workerChecks
-// and alwaysTests: each must appear (backticks optional) in some Ran entry.
-export function checkEvidence(body: string, required: string[]): { evidence: Evidence } | { problems: string[] } {
+// and alwaysTests: each must appear (backticks optional) in some Ran entry. `guard` are the guard tests the PR's
+// changed files require (guardtests.ts): same matching, and the refusal names the globs that triggered them.
+export function checkEvidence(body: string, required: string[], guard: GuardHit[] = []): { evidence: Evidence } | { problems: string[] } {
   const section = verificationSection(body)
   if (section === undefined) return { problems: ['the PR description has no `## Verification` section'] }
   if (!section.trim()) return { problems: ['the `## Verification` section is empty'] }
@@ -79,6 +82,10 @@ export function checkEvidence(body: string, required: string[]): { evidence: Evi
     const ran = p.ran.map(unticked)
     for (const cmd of required) {
       if (!ran.some(r => r.includes(unticked(cmd)))) problems.push(`required command \`${cmd}\` does not appear under \`Ran:\``)
+    }
+    for (const g of guard) {
+      if (required.includes(g.test) || ran.some(r => r.includes(unticked(g.test)))) continue
+      problems.push(`guard test \`${g.test}\` (for ${g.globs.map(x => `\`${x}\``).join(', ')}) does not appear under \`Ran:\``)
     }
   }
   if (problems.length) return { problems }

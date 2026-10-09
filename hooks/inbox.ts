@@ -17,6 +17,7 @@ export type AskedQuestion = {
   blocking: boolean
   context?: string
   topic?: string
+  guard?: { glob: string; test: string }
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
@@ -146,7 +147,8 @@ export const askingNames = (inbox: Inbox | undefined): string[] =>
   (inbox?.items ?? []).filter(x => x.state === 'open' && x.blocking).map(x => x.owner)
 
 // A non-blocking question answered with its default needs no message: the asker already went on it.
-export const needsMessage = (q: Question, isDefault: boolean): boolean => q.blocking || !isDefault
+// A guard_tests suggestion is main's alone to decide: the queue that filed it is not told.
+export const needsMessage = (q: Question, isDefault: boolean): boolean => q.guard === undefined && (q.blocking || !isDefault)
 
 // What the asker is told when its question is answered.
 export function answerMessage(q: Question, answer: string, by: string, isDefault: boolean): string {
