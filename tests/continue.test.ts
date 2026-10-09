@@ -24,8 +24,8 @@ function usageMock(on: On, tokens: number): (n: number) => void {
   return n => { used = n }
 }
 
-const step = async ($: Dollar, agentId?: string) => {
-  const stream = $.turn.step({ turnId: 't', index: 0, model: 'sonnet', messageCount: 1, agentId } as never)
+const step = async ($: Dollar, agentId?: string, model = 'sonnet') => {
+  const stream = $.turn.step({ turnId: 't', index: 0, model, messageCount: 1, agentId } as never)
   for await (const chunk of stream) void chunk
   return stream.result
 }
@@ -340,4 +340,45 @@ test('main gets no warning when no flow agents exist', async ($, on) => {
   on('session.usage', () => ({ value: { context: { tokens: 150_000, window: 200_000, percent: 75 } } }) as never)
   await step($)
   expect(toasts.filter(t => t.includes('main session'))).toEqual([])
+})
+
+// The API reports `claude-sonnet-5` without the suffix; the engine's resolved id carries `[1m]`.
+const ONE_M = 'claude-sonnet-5[1m]'
+
+test('a [1m] worker is measured against 1M although usage.model lacks the suffix', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  const use = usageMock(on, 300_000)
+  const { sent } = notices(on)
+  await step($, 'w1', ONE_M)
+  expect(sent).toEqual([])
+  use(350_000)
+  await step($, 'w1', ONE_M)
+  expect(sent.length).toBe(1)
+  expect(sent[0]?.text).toMatch(/past the 350k tokens limit/)
+})
+
+test('a plain sonnet worker is told at 80k', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  const use = usageMock(on, 79_000)
+  const { sent } = notices(on)
+  await step($, 'w1')
+  expect(sent).toEqual([])
+  use(80_000)
+  await step($, 'w1')
+  expect(sent.length).toBe(1)
+})
+
+test('the meter shows the token limit next to the marker for a [1m] worker', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('agent.list', () => ({ value: AGENTS }))
+  on('agent.spawn', () => ({ model: ONE_M, agentId: 'w1' }))
+  on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { window: 200_000, tokens: 1000, percent: 1 } } }))
+  usageMock(on, 100_000)
+  notices(on)
+  await $.agent.spawn({ prompt: 'brief', description: 'A task', subagentType: 'flow:manager' } as never)
+  await step($, 'w1', ONE_M)
+  const ui = await $.ui.mount({ plugin: 'flow', surface: 'terminal', component: 'Pane', props: { title: 'Flow' }, requestId: 'flow', viewport: { columns: 100, rows: 40 } } as never)
+  expect(await ui.find({ type: 'Text', text: /350k│/ })).toBeDefined()
 })
