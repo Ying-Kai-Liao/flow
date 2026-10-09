@@ -351,6 +351,11 @@ function limitLabel(s: { contextWarn: number; contextWarnTokens: number }, windo
     ? `${tokensLabel(s.contextWarnTokens)} tokens` : `${s.contextWarn}%`
 }
 
+// The threshold in tokens for the meter, only when the token limit is the one in force.
+function limitTokens(s: { contextWarn: number; contextWarnTokens: number }, window: number): string | undefined {
+  return limitLabel(s, window).endsWith('tokens') ? tokensLabel(s.contextWarnTokens) : undefined
+}
+
 // The line an agent past the threshold reads. A manager keeps going until its workers are done.
 function wrapUpText(role: string, percent: number, limit: string): string {
   const handoff = 'follow the Handoff section of your instructions now: commit WIP, push, update the draft PR\'s ## Handoff note, end with HANDOFF: <branch>.'
@@ -1616,7 +1621,8 @@ export const register: Register = (on, options) => {
         mainModel = e.model
       } else if (r?.usage) {
         const tokens = r.usage.input_tokens + r.usage.cache_creation_input_tokens + r.usage.cache_read_input_tokens
-        const model = r.usage.model || e.model
+        // The API's id usually lacks `[1m]`; keep the engine's when it has it, or the window is guessed at 200k.
+        const model = e.model.includes('[1m]') ? e.model : r.usage.model || e.model
         const t = await $.clock.now()
         await update($, activity, acts => {
           const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
@@ -1755,6 +1761,7 @@ export const register: Register = (on, options) => {
             <Text key={String(i)} dimColor={dim} color={c.kind === 'empty' ? 'inactive' : c.kind === 'mark' ? 'text' : meterColor(u.percent, warnOf(u.window)) ?? 'success'}>{c.ch}</Text>
           ))}
           <Text color={meterColor(u.percent, warnOf(u.window))} dimColor={dim}> {u.percent}%</Text>
+          {limitTokens(settings, u.window) !== undefined && <Text dimColor> · {limitTokens(settings, u.window)}│</Text>}
           <Text dimColor>{tail ? `   ${tail}` : ''}</Text>
         </Text>
     }
