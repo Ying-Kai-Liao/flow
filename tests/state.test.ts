@@ -9,7 +9,7 @@ const PR = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRe
 const DIR = '/r/.git/flow'
 
 // A repo whose state dir lives in an in-memory file map; `abs` false makes git print a relative path.
-function disk(on: On, files: Map<string, string>, o: { abs?: boolean; agents?: AgentInfo[] } = {}) {
+function disk(on: On, files: Map<string, string>, o: { abs?: boolean; agents?: AgentInfo[]; gh?: (argv: string[]) => string | undefined; failGh?: boolean } = {}) {
   const spawned: string[] = []
   on('agent.list', () => ({ value: o.agents ?? [] }))
   on('agent.spawn', (_, e) => { spawned.push(e.subagentType); return { model: 'sonnet', agentId: 'q1' } })
@@ -33,7 +33,7 @@ function disk(on: On, files: Map<string, string>, o: { abs?: boolean; agents?: A
     const a = e.argv
     const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     if (a[0] === 'git' && a[1] === 'rev-parse') return out(o.abs === false ? '.git\n' : '/r/.git\n')
-    if (a[0] === 'gh') return out(JSON.stringify(PR))
+    if (a[0] === 'gh') return o.failGh ? out('', 1) : out(o.gh?.(a) ?? JSON.stringify(PR))
     if (a[0] === 'mv') {
       const t = files.get(a[1] ?? '')
       if (t !== undefined) { files.set(a[2] ?? '', t); files.delete(a[1] ?? '') }
@@ -147,4 +147,61 @@ test('outside a git repo state is a no-op and tools still work', async ($, on) =
   expect(files.size).toBe(0)
   const plain = String((await call($, { tool: 'mcp__flow__status' })).result)
   expect(plain.split('\n').pop()).toBe('State: none (not a git repo)')
+})
+
+const HANDOVER = { version: 1, pr: 7, title: 'Export orders as CSV', head: 'abc1234def', branch: 'flow/csv', reportTo: 'csv-export-2', verified: 'npm test', pending: 'none', afterDeploy: 'none', status: 'pending', at: 1 }
+
+// A restart's leftovers: two handovers on disk, a log naming the owner, and the owner's notes.
+function leftovers(files: Map<string, string>): void {
+  files.set(`${DIR}/handovers/7.json`, JSON.stringify(HANDOVER))
+  files.set(`${DIR}/handovers/8.json`, JSON.stringify({ ...HANDOVER, pr: 8, branch: 'flow/old', title: 'Old' }))
+  files.set(`${DIR}/log.jsonl`, `${JSON.stringify({ ts: 1, event: 'handover', owner: 'csv-export', pr: 7, branch: 'flow/csv' })}\n`)
+  files.set(`${DIR}/managers/csv-export/notes.md`, '- 2026-10-09 decision: "use utf-8"\n')
+}
+
+const resume = ($: Dollar) => $.command.run({ command: 'flow', args: 'resume' } as never)
+
+test('/flow resume lists disk handovers by owner with notes, skips merged ones, and restores the atom', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const files = new Map<string, string>()
+  leftovers(files)
+  disk(on, files, { gh: a => a.includes('open') ? '[]' : JSON.stringify([{ number: 8, headRefName: 'flow/old', state: 'MERGED' }]) })
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+
+  const r = await resume($)
+  expect(r.text).toContain('#7 flow/csv: handover pending')
+  expect(r.text).not.toContain('flow/old')
+  const ctx = r.context?.[0] ?? ''
+  expect(ctx).toContain('Owner csv-export:')
+  expect(ctx).toContain('Handover #7 is pending')
+  expect(ctx).toContain(`Notes (${DIR}/managers/csv-export/notes.md)`)
+  expect(ctx).toContain('"use utf-8"')
+  expect(ctx).not.toContain('Handover #8')
+  // The merged one is marked done on disk; the pending one is back in the atom.
+  expect(JSON.parse(files.get(`${DIR}/handovers/8.json`) ?? '{}').status).toBe('done')
+  expect(String((await call($, { tool: 'mcp__flow__status' })).result)).toContain('#7 pending')
+  // Already resumed in this session: skipped as before.
+  expect((await resume($)).text).toContain('Already resumed in this session:')
+})
+
+test('/flow resume without GitHub lists the disk handovers and says so', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const files = new Map<string, string>()
+  leftovers(files)
+  disk(on, files, { failGh: true })
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+
+  const r = await resume($)
+  expect(r.text).toContain('GitHub was unavailable')
+  expect(r.text).toContain('#7 flow/csv: handover pending')
+  expect(r.context?.[0]).toContain('Owner csv-export:')
+})
+
+test('/flow resume with an empty state dir is unchanged, and notes alone restart nobody', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const files = new Map<string, string>()
+  files.set(`${DIR}/managers/csv-export/notes.md`, '- 2026-10-09 decision: "x"\n')
+  disk(on, files, { gh: () => '[]' })
+
+  expect((await resume($)).text).toBe('Nothing unfinished.')
 })
