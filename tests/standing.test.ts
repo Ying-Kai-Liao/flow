@@ -473,16 +473,21 @@ test('an escalate rule forces blocking, flags the question, tells the manager, a
   expect(item.state).toBe('open')
   expect(item.blocking).toBe(true)
   expect(item.escalated).toBe('s1')
-  expect(w.sent[0]!.text).toContain('standing rule (s1) makes this the user\'s decision')
+  expect(w.sent[0]!.text).toContain('standing rule (s1) makes this the user\'s decision; it is in main\'s inbox as q1')
+  expect(await inbox($)).toContain('q1 BLOCKING ESCALATED (rule s1), for main')
   expect(await answer($, 'm1', { answers: [{ id: 'q1', choice: 'yes' }] })).toContain('refused, standing rule s1 makes this the user\'s decision')
   expect(await answer($, 'm1', { defaults: true })).toContain('refused, standing rule s1')
   expect(stored(w.files)[0]!.state).toBe('open')
-  // A manager's own question goes to main, blocking.
+  // Main answers the worker's own question; the worker gets the answer.
+  w.sent.length = 0
+  expect(await answer($, null, { answers: [{ id: 'q1', choice: 'no' }] })).toContain('q1: no, delivered')
+  expect(stored(w.files)[0]!.answeredBy).toBe('main')
+  expect(w.sent.map(s => s.to)).toEqual(['w1'])
+  expect(w.sent[0]!.text).toContain('Answer: no')
+  // A manager's own question goes to main, blocking, flagged too.
   expect(await ask($, 'm1', [{ ...TRACK, question: 'Close the card?' }])).toContain('q2: end your turn now')
   expect(stored(w.files)[1]!.addressee).toBe('main')
   expect(w.toasts.length).toBe(1)
-  expect(await answer($, null, { answers: [{ id: 'q2', choice: 'no' }] })).toContain('q2: no')
-  expect(stored(w.files)[1]!.answeredBy).toBe('main')
 })
 
 test('the conservative seed ("default") auto-answers a non-blocking ask and leaves a blocking one', async ($, on) => {

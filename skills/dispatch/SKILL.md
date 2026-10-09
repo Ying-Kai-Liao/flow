@@ -109,7 +109,9 @@ put them in front of the user.
   wants it revoked. Auto-answered questions show in `/flow inbox`. When the plugin offers
   "Suggested starting rules (not applied)" (in `standing list`, and once in the first `status`
   when no rules exist), put them to the user once as a question; add only the ones they accept,
-  with `standing` `add` and `seed: "<id>"` (or `seeds: [ids]`).
+  with `standing` `add` and `seed: "<id>"` (or `seeds: [ids]`). Questions flagged ESCALATED
+  (an `escalate` rule) are in your inbox even when a worker asked: put them to the user, then
+  answer them yourself; the asker gets the answer.
 - **Anything you relay to a manager** (answers, scope additions, mid-task fixes) goes both in the
   SendMessage and in `mcp__flow__note` (manager = its name, kind "decision", the user's words
   quoted, with the date), so it survives a restart whether or not the manager writes it down.

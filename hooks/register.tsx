@@ -835,7 +835,7 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
     const m = markAnswered(cur, id, choice, by, at)
     return { inbox: m.kind === 'ok' ? m.inbox : cur, out: m }
   })
-  if (marked.kind === 'escalated') return `${id}: refused, standing rule ${marked.q.escalated} makes this the user's decision. Escalate it with mcp__flow__ask; do not answer it yourself.`
+  if (marked.kind === 'escalated') return `${id}: refused, standing rule ${marked.q.escalated} makes this the user's decision. It is in main's inbox as ${id}; main answers it directly and the asker gets the answer. Don't answer or re-ask it.`
   if (marked.kind === 'unknown') return `${id}: no such question.`
   if (marked.kind === 'answered') return `${id}: already answered ("${marked.q.answer ?? ''}" by ${marked.q.answeredBy ?? '?'}).`
   if (marked.kind === 'refused') return `${id}: refused, it is addressed to ${marked.q.addressee}, not ${by}.`
@@ -3161,7 +3161,7 @@ export const register: Register = (on, options) => {
       // An escalate rule holds the question for the user: blocking, flagged, never auto-answered.
       for (const { q, fresh } of r.added) {
         const esc = fresh ? escalation(rules, q) : undefined
-        if (esc !== undefined) next = { ...next, items: next.items.map(x => (x.id === q.id ? { ...x, blocking: true, escalated: esc.rid } : x)) }
+        if (esc !== undefined) next = { ...next, items: next.items.map(x => (x.id === q.id ? { ...x, blocking: true, escalated: esc.rid, addressee: 'main' } : x)) }
       }
       const hits = new Map<string, { answer: string; rid: string }>()
       for (const { q, fresh } of r.added) {
@@ -3193,7 +3193,7 @@ export const register: Register = (on, options) => {
       const lines = fresh.map(q =>
         `${name} asks ${q.id} (${q.blocking ? 'blocking' : 'non-blocking'}): ${q.question} - options ` +
         `${q.options.map((o, i) => `${String.fromCharCode(97 + i)}) ${o}`).join(' ')} (default: ${q.default})` +
-        (q.escalated !== undefined ? ` - a standing rule (${q.escalated}) makes this the user's decision: escalate it with mcp__flow__ask, don't answer it yourself; mcp__flow__answer refuses a non-main answer.` : ''))
+        (q.escalated !== undefined ? ` - a standing rule (${q.escalated}) makes this the user's decision; it is in main's inbox as ${q.id}, main answers it directly and the worker gets the answer; don't answer or re-ask it.` : ''))
       await $.session.send({ to: { agentId: parent.id }, text: `${lines.join('\n')}\nAnswer with mcp__flow__answer.` }).catch(() => undefined)
     } else if (addressee === 'main' && fresh.some(q => q.blocking)) {
       void $.ui.toast(`${name} asks: ${fresh.length} question(s) in /flow inbox`)

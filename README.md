@@ -195,7 +195,7 @@ id to revoke.
 - Two more forms. `escalate: true` with no `answer` holds a matching question for you: no rule ever
   auto-answers it (whatever the order), it is recorded `blocking: true` and flagged
   `escalated: <rule id>`, and `mcp__flow__answer` refuses an answer from anyone but main; a worker's
-  manager is told to escalate it with `mcp__flow__ask`. `answer: "default"` (the literal word)
+  it is addressed to main (a worker's manager is told so and must not answer or re-ask it), and `/flow inbox` marks it ESCALATED. `answer: "default"` (the literal word)
   answers a matching non-blocking question with its own default and never touches a blocking one.
   A rule with both `escalate` and an `answer` is invalid and dropped with a warning.
 - Seeds. When no rule exists in any layer, `standing list` and the first `status` call by main
