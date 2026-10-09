@@ -36,6 +36,7 @@ export const KEYS: Record<string, Kind> = {
   always_tests: 'list',
   flaky_tests: 'list',
   guard_tests: 'globmap',
+  verify_paths: 'list',
   deploy_targets: 'objects',
   standing_answers: 'objects',
   state_file: 'object',
