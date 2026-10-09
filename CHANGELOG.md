@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.22] - 2026-10-10
+
+### Added
+
+- `handover` refuses a PR whose description lacks a valid `## Verification` section (Ran, Exercised,
+  Not verified; every `worker_checks` and `always_tests` command under Ran). The evidence is stored
+  on the handover and shown in `queue list`, `status`, the queue's report and the status file.
+
+### Changed
+
+- The worker prompt asks for the section; the manager prompt checks it against the diff.
+  The `verified` input of `handover` is optional.
+
 ## [0.3.21] - 2026-10-10
 
 ### Added

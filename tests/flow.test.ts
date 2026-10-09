@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const
 
-const PR = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: 'flow/csv', title: 'Export orders as CSV' }
+const PR = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: 'flow/csv', title: 'Export orders as CSV', body: '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- full check' }
 
 test('a handed-over PR starts one merge queue, which works through it', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })

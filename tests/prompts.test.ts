@@ -26,7 +26,8 @@ test('worker checks and always tests are hard requirements in the worker prompt'
   expect(p).toContain('Required before `gh pr create`, on your final commit: run each of these and they must pass: `tsc -p .`, `pnpm lint`.')
   expect(p).toContain('report BLOCKED with the output')
   expect(p).toContain('Also run these every time, on top of the tests for the files you changed: `tests/guard.test.ts`. Run each entry as a command.')
-  expect(p).toContain('each with pass/fail, including every required check')
+  expect(p).toContain('including every required check named above (each must appear under Ran)')
+  expect(p).toContain('## Verification')
 })
 
 test('always tests go through {files} when the test command has it', () => {

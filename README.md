@@ -380,6 +380,23 @@ After deploying, a PR whose `after_deploy` an agent can check gets a check-only 
 
 - `handover`: a manager hands a reviewed PR over; the plugin records its head and starts
   a queue if none is running.
+  It refuses a PR whose description has no valid `## Verification` section (checked after the
+  closed and draft checks), records nothing and starts no queue, and lists every problem with the
+  expected format. Fix with `gh pr edit <n> --body-file <file>` and call again. The format:
+
+```
+## Verification
+Ran:
+- `<command>`: pass (<short result, e.g. 42 tests>)
+Exercised: <how the change was run for real: app launched and what was seen, screenshot path, curl output, or "n/a: <reason>" for docs/prompt-only changes>
+Not verified:
+- <what you did not check>   (or one line "Not verified: none, because <reason>")
+```
+
+  `Ran` needs at least one entry and must include every `worker_checks` and `always_tests`
+  command (backticks optional). `Exercised` and `Not verified` must be non-empty; a bare
+  "Not verified: nothing" and a bare "n/a" are refused. The section is stored on the handover and
+  shown in `queue list`, in the queue's report, in the status file entry and in `status`.
 - `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
 - `plan`: dependencies between tasks or packages (see Dependencies).
 - `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
@@ -418,7 +435,7 @@ stops a tool call.
 ```
 
 - `handovers/<pr>.json`: `{version: 1, pr, title, head, branch, reportTo, verified, pending,
-  afterDeploy, status, at, sha?, report?, reason?}`; `status` is pending, taken, done or returned.
+  afterDeploy, evidence?: {ran, exercised, notVerified}, status, at, sha?, report?, reason?}`; `status` is pending, taken, done or returned.
   A new session loads these.
 - `log.jsonl`: one JSON object per line, `{ts, event, owner, agent?, pr?, branch?, text?}`;
   `event` is spawn, report, handover, take, done, back or note. `owner` is the manager the

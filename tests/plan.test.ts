@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 const run = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-const pr = (branch: string) => JSON.stringify({ state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: branch, title: `PR ${branch}` })
+const pr = (branch: string) => JSON.stringify({ state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: branch, title: `PR ${branch}`, body: '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- full check' })
 
 type Sent = { to: string; text: string }
 
