@@ -203,6 +203,30 @@ test('a changed settings file is picked up by the poll, once', async ($, on) => 
   expect(w.last('worker')!.model).toBe('sonnet')
 })
 
+test('a reload re-registers the agents with the new models and applies the new limits', async ($, on) => {
+  const w = world(on, { [REPO]: JSON.stringify({ merge_queue: true, max_managers: 7 }) })
+  on('tool.call', () => ({ result: 'ok' }) as never)
+  await start($)
+  const call = (input: Record<string, unknown>) => $.tool.call(input as never).then(r => String(r.result))
+  expect(w.last('manager')!.model).toBe('opus')
+  expect(await call({ tool: 'mcp__flow__status' })).toContain('managers 0/7')
+  expect(await call({ tool: 'mcp__flow__handover', pr: 5, verified: 'x', report_to: 'm' })).not.toContain('no merge queue')
+
+  // Same mtime: nothing is read again.
+  const before = w.registered.length
+  await w.clock.advance(9000)
+  await w.clock.settle()
+  expect(w.registered.length).toBe(before)
+
+  w.touch(REPO, JSON.stringify({ merge_queue: false, max_managers: 2, test_slots: 3, manager_model: 'sonnet' }))
+  await w.clock.advance(3000)
+  await w.clock.settle()
+  expect(w.registered.length).toBeGreaterThan(before)
+  expect(w.last('manager')!.model).toBe('sonnet')
+  expect(await call({ tool: 'mcp__flow__handover', pr: 6, verified: 'x', report_to: 'm' })).toContain('no merge queue')
+  expect(await call({ tool: 'mcp__flow__status' })).toContain('managers 0/2')
+})
+
 test('a refused [1m] model falls back once to the plain model, tells once, and later spawns skip the try', { options: { worker_model: 'sonnet[1m]' } }, async ($, on) => {
   const w = world(on, {})
   const tried: (string | undefined)[] = []
