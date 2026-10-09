@@ -37,9 +37,48 @@ const HANDOVER_GLYPH: Record<Handover['status'], string> = {
 const roster = atom({ plugin: 'flow', key: 'roster' } as const, [] as AgentRow[])
 const activity = atom({ plugin: 'flow', key: 'activity' } as const, {} as Record<string, Activity>)
 const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as string | null)
+// The highlighted card of the tree (an agent id), and the folds the person chose: true folds an
+// agent's children away, false keeps them out even when the tree is crowded. Absent = automatic.
+const cursor = atom({ plugin: 'flow', key: 'cursor' } as const, null as string | null)
+const folded = atom({ plugin: 'flow', key: 'folded' } as const, {} as Record<string, boolean>)
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
+
+export type TreeItem = { a: AgentRow; depth: number; kids: number; collapsed: boolean }
+
+// The rows of the tree in the order they are drawn and walked. `auto` folds every agent with
+// children except the ones on the way to the highlight (a crowded tree); a fold the person chose
+// wins over it. `at` is the highlight, moved up to the nearest row that is drawn.
+export function treeItems(
+  list: AgentRow[], fold: Record<string, boolean>, cur: string | null | undefined, auto: boolean,
+): { items: TreeItem[]; at: string | undefined } {
+  const ids = new Set(list.map(a => a.id))
+  const kids = (id: string | undefined) => list
+    .filter(a => (id === undefined ? a.parentId === undefined || !ids.has(a.parentId) : a.parentId === id))
+    .sort((a, b) => rank(a.status) - rank(b.status))
+  const path = new Set<string>()
+  for (let a = list.find(x => x.id === cur); a !== undefined && !path.has(a.id); a = list.find(x => x.id === a!.parentId)) path.add(a.id)
+  const items: TreeItem[] = []
+  const walk = (a: AgentRow, depth: number) => {
+    const under = kids(a.id)
+    const collapsed = under.length > 0 && (fold[a.id] ?? (auto && !path.has(a.id)))
+    items.push({ a, depth, kids: under.length, collapsed })
+    if (!collapsed) for (const c of under) walk(c, depth + 1)
+  }
+  for (const a of kids(undefined)) walk(a, 0)
+  const drawn = new Set(items.map(i => i.a.id))
+  let at: string | undefined = cur ?? undefined
+  while (at !== undefined && !drawn.has(at)) at = list.find(a => a.id === at)?.parentId
+  return { items, at }
+}
+
+// The window of rows to draw: all of them, or `size` rows with the highlight in the middle.
+export function viewOf<T>(items: T[], at: number, size: number): { top: number; rows: T[] } {
+  if (items.length <= size) return { top: 0, rows: items }
+  const top = Math.min(Math.max(0, at - Math.floor(size / 2)), items.length - size)
+  return { top, rows: items.slice(top, top + size) }
+}
 
 // One line for a tool call: the tool and its most telling argument.
 function describeCall(e: Record<string, unknown>): string {
@@ -672,8 +711,9 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [list, acts, pick, t, hs] = await Promise.all([
+    const [list, acts, pick, t, hs, cur, fold] = await Promise.all([
       read($, roster), read($, activity), read($, selected), read($, now), read($, handovers),
+      read($, cursor), read($, folded),
     ])
     const rows = e.viewport?.rows ?? 24
     const warn = settings.contextWarn
@@ -710,7 +750,7 @@ export const register: Register = (on, options) => {
 
     // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
     // Only a top-level card has a border; deeper ones read as a tree by their indent.
-    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean) => {
+    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, chev = '') => {
       const act = acts[a.id]
       const dim = ENDED.has(a.status)
       const asks = asksQuestion(act?.answer) && !['running', 'pending'].includes(a.status)
@@ -718,7 +758,7 @@ export const register: Register = (on, options) => {
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
       const head = <Text>
-        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold>{labelOf(a)}</Text>
+        {chev}<Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold inverse={hot}>{labelOf(a)}</Text>
         {under > 0 && <Text dimColor> (+{under})</Text>}
         <Text dimColor>  {ROLE[a.type] ?? a.type}</Text>
       </Text>
