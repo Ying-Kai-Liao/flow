@@ -145,7 +145,7 @@ test('a grant not confirmed within the claim window passes to the next waiter', 
 test('the queued answer names the grant file and the until-loop', async ($, on) => {
   world(on, agents('a', 'b'))
   const { runs } = signals(on)
-  for (const k of ['command.register', 'agent.register', 'tool.register']) on(k, () => ({ value: undefined }))
+  for (const k of ['command.register', 'agent.register', 'tool.register']) on(k as 'tool.register', () => ({ value: undefined }) as never)
   on('session.start', () => ({ cwd: '/repo' }))
   await $.session.start({ cwd: '/repo' } as never)
   await call($, 'acquire', 'a')

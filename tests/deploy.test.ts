@@ -4,7 +4,7 @@ import type { Settings } from '../hooks/prompts'
 
 const BASE: Settings = {
   base: 'main', testCommand: '', fullCheck: '', deployCommand: '', deployTargets: [], stateFile: undefined,
-  mergeMethod: 'squash', useQueue: true, maxWorkers: 3, workerModel: 'sonnet',
+  mergeMethod: 'squash', useQueue: true, maxWorkers: 3, workerModel: 'sonnet', testSlots: 1,
 }
 
 const TWO = deployTargetsOf([

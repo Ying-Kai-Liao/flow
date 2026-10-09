@@ -41,7 +41,7 @@ function findCycle(graph: Graph): string | undefined {
     }
     state[id] = 1
     stack.push(id)
-    for (const dep of graph[id].after) {
+    for (const dep of graph[id]?.after ?? []) {
       const found = visit(dep)
       if (found) return found
     }
@@ -73,7 +73,7 @@ export function addNodes(graph: Graph, nodes: NodeInput[]): { graph: Graph } | {
     added.push(n.id)
   }
   for (const id of added) {
-    for (const dep of next[id].after) {
+    for (const dep of next[id]?.after ?? []) {
       if (!next[dep]) return { error: `unknown dependency: ${id} comes after ${dep}, which is not in the plan` }
     }
   }
@@ -102,7 +102,7 @@ const reportsTo = (h: Handover, id: string) => h.reportTo === id || (h.reportTo.
 // The newest handover per branch.
 function latestPerBranch(hs: Handover[]): Handover[] {
   const by: Record<string, Handover> = {}
-  for (const h of hs) if (!by[h.branch] || h.at >= by[h.branch].at) by[h.branch] = h
+  for (const h of hs) if (!by[h.branch] || h.at >= by[h.branch]!.at) by[h.branch] = h
   return Object.values(by)
 }
 
@@ -151,8 +151,10 @@ function judge(owner: string, node: DagNode, facts: Facts): Verdict {
 export function evaluate(owner: string, graph: Graph, facts: Facts): Graph {
   const out: Graph = {}
   const visit = (id: string): DagNode => {
-    if (out[id]) return out[id]
+    const seen = out[id]
+    if (seen) return seen
     const prev = graph[id]
+    if (!prev) throw new Error(`unknown node: ${id}`)
     // Marks the node while it is being worked out, so a (refused) cycle cannot recurse forever.
     out[id] = prev
     const deps = prev.after.map(visit)
@@ -173,8 +175,11 @@ export function evaluate(owner: string, graph: Graph, facts: Facts): Graph {
         info = undefined
       }
     }
-    out[id] = { ...prev, state, info }
-    return out[id]
+    const node: DagNode = { ...prev, state }
+    if (info === undefined) delete node.info
+    else node.info = info
+    out[id] = node
+    return node
   }
   for (const id of Object.keys(graph)) visit(id)
   return out
@@ -244,10 +249,12 @@ export function noticeText(notice: Notice, slots: number | undefined = notice.sl
 export function layers(graph: Graph): Record<string, number> {
   const depth: Record<string, number> = {}
   const visit = (id: string): number => {
-    if (depth[id] !== undefined) return depth[id]
+    const known = depth[id]
+    if (known !== undefined) return known
     depth[id] = 0
-    depth[id] = Math.max(-1, ...graph[id].after.filter(d => graph[d]).map(visit)) + 1
-    return depth[id]
+    const d = Math.max(-1, ...(graph[id]?.after ?? []).filter(d => graph[d]).map(visit)) + 1
+    depth[id] = d
+    return d
   }
   for (const id of Object.keys(graph)) visit(id)
   return depth
@@ -257,7 +264,7 @@ export function layers(graph: Graph): Record<string, number> {
 export function describe(graph: Graph): string[] {
   const depth = layers(graph)
   return Object.values(graph)
-    .sort((a, b) => depth[a.id] - depth[b.id])
+    .sort((a, b) => (depth[a.id] ?? 0) - (depth[b.id] ?? 0))
     .map(n => {
       const after = n.after.length ? ` | after: ${n.after.map(d => `${d} (${graph[d]?.state ?? '?'})`).join(', ')}` : ''
       return `- ${n.id}: ${n.state}${n.info ? ` (${n.info})` : ''}${after}`

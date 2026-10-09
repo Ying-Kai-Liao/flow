@@ -9,7 +9,7 @@ const PR = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRe
 const DIR = '/r/.git/flow'
 
 // A repo whose state dir lives in an in-memory file map; `abs` false makes git print a relative path.
-function disk(on: On, files: Map<string, string>, o: { abs?: boolean; agents?: AgentInfo[]; gh?: (argv: string[]) => string | undefined; failGh?: boolean } = {}) {
+function disk(on: On, files: Map<string, string>, o: { abs?: boolean; agents?: AgentInfo[]; gh?: (argv: readonly string[]) => string | undefined; failGh?: boolean } = {}) {
   const spawned: string[] = []
   on('agent.list', () => ({ value: o.agents ?? [] }))
   on('agent.spawn', (_, e) => { spawned.push(e.subagentType); return { model: 'sonnet', agentId: 'q1' } })
