@@ -5,13 +5,6 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.33] - 2026-10-10
-
-### Fixed
-
-- `.gitignore` ignores `.claude-plugin/types` without the trailing slash, so the symlink `npm run typecheck`
-  creates in a worktree is ignored too and `git worktree remove` no longer refuses it.
-
 ## [0.3.34] - 2026-10-10
 
 ### Added
@@ -21,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing, unreadable or directories (naming each), and rewrites relative paths to absolute ones. The worker
   prompt reports `BLOCKED: attachment <path> could not be opened`; the dispatch skill passes user files to
   managers as paths.
+
+## [0.3.33] - 2026-10-10
+
+### Fixed
+
+- `.gitignore` ignores `.claude-plugin/types` without the trailing slash, so the symlink `npm run typecheck`
+  creates in a worktree is ignored too and `git worktree remove` no longer refuses it.
 
 ## [0.3.32] - 2026-10-10
 
