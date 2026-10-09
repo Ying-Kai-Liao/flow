@@ -16,6 +16,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `reviewer` | on | `/config`, file | off: managers merge themselves with `merge_method` |
 | `merge_method` | `squash` | `/config`, file | managers, when there is no reviewer |
 | `merge_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` holds every handed-over PR until you run `/flow approve <n>` (see Merge mode) |
+| `push_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` makes the reviewer stop after the full check and the release, and waits for your `/flow push` (see Push gate) |
 | `preflight` | `on` | `/config`, file | `off`: managers are not gated and no round is sent (see Pre-flight) |
 | `preflight_wait` | 10 | `/config`, file | minutes the main session waits for managers to file before sending the round |
 | `release` | `off` | `/config`, file | `on`: release at merge, the reviewer bumps the version once per batch (see Releases) |
@@ -86,7 +87,9 @@ The files are checked every few seconds by modification time. New settings apply
 ## Tools the agents use
 
 - `migrations` (read-only; used by the reviewer): `prs` (PR numbers in merge order) and `ref` (default HEAD). It reports the highest migration number on the base branch and at `ref`, each PR's added migrations as ok, clash or at-or-below, the next free number with its zero padding kept, the suggested `git mv`, and where the PR references the old number.
-- `release`: the reviewer, once per batch before the push (release on): cuts the changelog, bumps the version files, returns the commit command (see Releases). With `action: "publish"` (`release_github` on, after the push; optional `version`, default the last cut) it tags, pushes the tag and creates the GitHub Release.
+- `reviewer` action `ready` (push_mode confirm; the reviewer only): records the checked batch instead of pushing it. Takes `prs` (the PRs in the batch), `sha` (the batch head, which must match `refs/flow/push/<id>`), `base_sha` (the `origin/<base>` it was built on), `check` (one line, the full check result) and `version` (when released). The PRs become `ready`; it opens the inbox item and a toast (see Push gate).
+- `push` (main only, on your word): `list` shows the ready batch, `push` releases it, `send-back` with `pr` returns one PR (the rest is rebuilt), `drop` returns them all. Same as `/flow push`, `/flow push back <pr>` and `/flow push drop`.
+- `release`: the reviewer, once per batch before the push (release on): cuts the changelog, bumps the version files, returns the commit command (see Releases). With `action: "publish"` (`release_github` on, after the push; optional `version`, default the last cut) it tags, pushes the tag and creates the GitHub Release. With `recut: true` (push gate, the base moved) it cuts a batch again that was already released.
 - `handover`: a manager hands a reviewed PR over (optional `release`: `patch`, `minor` or `major`; optional `env`: a list of `{target, name, value | secret: true, why, login?}` env changes, one inbox item each, see Deploying; `target` must be a configured deploy target, `name` an env variable name, an entry with both `value` and `secret: true` is refused without repeating the value, and a non-empty `env` is refused when no deploy target is configured; a secret has no value in flow; optional `verify_command`, a shell command the reviewer runs after merge to close a needs-a-person check, see Person checks); the plugin records its head and starts
   a reviewer if none is running. `report_to` is optional and defaults to the caller's own name
   (`main` for the main session). A name that matches no agent of the session is refused, naming
@@ -145,14 +148,16 @@ stops a tool call.
   log.jsonl                append-only event log
   handoffs/<branch-slug>/<n>.md  transcript digest of a worker's n-th handoff
   managers/<key>/notes.md  a manager's notes
+  push.json                the batch behind the push gate (see Push gate)
   preflight.json           pre-flight filings and rounds (see Pre-flight)
   checks.json              person checks and their follow-ups (see Person checks)
   config.json              not state: the settings loader's file, never touched by flow
 ```
 
 - `handovers/<pr>.json`: `{version: 1, pr, title, head, branch, reportTo, verified, pending,
-  afterDeploy, evidence?: {ran, exercised, notVerified}, status, at, sha?, report?, reason?}`; `status` is pending, taken, done or returned.
+  afterDeploy, evidence?: {ran, exercised, notVerified}, status, at, sha?, report?, reason?}`; `status` is pending, awaiting, taken, ready (⇪, in a batch that awaits `/flow push`), done or returned.
   A new session loads these.
+- `push.json`: `{batch?: {id, state, prs, items, sha, baseSha, ref, check, createdAt, version?, qid?, releasedAt?, reason?}}`; `state` is ready, pushing or rebuilding, `ref` is `refs/flow/push/<id>` (a local ref shared by all worktrees). The inbox item has kind `push`, options push / not yet (default) / drop, and is never answered by standing answers.
 - `log.jsonl`: one JSON object per line, `{ts, event, owner, agent?, pr?, branch?, text?}`;
   `event` is spawn, report, handover, take, done, back or note. `owner` is the manager the
   event belongs to (or `main`).

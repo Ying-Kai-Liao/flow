@@ -277,6 +277,29 @@ branch moves and the manager hands it over again, you approve again. The reviewe
 and head when it takes a PR; a PR still unapproved answers "Held:" and is skipped, and if `gh` fails
 the labels count as none, so it never merges something it could not check.
 
+## Push gate
+
+`merge_mode: confirm` asks before a PR is merged and a deploy target in `confirm` mode asks before it deploys. `push_mode: confirm` sits between them: the reviewer merges, checks and releases a batch, then stops before the push. You look at the batch and start the push yourself. (`push_mode` is `auto` by default; unknown values mean `auto`, and with `auto` the reviewer's instructions are unchanged.)
+
+The sequence:
+
+1. The reviewer builds the batch, runs the full check and cuts the release as usual. Then it does not push, delete branches, publish or deploy. It saves the batch head under the local ref `refs/flow/push/<id>` (the id is the first 8 characters of the head sha) and records it with `mcp__flow__reviewer` action `ready`. The PRs get the status `ready` (⇪).
+2. The batch is shown at the top of the pane with the commands, in `mcp__flow__status` under "Needs the user", first in `/flow resume`, and as an inbox item of kind `push`. A toast says it is ready.
+3. You look at it (the PRs, their evidence, the check result, the version), then run `/flow push`. A reviewer checks that the base did not move, pushes, deletes the merged branches, marks the PRs done, publishes the GitHub Release (`release_github`) and deploys, as in a normal batch.
+
+Other ways out:
+
+- **Send back.** `/flow push back <pr>` returns that PR to its manager (reason "sent back by the user at push"). The rest of the batch is rebuilt, re-checked and asked again as a new batch. Sending back the last PR ends the batch.
+- **Drop.** `/flow push drop` returns every PR of the batch (reason "batch dropped by the user at push"). A dropped batch may be handed over again as it was.
+- **Base moved.** If `origin/<base>` moved between the build and your push, the reviewer never pushes the stale batch. It rebuilds it on the new base (the same PRs, in the same order), runs the full check, cuts the release again (`mcp__flow__release` with `recut`) and asks you again. A PR whose head moved or that no longer merges is sent back.
+- **Nothing to push, or twice.** `/flow push` with no batch answers "Nothing ready to push."; once released, a second `/flow push` (or back or drop) is refused because the batch is already being pushed.
+
+While a batch exists, in any state, new handovers stay pending: no second batch starts, and handing over a PR that is in a ready batch again is refused.
+
+The batch lives in `<git-common-dir>/flow/push.json` with the state `ready` (awaits you), `pushing` (released) or `rebuilding`; the local ref keeps the checked commit even when the reviewer's worktree is gone. After a restart, a `pushing` or `rebuilding` batch gets its reviewer started again; a `ready` batch only reappears in the pane, `status`, `/flow resume` and the inbox, and waits for you.
+
+The inbox item asks "Push batch <id>: #n, #m as <version>?" with the options push, not yet (the default) and drop; you can also answer "send back #n". Standing answers never answer it, and taking the defaults (`defaults: true`) never pushes: the default is "not yet". Only a person's command, or main on your word through `mcp__flow__push`, releases a batch; managers, workers and the reviewer cannot.
+
 ## Releases
 
 With `release` on, no PR touches the version, so parallel PRs never collide on a version number or a dated changelog section.
