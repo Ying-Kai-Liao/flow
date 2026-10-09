@@ -88,6 +88,22 @@ export type SlotEntry = { key: string; name: string; label: string; since: numbe
 export type TestSlots = { holders: SlotEntry[]; waiters: SlotEntry[] }
 
 // One line of the state dir's log.jsonl. `handoff` and `continue` are defined for a later package.
+// Where a worker stood when it handed off; the successor reads it.
+export type HandoffRecord = {
+  branch: string
+  agent: string
+  agentId: string
+  owner: string
+  at: number
+  digestPath?: string
+  worktree?: string
+  head?: string
+  // Handoffs of this branch so far, this one included.
+  count: number
+  // The successor that was given this worktree; a second spawn for the branch does not get it.
+  takenBy?: string
+}
+
 export type LogEvent = {
   ts: string
   event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'handoff' | 'continue' | 'note'
@@ -116,6 +132,7 @@ declare module 'claude-code' {
       testSlots: TestSlots
       overrideView: string | null | undefined
       hinted: boolean
+      handoffs: Record<string, HandoffRecord>
     }
   }
 }

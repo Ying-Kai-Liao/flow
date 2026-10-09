@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   top level and inside a manager; `h` `j` `k` `l` move the highlight, `o` opens a node's agent,
   waiting nodes show without an agent, managers carry `+N workers`, and narrow panes fall back to a list.
 
+## [0.3.12] - 2026-10-09
+
+### Added
+
+- Handoff parity with orca-flow. On a worker's `HANDOFF: <branch>` a transcript digest is
+  written to `handoffs/<branch-slug>/<n>.md` in the state directory, with a `handoff` log event.
+- The continuation worker gets the digest (capped at 4k) and, when the old worktree is clean,
+  at `origin/flow/<x>`, its agent has ended and no other spawn claimed it, runs in that
+  worktree through the new non-isolated `flow:continue` type. Otherwise it gets a new worktree
+  and the old one is removed if clean and behind.
+- `max_continues` setting (default 2): past it the owning manager is told to split the package.
+
+### Changed
+
+- Managers no longer remove worktrees on handoff.
+
 ## [0.3.11] - 2026-10-09
 
 ### Added
