@@ -6,7 +6,7 @@ import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evi
 import { ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
-import type { Facts, Graph, Notice, Plan } from './dag'
+import type { AgentFact, Facts, Graph, Notice, Plan } from './dag'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, inboxHead, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
 } from './inbox'
@@ -56,6 +56,7 @@ const CONTINUE = 'flow:continue'
 const WORKERS = new Set([WORKER, CONTINUE, SESSION])
 const QUEUE = 'flow:queue'
 const ENDED = new Set(['completed', 'failed', 'killed'])
+const LIVE_STATUS = new Set(['running', 'pending'])
 const LIVE = new Set(['pending', 'running', 'waiting'])
 // Display order: what may need a person first, finished agents last.
 const ORDER = ['waiting', 'idle', 'running', 'pending', 'failed', 'killed', 'completed']
@@ -92,6 +93,9 @@ const hinted = atom({ plugin: 'flow', key: 'hinted' } as const, false)
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
 // The decision inbox, mirrored from <state dir>/inbox.json.
+// The last status and answer seen per agent name, so an agent the host drops from its list keeps its
+// last known state instead of reading as never started.
+const seenAgents = atom({ plugin: 'flow', key: 'seen-agents' } as const, {} as Record<string, AgentFact>)
 const inbox = atom({ plugin: 'flow', key: 'inbox' } as const, EMPTY_INBOX as Inbox)
 // Pre-flight records, mirrored from <state dir>/preflight.json.
 const preflight = atom({ plugin: 'flow', key: 'preflight' } as const, EMPTY_PREFLIGHT as Preflight)
@@ -567,8 +571,19 @@ async function syncPlans(
   for (const a of freed) freedSeen.add(a.id)
   if (edit === undefined && Object.keys(await read($, plan)).length === 0) return {}
   const [acts, hs] = await Promise.all([read($, activity), read($, handovers)])
+  const agents: AgentFact[] = rows.map(a => ({
+    name: a.name, status: a.status, answer: acts[a.id]?.answer,
+    children: rows.filter(c => c.parentId === a.id && LIVE_STATUS.has(c.status)).length,
+  }))
+  const known = { ...(await read($, seenAgents)) }
+  const present = new Set(rows.map(a => a.name))
+  for (const a of agents) if (a.name !== undefined) known[a.name] = a
+  for (const [name, a] of Object.entries(known)) if (!present.has(name)) agents.push(a)
+  if (JSON.stringify(known) !== JSON.stringify(await read($, seenAgents))) await update($, seenAgents, () => known)
+  const owners: Record<string, string> = {}
+  for (const e of await readLog($)) if ((e.event === 'handover' || e.event === 'continue') && e.branch !== undefined && e.owner !== undefined) owners[e.branch] = e.owner
   const facts: Facts = {
-    agents: rows.map(a => ({ name: a.name, status: a.status, answer: acts[a.id]?.answer })),
+    agents, owners,
     handovers: Object.values(hs),
     phrases: decisionPhrases,
     asking: askingNames(await read($, inbox)),

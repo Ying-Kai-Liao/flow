@@ -227,3 +227,29 @@ test('layers and describe on a diamond', async () => {
     '- d: waiting | after: b (waiting), c (waiting)',
   ])
 })
+
+test('an idle manager that owns merged handovers is done; with no handover or live workers it is running', async () => {
+  const g = build([{ id: 'ev' }, { id: 'next', after: ['ev'] }])
+  const merged = handover('flow/ev-worker', 'done', 5, { reportTo: 'ev' })
+  const ev = (agent: AgentFact, hs: Handover[]) => evaluate('main', g, { agents: [agent], handovers: hs })
+  const idle = { name: 'ev', status: 'idle', answer: 'Nothing else waits on you.' }
+  expect(stateOf(ev(idle, [merged]), 'ev')).toBe('done')
+  expect(stateOf(ev(idle, [merged]), 'next')).toBe('ready')
+  expect(stateOf(ev(idle, []), 'ev')).toBe('running')
+  expect(stateOf(ev({ ...idle, children: 1 }, [merged]), 'ev')).toBe('running')
+  expect(stateOf(ev(idle, [{ ...merged, status: 'pending' }]), 'ev')).toBe('running')
+})
+
+test('a handover with a wrong report_to still counts for the manager that owns its branch', async () => {
+  const g = build([{ id: 'ask-inbox' }])
+  const h = handover('flow/decision-inbox-views', 'pending', 5, { reportTo: 'decision-inbox' })
+  const agent = { name: 'ask-inbox', status: 'completed', answer: 'Done.' }
+  const facts = { agents: [agent], handovers: [h], owners: { 'flow/decision-inbox-views': 'ask-inbox' } }
+  expect(stateOf(evaluate('main', g, facts), 'ask-inbox')).toBe('running')
+  expect(stateOf(evaluate('main', g, { ...facts, handovers: [{ ...h, status: 'done' }] }), 'ask-inbox')).toBe('done')
+})
+
+test('with two rows of one name the live one decides', async () => {
+  const rows = [{ name: 'm', status: 'completed' }, { name: 'm', status: 'running' }]
+  expect(agentFor('m', rows)?.status).toBe('running')
+})
