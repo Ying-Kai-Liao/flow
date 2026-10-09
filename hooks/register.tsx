@@ -2249,6 +2249,10 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    // A throw while building the tree would leave the pane blank with no hint why; draw one line instead.
+    // The body below is wrapped as is (not re-indented) to keep the diff to this fix.
+    try {
+    return await (async () => {
     const { Box, Text, Button } = $.ui.resolve(e)
     let [list, acts, pick, t, hs, cur, fold, unhanded, leftCounts] = await Promise.all([
       read($, roster), read($, activity), read($, selected), read($, now), read($, handovers),
@@ -2576,12 +2580,17 @@ export const register: Register = (on, options) => {
           </Box>
         )}
         {prs.length > 0 && <Text bold>  Merge queue</Text>}
-        {prs.slice(0, 5).map(h => (
-          <Text key={`pr-${h.pr}`} dimColor={h.status === 'done'} wrap="truncate-end">
-            {'    '}{HANDOVER_GLYPH[h.status]} #{h.pr} {h.status}{h.status === 'returned' ? `: ${h.reason ?? ''}` : ''} <Text dimColor>{h.title}</Text>
+        {prs.slice(0, 5).map(ho => (
+          <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} wrap="truncate-end">
+            {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
           </Text>
         ))}
       </Box>
     )
+    })()
+    } catch (err) {
+      const { Text } = $.ui.resolve(e)
+      return <Text>flow: pane failed to draw: {err instanceof Error ? err.message : String(err)}</Text>
+    }
   })
 }
