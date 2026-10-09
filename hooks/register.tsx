@@ -34,7 +34,7 @@ import {
 import type { Settings } from './prompts'
 import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
 import { isFable, mergeLayers, renameOptions } from './settings'
-import { bumpVersion, cutChangelog, highestBump, isBump, labelBump, readVersion, setVersion } from './release'
+import { bumpVersion, changelogSection, cutChangelog, highestBump, isBump, labelBump, readVersion, setVersion } from './release'
 import type { Bump } from './release'
 import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
@@ -566,6 +566,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     alwaysTests: strs('always_tests'),
     flakyTests: strs('flaky_tests'),
     release: str('release', 'off') === 'on',
+    releaseGithub: str('release_github', 'off') === 'on',
     releaseFiles: strs('release_files'),
     changelogFile: str('changelog_file', 'CHANGELOG.md'),
     guardTests: parseGuardTests(options.guard_tests) ?? {},
@@ -579,6 +580,69 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
 
 // The last batch the release tool cut, so a retried push does not release twice.
 let lastRelease: { key: string; version: string } | undefined
+
+// Tag the release commit, push the tag and create the GitHub Release. Every step is idempotent and retried, and
+// a failure is a returned line, never a throw: the release commit is already pushed and the batch stays done.
+const PUBLISH_ATTEMPTS = 4
+async function publishRelease($: EngineInterface, settings: Settings, dir: string, wanted: string | undefined): Promise<string> {
+  if (!settings.release) return 'Refused: the release setting is off, so nothing is published.'
+  if (!settings.releaseGithub) return 'Refused: the release_github setting is off, so nothing is published.'
+  if (!dir.startsWith('/')) return 'Refused: dir must be the absolute path of your worktree.'
+  let version = wanted
+  if (version === undefined) {
+    let last = lastRelease
+    if (last === undefined) {
+      const stateD = await stateDir($)
+      const disk = stateD === undefined ? undefined : await readJson($, `${stateD}/release.json`) as { key?: string; version?: string } | undefined
+      if (typeof disk?.version === 'string') last = { key: String(disk.key ?? ''), version: disk.version }
+    }
+    version = last?.version
+  }
+  if (version === undefined) return 'Refused: no version to publish; pass version or cut a release first.'
+  const tag = `v${version}`
+  const git = (...a: string[]) => $.process.run(['git', '-C', dir, ...a])
+  const tail = (r: { stderr: string; stdout: string }) => (r.stderr.trim() || r.stdout.trim()).split('\n').slice(-3).join(' ').slice(0, 300)
+  const run = async (step: string, argv: string[]): Promise<{ ok: true } | { ok: false; line: string }> => {
+    let last = ''
+    for (let i = 0; i < PUBLISH_ATTEMPTS; i++) {
+      if (i > 0) await $.clock.sleep(2000 * 2 ** (i - 1))
+      try {
+        const r = await $.process.run(argv)
+        if (r.exitCode === 0) return { ok: true }
+        last = tail(r)
+      } catch (err) { last = err instanceof Error ? err.message : String(err) }
+    }
+    return { ok: false, line: `Not published: ${step} failed: ${last}. The release commit is pushed; report this, the batch stays done.` }
+  }
+  try {
+    const head = await git('rev-parse', 'HEAD')
+    const subject = await git('log', '-1', '--format=%s')
+    if (head.exitCode !== 0 || subject.exitCode !== 0) return `Not published: could not read HEAD of ${dir}: ${tail(head.exitCode !== 0 ? head : subject)}. The release commit is pushed; report this, the batch stays done.`
+    const sha = head.stdout.trim()
+    if (subject.stdout.trim() !== `Release ${version}`) return `Refused: HEAD of ${dir} is "${subject.stdout.trim()}", not "Release ${version}". Publish only the release commit.`
+    const existing = await git('rev-parse', '--verify', '--quiet', `refs/tags/${tag}^{commit}`)
+    if (existing.exitCode === 0 && existing.stdout.trim() !== sha) return `Not published: tag ${tag} already exists at ${existing.stdout.trim().slice(0, 8)}, not at the release commit ${sha.slice(0, 8)}; it was not moved. The release commit is pushed; report this, the batch stays done.`
+    if (existing.exitCode !== 0) {
+      const t = await git('tag', '-a', tag, '-m', `Release ${version}`, sha)
+      if (t.exitCode !== 0) return `Not published: tagging failed: ${tail(t)}. The release commit is pushed; report this, the batch stays done.`
+    }
+    const pushed = await run('pushing the tag', ['git', '-C', dir, 'push', 'origin', tag])
+    if (!pushed.ok) return pushed.line
+    const view = await $.process.run(['gh', 'release', 'view', tag])
+    if (view.exitCode === 0) return `Published ${tag}: tag pushed, GitHub Release already existed.`
+    const logName = settings.changelogFile || 'CHANGELOG.md'
+    const section = await $.fs.exists(`${dir}/${logName}`) ? changelogSection(await $.fs.read(`${dir}/${logName}`), version) : undefined
+    const stateD = await stateDir($)
+    const notes = `${stateD ?? '/tmp'}/release-notes-${tag}.md`
+    await $.fs.write(notes, section !== undefined && section !== '' ? section + '\n' : `Release ${version}\n`)
+    const made = await run('gh release create', ['gh', 'release', 'create', tag, '--title', tag, '--notes-file', notes, '--verify-tag'])
+    if (!made.ok) return made.line
+    const url = await $.process.run(['gh', 'release', 'view', tag, '--json', 'url', '--jq', '.url'])
+    return `Published ${tag}: tag pushed, GitHub Release created${url.exitCode === 0 && url.stdout.trim() !== '' ? ' ' + url.stdout.trim() : ''}.${section === undefined || section === '' ? ` The changelog has no ${version} section, so the notes are "Release ${version}".` : ''}`
+  } catch (err) {
+    return `Not published: ${err instanceof Error ? err.message : String(err)}. The release commit is pushed; report this, the batch stays done.`
+  }
+}
 
 // How many managers main runs at once; refresh needs it to tell main how many slots are free.
 let maxManagers = 20
@@ -3149,14 +3213,16 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'release',
-      description: 'Release at merge (the release setting must be on). The reviewer calls this once per batch, after the full check and before the push: it moves the changelog\'s ## [Unreleased] lines into a new version section, bumps the version in the release files (patch, or the highest of the PRs\' handover release field and flow:minor / flow:major labels) and returns the commit command. It does not commit or push. A second call for the same PRs is refused as already released.',
+      description: 'Release at merge (the release setting must be on). The reviewer calls this once per batch, after the full check and before the push: it moves the changelog\'s ## [Unreleased] lines into a new version section, bumps the version in the release files (patch, or the highest of the PRs\' handover release field and flow:minor / flow:major labels) and returns the commit command. It does not commit or push. A second call for the same PRs is refused as already released. With action "publish" (release_github on, after the release commit is pushed) it tags v<version>, pushes the tag and creates the GitHub Release from the changelog section; failures come back as a "Not published" line and never throw.',
       inputSchema: {
         type: 'object',
         properties: {
+          action: { type: 'string', enum: ['cut', 'publish'], description: '"cut" (default): cut the changelog and bump the version. "publish": tag, push the tag and create the GitHub Release for the release commit at HEAD of dir.' },
           dir: { type: 'string', description: 'The reviewer\'s worktree, absolute' },
-          prs: { type: 'array', items: { type: 'number' }, description: 'The PR numbers merged in this batch' },
+          prs: { type: 'array', items: { type: 'number' }, description: 'cut: the PR numbers merged in this batch' },
+          version: { type: 'string', description: 'publish: the version to publish; default the version of the last cut' },
         },
-        required: ['dir', 'prs'],
+        required: ['dir'],
       },
       isDeferred: false,
     })
@@ -3849,6 +3915,7 @@ export const register: Register = (on, options) => {
     const input = e as unknown as Record<string, unknown>
     if (!settings.release) return { result: 'Refused: the release setting is off, so nothing is released. Skip the release step.' }
     const dir = String(input.dir ?? '').replace(/\/+$/, '')
+    if (input.action === 'publish') return { result: await publishRelease($, settings, dir, typeof input.version === 'string' ? input.version.replace(/^v/, '') : undefined) }
     const prs = Array.isArray(input.prs) ? input.prs.map(Number).filter(n => Number.isInteger(n) && n > 0) : []
     if (!dir.startsWith('/')) return { result: 'Refused: dir must be the absolute path of your worktree.' }
     if (prs.length === 0) return { result: 'Refused: prs must list the PR numbers merged in this batch.' }

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `release_github` setting (default `off`): with `release` on, the reviewer calls `mcp__flow__release` action `publish` after a successful push, which tags `v<x.y.z>`, pushes the tag and creates a GitHub Release from the changelog section. Failures are reported, never fatal.
+- The reviewer treats a push refused by branch protection as neither a retry nor a publish case: the batch goes back with a clear reason.
+
 ## [0.4.4] - 2026-10-09
 
 ### Changed

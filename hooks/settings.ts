@@ -56,12 +56,13 @@ export const KEYS: Record<string, Kind> = {
   preflight: 'string',
   preflight_wait: 'number',
   release: 'string',
+  release_github: 'string',
   release_files: 'list',
   changelog_file: 'string',
 }
 
 // String settings with a closed set of values: another value is dropped with a warning.
-export const CHOICES: Record<string, string[]> = { preflight: ['on', 'off'], release: ['on', 'off'] }
+export const CHOICES: Record<string, string[]> = { preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'] }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
