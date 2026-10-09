@@ -17,8 +17,8 @@ import {
   recordFiling, recordSpawn, renderFollowUp, renderRound, renderStatus,
 } from './preflight'
 import type { Preflight } from './preflight'
-import type { Inbox, Question } from './inbox'
-import { AUTO, matchRule, nextRuleId, removeRule, renderRules, ruleFromQuestion, sameRule, suggest, validateRule } from './standing'
+import type { Inbox, Marked, Question } from './inbox'
+import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
 import type { Resolved, Rule } from './standing'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
@@ -828,10 +828,14 @@ const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOS
 // choice null takes the question's default. Returns one result line.
 async function answerQuestion($: EngineInterface, id: string, choice: string | null, by: string): Promise<string> {
   const at = await $.clock.now()
-  const marked = await withInbox($, cur => {
+  const marked = await withInbox($, (cur): { inbox: Inbox; out: Marked | { kind: 'escalated'; q: Question } } => {
+    // A standing rule made this the user's decision: only main answers it.
+    const held = cur.items.find(x => x.id === id)
+    if (held !== undefined && held.state === 'open' && held.escalated !== undefined && by !== 'main') return { inbox: cur, out: { kind: 'escalated', q: held } }
     const m = markAnswered(cur, id, choice, by, at)
     return { inbox: m.kind === 'ok' ? m.inbox : cur, out: m }
   })
+  if (marked.kind === 'escalated') return `${id}: refused, standing rule ${marked.q.escalated} makes this the user's decision. Escalate it with mcp__flow__ask; do not answer it yourself.`
   if (marked.kind === 'unknown') return `${id}: no such question.`
   if (marked.kind === 'answered') return `${id}: already answered ("${marked.q.answer ?? ''}" by ${marked.q.answeredBy ?? '?'}).`
   if (marked.kind === 'refused') return `${id}: refused, it is addressed to ${marked.q.addressee}, not ${by}.`
@@ -934,6 +938,21 @@ function dropRule($: EngineInterface, options: Record<string, unknown>, rid: str
     if (!r.out) return `${rid}: not found in ${path}.`
     return `${rid}: removed from ${path}${hit.source === 'repo' ? ' (a committed file: the change shows in git status)' : ''}.`
   })
+}
+
+// The suggested starting rules, for main's first status call when no rule exists anywhere. The flag is
+// written before returning; two calls at once may both show it, none may miss it.
+async function offerSeedsOnce($: EngineInterface, options: Record<string, unknown>): Promise<string[]> {
+  const dir = await stateDir($)
+  if (dir === undefined) return []
+  const flag = `${dir}/seeds-offered.json`
+  if (await readJson($, flag) !== undefined) return []
+  const { rules } = await loadRules($, options)
+  const offer = rules.length === 0 ? seedsToOffer(rules) : []
+  if (offer.length === 0) return []
+  await $.process.run(['mkdir', '-p', dir])
+  await writeJsonAtomic($, flag, { offeredAt: await $.clock.now() })
+  return renderSeeds(offer)
 }
 
 // An `always` answer: after answering, the answer becomes a rule in the personal file. Only main makes rules.
@@ -2503,7 +2522,9 @@ export const register: Register = (on, options) => {
       name: 'standing',
       description: 'Main only. Standing answers: rules that answer a recurring decision-inbox question at once. action "list": the rules (id, file, match, answer, how often used) and suggestions ' +
         '(questions you answered the same way 3 or more times). "add": topic or match (a case-insensitive regex on the question text), answer, optional blocking (default false: blocking questions are left to you) and from (asker name). ' +
-        '"remove": id. Rules without an id are named by file and position: personal:1, repo:2.',
+        '"remove": id. Rules without an id are named by file and position: personal:1, repo:2. ' +
+        'Instead of an answer, escalate: true makes matching questions blocking and the user\'s alone; answer "default" takes the question\'s own default (non-blocking only). ' +
+        '"list" with no rules also offers a few suggested starting rules (not applied); accept with "add" and seed (an id) or seeds (ids).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2512,8 +2533,11 @@ export const register: Register = (on, options) => {
           match: { type: 'string' },
           answer: { type: 'string', description: 'An option of the question: its text, letter or number' },
           blocking: { type: 'boolean' },
+          escalate: { type: 'boolean', description: 'Instead of an answer: matching questions are never auto-answered, are blocking and only you answer them' },
           from: { type: 'string' },
           id: { type: 'string' },
+          seed: { type: 'string', description: `With add: a suggested starting rule by id (${seedIds().join(', ')})` },
+          seeds: { type: 'array', items: { type: 'string' }, description: 'With add: several suggested starting rules by id' },
         },
         required: ['action'],
       },
@@ -3134,9 +3158,14 @@ export const register: Register = (on, options) => {
     const { added, auto } = await withInbox($, cur => {
       const r = addQuestions(cur, { name, id: e.agentId, isManager: me?.type === MANAGER }, addressee, parsed.questions, at)
       let next = r.added.some(a => a.fresh) ? r.inbox : cur
+      // An escalate rule holds the question for the user: blocking, flagged, never auto-answered.
+      for (const { q, fresh } of r.added) {
+        const esc = fresh ? escalation(rules, q) : undefined
+        if (esc !== undefined) next = { ...next, items: next.items.map(x => (x.id === q.id ? { ...x, blocking: true, escalated: esc.rid } : x)) }
+      }
       const hits = new Map<string, { answer: string; rid: string }>()
       for (const { q, fresh } of r.added) {
-        const m = fresh ? matchRule(rules, q) : undefined
+        const m = fresh ? matchRule(rules, next.items.find(x => x.id === q.id) ?? q) : undefined
         if (m === undefined) continue
         const marked = markAnswered(next, q.id, m.answer, AUTO, at, m.rule.rid)
         if (marked.kind !== 'ok') continue
@@ -3163,7 +3192,8 @@ export const register: Register = (on, options) => {
     if (addressee !== 'main' && fresh.length > 0 && parent !== undefined) {
       const lines = fresh.map(q =>
         `${name} asks ${q.id} (${q.blocking ? 'blocking' : 'non-blocking'}): ${q.question} - options ` +
-        `${q.options.map((o, i) => `${String.fromCharCode(97 + i)}) ${o}`).join(' ')} (default: ${q.default})`)
+        `${q.options.map((o, i) => `${String.fromCharCode(97 + i)}) ${o}`).join(' ')} (default: ${q.default})` +
+        (q.escalated !== undefined ? ` - a standing rule (${q.escalated}) makes this the user's decision: escalate it with mcp__flow__ask, don't answer it yourself; mcp__flow__answer refuses a non-main answer.` : ''))
       await $.session.send({ to: { agentId: parent.id }, text: `${lines.join('\n')}\nAnswer with mcp__flow__answer.` }).catch(() => undefined)
     } else if (addressee === 'main' && fresh.some(q => q.blocking)) {
       void $.ui.toast(`${name} asks: ${fresh.length} question(s) in /flow inbox`)
@@ -3249,11 +3279,26 @@ export const register: Register = (on, options) => {
     if (action === 'list') {
       const { rules } = await loadRules($, options)
       const box = await read($, inbox)
-      return { result: renderRules(rules, box, suggest(box, rules)) }
+      return { result: renderRules(rules, box, suggest(box, rules), seedsToOffer(rules)) }
+    }
+    if (action === 'add' && (input.seed !== undefined || input.seeds !== undefined)) {
+      const want = [...new Set([...(typeof input.seed === 'string' ? [input.seed] : []), ...(Array.isArray(input.seeds) ? input.seeds.map(String) : [])].map(s => s.trim()))]
+      const bad = want.filter(id => !SEEDS.some(s => s.id === id))
+      if (bad.length > 0 || want.length === 0) return { result: `Refused: unknown seed ${bad.map(b => `"${b}"`).join(', ') || '(none given)'}. The ids are ${seedIds().join(', ')}; nothing added.` }
+      const date = await today($)
+      const out: string[] = []
+      for (const id of want) {
+        const seed = SEEDS.find(s => s.id === id)!
+        const r = await addRule($, options, { ...seed.rule, note: `seed ${id}, added ${date}` })
+        out.push(r.kind === 'error' ? `${id}: not added: ${r.msg}`
+          : r.kind === 'exists' ? `${id}: already there as rule ${r.id}; nothing added.`
+            : `${id}: rule ${r.id} added to the personal file. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.`)
+      }
+      return { result: out.join('\n') }
     }
     if (action === 'add') {
       const v = validateRule({
-        topic: input.topic, match: input.match, answer: input.answer, blocking: input.blocking, from: input.from,
+        topic: input.topic, match: input.match, answer: input.answer, escalate: input.escalate, blocking: input.blocking, from: input.from,
         note: `added ${await today($)} by hand`,
       })
       if ('error' in v) return { result: `Refused: ${v.error}.` }
@@ -3380,9 +3425,11 @@ export const register: Register = (on, options) => {
     const list = Object.values(hs).sort((a, b) => a.at - b.at)
     const plans = Object.entries(await read($, plan)).filter(([, g]) => Object.keys(g).length > 0)
     const slots = slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
+    const seeds = e.agentId === undefined ? await offerSeedsOnce($, options) : []
     return {
       result: [
         ...inboxHead(await read($, inbox), await $.clock.now()),
+        ...seeds,
         limitsLine(rows, settings.maxWorkers),
         ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,

@@ -106,7 +106,10 @@ put them in front of the user.
   questions to the user, say if one looks recurring (same `topic` as before) and offer "always".
   `mcp__flow__standing` `list` shows the rules and suggestions (questions answered the same way
   3+ times): offer a suggestion to the user, don't add it unasked. `remove` a rule when the user
-  wants it revoked. Auto-answered questions show in `/flow inbox`.
+  wants it revoked. Auto-answered questions show in `/flow inbox`. When the plugin offers
+  "Suggested starting rules (not applied)" (in `standing list`, and once in the first `status`
+  when no rules exist), put them to the user once as a question; add only the ones they accept,
+  with `standing` `add` and `seed: "<id>"` (or `seeds: [ids]`).
 - **Anything you relay to a manager** (answers, scope additions, mid-task fixes) goes both in the
   SendMessage and in `mcp__flow__note` (manager = its name, kind "decision", the user's words
   quoted, with the date), so it survives a restart whether or not the manager writes it down.

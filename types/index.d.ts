@@ -209,6 +209,8 @@ export type Question = {
   askerIsManager?: boolean
   // The standing answer rule that answered it (answeredBy is then "standing answer").
   rule?: string
+  // An escalate standing rule holds it for the user: it is blocking and only main may answer it.
+  escalated?: string
 }
 
 export type Inbox = { next: number; items: Question[] }

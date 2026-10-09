@@ -186,12 +186,27 @@ and the asker's `ask` result says so; nobody is messaged or toasted, and the dec
 and `log.jsonl` (`auto-answer`). `/flow inbox` lists the last 24 h under "Auto-answered" with the rule
 id to revoke.
 
-- A rule is `{id?, topic?, match?, answer, blocking?, from?, note?}` in the `standing_answers` list of a
+- A rule is `{id?, topic?, match?, answer, blocking?, from?, note?}` (or, see below, `{..., escalate: true}`) in the `standing_answers` list of a
   settings file. `topic` equals the question's topic (any case); `match` is a case-insensitive regular
   expression on the question text; with both, both must match. No fuzzy matching. `answer` must be one
   of the new question's options (text, letter or number), else the rule does not apply and the question
   goes to the inbox. `from` limits it to one asker (`foo-2` counts as `foo`). A blocking question is
   answered only by a rule with `blocking: true`. A bad rule is dropped with a settings warning.
+- Two more forms. `escalate: true` with no `answer` holds a matching question for you: no rule ever
+  auto-answers it (whatever the order), it is recorded `blocking: true` and flagged
+  `escalated: <rule id>`, and `mcp__flow__answer` refuses an answer from anyone but main; a worker's
+  manager is told to escalate it with `mcp__flow__ask`. `answer: "default"` (the literal word)
+  answers a matching non-blocking question with its own default and never touches a blocking one.
+  A rule with both `escalate` and an `answer` is invalid and dropped with a warning.
+- Seeds. When no rule exists in any layer, `standing list` and the first `status` call by main
+  (once; `seeds-offered.json` in flow's state dir, next to `inbox.json`, records it) show "Suggested
+  starting rules (not applied)": `tracker` (never write to an external task tracker without your yes;
+  topic `external-tracker`, escalate), `prod-env` (production environment changes always ask; topic
+  `prod-env-change`, escalate) and `conservative` (non-blocking questions take their own default).
+  Nothing is applied until you accept: `mcp__flow__standing {"action":"add","seed":"<id>"}` (or
+  `seeds: [ids]`) adds the rule to your personal file; an unknown id lists the valid ones, and a
+  seed already present is not added twice. `standing list` keeps showing the remaining seeds while
+  every rule you have is an accepted seed, and hides them once you have a rule of your own.
 - The personal file's rules come before the repo file's and both apply; the first match wins.
   A rule without `id` is named by file and position: `personal:1`, `repo:2`. `always` makes `s1`,
   `s2`, ...
