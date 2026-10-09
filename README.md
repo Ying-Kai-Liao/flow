@@ -200,6 +200,19 @@ id to revoke.
   (`topic` or `match`, `answer`, optional `blocking`, `from`) writes the personal file; `remove`
   (`id`) removes a rule from whichever file holds it (a repo-file rule is a committed file).
 
+## Attachments
+
+A brief can carry files the worker should look at (screenshots, mockups, logs) in an optional
+`## Attachments` section (or an `Attachments:` line), one path per line, as `- <path>` bullets or bare
+lines; quotes and backticks around a path are fine, and `~` expands to your home. The list ends at the
+next heading. When a manager, worker or continuation is started, the spawn hook checks every listed path
+and refuses the spawn, naming each bad one, if it is missing, unreadable or a directory. Relative paths
+resolve against the spawning agent's directory and are rewritten to absolute paths in the prompt, since a
+worker's worktree doesn't hold the manager's untracked files. Workers open each attachment first and end
+with `BLOCKED: attachment <path> could not be opened` if they can't. The main session passes the user's
+images and files to managers as paths under an `Attachments:` heading. Workers started with
+`mcp__flow__session` are not checked by the hook.
+
 ## Continuing work
 
 **Handoff.** When a worker or manager reaches the limit (once per agent; the queue never gets it),
