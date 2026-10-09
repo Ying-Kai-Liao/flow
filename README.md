@@ -36,6 +36,8 @@ anything.
   Click a card to see the agent's activity and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
+  `/flow close` closes the pane. It stays closed while agents keep running, until the next
+  `/flow` or a newly started agent opens it again.
 - **A context meter on each card**: `███│░░░░░░░ 42% · 84k/200k`, with `│` marking the warning
   threshold (`context_warn_percent`). The meter turns yellow at or past the threshold and red
   from 90%. Where an agent's usage isn't known yet it says `context ?`, never a guess. A

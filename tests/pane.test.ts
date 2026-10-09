@@ -172,3 +172,62 @@ test('a short viewport gives compact rows, then "+N more", keeping the header an
   expect(await tiny.find({ type: 'Text', text: /\+\d+ more/ })).toBeDefined()
   await tiny.unmount()
 })
+
+// The engine's pane record, as a test answers `ui.open`, `ui.close` and `ui.panes` beneath the plugin.
+function paneHost(on: On): { isOpen: () => boolean; opens: () => number } {
+  let open = false
+  let opens = 0
+  on('ui.open', () => { open = true; opens++; return { value: { isPlaced: true } } })
+  on('ui.close', () => { open = false; return { value: undefined } })
+  on('ui.panes', () => ({ value: open ? [{ id: 'flow', title: 'Flow', isShown: true, isFocused: false, isPlaced: true }] : [] }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  return { isOpen: () => open, opens: () => opens }
+}
+
+test('/flow opens the pane and /flow close closes it', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  on('agent.list', () => ({ value: [] }))
+  const host = paneHost(on)
+
+  expect((await $.command.run({ command: 'flow', args: 'close' } as never)).text).toBe('The Flow pane is not open.')
+
+  expect((await $.command.run({ command: 'flow' } as never)).text).toBe('Flow pane opened.')
+  expect(host.isOpen()).toBe(true)
+
+  expect((await $.command.run({ command: 'flow', args: ' close ' } as never)).text).toBe('Flow pane closed.')
+  expect(host.isOpen()).toBe(false)
+
+  expect((await $.command.run({ command: 'flow', args: 'shut' } as never)).text).toContain('Unknown argument "shut"')
+  expect(host.isOpen()).toBe(false)
+})
+
+test('a closed pane stays closed while agents run, until a new agent starts', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const agents: AgentInfo[] = [
+    { id: 'm1', name: 'task', description: 'A task', type: 'flow:manager', status: 'running' },
+  ]
+  on('agent.list', () => ({ value: agents }))
+  on('agent.spawn', ($, e) => {
+    const id = e.description === 'A task' ? 'm1' : 'w1'
+    if (id === 'w1') agents.push({ id, name: 'fix', description: 'Fix it', type: 'flow:worker', status: 'running', parentId: 'm1' })
+    return { model: 'sonnet', agentId: id }
+  })
+  const host = paneHost(on)
+
+  await $.agent.spawn({ prompt: 'brief', description: 'A task', subagentType: 'flow:manager' } as never)
+  await clock.settle()
+  expect(host.isOpen()).toBe(true)
+
+  await $.command.run({ command: 'flow', args: 'close' } as never)
+  const opensBefore = host.opens()
+  // Roster refreshes: the poll and a status call.
+  await clock.advance(10_000)
+  await $.tool.call({ tool: 'mcp__flow__status' } as never)
+  expect(host.isOpen()).toBe(false)
+  expect(host.opens()).toBe(opensBefore)
+
+  await $.agent.spawn({ prompt: 'brief', description: 'Fix it', subagentType: 'flow:worker' } as never)
+  await clock.settle()
+  expect(host.isOpen()).toBe(true)
+})
