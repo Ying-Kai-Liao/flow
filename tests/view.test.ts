@@ -90,3 +90,19 @@ test('the first card click toasts how to see its chat, once; the detail view the
   expect(toasts.filter(t => /To see its chat/.test(t))).toHaveLength(1)
   await ui.unmount()
 })
+
+test('acting while following wins until the view changes', async ($, on) => {
+  await setup($, on)
+  const a = await mount($, 'm0')
+  await a.press({ key: 'back' })
+  expect(await a.find({ type: 'Button', key: 'back' })).toBeUndefined()
+  await a.unmount()
+  // Same view, new draw: the person's choice still stands.
+  const b = await mount($, 'm0')
+  expect(await b.find({ type: 'Button', key: 'back' })).toBeUndefined()
+  await b.unmount()
+  // Another agent in view follows again.
+  const c = await mount($, 'm1')
+  expect(await c.find({ type: 'Text', text: /d m1/ })).toBeDefined()
+  await c.unmount()
+})

@@ -400,6 +400,8 @@ export const register: Register = (on, options) => {
   // The view the pane was last drawn under: a focus event carries none, and a focus move is the
   // person acting in that view.
   let paneView: string | null = null
+  // What the last drawing showed in place of the stored state while following, else null.
+  let paneFollow: { pick: string; cur: string } | null = null
   // What /flow resume already handed to managers in this session.
   const resumed = new Set<string>()
 
@@ -721,6 +723,12 @@ export const register: Register = (on, options) => {
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const r = await next(e)
     if (e.element !== undefined && (await read($, roster)).some(a => a.id === e.element)) {
+      // Acting while following keeps what was shown, then the person's move applies on top.
+      if (paneFollow !== null) {
+        const f = paneFollow
+        await update($, selected, () => f.pick)
+        await update($, cursor, () => f.cur)
+      }
       await update($, overrideView, () => paneView)
       await update($, cursor, () => e.element!)
     }
@@ -739,13 +747,22 @@ export const register: Register = (on, options) => {
     // The pane follows the transcript in view, derived here without writing: the viewed agent wins
     // until the person acts in the pane under that view. An id not in the roster is ignored.
     const viewId = (e.props as { view?: { agentId?: string } }).view?.agentId ?? null
-    if (viewId !== null && list.some(a => a.id === viewId) && viewId !== override) {
+    const following = viewId !== null && list.some(a => a.id === viewId) && viewId !== override
+    if (following) {
       pick = viewId
       cur = viewId
     }
+    paneFollow = following ? { pick: viewId!, cur: viewId! } : null
     // Handlers record which view they acted in, so a later view change follows again.
     paneView = viewId
-    const acted = () => update($, overrideView, () => viewId)
+    const acted = async () => {
+      // Acting while following adopts what was shown, so the stored state does not jump back.
+      if (following) {
+        await update($, selected, () => viewId)
+        await update($, cursor, () => viewId)
+      }
+      await update($, overrideView, () => viewId)
+    }
     const rows = e.viewport?.rows ?? 24
     const warn = settings.contextWarn
     // Free: no breakdown asked. Main's figures also size a subagent on the same model.
@@ -895,6 +912,7 @@ export const register: Register = (on, options) => {
       void $.ui.focus({ requestId: PANE, key: id }).catch(() => undefined)
     }
     const hotItem = async () => {
+      await acted()
       const c = (await read($, cursor)) ?? hotId
       return items.find(x => x.a.id === c) ?? items[hotIdx]
     }
