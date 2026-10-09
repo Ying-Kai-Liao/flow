@@ -271,6 +271,14 @@ branch moves and the manager hands it over again, you approve again. The queue r
 and head when it takes a PR; a PR still unapproved answers "Held:" and is skipped, and if `gh` fails
 the labels count as none, so it never merges something it could not check.
 
+## Releases
+
+With `release` on, no PR touches the version, so parallel PRs never collide on a version number or a dated changelog section.
+- Workers add their changelog lines under `## [Unreleased]` in `changelog_file` and never change the version. Managers check that when they review, and pass `release: "minor"` on the handover for a new feature users see (or put the `flow:minor` label on the PR; `flow:major` / `"major"` only when the task asks). Everything else is a patch.
+- After the full check passes and before the push, the queue calls `release` once per batch: it moves the Unreleased lines into a new `## [x.y.z] - date` section (a PR title per merged PR when Unreleased is empty) and bumps the version in each `release_files` entry by the highest bump asked in the batch. The queue commits "Release x.y.z" and pushes it with the merges. A retried push does not release twice.
+- The release refuses (and the queue says so) when the setting is off, no version file is found, or the changelog is missing.
+- Recommended for repos that turn it on: a `.gitattributes` line `CHANGELOG.md merge=union`, so Unreleased lines added side by side merge without conflicts.
+
 ## Cleanup
 
 Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
@@ -485,6 +493,9 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `merge_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` holds every handed-over PR until you run `/flow approve <n>` (see Merge mode) |
 | `preflight` | `on` | `/config`, file | `off`: managers are not gated and no round is sent (see Pre-flight) |
 | `preflight_wait` | 10 | `/config`, file | minutes the main session waits for managers to file before sending the round |
+| `release` | `off` | `/config`, file | `on`: release at merge, the queue bumps the version once per batch (see Releases) |
+| `release_files` | none (`package.json` at the repo root when there is one) | file only | repo-relative JSON or TOML files whose version the release bumps, a list; the first one gives the current version |
+| `changelog_file` | `CHANGELOG.md` | `/config`, file | the changelog the release cuts and workers add their lines to |
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
 | `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `max_workers` | 3 | `/config`, file | workers per manager at a time |
@@ -544,7 +555,8 @@ The files are checked every few seconds by modification time. New settings apply
 ## Tools the agents use
 
 - `migrations` (read-only; used by the merge queue): `prs` (PR numbers in merge order) and `ref` (default HEAD). It reports the highest migration number on the base branch and at `ref`, each PR's added migrations as ok, clash or at-or-below, the next free number with its zero padding kept, the suggested `git mv`, and where the PR references the old number.
-- `handover`: a manager hands a reviewed PR over; the plugin records its head and starts
+- `release`: the merge queue, once per batch before the push (release on): cuts the changelog, bumps the version files, returns the commit command (see Releases).
+- `handover`: a manager hands a reviewed PR over (optional `release`: `patch`, `minor` or `major`); the plugin records its head and starts
   a queue if none is running. `report_to` is optional and defaults to the caller's own name
   (`main` for the main session). A name that matches no agent of the session is refused, naming
   the caller's own name; the caller's own worker's name is corrected to the caller's, with a note.
@@ -623,5 +635,4 @@ ignores and removes such links when it cleans a worktree. The repo's `.claude/fl
 `npm run typecheck` and `npm run validate` worker checks and `npm run check` the merge queue's full check, so no PR merges
 with type errors.
 
-Bump `version` in `.claude-plugin/plugin.json` before pushing a change, so
-`claude plugin update flow@flow` picks it up.
+Do not change `version` in `.claude-plugin/plugin.json`: this repo has `release` on, so add your changelog lines under `## [Unreleased]` in `CHANGELOG.md` and the merge queue bumps the version and cuts the release at merge (that is what `claude plugin update flow@flow` picks up).

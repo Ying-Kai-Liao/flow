@@ -28,6 +28,8 @@ import {
 import type { Settings } from './prompts'
 import { deployTargetsOf, stateFileOf } from './prompts'
 import { isFable, mergeLayers } from './settings'
+import { bumpVersion, cutChangelog, highestBump, isBump, labelBump, readVersion, setVersion } from './release'
+import type { Bump } from './release'
 import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
@@ -537,6 +539,9 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     workerChecks: strs('worker_checks'),
     alwaysTests: strs('always_tests'),
     flakyTests: strs('flaky_tests'),
+    release: str('release', 'off') === 'on',
+    releaseFiles: strs('release_files'),
+    changelogFile: str('changelog_file', 'CHANGELOG.md'),
     workerHarness: str('worker_harness', 'agent'),
     sessionHost: ['orca', 'tmux'].includes(str('session_host', 'auto')) ? str('session_host', 'auto') : 'auto',
     harnesses,
@@ -544,6 +549,9 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     minQuota: Math.min(100, Math.max(0, Math.round(num('min_quota', 10)))),
   }
 }
+
+// The last batch the release tool cut, so a retried push does not release twice.
+let lastRelease: { key: string; version: string } | undefined
 
 // How many managers main runs at once; refresh needs it to tell main how many slots are free.
 let maxManagers = 20
@@ -2518,9 +2526,23 @@ export const register: Register = (on, options) => {
           pending: { type: 'string', description: '"none", or decisions the user still has to make; the queue puts them in its report and the status file' },
           after_deploy: { type: 'string', description: '"none", or what to check after deploy; the queue starts a check-only worker for what an agent can check and reports the rest as "needs a person"' },
           report_to: { type: 'string', description: 'Optional. Your own agent name (the default), so the queue reports back to you. A name that matches no agent is refused; your own worker\'s name is corrected to yours.' },
+          release: { type: 'string', enum: ['patch', 'minor', 'major'], description: 'How far the release at merge bumps the version for this PR (only when the release setting is on). "minor" for a new feature users see; omit for patch; "major" only when the task asks for it. The batch gets the highest of its PRs.' },
           mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: it waits for the user\'s /flow approve before the queue merges it. "auto" only marks it safe to merge directly and is refused when the merge_mode setting is confirm. Omit to use the setting.' },
         },
         required: ['pr'],
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
+      name: 'release',
+      description: 'Release at merge (the release setting must be on). The merge queue calls this once per batch, after the full check and before the push: it moves the changelog\'s ## [Unreleased] lines into a new version section, bumps the version in the release files (patch, or the highest of the PRs\' handover release field and flow:minor / flow:major labels) and returns the commit command. It does not commit or push. A second call for the same PRs is refused as already released.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          dir: { type: 'string', description: 'The queue\'s worktree, absolute' },
+          prs: { type: 'array', items: { type: 'number' }, description: 'The PR numbers merged in this batch' },
+        },
+        required: ['dir', 'prs'],
       },
       isDeferred: false,
     })
@@ -3070,6 +3092,7 @@ export const register: Register = (on, options) => {
       reportTo: dest.name, verified: String(input.verified ?? ''),
       pending: String(input.pending ?? 'none'), afterDeploy: String(input.after_deploy ?? 'none'),
       evidence: checked.evidence, status: 'pending', at: t, ...(asked !== undefined ? { mode: asked } : {}),
+      ...(isBump(input.release) ? { release: input.release } : {}),
     }
     // A labelling failure is reported, not fatal: the stored mode still gates the queue.
     let labelNote = ''
@@ -3098,6 +3121,59 @@ export const register: Register = (on, options) => {
     return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.${dest.note ?? ''}${labelNote}` }
   })
 
+  on('tool.call', { tool: 'mcp__flow__release' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    if (!settings.release) return { result: 'Refused: the release setting is off, so nothing is released. Skip the release step.' }
+    const dir = String(input.dir ?? '').replace(/\/+$/, '')
+    const prs = Array.isArray(input.prs) ? input.prs.map(Number).filter(n => Number.isInteger(n) && n > 0) : []
+    if (!dir.startsWith('/')) return { result: 'Refused: dir must be the absolute path of your worktree.' }
+    if (prs.length === 0) return { result: 'Refused: prs must list the PR numbers merged in this batch.' }
+    const key = [...new Set(prs)].sort((a, b) => a - b).join(',')
+    const stateD = await stateDir($)
+    let last = lastRelease
+    if (last === undefined && stateD !== undefined) {
+      const disk = await readJson($, `${stateD}/release.json`) as { key?: string; version?: string } | undefined
+      if (typeof disk?.key === 'string' && typeof disk.version === 'string') last = { key: disk.key, version: disk.version }
+    }
+    if (last?.key === key) return { result: `Refused: already released ${last.version} for PRs ${key.replaceAll(',', ', ')}. The release commit is in your worktree; go on to the push.` }
+    let files = settings.releaseFiles ?? []
+    if (files.length === 0 && await $.fs.exists(`${dir}/package.json`)) files = ['package.json']
+    if (files.length === 0) return { result: 'Refused: no version file. Set release_files (repo-relative JSON or TOML files) in .claude/flow.json, or add a package.json at the repo root; a release without a version is meaningless.' }
+    const logName = settings.changelogFile || 'CHANGELOG.md'
+    if (!(await $.fs.exists(`${dir}/${logName}`))) return { result: `Refused: the changelog ${logName} does not exist in ${dir}; create it or set changelog_file.` }
+    const all = await read($, handovers)
+    const asked: (Bump | undefined)[] = []
+    const titles: string[] = []
+    let ghNote = ''
+    for (const pr of prs) {
+      const h = all[String(pr)]
+      asked.push(h?.release)
+      titles.push(`- ${h?.title ?? 'PR'} (#${pr})`)
+      const v = await $.process.run(['gh', 'pr', 'view', String(pr), '--json', 'labels'])
+      let names: string[] | undefined
+      if (v.exitCode === 0) {
+        try { names = ((JSON.parse(v.stdout) as { labels?: { name: string }[] }).labels ?? []).map(l => l.name) } catch { names = undefined }
+      }
+      if (names === undefined) ghNote = ' gh could not read some PR labels; those PRs counted by their handover release field only.'
+      else asked.push(labelBump(names))
+    }
+    const kind = highestBump(asked)
+    try {
+      const texts = await Promise.all(files.map(f => $.fs.read(`${dir}/${f}`)))
+      const next = bumpVersion(readVersion(texts[0]!, files[0]!), kind)
+      const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
+      const log = cutChangelog(await $.fs.read(`${dir}/${logName}`), next, date, titles)
+      const updated = files.map((f, i) => setVersion(texts[i]!, f, next))
+      for (const [i, f] of files.entries()) await $.fs.write(`${dir}/${f}`, updated[i]!)
+      await $.fs.write(`${dir}/${logName}`, log)
+      lastRelease = { key, version: next }
+      if (stateD !== undefined) await writeJsonAtomic($, `${stateD}/release.json`, lastRelease)
+      return { result: `Released ${next} (${kind} bump from ${readVersion(texts[0]!, files[0]!)}). Changed: ${[...files, logName].join(', ')}.${ghNote} Now run: git -C ${dir} commit -am "Release ${next}" (add your attribution lines), then push as usual.` }
+    } catch (err) {
+      return { result: `Refused: ${err instanceof Error ? err.message : String(err)}` }
+    }
+  })
+
   on('tool.call', { tool: 'mcp__flow__queue' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     const action = String(input.action)
@@ -3107,7 +3183,7 @@ export const register: Register = (on, options) => {
       if (open.length === 0) return { result: 'No pending handovers.' }
       return {
         result: open.map(h =>
-          `#${h.pr} ${h.status}: "${h.title}" branch ${h.branch} head ${h.head} | report_to: ${h.reportTo} | verified: ${h.verified} | evidence: ${evidenceText(h.evidence)} | pending decisions: ${h.pending} | after deploy: ${h.afterDeploy}`,
+          `#${h.pr} ${h.status}: "${h.title}" branch ${h.branch} head ${h.head} | report_to: ${h.reportTo} | verified: ${h.verified} | evidence: ${evidenceText(h.evidence)} | pending decisions: ${h.pending} | after deploy: ${h.afterDeploy}${h.release === undefined ? '' : ` | release: ${h.release}`}`,
         ).join('\n'),
       }
     }

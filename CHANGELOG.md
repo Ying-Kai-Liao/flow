@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Release at merge: new settings `release` (`on`/`off`, default off), `release_files` and
+  `changelog_file`. With it on, workers add changelog lines under `## [Unreleased]` and never touch
+  the version; the merge queue calls the new `mcp__flow__release` tool once per batch, which cuts the
+  changelog, bumps the version files (patch, or the highest of the handover `release` field and the
+  `flow:minor` / `flow:major` labels) and returns the commit command; the queue commits "Release
+  x.y.z" and pushes. Worker, manager and queue prompts carry the rules when it is on. This repo turns
+  it on, so PRs here no longer bump `plugin.json`.
+
 ## [0.3.38] - 2026-10-10
 
 ### Changed
