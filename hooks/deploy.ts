@@ -76,7 +76,13 @@ export function decideGate(
 }
 
 export const withApproval = (ts: TargetState | undefined, qid: string, sha: string, at: number): TargetState =>
-  ({ ...(ts ?? {}), approval: { qid, sha, state: 'pending', at } })
+  // A new pending item supersedes an approved but not yet deployed sha, so its `due` goes too.
+  ({ ...withoutDue(ts), approval: { qid, sha, state: 'pending', at } })
+
+function withoutDue(ts: TargetState | undefined): TargetState {
+  const { due: _d, ...rest } = ts ?? {}
+  return rest
+}
 
 // The user's answer to an approval item: "deploy" approves its sha and makes a deploy-only run due,
 // anything else drops the approval and leaves the target behind.

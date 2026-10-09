@@ -312,3 +312,32 @@ test('a legacy deploy_command is one auto target: the gate goes', { options: { d
   expect(await deploy($, { action: 'gate', target: 'default', sha: 'abc1234' }, 'q1')).toBe('Go')
   expect(await deploy($, { action: 'list' })).toContain('default: mode auto')
 })
+
+test('a newer pending approval supersedes an approved one: due goes with it', () => {
+  const approved = applyAnswer(withApproval(undefined, 'q1', 'aaa', 1), 'deploy')
+  expect(approved.due).toBe(true)
+  const r = decideGate(approved, 'confirm', 'bbb', none)
+  expect(r.gate).toEqual({ kind: 'ask' })
+  const next = withApproval(r.state, 'q2', 'bbb', 2)
+  expect(next.due).toBeUndefined()
+  expect(next.approval).toMatchObject({ qid: 'q2', sha: 'bbb', state: 'pending' })
+  expect(renderList([{ name: 'production', mode: 'confirm' }], { targets: { production: next } }, {})).not.toContain('DUE')
+})
+
+const RULE_DEPLOY = [{ id: 'r1', match: '^Deploy production', answer: 'deploy', blocking: true, kinds: ['deploy'] }]
+const RULE_PLAIN = [{ id: 'r2', match: '^Deploy production', answer: 'deploy', blocking: true }]
+
+test('a standing rule naming the deploy kind answers the fresh approval item and the gate goes', { options: { deploy_targets: JSON.stringify(TARGETS), standing_answers: JSON.stringify(RULE_DEPLOY) } }, async ($, on) => {
+  const w = world(on)
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')).toBe('Go')
+  expect(inboxOf(w.files).items[0]).toMatchObject({ kind: 'deploy', state: 'answered', answer: 'deploy', answeredBy: 'standing answer', rule: 'r1' })
+  expect(stored(w.files).targets.production).toMatchObject({ approval: { state: 'approved', sha: 'abc1234' } })
+  await deploy($, { action: 'deployed', target: 'production', sha: 'abc1234', ok: true }, 'q1')
+  expect(stored(w.files).targets.production!.due).toBeUndefined()
+})
+
+test('a standing rule without kinds never answers a deploy approval', { options: { deploy_targets: JSON.stringify(TARGETS), standing_answers: JSON.stringify(RULE_PLAIN) } }, async ($, on) => {
+  const w = world(on)
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')).toContain('Awaits approval: q1')
+  expect(inboxOf(w.files).items[0]).toMatchObject({ state: 'open' })
+})

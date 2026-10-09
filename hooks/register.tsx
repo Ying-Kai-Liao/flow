@@ -959,7 +959,7 @@ async function releaseTarget($: EngineInterface, name: string): Promise<string> 
 }
 
 // mcp__flow__deploy. The gate is the one place that decides whether a target deploys in this batch.
-async function deployTool($: EngineInterface, input: Record<string, unknown>, isMain: boolean, caller: string): Promise<string> {
+async function deployTool($: EngineInterface, options: Record<string, unknown>, input: Record<string, unknown>, isMain: boolean, caller: string): Promise<string> {
   const action = String(input.action ?? 'list')
   const target = typeof input.target === 'string' ? input.target.trim() : ''
   const sha = typeof input.sha === 'string' ? input.sha.trim() : ''
@@ -1005,6 +1005,22 @@ async function deployTool($: EngineInterface, input: Record<string, unknown>, is
     return { inbox: r.inbox, out: r.q }
   })
   await withDeploys($, cur => ({ deploys: setTarget(cur, target, withApproval(cur.targets[target], q.id, sha, at)), out: undefined }))
+  // A standing rule answers the fresh item only if it names the deploy kind (matchRule skips it otherwise).
+  const { rules } = await loadRules($, options)
+  const m = matchRule(rules, q)
+  if (m !== undefined) {
+    const marked = await withInbox($, cur => {
+      const r = markAnswered(cur, q.id, m.answer, AUTO, at, m.rule.rid)
+      return { inbox: r.kind === 'ok' ? r.inbox : cur, out: r }
+    })
+    if (marked.kind === 'ok') {
+      await withDeploys($, cur => ({ deploys: setTarget(cur, target, applyAnswer(cur.targets[target], marked.answer)), out: undefined }))
+      await appendNote($, notesOwner(marked.q), `- ${await today($)} decision: "${q.id} ${q.question}: ${marked.answer}" (standing answer ${m.rule.rid})`)
+      await best($, 'logging an auto-answer', () => appendLog($, { event: 'auto-answer', owner: 'main', text: `${q.id} rule ${m.rule.rid}: ${marked.answer}` }))
+      if (isApprove(marked.answer)) return 'Go'
+      return `Held: standing answer ${m.rule.rid} said "${marked.answer}". Skip ${target} for this batch and go on with the next target.`
+    }
+  }
   void $.ui.toast(`Deploy ${target} awaits your approval: /flow inbox (${q.id})`)
   return `Awaits approval: ${q.id}. Skip ${target} for this batch and go on with the next target.`
 }
@@ -3547,7 +3563,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__flow__deploy' }, async ($, e) => {
     const isMain = e.agentId === undefined
     const caller = isMain ? 'main' : await ownerNameOf($, e.agentId!)
-    return { result: await deployTool($, e as unknown as Record<string, unknown>, isMain, caller) }
+    return { result: await deployTool($, options, e as unknown as Record<string, unknown>, isMain, caller) }
   })
 
   on('tool.call', { tool: 'mcp__flow__status' }, async ($, e) => {
