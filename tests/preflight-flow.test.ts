@@ -250,3 +250,51 @@ test('mcp__flow__session start by a gated manager is refused', async ($, on) => 
   expect(r).toContain('Refused')
   expect(r).toContain('mcp__flow__preflight')
 })
+
+const REPO_RULES = '/r/.git/.claude/flow.json'
+const setRules = (w: { files: Map<string, string> }, ...r: Array<Record<string, unknown>>) =>
+  w.files.set(REPO_RULES, JSON.stringify({ standing_answers: r }))
+const storedItems = (w: { files: Map<string, string> }) =>
+  (JSON.parse(w.files.get(`${DIR}/inbox.json`) ?? '{"items":[]}') as { items: Array<Record<string, unknown>> }).items
+const inboxText = ($: Dollar) => $.command.run({ command: 'flow', args: 'inbox' } as never).then(r => r.text ?? '')
+
+test('a pre-flight question a standing rule matches is answered, left out of the round and the gate', async ($, on) => {
+  const w = world(on)
+  setRules(w, { id: 'r1', topic: 'format', answer: 'tsv', blocking: true })
+  await manager($, 'csv')
+  await manager($, 'login')
+  const qs = [{ ...BLOCK, topic: 'format' }, { ...BLOCK, question: 'Other?' }]
+  const r = await file($, 'a1', { questions: qs })
+  expect(r).toContain('blocking question(s) q2.')
+  expect(r).toContain('q1 by standing answer r1: tsv')
+  expect(storedItems(w)[0]).toMatchObject({ id: 'q1', state: 'answered', answer: 'tsv', answeredBy: 'standing answer', rule: 'r1' })
+  const notes = () => w.files.get(`${DIR}/managers/csv/notes.md`) ?? ''
+  expect(notes()).toContain('decision: "q1 Which format?: tsv" (standing answer r1)')
+
+  // Filing again matches nothing new: no second note.
+  await file($, 'a1', { questions: qs })
+  expect((notes().match(/standing answer r1/g) ?? []).length).toBe(1)
+
+  // The round counts only the other question; the gate holds on it alone and releases when it is answered.
+  await file($, 'a2')
+  await w.clock.advance(5)
+  expect(w.submitted[0]!.split('\n')[0]).toContain('1 question (1 blocking)')
+  expect(w.submitted[0]).not.toContain('Which format?')
+  expect(await worker($, 'a1')).toContain('q2')
+  await answer($, { answers: [{ id: 'q2', choice: 'a' }] })
+  expect(await worker($, 'a1')).not.toContain('pre-flight')
+  const text = await inboxText($)
+  expect(text).toContain('Auto-answered')
+  expect(text).toContain('q1 csv: Which format? -> tsv (rule r1)')
+})
+
+test('a pre-flight whose only blocking question matches a rule is not gated', async ($, on) => {
+  const w = world(on)
+  setRules(w, { id: 'r1', match: 'which format', answer: 'csv', blocking: true })
+  await manager($, 'csv')
+  const r = await file($, 'a1', { questions: [BLOCK] })
+  expect(r).toContain('Start your workers now')
+  expect(r).toContain('q1 by standing answer r1: csv')
+  expect(await worker($, 'a1')).not.toContain('pre-flight')
+  expect(storedItems(w)[0]).toMatchObject({ state: 'answered' })
+})

@@ -862,6 +862,37 @@ async function loadRules($: EngineInterface, options: Record<string, unknown>): 
   return { rules: Array.isArray(raw) ? raw as Resolved[] : [], paths }
 }
 
+type AutoHits = Map<string, { answer: string; rid: string }>
+
+// The standing-answer check shared by ask and pre-flight: a fresh question that a rule matches is marked
+// answered in the same write, so it has an id and history. Returns the inbox, the stored questions as they
+// are now, and which ones a rule answered.
+function autoAnswer(cur: Inbox, r: ReturnType<typeof addQuestions>, rules: Resolved[], at: number) {
+  let next = r.added.some(a => a.fresh) ? r.inbox : cur
+  const hits: AutoHits = new Map()
+  for (const { q, fresh } of r.added) {
+    const m = fresh ? matchRule(rules, q) : undefined
+    if (m === undefined) continue
+    const marked = markAnswered(next, q.id, m.answer, AUTO, at, m.rule.rid)
+    if (marked.kind !== 'ok') continue
+    next = marked.inbox
+    hits.set(q.id, { answer: marked.answer, rid: m.rule.rid })
+  }
+  const added = r.added.map(a => ({ ...a, q: next.items.find(x => x.id === a.q.id) ?? a.q }))
+  return { inbox: next, added, hits }
+}
+
+// The decision note and auto-answer log event for each question a rule answered.
+async function recordAutoAnswers($: EngineInterface, added: Array<{ q: Question }>, hits: AutoHits, agent: string): Promise<void> {
+  const date = await today($)
+  for (const { q } of added) {
+    const hit = hits.get(q.id)
+    if (hit === undefined) continue
+    await appendNote($, notesOwner(q), `- ${date} decision: "${q.id} ${q.question}: ${hit.answer}" (standing answer ${hit.rid})`)
+    await best($, 'logging an auto-answer', () => appendLog($, { event: 'auto-answer', owner: noteKey(notesOwner(q)), agent, text: `${q.id} rule ${hit.rid}: ${hit.answer}` }))
+  }
+}
+
 // Rule file changes run one after another: two `always` answers at once must not lose a rule.
 let rulesChain: Promise<unknown> = Promise.resolve()
 function inRulesChain<T>(fn: () => Promise<T>): Promise<T> {
@@ -3116,30 +3147,14 @@ export const register: Register = (on, options) => {
     // answered in the same write (so it has an id and history); the result line tells the asker.
     const { rules } = await loadRules($, options)
     const { added, auto } = await withInbox($, cur => {
-      const r = addQuestions(cur, { name, id: e.agentId, isManager: me?.type === MANAGER }, addressee, parsed.questions, at)
-      let next = r.added.some(a => a.fresh) ? r.inbox : cur
-      const hits = new Map<string, { answer: string; rid: string }>()
-      for (const { q, fresh } of r.added) {
-        const m = fresh ? matchRule(rules, q) : undefined
-        if (m === undefined) continue
-        const marked = markAnswered(next, q.id, m.answer, AUTO, at, m.rule.rid)
-        if (marked.kind !== 'ok') continue
-        next = marked.inbox
-        hits.set(q.id, { answer: marked.answer, rid: m.rule.rid })
-      }
-      const done = r.added.map(a => ({ ...a, q: next.items.find(x => x.id === a.q.id) ?? a.q }))
-      return { inbox: next, out: { added: done, auto: hits } }
+      const r = autoAnswer(cur, addQuestions(cur, { name, id: e.agentId, isManager: me?.type === MANAGER }, addressee, parsed.questions, at), rules, at)
+      return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
     })
+    await recordAutoAnswers($, added, auto, name)
     const date = await today($)
     for (const { q, fresh } of added) {
-      const hit = auto.get(q.id)
-      if (hit !== undefined) {
-        await appendNote($, notesOwner(q), `- ${date} decision: "${q.id} ${q.question}: ${hit.answer}" (standing answer ${hit.rid})`)
-        await best($, 'logging an auto-answer', () => appendLog($, { event: 'auto-answer', owner: noteKey(notesOwner(q)), agent: name, text: `${q.id} rule ${hit.rid}: ${hit.answer}` }))
-        continue
-      }
       const owner = notesOwner(q)
-      if (fresh && !q.blocking && owner !== 'main') {
+      if (fresh && !auto.has(q.id) && !q.blocking && owner !== 'main') {
         await appendNote($, owner, `- ${date} progress: assumed ${q.default} for ${q.id}: ${q.question}`)
       }
     }
@@ -3174,11 +3189,24 @@ export const register: Register = (on, options) => {
     if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error} To file: ${FILE_HELP}.` }
     const name = me.name ?? (String(input.from ?? '').trim() || 'unknown')
     const at = await $.clock.now()
-    const added = parsed.questions.length === 0 ? [] : await withInbox($, cur => {
-      const r = addQuestions(cur, { name, id: e.agentId, isManager: true }, 'main', parsed.questions, at)
-      return { inbox: r.added.some(a => a.fresh) ? r.inbox : cur, out: r.added }
+    // Same standing-answer check as ask: a fresh question a rule matches is answered at once, so it is not
+    // open, never gates the manager and stays out of the round.
+    const { rules } = await loadRules($, options)
+    // A filing is often sent again whole, and an answered question no longer dedupes in addQuestions: one a
+    // rule already answered for this manager is reported again, not stored again.
+    const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase()
+    const { added, auto, earlier } = parsed.questions.length === 0 ? { added: [], auto: new Map() as AutoHits, earlier: [] as string[] } : await withInbox($, cur => {
+      const before = (text: string) => cur.items.find(x => x.owner === name && x.state === 'answered' && x.answeredBy === AUTO && norm(x.question) === norm(text))
+      const fresh = parsed.questions.filter(a => before(a.question) === undefined)
+      const earlier = parsed.questions.flatMap(a => { const x = before(a.question); return x === undefined ? [] : [`${x.id} by standing answer ${x.rule ?? '?'}: ${x.answer ?? ''}`] })
+      const r = autoAnswer(cur, addQuestions(cur, { name, id: e.agentId, isManager: true }, 'main', fresh, at), rules, at)
+      return { inbox: r.inbox, out: { added: r.added, auto: r.hits, earlier } }
     })
-    const ids = { asked: added.map(a => a.q.id), blocking: added.filter(a => a.q.blocking).map(a => a.q.id) }
+    await recordAutoAnswers($, added, auto, name)
+    const kept = added.filter(a => !auto.has(a.q.id))
+    const ids = { asked: kept.map(a => a.q.id), blocking: kept.filter(a => a.q.blocking).map(a => a.q.id) }
+    const answered = [...earlier, ...added.filter(a => auto.has(a.q.id)).map(a => `${a.q.id} by standing answer ${auto.get(a.q.id)!.rid}: ${auto.get(a.q.id)!.answer}`)]
+    const answeredLine = answered.length > 0 ? ` Answered by standing answer, carry on from them: ${answered.join('; ')}.` : ''
     const late = await withPreflight($, cur => {
       const f = followUp(recordFiling(cur, name, parsed.filing, ids, at), name)
       return { state: f.state, out: f.send ? f.state : undefined }
@@ -3190,8 +3218,8 @@ export const register: Register = (on, options) => {
     await preflightTick($, rows)
     return {
       result: ids.blocking.length === 0
-        ? `Pre-flight filed. Start your workers now.${ids.asked.length > 0 ? ` Your non-blocking question(s) ${ids.asked.join(', ')} are with main: go on the defaults, say so in your PRs; you get a message if an answer differs.` : ''}`
-        : `Pre-flight filed with blocking question(s) ${ids.blocking.join(', ')}. End your turn now: main answers once for all managers and the answers arrive by message. Then start workers.`,
+        ? `Pre-flight filed. Start your workers now.${answeredLine}${ids.asked.length > 0 ? ` Your non-blocking question(s) ${ids.asked.join(', ')} are with main: go on the defaults, say so in your PRs; you get a message if an answer differs.` : ''}`
+        : `Pre-flight filed with blocking question(s) ${ids.blocking.join(', ')}. End your turn now: main answers once for all managers and the answers arrive by message. Then start workers.${answeredLine}`,
     }
   })
 
