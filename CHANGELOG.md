@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.36] - 2026-10-10
+
+### Changed
+
+- Questions filed in a pre-flight go through the standing-answer rules like `mcp__flow__ask`: a fresh
+  question a rule matches is stored and answered at once (decision note and `auto-answer` log event as
+  for ask), shows under Auto-answered, stays out of the round and never gates the manager. The result
+  names the answered ids, their rule and answer. A filing sent again does not store them twice, and a
+  question the manager already had answered (by a rule or by main) is reported as already answered
+  instead of being asked again.
+
 ## [0.3.35] - 2026-10-10
 
 ### Fixed
