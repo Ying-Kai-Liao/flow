@@ -391,10 +391,17 @@ test('a lock naming an ancestor of the plugin process counts as this session; an
   expect(selectCleanup(inputs({ wts: off, ownPids: ours, oldLocks: old })).remove.worktrees).toEqual([])
 })
 
-test('ancestorPids walks up to pid 1, stops on a repeat and on a failed lookup', async () => {
-  const parents: Record<number, number> = { 900: 800, 800: 33643, 33643: 1 }
-  expect([...(await ancestorPids(900, async p => parents[p]))]).toEqual([900, 800, 33643])
-  expect([...(await ancestorPids(5, async () => 5))]).toEqual([5])
-  expect([...(await ancestorPids(5, async () => undefined))]).toEqual([5])
-  expect([...(await ancestorPids(NaN, async () => 1))]).toEqual([])
+test('ancestorPids stops at the nearest claude, inclusive; none found is empty', async () => {
+  const table: Record<number, { ppid: number; comm: string }> = {
+    900: { ppid: 800, comm: 'node' }, 800: { ppid: 700, comm: '/usr/local/bin/claude' }, 700: { ppid: 600, comm: 'zsh' },
+    600: { ppid: 500, comm: 'claude' }, 500: { ppid: 1, comm: 'zsh' },
+  }
+  const step = async (p: number) => table[p]
+  // Nested claude: the outer one (600) and the shell above it are not ours.
+  expect([...(await ancestorPids(900, step))]).toEqual([900, 800])
+  expect([...(await ancestorPids(700, step))]).toEqual([700, 600])
+  expect([...(await ancestorPids(500, step))]).toEqual([])
+  expect([...(await ancestorPids(5, async p => ({ ppid: p, comm: 'sh' })))]).toEqual([])
+  expect([...(await ancestorPids(5, async () => undefined))]).toEqual([])
+  expect([...(await ancestorPids(NaN, step))]).toEqual([])
 })

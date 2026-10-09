@@ -2218,13 +2218,13 @@ async function gatherClean($: EngineInterface, base: string): Promise<CleanGathe
     if (log.exitCode === 0) contained[sha] = log.stdout.split('\n').filter(Boolean)
   }
   partial.contained = contained
-  // The lock names the Claude process; the plugin's runner may sit below it, so the whole chain of
-  // ancestors counts as this session. Works with an empty roster (after a reload): an agent absent
+  // The lock names the Claude process; the plugin's runner may sit below it, so the chain up to the
+  // nearest claude process counts as this session. Works with an empty roster (after a reload): an agent absent
   // from it is judged by its lock's age. An unreadable chain means no lock is broken.
   const own = await ancestorPids(Number((await run(['sh', '-c', 'echo $PPID'])).stdout.trim()), async pid => {
-    const r = await run(['ps', '-o', 'ppid=', '-p', String(pid)])
-    const n = Number(r.stdout.trim())
-    return r.exitCode === 0 && Number.isInteger(n) ? n : undefined
+    const r = await run(['ps', '-o', 'ppid=,comm=', '-p', String(pid)])
+    const m = /^\s*(\d+)\s+(.*)$/.exec(r.stdout.trim())
+    return r.exitCode === 0 && m ? { ppid: Number(m[1]), comm: m[2]! } : undefined
   })
   if (own.size > 0) {
     partial.ownPids = own

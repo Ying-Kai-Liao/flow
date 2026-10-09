@@ -331,14 +331,19 @@ export function leftoverLine(c: { worktrees: number; branches: number; needsLook
   return `${parts.join(' · ')} · /flow clean`
 }
 
-// The ancestors of `start`, itself included, walked up with `parentOf` (undefined when ps fails)
-// until pid 1, a repeat or `max` steps.
-export async function ancestorPids(start: number, parentOf: (pid: number) => Promise<number | undefined>, max = 12): Promise<Set<number>> {
+// This session's pids: `start` and its ancestors up to and including the nearest `claude` process,
+// walked with `step` (undefined when ps fails). A chain that meets no claude within `max` steps,
+// pid 1 or a repeat is not trusted: empty. Stopping at the nearest one keeps a nested claude from
+// claiming the locks of the session whose shell it runs in.
+export async function ancestorPids(start: number, step: (pid: number) => Promise<{ ppid: number; comm: string } | undefined>, max = 12): Promise<Set<number>> {
   const out = new Set<number>()
   let pid: number | undefined = start
   for (let n = 0; n < max && pid !== undefined && Number.isInteger(pid) && pid > 1 && !out.has(pid); n++) {
     out.add(pid)
-    pid = await parentOf(pid)
+    const r = await step(pid)
+    if (r === undefined) break
+    if (r.comm.trim().split('/').pop() === 'claude') return out
+    pid = r.ppid
   }
-  return out
+  return new Set()
 }
