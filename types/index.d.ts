@@ -18,6 +18,8 @@ export type Activity = {
   answer?: string
   // The latest turn.step's context fill; absent until the agent has taken one.
   usage?: { tokens: number; model: string }
+  // When the plugin told this agent to hand off; once per agent.
+  handoffNotifiedAt?: number
 }
 
 // A PR a manager handed to the merge queue (the handover tool), and what the queue did with it.
