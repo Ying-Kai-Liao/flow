@@ -1,10 +1,13 @@
 # flow
 
-The orca-flow pattern inside one Claude Code session, with nothing else installed: no Orca, no
-tmux. You talk to the main session; it runs the work through managers, workers and one merge
-queue, and a pane shows the whole tree. When Orca or tmux is there, a manager can also run a
-worker in another harness (Codex, Gemini, OpenCode, Claude on its own, or any CLI) in a terminal
-you can watch.
+Standalone orchestration for software development, as a Claude Code plugin. Hand Claude Code a
+batch of tasks and it runs them through managers, workers that each build in a git worktree of
+their own, and one merge queue, all inside your session. Nothing else to install.
+
+Your attention goes only to decisions: one pre-flight round of questions before work starts, a
+decision inbox, and standing answers for what you would answer the same way again. Every PR
+carries proof it was verified, a `## Verification` section, and risky PRs wait for your approval
+(merge mode `confirm` or the `flow:confirm` label).
 
 ```
 you ── main session (super manager)
@@ -15,6 +18,27 @@ you ── main session (super manager)
          │     └── worker: redirect-fix
          └── merge queue                  merges handed-over PRs, runs the full check, deploys
 ```
+
+## Quick start
+
+In a Claude Code session:
+
+```
+/plugin install flow --marketplace Ying-Kai-Liao/flow
+```
+
+Then ask for work in the main session, for example:
+
+```
+Add CSV export to the reports page, and fix the login redirect loop.
+```
+
+Open `/flow` to watch the managers and workers, and answer the questions that reach you. For one
+change, "start a worker to fix X" is enough.
+
+## How it works
+
+Sections below, in order: roles, dependencies, what you see, pre-flight, questions and the inbox, continuing work, merge mode, cleanup, guards, deploying, verification, workers in other harnesses.
 
 ## Roles
 
@@ -103,6 +127,79 @@ add login-redirect  after: csv-export
 - **The status line**: `flow: 2 managers · 3 workers · queue: 1 PR · /flow`.
 - **Toasts** when an agent finishes, asks a question, or a PR merges or comes back.
 
+## Pre-flight
+
+Before any worker starts, each manager looks over its task and files what it found, so most
+interruptions come before you leave.
+
+- A manager reads the code at the base, `git log` and open PRs (Explore and general-purpose
+  subagents are allowed, no workers) and calls `mcp__flow__preflight`: `from`, `summary`,
+  `criteria`, `shipped` (work that already exists), `depends` (other tasks it needs), optional
+  `workers` estimate and `questions` in the `ask` shape. Filing again replaces the filing.
+- **The gate**: until a manager has filed, and while a blocking question of its filing is open,
+  the plugin refuses its `flow:worker` starts and `mcp__flow__session` starts. Answering with
+  `mcp__flow__answer` (choices or `defaults: true`) releases it. A manager with only
+  non-blocking questions starts at once on the defaults.
+- **The round**: managers started together form one round. When all have filed, skipped or
+  ended, or after `preflight_wait` minutes, the main session gets one message, "Pre-flight: 15
+  tasks, 2 already shipped, 3 depend on others, 6 questions", with each task's criteria and
+  findings and the numbered questions. You answer once. Managers still in recon at the timeout
+  follow as "Pre-flight (late): ...".
+- `/flow preflight` shows the open or latest round; `mcp__flow__status` shows the phase.
+- **Skip**: a line `Pre-flight: skip` in a manager's prompt exempts it (the main session uses it
+  for a single small change). With `preflight` off, nothing is gated.
+- Settings: `preflight` (`on`/`off`, default on) and `preflight_wait` (minutes, default 10).
+  State is in `<git-common-dir>/flow/preflight.json`.
+
+## Questions and the inbox
+
+Questions reach you as one batched, numbered inbox instead of free-text reports.
+
+- An agent asks with `mcp__flow__ask` (`from` = its name, `questions`: each with `question`,
+  `options` (at least two), a recommended `default`, `blocking`, optional `context` and `topic`).
+  One call can carry a batch. A worker's questions reach its manager as one message, a manager's go to you; main cannot ask. Each
+  gets an id (`q7`); asking the same open question twice returns the existing id. They are kept in
+  `<git-common-dir>/flow/inbox.json`, so they survive restarts.
+- **Non-blocking**: the agent goes ahead on the default and says in its report or PR that it
+  assumed it; a message comes only if the answer differs. **Blocking**: it ends its turn and the
+  answer arrives by message.
+- `/flow inbox` lists what is open, numbered, grouped by owner, blocking first, with the options
+  (default marked), context and age. `status` and the Flow pane show the open inbox first. An agent
+  with an open blocking question shows as asking in the pane, the toasts and the task graph.
+- Answer with `mcp__flow__answer`: `answers: [{id, choice}]` where choice is the option text, its
+  letter or number, or free text; or `defaults: true` (optionally `ids`) to accept the defaults.
+  Only the addressee answers: your main session for managers' questions (tell it "defaults", "1 b,
+  3 defaults" or free text), a manager for its workers'. The answer is messaged to the asker and
+  recorded as a decision note. If the asker is gone, the result says undelivered and the main
+  session relays it to the successor (`<name>-2`).
+- A report whose last line ends in `?` still counts as a question, for agents that don't use the
+  tool. `decision_phrases` is deprecated.
+
+### Standing answers
+
+Answer a recurring question once. Give an inbox answer `always: true` (`answers: [{id, choice, always: true}]`;
+only main may) and flow adds a rule to your personal file, `<git-common-dir>/flow/config.json`: by the
+question's `topic` when it has one (agents are told to give recurring questions a stable kebab-case
+topic such as `version-bump`), else by the exact question text. From then on a fresh question that the
+rule matches is stored, marked answered at once (`answeredBy: "standing answer"`, the rule id on it)
+and the asker's `ask` result says so; nobody is messaged or toasted, and the decision goes to the notes
+and `log.jsonl` (`auto-answer`). `/flow inbox` lists the last 24 h under "Auto-answered" with the rule
+id to revoke.
+
+- A rule is `{id?, topic?, match?, answer, blocking?, from?, note?}` in the `standing_answers` list of a
+  settings file. `topic` equals the question's topic (any case); `match` is a case-insensitive regular
+  expression on the question text; with both, both must match. No fuzzy matching. `answer` must be one
+  of the new question's options (text, letter or number), else the rule does not apply and the question
+  goes to the inbox. `from` limits it to one asker (`foo-2` counts as `foo`). A blocking question is
+  answered only by a rule with `blocking: true`. A bad rule is dropped with a settings warning.
+- The personal file's rules come before the repo file's and both apply; the first match wins.
+  A rule without `id` is named by file and position: `personal:1`, `repo:2`. `always` makes `s1`,
+  `s2`, ...
+- `mcp__flow__standing` (main only): `list` shows each rule with its file, match, answer and use
+  count, and suggests rules for questions you answered the same way 3 or more times; `add`
+  (`topic` or `match`, `answer`, optional `blocking`, `from`) writes the personal file; `remove`
+  (`id`) removes a rule from whichever file holds it (a repo-file rule is a committed file).
+
 ## Continuing work
 
 **Handoff.** When a worker or manager reaches the limit (once per agent; the queue never gets it),
@@ -141,6 +238,130 @@ without a PR (merged or closed ones are skipped) and leftover worktrees with unc
 unpushed work, then has the main session start one `resume-<slug>` manager per task (up to `max_managers`
 at a time). Work owned by a live agent, or already resumed in this session, is not listed again.
 
+## Merge mode
+
+By default the queue merges every PR a manager hands over. Set `merge_mode` to `confirm` and it
+holds each one until you approve it. A PR's effective mode comes from, in order:
+
+1. Its labels: `flow:confirm` or `flow:auto` (with both, `confirm` wins).
+2. The `mode` the manager gave when handing it over (`mcp__flow__handover` takes `auto` or `confirm`;
+   the plugin adds the matching label, and a label that fails to apply is reported, not fatal).
+3. The `merge_mode` setting.
+
+Managers can only raise a PR to `confirm`: under a `confirm` setting a handover with mode `auto` is
+refused, so only you can add `flow:auto` there. Managers mark a PR `confirm` when it has database
+migrations or data rewrites, deploy/CI/infra config, auth/permissions/secrets, deletions of
+things users rely on, or irreversible operations.
+
+A PR waiting for you has status `awaiting`: no queue is started for it, and it shows in the pane,
+in `status` and in `/flow resume`. Run `/flow approve <n>` (yours only; it works on awaiting PRs
+and nothing else) to put it in the queue. The approval is tied to the head commit: if the
+branch moves and the manager hands it over again, you approve again. The queue re-reads the labels
+and head when it takes a PR; a PR still unapproved answers "Held:" and is skipped, and if `gh` fails
+the labels count as none, so it never merges something it could not check.
+
+## Cleanup
+
+Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
+`flow/*-N`, `worktree-agent-*`, anything else). Most PRs are squash-merged, so `git branch -d`
+does not see them as merged; the plugin judges each by ancestry and by the PR's head sha instead
+of by name.
+
+**What goes.** A worktree under `.claude/worktrees/` (never the main checkout) when its HEAD is on
+`origin/<base>`, or its branch has a merged PR whose head is HEAD (or contains it), or its branch's
+PR was closed and HEAD is pushed; and `git status` is empty apart from the untracked type links
+`types` and `.claude-plugin/types`; and no live agent works in it; and it is not locked, unless the
+lock names an agent that has ended or a process that is gone. It goes with `git worktree remove`
+(never `--force`), then `git worktree prune`; a directory already missing is pruned. A local
+branch when it is not checked out anywhere (a worktree removed in the same sweep doesn't count),
+is not the base, has no open PR, and its tip is on `origin/<base>` or is the head of a merged PR
+of that branch (or contained in it). It goes with `git branch -D`. Remote branches are never
+deleted: the queue's `gh pr merge --delete-branch` does that.
+
+**What stays, listed for a person.** Uncommitted changes (the files named), unpushed commits,
+locked worktrees, a closed PR's branch, a worktree or branch a live agent uses, an open PR's
+branch, and a handed-off worktree whose successor has not started yet. Nothing in that list is
+touched in any mode.
+
+**`/flow clean`** lists what would be removed and what is kept, and why; **`/flow clean --yes`**
+removes. The tool `clean` (`apply`, default false) does the same for agents. One `git fetch
+origin --prune` and one `gh pr list --state all` per sweep; when gh fails the sweep says so and
+goes by ancestry only. Every sweep that removed something adds a `clean` line to `log.jsonl`.
+
+**The automatic sweep** (`cleanup` = `auto`, the default) runs the same safe sweep in the
+background after each PR the queue marks done, and when a queue agent ends (its worktree, detached
+at the base, goes once the queue is gone). Never two sweeps at once; errors go to the log. With
+`cleanup` = `off` nothing runs by itself, the tool's `apply` runs dry and says so, and only
+`/flow clean --yes` removes. The pane and `status` show one dim line while there are leftovers,
+e.g. `3 leftover worktrees · 12 branches · 1 needs a look · /flow clean`, from a dry sweep
+refreshed with the PR list (every 5 minutes).
+
+## Guards
+
+The plugin's `tool.call` hook refuses three things for every agent of the flow, the main
+session included. A rule in a prompt can be skipped; a refused tool call can't.
+
+- **Managers don't edit code.** A manager's Edit, Write and NotebookEdit calls are refused; the
+  change goes into a worker's brief.
+- **No broad process kills.** `pkill` and `killall` in any form (on macOS, options after the
+  pattern become more patterns: `pkill -f X -n -u 501` once killed every session), `kill` of
+  pid `-1`, `0` or `1` or of a process group (a negative pid), and `kill` fed by `lsof` without
+  `-sTCP:LISTEN`. Every flow agent lives in this one Claude Code session, so a broad kill stops
+  the whole flow. `kill <pid>` stays allowed: find the pid with `lsof -i :PORT` or
+  `pgrep -fl <pattern>`.
+- **Nothing changes the main checkout.** Edit, Write and NotebookEdit aimed at the repo's main
+  checkout are refused, and so are obvious shell writes there: `>`/`>>` redirects, `tee`,
+  `sed -i`/`perl -i`, `cp`/`mv` targets, `rm`, `touch`, and git commands that change the
+  checkout (`commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `am`, `apply`, `reset`,
+  `restore`, `checkout`, `switch`, `stash`). Linked worktrees, `.git/`, files outside the repo
+  and `main_checkout_allow` stay writable; reading, `git fetch`, `git pull` and `gh` are not
+  touched. A shell command's relative paths are placed by the session's directory for the main
+  session and managers, and by any `cd` or `git -C` in the command; a worker's relative paths
+  land in its own worktree and pass. Turn it off with `main_checkout_guard`.
+
+## Deploying
+
+`deploy_targets` is an ordered list. Per target, the queue runs `backup` commands (every batch, checking their output is sane), then the `deploy` commands, then fetches `health_url` (retrying a few minutes) until it contains the short sha just pushed, then follows the free-text `verify` notes. It stops at the first failing target and reports it, e.g. `deployed: demo ✓, production ✗ at health: ...`. The PRs are already merged by then; they are marked done with the failure in the report.
+
+```json
+{
+  "deploy_targets": [
+    { "name": "demo", "deploy": ["./deploy.sh demo"], "health_url": "https://demo.example.com/health" },
+    { "name": "production", "backup": ["./scripts/backup.sh"], "deploy": ["./deploy.sh prod"],
+      "health_url": "https://example.com/health", "verify": ["check the error rate for 5 minutes"] }
+  ],
+  "state_file": { "path": "NOW.md", "keep": 10 }
+}
+```
+
+`state_file` (set it per repo, see Settings per repo): after deploying, the queue adds one entry at the top of the file (date, PRs with titles, deployed sha and targets, verified, not verified, pending decisions), moves entries beyond `keep` (default 10) to the end of the archive (default `<stem>-archive.md` next to it, oldest last), and commits and pushes "Status: <PRs> deployed <sha>" without deploying again. Workers are told never to edit it.
+
+After deploying, a PR whose `after_deploy` an agent can check gets a check-only worker (`<queue>-verify-<pr>`); one that needs a person is reported as `needs a person: PR #<n>: ...`. A PR's `pending` decisions go into the reports and the status entry as `pending decisions: PR #<n>: ...`.
+
+## Verification
+Ran:
+- `<command>`: pass (<short result, e.g. 42 tests>)
+Exercised: <how the change was run for real: app launched and what was seen, screenshot path, curl output, or "n/a: <reason>" for docs/prompt-only changes>
+Not verified:
+- <what you did not check>   (or one line "Not verified: none, because <reason>")
+```
+
+  `Ran` needs at least one entry and must include every `worker_checks` and `always_tests`
+  command (backticks optional). `Exercised` and `Not verified` must be non-empty; a bare
+  "Not verified: nothing" and a bare "n/a" are refused. The section is stored on the handover and
+  shown in `queue list`, in the queue's report, in the status file entry and in `status`.
+- `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
+- `plan`: dependencies between tasks or packages (see Dependencies).
+- `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
+- `preflight`: a manager files its pre-flight before starting workers (see Pre-flight).
+- `ask`: questions with options, a recommended default and `blocking` (see Questions and the inbox).
+- `answer`: answers inbox questions by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
+- `standing`: main only: list, add and remove standing answers.
+- `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
+  `text` it returns the notes.
+- `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.
+- `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`). See below.
+
 ## Workers in other harnesses
 
 A manager can run a worker outside this session, in any harness, with `mcp__flow__session`: when
@@ -159,7 +380,7 @@ built-in.
 | `list` | every session, its harness, host, state and worktree |
 | `stop` (name, remove_worktree?) | closes the terminal; removes the worktree only when it is clean and pushed |
 
-- **Where.** In an Orca terminal (`orca worktree create`, then `orca terminal create`) or a
+- **Where.** In an Orca terminal (Orca is a terminal and worktree app; `orca worktree create`, then `orca terminal create`) or a
   detached tmux session (`git worktree add` under `.claude/worktrees/`; watch it with
   `tmux attach -t flow-<name>`). `session_host` `auto` takes Orca when its runtime answers, else
   tmux; a manager can name one per worker.
@@ -223,170 +444,9 @@ built-in.
   Sessions live in this Claude Code session's memory: after a restart the terminals keep running,
   but their reports reach nobody; `/flow resume` picks up their branches like any other.
 
-## Questions and the inbox
+## Reference
 
-Questions reach you as one batched, numbered inbox instead of free-text reports.
-
-- An agent asks with `mcp__flow__ask` (`from` = its name, `questions`: each with `question`,
-  `options` (at least two), a recommended `default`, `blocking`, optional `context` and `topic`).
-  One call can carry a batch. A worker's questions reach its manager as one message, a manager's go to you; main cannot ask. Each
-  gets an id (`q7`); asking the same open question twice returns the existing id. They are kept in
-  `<git-common-dir>/flow/inbox.json`, so they survive restarts.
-- **Non-blocking**: the agent goes ahead on the default and says in its report or PR that it
-  assumed it; a message comes only if the answer differs. **Blocking**: it ends its turn and the
-  answer arrives by message.
-- `/flow inbox` lists what is open, numbered, grouped by owner, blocking first, with the options
-  (default marked), context and age. `status` and the Flow pane show the open inbox first. An agent
-  with an open blocking question shows as asking in the pane, the toasts and the task graph.
-- Answer with `mcp__flow__answer`: `answers: [{id, choice}]` where choice is the option text, its
-  letter or number, or free text; or `defaults: true` (optionally `ids`) to accept the defaults.
-  Only the addressee answers: your main session for managers' questions (tell it "defaults", "1 b,
-  3 defaults" or free text), a manager for its workers'. The answer is messaged to the asker and
-  recorded as a decision note. If the asker is gone, the result says undelivered and the main
-  session relays it to the successor (`<name>-2`).
-- A report whose last line ends in `?` still counts as a question, for agents that don't use the
-  tool. `decision_phrases` is deprecated.
-
-### Standing answers
-
-Answer a recurring question once. Give an inbox answer `always: true` (`answers: [{id, choice, always: true}]`;
-only main may) and flow adds a rule to your personal file, `<git-common-dir>/flow/config.json`: by the
-question's `topic` when it has one (agents are told to give recurring questions a stable kebab-case
-topic such as `version-bump`), else by the exact question text. From then on a fresh question that the
-rule matches is stored, marked answered at once (`answeredBy: "standing answer"`, the rule id on it)
-and the asker's `ask` result says so; nobody is messaged or toasted, and the decision goes to the notes
-and `log.jsonl` (`auto-answer`). `/flow inbox` lists the last 24 h under "Auto-answered" with the rule
-id to revoke.
-
-- A rule is `{id?, topic?, match?, answer, blocking?, from?, note?}` in the `standing_answers` list of a
-  settings file. `topic` equals the question's topic (any case); `match` is a case-insensitive regular
-  expression on the question text; with both, both must match. No fuzzy matching. `answer` must be one
-  of the new question's options (text, letter or number), else the rule does not apply and the question
-  goes to the inbox. `from` limits it to one asker (`foo-2` counts as `foo`). A blocking question is
-  answered only by a rule with `blocking: true`. A bad rule is dropped with a settings warning.
-- The personal file's rules come before the repo file's and both apply; the first match wins.
-  A rule without `id` is named by file and position: `personal:1`, `repo:2`. `always` makes `s1`,
-  `s2`, ...
-- `mcp__flow__standing` (main only): `list` shows each rule with its file, match, answer and use
-  count, and suggests rules for questions you answered the same way 3 or more times; `add`
-  (`topic` or `match`, `answer`, optional `blocking`, `from`) writes the personal file; `remove`
-  (`id`) removes a rule from whichever file holds it (a repo-file rule is a committed file).
-
-## Pre-flight
-
-Before any worker starts, each manager looks over its task and files what it found, so most
-interruptions come before you leave.
-
-- A manager reads the code at the base, `git log` and open PRs (Explore and general-purpose
-  subagents are allowed, no workers) and calls `mcp__flow__preflight`: `from`, `summary`,
-  `criteria`, `shipped` (work that already exists), `depends` (other tasks it needs), optional
-  `workers` estimate and `questions` in the `ask` shape. Filing again replaces the filing.
-- **The gate**: until a manager has filed, and while a blocking question of its filing is open,
-  the plugin refuses its `flow:worker` starts and `mcp__flow__session` starts. Answering with
-  `mcp__flow__answer` (choices or `defaults: true`) releases it. A manager with only
-  non-blocking questions starts at once on the defaults.
-- **The round**: managers started together form one round. When all have filed, skipped or
-  ended, or after `preflight_wait` minutes, the main session gets one message, "Pre-flight: 15
-  tasks, 2 already shipped, 3 depend on others, 6 questions", with each task's criteria and
-  findings and the numbered questions. You answer once. Managers still in recon at the timeout
-  follow as "Pre-flight (late): ...".
-- `/flow preflight` shows the open or latest round; `mcp__flow__status` shows the phase.
-- **Skip**: a line `Pre-flight: skip` in a manager's prompt exempts it (the main session uses it
-  for a single small change). With `preflight` off, nothing is gated.
-- Settings: `preflight` (`on`/`off`, default on) and `preflight_wait` (minutes, default 10).
-  State is in `<git-common-dir>/flow/preflight.json`.
-
-## Cleanup
-
-Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
-`flow/*-N`, `worktree-agent-*`, anything else). Most PRs are squash-merged, so `git branch -d`
-does not see them as merged; the plugin judges each by ancestry and by the PR's head sha instead
-of by name.
-
-**What goes.** A worktree under `.claude/worktrees/` (never the main checkout) when its HEAD is on
-`origin/<base>`, or its branch has a merged PR whose head is HEAD (or contains it), or its branch's
-PR was closed and HEAD is pushed; and `git status` is empty apart from the untracked type links
-`types` and `.claude-plugin/types`; and no live agent works in it; and it is not locked, unless the
-lock names an agent that has ended or a process that is gone. It goes with `git worktree remove`
-(never `--force`), then `git worktree prune`; a directory already missing is pruned. A local
-branch when it is not checked out anywhere (a worktree removed in the same sweep doesn't count),
-is not the base, has no open PR, and its tip is on `origin/<base>` or is the head of a merged PR
-of that branch (or contained in it). It goes with `git branch -D`. Remote branches are never
-deleted: the queue's `gh pr merge --delete-branch` does that.
-
-**What stays, listed for a person.** Uncommitted changes (the files named), unpushed commits,
-locked worktrees, a closed PR's branch, a worktree or branch a live agent uses, an open PR's
-branch, and a handed-off worktree whose successor has not started yet. Nothing in that list is
-touched in any mode.
-
-**`/flow clean`** lists what would be removed and what is kept, and why; **`/flow clean --yes`**
-removes. The tool `clean` (`apply`, default false) does the same for agents. One `git fetch
-origin --prune` and one `gh pr list --state all` per sweep; when gh fails the sweep says so and
-goes by ancestry only. Every sweep that removed something adds a `clean` line to `log.jsonl`.
-
-**The automatic sweep** (`cleanup` = `auto`, the default) runs the same safe sweep in the
-background after each PR the queue marks done, and when a queue agent ends (its worktree, detached
-at the base, goes once the queue is gone). Never two sweeps at once; errors go to the log. With
-`cleanup` = `off` nothing runs by itself, the tool's `apply` runs dry and says so, and only
-`/flow clean --yes` removes. The pane and `status` show one dim line while there are leftovers,
-e.g. `3 leftover worktrees · 12 branches · 1 needs a look · /flow clean`, from a dry sweep
-refreshed with the PR list (every 5 minutes).
-
-## Merge mode
-
-By default the queue merges every PR a manager hands over. Set `merge_mode` to `confirm` and it
-holds each one until you approve it. A PR's effective mode comes from, in order:
-
-1. Its labels: `flow:confirm` or `flow:auto` (with both, `confirm` wins).
-2. The `mode` the manager gave when handing it over (`mcp__flow__handover` takes `auto` or `confirm`;
-   the plugin adds the matching label, and a label that fails to apply is reported, not fatal).
-3. The `merge_mode` setting.
-
-Managers can only raise a PR to `confirm`: under a `confirm` setting a handover with mode `auto` is
-refused, so only you can add `flow:auto` there. Managers mark a PR `confirm` when it has database
-migrations or data rewrites, deploy/CI/infra config, auth/permissions/secrets, deletions of
-things users rely on, or irreversible operations.
-
-A PR waiting for you has status `awaiting`: no queue is started for it, and it shows in the pane,
-in `status` and in `/flow resume`. Run `/flow approve <n>` (yours only; it works on awaiting PRs
-and nothing else) to put it in the queue. The approval is tied to the head commit: if the
-branch moves and the manager hands it over again, you approve again. The queue re-reads the labels
-and head when it takes a PR; a PR still unapproved answers "Held:" and is skipped, and if `gh` fails
-the labels count as none, so it never merges something it could not check.
-
-## Guards
-
-The plugin's `tool.call` hook refuses three things for every agent of the flow, the main
-session included. A rule in a prompt can be skipped; a refused tool call can't.
-
-- **Managers don't edit code.** A manager's Edit, Write and NotebookEdit calls are refused; the
-  change goes into a worker's brief.
-- **No broad process kills.** `pkill` and `killall` in any form (on macOS, options after the
-  pattern become more patterns: `pkill -f X -n -u 501` once killed every session), `kill` of
-  pid `-1`, `0` or `1` or of a process group (a negative pid), and `kill` fed by `lsof` without
-  `-sTCP:LISTEN`. Every flow agent lives in this one Claude Code session, so a broad kill stops
-  the whole flow. `kill <pid>` stays allowed: find the pid with `lsof -i :PORT` or
-  `pgrep -fl <pattern>`.
-- **Nothing changes the main checkout.** Edit, Write and NotebookEdit aimed at the repo's main
-  checkout are refused, and so are obvious shell writes there: `>`/`>>` redirects, `tee`,
-  `sed -i`/`perl -i`, `cp`/`mv` targets, `rm`, `touch`, and git commands that change the
-  checkout (`commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `am`, `apply`, `reset`,
-  `restore`, `checkout`, `switch`, `stash`). Linked worktrees, `.git/`, files outside the repo
-  and `main_checkout_allow` stay writable; reading, `git fetch`, `git pull` and `gh` are not
-  touched. A shell command's relative paths are placed by the session's directory for the main
-  session and managers, and by any `cd` or `git -C` in the command; a worker's relative paths
-  land in its own worktree and pass. Turn it off with `main_checkout_guard`.
-
-## Install
-
-In a Claude Code session:
-
-```
-/plugin install flow --marketplace Ying-Kai-Liao/flow
-```
-
-Then ask for work: "start managers for these three tasks: …", or for one change, "start a
-worker to fix X".
+Sections below: settings, tools the agents use, the test lock, state on disk, limits, develop it.
 
 ## Settings
 
@@ -459,25 +519,6 @@ An unknown key, bad JSON or a wrong type is a warning (shown as a toast) and the
 
 The files are checked every few seconds by modification time. New settings apply to agents started afterwards; running agents keep their prompts.
 
-## Deploying
-
-`deploy_targets` is an ordered list. Per target, the queue runs `backup` commands (every batch, checking their output is sane), then the `deploy` commands, then fetches `health_url` (retrying a few minutes) until it contains the short sha just pushed, then follows the free-text `verify` notes. It stops at the first failing target and reports it, e.g. `deployed: demo ✓, production ✗ at health: ...`. The PRs are already merged by then; they are marked done with the failure in the report.
-
-```json
-{
-  "deploy_targets": [
-    { "name": "demo", "deploy": ["./deploy.sh demo"], "health_url": "https://demo.example.com/health" },
-    { "name": "production", "backup": ["./scripts/backup.sh"], "deploy": ["./deploy.sh prod"],
-      "health_url": "https://example.com/health", "verify": ["check the error rate for 5 minutes"] }
-  ],
-  "state_file": { "path": "NOW.md", "keep": 10 }
-}
-```
-
-`state_file` (set it per repo, see Settings per repo): after deploying, the queue adds one entry at the top of the file (date, PRs with titles, deployed sha and targets, verified, not verified, pending decisions), moves entries beyond `keep` (default 10) to the end of the archive (default `<stem>-archive.md` next to it, oldest last), and commits and pushes "Status: <PRs> deployed <sha>" without deploying again. Workers are told never to edit it.
-
-After deploying, a PR whose `after_deploy` an agent can check gets a check-only worker (`<queue>-verify-<pr>`); one that needs a person is reported as `needs a person: PR #<n>: ...`. A PR's `pending` decisions go into the reports and the status entry as `pending decisions: PR #<n>: ...`.
-
 ## Tools the agents use
 
 - `handover`: a manager hands a reviewed PR over; the plugin records its head and starts
@@ -487,30 +528,6 @@ After deploying, a PR whose `after_deploy` an agent can check gets a check-only 
   expected format. Fix with `gh pr edit <n> --body-file <file>` and call again. The format:
 
 ```
-## Verification
-Ran:
-- `<command>`: pass (<short result, e.g. 42 tests>)
-Exercised: <how the change was run for real: app launched and what was seen, screenshot path, curl output, or "n/a: <reason>" for docs/prompt-only changes>
-Not verified:
-- <what you did not check>   (or one line "Not verified: none, because <reason>")
-```
-
-  `Ran` needs at least one entry and must include every `worker_checks` and `always_tests`
-  command (backticks optional). `Exercised` and `Not verified` must be non-empty; a bare
-  "Not verified: nothing" and a bare "n/a" are refused. The section is stored on the handover and
-  shown in `queue list`, in the queue's report, in the status file entry and in `status`.
-- `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
-- `plan`: dependencies between tasks or packages (see Dependencies).
-- `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
-- `preflight`: a manager files its pre-flight before starting workers (see Pre-flight).
-- `ask`: questions with options, a recommended default and `blocking` (see Questions and the inbox).
-- `answer`: answers inbox questions by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
-- `standing`: main only: list, add and remove standing answers.
-- `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
-  `text` it returns the notes.
-- `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.
-- `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`). See below.
-
 ## The test lock
 
 Six worktrees running the whole suite at once can exhaust memory and time out the real check.

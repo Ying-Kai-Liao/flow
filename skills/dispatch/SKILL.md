@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: Run work through flow's managers and workers in this session. The main session is the super manager - it starts one flow:manager per task; managers start flow:worker agents in their own worktrees and hand PRs to the flow merge queue. Use when the user hands over several tasks, wants work done in parallel or in worktrees ("start a manager", "start workers", "fix X in a worktree"), asks what the managers or workers are doing, or says "merge and deploy". Not for work the user runs through Orca terminals and worktrees: that is the orca-flow skill.
+description: Run work through flow's managers and workers in this session. The main session is the super manager - it starts one flow:manager per task; managers start flow:worker agents in their own worktrees and hand PRs to the flow merge queue. Use when the user hands over several tasks, wants work done in parallel or in worktrees ("start a manager", "start workers", "fix X in a worktree"), asks what the managers or workers are doing, or says "merge and deploy".
 ---
 
 # Super manager
