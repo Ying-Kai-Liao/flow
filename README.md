@@ -79,7 +79,6 @@ flow works with no setup. Most people set a few things in `.claude/flow.json` at
   "full_check_command": "pnpm check",
   "deploy_targets": [{ "name": "staging", "deploy": ["./deploy.sh staging"] }],
   "merge_mode": "confirm",
-  "worker_model": "sonnet",
   "max_workers": 3
 }
 ```
