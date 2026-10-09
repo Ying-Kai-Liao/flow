@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.10] - 2026-10-09
+
+### Added
+
+- Pane hotkeys `j`/`k`/`o`/`c`, a tree that stays usable with 10 to 20 managers (auto-collapse, `↑ N above`, `+N more`), and a pane that follows the agent whose chat is in view.
+
 ## [0.2.9] - 2026-10-09
 
 ### Changed
