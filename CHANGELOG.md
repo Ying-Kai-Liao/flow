@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing, unreadable or directories (naming each), and rewrites relative paths to absolute ones. The worker
   prompt reports `BLOCKED: attachment <path> could not be opened`; the dispatch skill passes user files to
   managers as paths.
+- Seeded standing answers: when no rule exists, `standing list` and main's first `status` call offer
+  three common rules as suggestions (`tracker`, `prod-env`, `conservative`); accept with
+  `standing add` and `seed`/`seeds`. Nothing is applied unasked.
+- Two rule forms: `escalate: true` (a matching question is never auto-answered, is recorded blocking
+  and flagged, and only main may answer it) and `answer: "default"` (a non-blocking question takes its
+  own default). The ask guidance names the stable topics `external-tracker` and `prod-env-change`.
 
 ### Fixed
 

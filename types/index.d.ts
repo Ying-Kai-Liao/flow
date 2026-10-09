@@ -217,6 +217,8 @@ export type Question = {
   rule?: string
   // A guard_tests suggestion (guardtests.ts): answering "Add it" writes this mapping to the personal config.
   guard?: { glob: string; test: string }
+  // An escalate standing rule holds it for the user: it is blocking and only main may answer it.
+  escalated?: string
 }
 
 export type Inbox = { next: number; items: Question[] }

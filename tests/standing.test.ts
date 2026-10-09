@@ -5,7 +5,7 @@ import type { TestBody } from 'claude-code/testing'
 import { addQuestions, EMPTY_INBOX, inboxHead, markAnswered, renderInbox } from '../hooks/inbox'
 import type { AskedQuestion, Inbox, Question } from '../hooks/inbox'
 import { mergeLayers } from '../hooks/settings'
-import { matchRule, nextRuleId, parseRules, removeRule, ruleFromQuestion, sameRule, suggest, validateRule } from '../hooks/standing'
+import { escalation, matchRule, nextRuleId, parseRules, removeRule, renderRules, ruleFromQuestion, sameRule, SEEDS, seedsToOffer, suggest, validateRule } from '../hooks/standing'
 import type { Resolved } from '../hooks/standing'
 
 type Dollar = Parameters<TestBody>[0]
@@ -378,4 +378,123 @@ test('status shows the auto-answered count line', async ($, on) => {
   await ask($, 'w1', [BUMP])
   const out = String((await $.tool.call({ tool: 'mcp__flow__status' } as never)).result)
   expect(out.startsWith('Inbox: 1 auto-answered')).toBe(true)
+})
+
+// ---- escalate, "default" and seeds ----
+
+test('validateRule: escalate takes no answer; "default" is normalised; old rules read back unchanged', () => {
+  const e = validateRule({ topic: 't', escalate: true })
+  expect('rule' in e && e.rule).toEqual({ topic: 't', escalate: true })
+  expect(validateRule({ topic: 't', escalate: true, answer: 'x' })).toEqual({ error: 'an escalate rule takes no answer' })
+  expect('error' in validateRule({ topic: 't', escalate: 'yes' })).toBe(true)
+  expect(validateRule({ topic: 't' })).toEqual({ error: 'needs an answer' })
+  expect(validateRule({ topic: 't', escalate: false })).toEqual({ error: 'needs an answer' })
+  const d = validateRule({ match: '.', answer: ' Default ' })
+  expect('rule' in d && d.rule.answer).toBe('default')
+  const warnings: string[] = []
+  expect(parseRules([{ topic: 'a', escalate: true, answer: 'x' }], 'repo', 'f', warnings)).toEqual([])
+  expect(warnings[0]).toContain('an escalate rule takes no answer')
+})
+
+test('matchRule: escalate beats every rule; "default" answers non-blocking questions only', () => {
+  const bump = q('Which bump?', { topic: 'version-bump' })
+  const blocking = q('Which bump?', { topic: 'version-bump', blocking: true })
+  const def = rules([{ match: '.', answer: 'default', blocking: true }])
+  expect(matchRule(def, bump)?.answer).toBe('patch')
+  expect(matchRule(def, blocking)).toBeUndefined()
+  const esc = rules([{ topic: 'version-bump', answer: 'minor' }, { topic: 'version-bump', escalate: true }])
+  expect(matchRule(esc, bump)).toBeUndefined()
+  expect(escalation(esc, blocking)?.rid).toBe('personal:2')
+  expect(escalation(esc, q('Other?', { topic: 'x' }))).toBeUndefined()
+  expect(matchRule(rules([{ topic: 'x', answer: 'minor' }]), bump)).toBeUndefined()
+})
+
+test('sameRule tells escalate from answer; renderRules describes the new forms', () => {
+  expect(sameRule({ topic: 't', escalate: true }, { topic: 't', escalate: true })).toBe(true)
+  expect(sameRule({ topic: 't', escalate: true }, { topic: 't', answer: 'a' })).toBe(false)
+  const out = renderRules(rules([{ topic: 't', escalate: true }, { match: '.', answer: 'default' }]), EMPTY_INBOX, [])
+  expect(out).toContain('ESCALATE')
+  expect(out).toContain('"default" (the question\'s own default')
+})
+
+test('seeds: offered with no rules, partly accepted ones filtered, hidden once a rule of your own exists', () => {
+  expect(SEEDS.map(s => s.id)).toEqual(['tracker', 'prod-env', 'conservative'])
+  expect(seedsToOffer([]).length).toBe(3)
+  const text = renderRules([], EMPTY_INBOX, [], seedsToOffer([]))
+  expect(text).toContain('No standing answers.')
+  expect(text).toContain('Suggested starting rules (not applied):')
+  expect(text).toContain('mcp__flow__standing {"action":"add","seed":"tracker"}')
+  expect(seedsToOffer(rules([SEEDS[0]!.rule])).map(s => s.id)).toEqual(['prod-env', 'conservative'])
+  expect(seedsToOffer(rules(SEEDS.map(s => s.rule)))).toEqual([])
+  expect(seedsToOffer(rules([SEEDS[0]!.rule, { topic: 'format', answer: 'csv' }]))).toEqual([])
+})
+
+const statusText = ($: Dollar) => $.tool.call({ tool: 'mcp__flow__status' } as never).then(r => String(r.result))
+
+test('standing list shows the seeds with no rules; add by seed, twice, several, unknown', async ($, on) => {
+  const w = world(on)
+  expect(await standing($, null, { action: 'list' })).toContain('Suggested starting rules (not applied)')
+  expect(personalRules(w.files)).toEqual([])
+  expect(await standing($, null, { action: 'add', seed: 'nope' })).toContain('ids are tracker, prod-env, conservative')
+  expect(personalRules(w.files)).toEqual([])
+  expect(await standing($, null, { action: 'add', seed: 'tracker' })).toContain('tracker: rule s1 added')
+  expect(personalRules(w.files)[0]).toMatchObject({ id: 's1', topic: 'external-tracker', escalate: true })
+  expect(String(personalRules(w.files)[0]!.note)).toMatch(/^seed tracker, added \d{4}-\d\d-\d\d$/)
+  const again = await standing($, null, { action: 'add', seeds: ['tracker', 'conservative'] })
+  expect(again).toContain('tracker: already there as rule s1')
+  expect(again).toContain('conservative: rule s2 added')
+  expect(personalRules(w.files).length).toBe(2)
+  const after = await standing($, null, { action: 'list' })
+  expect(after).toContain('ESCALATE')
+  expect(after).toContain('"seed":"prod-env"')
+  expect(after).not.toContain('"seed":"tracker"')
+  expect(await standing($, 'm1', { action: 'add', seed: 'tracker' })).toContain('only main')
+})
+
+test('status offers the seeds once, then never again; never when a rule exists', async ($, on) => {
+  const w = world(on)
+  expect(await statusText($)).toContain('Suggested starting rules (not applied)')
+  expect(w.files.has(`${DIR}/seeds-offered.json`)).toBe(true)
+  expect(await statusText($)).not.toContain('Suggested starting rules')
+  expect(await standing($, null, { action: 'list' })).toContain('Suggested starting rules')
+})
+
+test('status shows no seeds when a rule already exists', async ($, on) => {
+  const w = world(on, new Map([[REPO, JSON.stringify({ standing_answers: [{ topic: 'format', answer: 'csv' }] })]]))
+  expect(await statusText($)).not.toContain('Suggested starting rules')
+  expect(w.files.has(`${DIR}/seeds-offered.json`)).toBe(false)
+})
+
+test('an escalate rule forces blocking, flags the question, tells the manager, and refuses a manager\'s answer', async ($, on) => {
+  const w = world(on)
+  await standing($, null, { action: 'add', seeds: ['tracker', 'conservative'] })
+  const TRACK = { question: 'Comment on the card?', options: ['yes', 'no'], default: 'no', blocking: false, topic: 'external-tracker' }
+  expect(await ask($, 'w1', [TRACK])).toContain('end your turn now')
+  const item = stored(w.files)[0]!
+  expect(item.state).toBe('open')
+  expect(item.blocking).toBe(true)
+  expect(item.escalated).toBe('s1')
+  expect(w.sent[0]!.text).toContain('standing rule (s1) makes this the user\'s decision; it is in main\'s inbox as q1')
+  expect(await inbox($)).toContain('q1 BLOCKING ESCALATED (rule s1), for main')
+  expect(await answer($, 'm1', { answers: [{ id: 'q1', choice: 'yes' }] })).toContain('refused, standing rule s1 makes this the user\'s decision')
+  expect(await answer($, 'm1', { defaults: true, ids: ['q1'] })).toContain('refused, standing rule s1')
+  expect(stored(w.files)[0]!.state).toBe('open')
+  // Main answers the worker's own question; the worker gets the answer.
+  w.sent.length = 0
+  expect(await answer($, null, { answers: [{ id: 'q1', choice: 'yes' }] })).toContain('q1: yes, delivered')
+  expect(stored(w.files)[0]!.answeredBy).toBe('main')
+  expect(w.sent.map(s => s.to)).toEqual(['w1'])
+  expect(w.sent[0]!.text).toContain('Answer: yes')
+  // A manager's own question goes to main, blocking, flagged too.
+  expect(await ask($, 'm1', [{ ...TRACK, question: 'Close the card?' }])).toContain('q2: end your turn now')
+  expect(stored(w.files)[1]!.addressee).toBe('main')
+  expect(w.toasts.length).toBe(1)
+})
+
+test('the conservative seed ("default") auto-answers a non-blocking ask and leaves a blocking one', async ($, on) => {
+  const w = world(on)
+  await standing($, null, { action: 'add', seed: 'conservative' })
+  expect(await ask($, 'w1', [BUMP])).toBe('q1: answered by standing answer s1: patch. Carry on from it.')
+  expect(await ask($, 'w1', [BLOCK])).toContain('q2: end your turn now')
+  expect(stored(w.files).map(i => i.state)).toEqual(['answered', 'open'])
 })

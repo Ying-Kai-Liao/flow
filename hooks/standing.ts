@@ -5,22 +5,30 @@ import type { Inbox, Question } from './inbox'
 // Standing answers: rules that answer a recurring decision-inbox question the way the user once decided.
 // Pure half: parse and validate the rules, match a question, suggest new rules, render the list. The
 // disk half (reading both settings files, writing the personal one) is in register.tsx.
+// SEEDS are a few common rules offered once when no rules exist; they are suggestions, never applied unasked.
 //
-// A rule: { id?, topic?, match?, answer, blocking?, from?, note? }.
+// A rule: { id?, topic?, match?, answer, blocking?, from?, note? } or { id?, topic?, match?, escalate: true, from?, note? }.
 //   topic    equals the question's topic (trimmed, any case)
 //   match    a case-insensitive regular expression tested on the question text (whitespace collapsed)
 //   both     given: both must match. A rule needs at least one of them.
 //   answer   must resolve to one of the question's options (text, letter or number), else the rule is skipped
 //   blocking a blocking question is answered only by a rule with blocking: true
+//   answer "default" (the literal word) answers a matching NON-blocking question with its own default; a
+//            blocking question is never answered by it, whatever `blocking` says
+//   escalate true, with no answer: a matching question is never auto-answered by any rule, whatever the order
+//            of the rules, and is recorded blocking and flagged `escalated: <rule id>`, so only main answers it.
+//            A rule with both `escalate` and an `answer` is invalid (dropped with a warning).
 //   from     the asker's name (a manager's continuation `foo-2` counts as `foo`)
 // A rule without an id gets a derived one from its file and 1-based position in that file's list:
 // `personal:1`, `repo:2`, `config:1`. Positions count every entry, valid or not, so they stay stable.
 
-export type Rule = { id?: string; topic?: string; match?: string; answer: string; blocking?: boolean; from?: string; note?: string }
+export type Rule = { id?: string; topic?: string; match?: string; answer?: string; escalate?: boolean; blocking?: boolean; from?: string; note?: string }
 export type Source = 'personal' | 'repo' | 'config'
 export type Resolved = { rid: string; source: Source; pos: number; rule: Rule; re?: RegExp }
 
 export const AUTO = 'standing answer'
+// The answer word that takes the question's own default.
+export const DEFAULT_WORD = 'default'
 
 const norm = (s: string) => s.trim().replace(/\s+/g, ' ')
 const lower = (s: string) => norm(s).toLowerCase()
@@ -31,9 +39,12 @@ export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { erro
   const r = raw as Record<string, unknown>
   const topic = text(r.topic)
   const match = text(r.match)
-  const answer = text(r.answer)
+  const answer = text(r.answer).toLowerCase() === DEFAULT_WORD ? DEFAULT_WORD : text(r.answer)
   if (topic === '' && match === '') return { error: 'needs a topic or a match' }
-  if (answer === '') return { error: 'needs an answer' }
+  if (r.escalate !== undefined && typeof r.escalate !== 'boolean') return { error: 'escalate must be true or false' }
+  const escalate = r.escalate === true
+  if (escalate && answer !== '') return { error: 'an escalate rule takes no answer' }
+  if (!escalate && answer === '') return { error: 'needs an answer' }
   if (r.blocking !== undefined && typeof r.blocking !== 'boolean') return { error: 'blocking must be true or false' }
   let re: RegExp | undefined
   if (match !== '') {
@@ -47,7 +58,7 @@ export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { erro
     ...(text(r.id) !== '' ? { id: text(r.id) } : {}),
     ...(topic !== '' ? { topic } : {}),
     ...(match !== '' ? { match } : {}),
-    answer,
+    ...(escalate ? { escalate: true } : { answer }),
     ...(r.blocking === true ? { blocking: true } : {}),
     ...(text(r.from) !== '' ? { from: text(r.from) } : {}),
     ...(text(r.note) !== '' ? { note: text(r.note) } : {}),
@@ -84,19 +95,34 @@ export function parseRules(value: unknown, source: Source, label: string, warnin
   return out
 }
 
-export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner'> & { topic?: string }
+export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner' | 'default'> & { topic?: string }
+
+// Topic, match and asker filters of a rule against a question.
+function applies(r: Resolved, q: Askable): boolean {
+  const { rule } = r
+  if (rule.topic !== undefined && (q.topic === undefined || lower(q.topic) !== lower(rule.topic))) return false
+  if (r.re !== undefined && !r.re.test(norm(q.question))) return false
+  return rule.from === undefined || noteKey(rule.from) === noteKey(q.owner)
+}
+
+// The escalate rule that holds this question for the user, if any. It beats every other rule.
+export function escalation(rules: Resolved[], q: Askable): Resolved | undefined {
+  return rules.find(r => r.rule.escalate === true && applies(r, q))
+}
 
 // The first rule that applies to the question, and the option it answers with. A rule whose answer is not
 // one of the question's options does not apply; the next rule gets its turn.
 export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answer: string } | undefined {
-  const qText = norm(q.question)
+  if (escalation(rules, q) !== undefined) return undefined
   for (const r of rules) {
     const { rule } = r
-    if (rule.topic !== undefined && (q.topic === undefined || lower(q.topic) !== lower(rule.topic))) continue
-    if (r.re !== undefined && !r.re.test(qText)) continue
-    if (rule.from !== undefined && noteKey(rule.from) !== noteKey(q.owner)) continue
+    if (rule.escalate === true || !applies(r, q)) continue
+    if (rule.answer === DEFAULT_WORD) {
+      if (q.blocking) continue
+      return { rule: r, answer: q.default }
+    }
     if (q.blocking && rule.blocking !== true) continue
-    const c = parseChoice(q.options, rule.answer)
+    const c = parseChoice(q.options, rule.answer ?? '')
     if (c.free) continue
     return { rule: r, answer: c.text }
   }
@@ -119,7 +145,7 @@ export function ruleFromQuestion(q: Question, answer: string, date: string): Rul
 export function sameRule(a: Rule, b: Rule): boolean {
   const eq = (x?: string, y?: string) => (x === undefined ? '' : lower(x)) === (y === undefined ? '' : lower(y))
   return eq(a.topic, b.topic) && norm(a.match ?? '') === norm(b.match ?? '') && eq(a.from, b.from) && eq(a.answer, b.answer) &&
-    (a.blocking === true) === (b.blocking === true)
+    (a.escalate === true) === (b.escalate === true) && (a.blocking === true) === (b.blocking === true)
 }
 
 // A new short id, unique among the ids in use (rules of both files and ids recorded in the inbox).
@@ -184,14 +210,59 @@ export function describeRule(r: Resolved): string {
   return parts.join(', ')
 }
 
-export function renderRules(rules: Resolved[], inbox: Inbox, suggestions: Suggestion[]): string {
+// What a rule does, for the list.
+const outcome = (rule: Rule): string =>
+  rule.escalate === true ? 'ESCALATE (never auto-answered; always blocking, only you answer)'
+    : rule.answer === DEFAULT_WORD ? '"default" (the question\'s own default; non-blocking questions only)'
+      : `"${rule.answer}"${rule.blocking ? ' (also blocking questions)' : ''}`
+
+export type Seed = { id: string; label: string; rule: Rule; why: string }
+
+// Common rules offered once, never applied unasked. Accepted with mcp__flow__standing {action: "add", seed: id}.
+export const SEEDS: Seed[] = [
+  {
+    id: 'tracker', label: 'Never write to an external task tracker without my yes; report in the terminal',
+    rule: { topic: 'external-tracker', escalate: true },
+    why: 'A comment, status move or close in a tracker is seen by others and is hard to take back.',
+  },
+  {
+    id: 'prod-env', label: 'Production environment changes always ask me',
+    rule: { topic: 'prod-env-change', escalate: true },
+    why: 'A changed production variable or secret affects live users at once.',
+  },
+  {
+    id: 'conservative', label: 'Reversible choices: pick the conservative option, mark it, don\'t block',
+    rule: { match: '.', answer: DEFAULT_WORD },
+    why: 'Workers recommend a default for every question; this takes it for non-blocking ones and you only see what is blocking.',
+  },
+]
+
+export const seedIds = (): string[] => SEEDS.map(s => s.id)
+
+// The seeds worth offering: none once a rule of your own exists. Rules that are only accepted seeds do not
+// count as your own, so a partly accepted set still shows the rest.
+export function seedsToOffer(rules: Resolved[]): Seed[] {
+  if (rules.some(r => !SEEDS.some(s => sameRule(s.rule, r.rule)))) return []
+  return SEEDS.filter(s => !rules.some(r => sameRule(s.rule, r.rule)))
+}
+
+export function renderSeeds(seeds: Seed[]): string[] {
+  if (seeds.length === 0) return []
+  return [
+    'Suggested starting rules (not applied):',
+    ...seeds.map(s => `  ${s.label}: mcp__flow__standing {"action":"add","seed":"${s.id}"}`),
+    `Several at once: mcp__flow__standing {"action":"add","seeds":${JSON.stringify(seeds.map(s => s.id))}}. Nothing is applied until you add it.`,
+  ]
+}
+
+export function renderRules(rules: Resolved[], inbox: Inbox, suggestions: Suggestion[], seeds: Seed[] = []): string {
   const lines: string[] = []
   if (rules.length === 0) lines.push('No standing answers.')
   else {
     lines.push(`Standing answers (${rules.length}; first match wins):`)
     for (const r of rules) {
       const times = inbox.items.filter(q => q.rule === r.rid).length
-      lines.push(`  ${r.rid} [${SOURCE_NAME[r.source]}] ${describeRule(r)} -> "${r.rule.answer}"${r.rule.blocking ? ' (also blocking questions)' : ''}, answered ${times}x${r.rule.note ? ` (${r.rule.note})` : ''}`)
+      lines.push(`  ${r.rid} [${SOURCE_NAME[r.source]}] ${describeRule(r)} -> ${outcome(r.rule)}, answered ${times}x${r.rule.note ? ` (${r.rule.note})` : ''}`)
     }
     lines.push('Remove with mcp__flow__standing {"action":"remove","id":"<id>"}.')
   }
@@ -199,5 +270,6 @@ export function renderRules(rules: Resolved[], inbox: Inbox, suggestions: Sugges
     lines.push('Suggested (answered the same way 3 or more times, no rule yet):')
     for (const s of suggestions) lines.push(`  ${s.label}: "${s.answer}" x${s.times}: ${s.add}`)
   }
+  lines.push(...renderSeeds(seeds))
   return lines.join('\n')
 }
