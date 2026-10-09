@@ -134,6 +134,8 @@ let slotDir: string | undefined
 const grantFile = (key: string): string | undefined => slotDir && `${slotDir}/${key.replace(/[^\w.-]/g, '_')}.granted`
 // The test_slots setting, for refresh()'s status line (set where the settings are read).
 let slotLimit = 1
+// The decision_phrases setting, for the question check in refresh() and syncPlans().
+let decisionPhrases: string[] = []
 
 const span = (ms: number): string => {
   const m = Math.floor(ms / 60_000)
@@ -507,6 +509,7 @@ async function syncPlans(
   const facts: Facts = {
     agents: rows.map(a => ({ name: a.name, status: a.status, answer: acts[a.id]?.answer })),
     handovers: Object.values(hs),
+    phrases: decisionPhrases,
   }
   const slots = Math.max(0, maxManagers - liveManagers(rows).length)
   let notices: Notice[] = []
@@ -555,7 +558,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
     if (ENDED.has(a.status) && acts[a.id] !== undefined) ended.push(a.id)
     if (ENDED.has(a.status) || a.status === 'idle') {
-      const asks = asksQuestion(acts[a.id]?.answer)
+      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases)
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
       void $.ui.toast(`${role}${labelOf(a)}: ${asks ? 'asks a question' : a.status === 'idle' ? 'finished its turn' : a.status}`)
     }
@@ -1333,6 +1336,7 @@ export const register: Register = (on, options) => {
   queueOn = settings.useQueue
   maxManagers = settings.maxManagers
   slotLimit = settings.testSlots
+  decisionPhrases = settings.decisionPhrases
   // Settings reloads: the files' paths and mtimes, the detected base branch, whether a check runs.
   let paths: string[] = []
   let seen = ''
@@ -1344,6 +1348,7 @@ export const register: Register = (on, options) => {
     queueOn = s.useQueue
     maxManagers = s.maxManagers
     slotLimit = s.testSlots
+    decisionPhrases = s.decisionPhrases
   }
   // Set once a `[1m]` model was refused for a sub-agent: later spawns go straight to the plain one.
   let noLong = false
@@ -2117,7 +2122,7 @@ export const register: Register = (on, options) => {
       const act = acts[a.id]
       const hand = handoffOf(a, act)
       const dim = ENDED.has(a.status) && hand?.kind !== 'done'
-      const asks = asksQuestion(act?.answer) && !['running', 'pending'].includes(a.status)
+      const asks = asksQuestion(act?.answer, settings.decisionPhrases) && !['running', 'pending'].includes(a.status)
       const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
@@ -2267,8 +2272,8 @@ export const register: Register = (on, options) => {
           <Text bold>Activity</Text>
           {(act?.log ?? []).length === 0 && <Text dimColor>Nothing seen yet.</Text>}
           {(act?.log ?? []).slice(-room).map(line => <Text wrap="truncate-end">{line}</Text>)}
-          {answer !== '' && <Text bold color={asksQuestion(answer) ? 'warning' : undefined}>
-            {asksQuestion(answer) ? 'Asks' : 'Last report'}
+          {answer !== '' && <Text bold color={asksQuestion(answer, settings.decisionPhrases) ? 'warning' : undefined}>
+            {asksQuestion(answer, settings.decisionPhrases) ? 'Asks' : 'Last report'}
           </Text>}
           {answer !== '' && <Text>{answer.length > 1200 ? '…' + answer.slice(-1200) : answer}</Text>}
         </Box>

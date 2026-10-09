@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.16] - 2026-10-09
+
+### Added
+
+- `decision_phrases` now works: a report whose last paragraph contains one of the phrases
+  (case-insensitive) counts as a question, in the pane, the toasts and the task graph, unless the
+  phrase directly follows a negation such as `不`, `不需要`, `no ` or `not `.
+
 ## [0.3.15] - 2026-10-09
 
 ### Added
