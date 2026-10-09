@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.22] - 2026-10-10
 
+### Fixed
+
+- Continuing a handed-off worker failed with "names no agent this call can dispatch": hiding `flow:continue`
+  from the model also refused the plugin's own rewrite. It is now offered only while that rewrite dispatches,
+  and if the host still refuses it the spawn falls back to a plain `flow:worker` in a new worktree and the
+  worktree claim is given back.
+
+## [0.3.22] - 2026-10-10
+
 ### Added
 
 - `handover` refuses a PR whose description lacks a valid `## Verification` section (Ran, Exercised,
