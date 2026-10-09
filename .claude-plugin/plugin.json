@@ -1,0 +1,9 @@
+{
+  "name": "flow-board",
+  "version": "0.1.0",
+  "description": "Run coding workers in parallel from one Claude Code session: each worker is a background subagent in its own git worktree, watched and switched from a Flow pane",
+  "author": {
+    "name": "Ying-Kai Liao"
+  },
+  "types": "./types/index.d.ts"
+}
