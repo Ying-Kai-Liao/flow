@@ -152,6 +152,7 @@ worker to fix X".
 | `merge_method` | `squash` | managers, when there is no queue |
 | `max_managers` | 20 | managers the main session runs at a time |
 | `max_workers` | 3 | workers per manager at a time |
+| `test_slots` | 1 | how many heavy test runs may run at once across all agents (minimum 1) |
 | `worker_model` | `sonnet` | workers |
 | `context_warn_percent` | 40 | the context limit as a percent of the window (1 to 100) |
 | `context_warn_tokens` | 350000 | the context limit in tokens; the lower of the two applies, so a 200k model still hands off at 80k. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
@@ -187,7 +188,22 @@ After deploying, a PR whose `after_deploy` an agent can check gets a check-only 
   a queue if none is running.
 - `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
 - `plan`: dependencies between tasks or packages (see Dependencies).
-- `status`: the tree, the handovers, the limits and the plans as text, for check-ins.
+- `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins.
+- `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`). See below.
+
+## The test lock
+
+Six worktrees running the whole suite at once can exhaust memory and time out the real check.
+Workers call `test_slot` `acquire` before a heavy run (a whole suite, anything over about a
+minute) and `release` after it; the queue does the same around the full check. At most
+`test_slots` runs hold a slot; the rest wait first come, first served. A hook has a 10 second
+budget, so `acquire` waits at most a few seconds and then answers "queued, position N". The
+head of the line is granted a free slot at once and told two ways: a file
+`<git-common-dir>/flow/test-slots/<agent>.granted` (wait with `until [ -e FILE ]; do sleep 3; done`)
+and a message; it confirms with one `acquire` within 2 minutes, else the grant passes on. A slot is
+freed when its agent ends, when released, or after a 45 minute lease (with a toast). The Flow
+status line shows `tests 1/1`. The lock lives in this session's plugin state: it covers every
+worktree of the session's agents, not other Claude sessions, and a plugin reload empties it.
 
 ## Limits
 

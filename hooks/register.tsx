@@ -1,8 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover, OpenPr, PrCache } from '../types'
-import type { Activity, AgentRow, Handover } from '../types'
+import type { Activity, AgentRow, Handover, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
 import {
@@ -96,6 +95,113 @@ async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
   return unhandedPrs(cache.prs, hs, rows, acts, t)
 }
 const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
+const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders: [], waiters: [] } as TestSlots)
+
+// A hook has a 10 s budget, a $.clock wait included, so acquire blocks only briefly. A free slot
+// is granted to the head waiter at once (claimed: false); it has CLAIM_MS to confirm with acquire,
+// else the grant passes on. The grant is signalled by a file and a message, so waiting costs no turns.
+const LEASE_MS = 45 * 60_000
+const CLAIM_MS = 2 * 60_000
+const WAIT_MAX_S = 8
+const WAIT_DEFAULT_S = 2
+// <git-common-dir>/flow/test-slots, set at session start; undefined when not in a git repo.
+let slotDir: string | undefined
+const grantFile = (key: string): string | undefined => slotDir && `${slotDir}/${key.replace(/[^\w.-]/g, '_')}.granted`
+// The test_slots setting, for refresh()'s status line (set where the settings are read).
+let slotLimit = 1
+
+const span = (ms: number): string => {
+  const m = Math.floor(ms / 60_000)
+  return m < 1 ? `${Math.max(0, Math.round(ms / 1000))}s` : `${m}m`
+}
+const heldBy = (h: SlotEntry, t: number): string => `${h.name} (${h.label}, ${span(t - h.since)})`
+
+// Drops holders and waiters whose agent ended or is gone and holders past the lease. The main session (key "main") never ends. Returns the new state and what was dropped.
+export function reapSlots(state: TestSlots, rows: AgentRow[], t: number): { state: TestSlots; notes: string[] } {
+  const status = new Map(rows.map(a => [a.id, a.status]))
+  const gone = (key: string) => key !== 'main' && (status.get(key) === undefined || ENDED.has(status.get(key)!))
+  const notes: string[] = []
+  const holders = state.holders.filter(h => {
+    if (gone(h.key)) return false
+    if (t - h.since >= LEASE_MS) {
+      notes.push(`test slot of ${h.name} (${h.label}) released after ${span(LEASE_MS)}: its lease ran out`)
+      return false
+    }
+    return true
+  })
+  const waiters = state.waiters.filter(w => !gone(w.key))
+  const changed = holders.length !== state.holders.length || waiters.length !== state.waiters.length
+  return { state: changed ? { holders, waiters } : state, notes }
+}
+
+// Gives free slots to the head waiters, after dropping grants nobody confirmed within CLAIM_MS.
+// Pure: the caller does the signalling for `granted`.
+export function grantSlots(state: TestSlots, limit: number, t: number): { state: TestSlots; granted: SlotEntry[]; notes: string[] } {
+  const notes: string[] = []
+  const holders = state.holders.filter(h => {
+    if (h.claimed !== false || t - h.since < CLAIM_MS) return true
+    notes.push(`test slot offered to ${h.name} (${h.label}) passed on: not confirmed within ${span(CLAIM_MS)}`)
+    return false
+  })
+  const waiters = [...state.waiters]
+  const granted: SlotEntry[] = []
+  while (holders.length < limit && waiters.length > 0) {
+    const w = { ...waiters.shift()!, since: t, claimed: false }
+    holders.push(w)
+    granted.push(w)
+  }
+  const changed = holders.length !== state.holders.length || granted.length > 0
+  return { state: changed ? { holders, waiters } : state, granted, notes }
+}
+
+// Applies `pre`, reaps, grants, and signals: a grant file and a message per new holder, the files
+// of everyone who left the line removed. Every slot change goes through here, inside one update().
+async function settleSlots($: EngineInterface, rows: AgentRow[], t: number, pre: (s: TestSlots) => TestSlots = s => s, me?: string): Promise<void> {
+  const notes: string[] = []
+  let granted: SlotEntry[] = []
+  let left: string[] = []
+  await update($, testSlots, st => {
+    notes.length = 0
+    const r = reapSlots(pre(st), rows, t)
+    const g = grantSlots(r.state, slotLimit, t)
+    notes.push(...r.notes, ...g.notes)
+    // The caller of acquire is here to hear it: its grant is confirmed on the spot, with no signal.
+    const state = me === undefined ? g.state
+      : { ...g.state, holders: g.state.holders.map(h => h.key === me ? { ...h, claimed: true } : h) }
+    granted = g.granted.filter(h => h.key !== me)
+    const stay = new Set([...state.holders, ...state.waiters].map(e => e.key))
+    left = [...st.holders, ...st.waiters].map(e => e.key).filter(k => !stay.has(k))
+    return state
+  })
+  for (const n of notes) void $.ui.toast(n)
+  await signalSlots($, granted, left)
+}
+
+const sh = ($: EngineInterface, script: string, ...args: string[]) =>
+  $.process.run(['sh', '-c', script, 'sh', ...args], { timeoutMs: 5_000 }).catch(() => undefined)
+
+async function signalSlots($: EngineInterface, granted: SlotEntry[], left: string[]): Promise<void> {
+  for (const key of left) {
+    const f = grantFile(key)
+    if (f) await sh($, 'rm -f "$1"', f)
+  }
+  for (const g of granted) {
+    const f = grantFile(g.key)
+    if (f) await sh($, 'mkdir -p "$(dirname "$1")" && : > "$1"', f)
+    if (g.key !== 'main') {
+      await $.session.send({
+        to: { agentId: g.key },
+        text: `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`,
+      }).catch(() => undefined)
+    }
+  }
+}
+
+function slotLine(state: TestSlots, limit: number, t: number): string {
+  if (state.holders.length === 0 && state.waiters.length === 0) return ''
+  const held = state.holders.length ? `held by ${state.holders.map(h => heldBy(h, t)).join(', ')}` : 'free'
+  return `Test slots: ${state.holders.length}/${limit} ${held}${state.waiters.length ? ` · ${state.waiters.length} waiting` : ''}`
+}
 
 // One line for a tool call: the tool and its most telling argument.
 function describeCall(e: Record<string, unknown>): string {
@@ -252,6 +358,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     useQueue: options.merge_queue !== false,
     maxWorkers: num('max_workers', 3),
     maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
+    testSlots: Math.max(1, Math.floor(num('test_slots', 1))),
     workerModel: str('worker_model', 'sonnet'),
   }
 }
@@ -350,6 +457,8 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   }
   if (JSON.stringify(rows) !== JSON.stringify(before)) await update($, roster, () => rows)
   await update($, now, () => t)
+  // Free the test slots of ended agents and pass them on.
+  await settleSlots($, rows, t)
 
   const hs = Object.values(await read($, handovers))
   const live = rows.filter(a => !ENDED.has(a.status))
@@ -362,8 +471,10 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   ].filter(Boolean)
   const unhanded = (await currentUnhanded($)).length
   if (unhanded) parts.push(`${unhanded} unhanded`)
+  const slots = await read($, testSlots)
+  const slotPart = slots.holders.length || slots.waiters.length ? ` · tests ${slots.holders.length}/${slotLimit}` : ''
   $.ui.status(rows.length === 0 && hs.length === 0 && !unhanded ? undefined
-    : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`} · /flow`)
+    : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`}${slotPart} · /flow`)
   await syncPlans($, rows).catch(() => undefined)
   return rows
 }
@@ -630,6 +741,7 @@ export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
   queueOn = settings.useQueue
   maxManagers = settings.maxManagers
+  slotLimit = settings.testSlots
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
@@ -646,10 +758,25 @@ export const register: Register = (on, options) => {
         const remote = await $.process.run(['git', 'ls-remote', '--symref', 'origin', 'HEAD'], { timeoutMs: 10_000 })
         base = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(remote.stdout)?.[1] ?? ''
       }
-      if (base !== '') { settings = settingsOf(options, base); queueOn = settings.useQueue }
+      if (base !== '') {
+        settings = settingsOf(options, base)
+        queueOn = settings.useQueue
+        slotLimit = settings.testSlots
+      }
       maxManagers = settings.maxManagers
     } catch {
       // Not a git repo, or no remote: keep "main".
+    }
+
+    // Grant files of a previous session would read as grants; start from an empty directory.
+    try {
+      const r = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+      if (r.exitCode === 0 && r.stdout.trim() !== '') {
+        slotDir = `${r.stdout.trim()}/flow/test-slots`
+        await sh($, 'rm -rf "$1" && mkdir -p "$1"', slotDir)
+      }
+    } catch {
+      slotDir = undefined
     }
 
     await $.command.register({
@@ -752,6 +879,23 @@ export const register: Register = (on, options) => {
           note: { type: 'string' },
           reason: { type: 'string' },
           owner: { type: 'string', description: 'main only: whose graph to list' },
+        },
+        required: ['action'],
+      },
+      isDeferred: false,
+    })
+
+    await $.tool.register({
+      name: 'test_slot',
+      description: 'A lock on heavy test runs, so only test_slots of them run at once across all worktrees of this session. ' +
+        'action "acquire" before a whole suite or any run over about a minute (waits a few seconds; if it says queued, wait as the answer tells you (grant file or grant message), then call acquire once to confirm), ' +
+        '"release" when the run is over or failed, "status" to see holders and waiters.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['acquire', 'release', 'status'] },
+          label: { type: 'string', description: 'What you will run, e.g. "full suite"' },
+          wait_s: { type: 'number', description: `Seconds to wait for a slot before answering queued (default ${WAIT_DEFAULT_S}, at most ${WAIT_MAX_S})` },
         },
         required: ['action'],
       },
@@ -998,6 +1142,65 @@ export const register: Register = (on, options) => {
     return { result: `Unknown action "${action}".` }
   })
 
+  on('tool.call', { tool: 'mcp__flow__test_slot' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const action = String(input.action)
+    const key = typeof input.agentId === 'string' ? input.agentId : 'main'
+    const rows = await refresh($)
+    const name = key === 'main' ? 'main' : labelOf(rows.find(a => a.id === key) ?? { id: key, description: '', type: '', status: '' })
+    const label = typeof input.label === 'string' && input.label.trim() !== '' ? input.label.trim().slice(0, 60) : 'tests'
+    const limit = settings.testSlots
+    const t = await $.clock.now()
+
+    if (action === 'status') {
+      return { result: slotLine(await read($, testSlots), limit, t) || `Test slots: 0/${limit} held, nobody waiting.` }
+    }
+    if (action === 'release') {
+      let freed = false
+      await settleSlots($, rows, t, st => {
+        freed = st.holders.some(h => h.key === key)
+        return freed ? { ...st, holders: st.holders.filter(h => h.key !== key) } : st
+      })
+      return { result: freed ? 'Released your test slot.' : 'You held no test slot; nothing to release.' }
+    }
+    if (action !== 'acquire') return { result: `Unknown action "${action}".` }
+
+    // Check and take inside one update(), so two callers never both get the last slot. A holder
+    // whose grant is still unclaimed confirms it here.
+    const attempt = async (): Promise<string | undefined> => {
+      let already: SlotEntry | undefined
+      const at = await $.clock.now()
+      await settleSlots($, rows, at, st => {
+        already = st.holders.find(h => h.key === key)
+        if (already || st.waiters.some(w => w.key === key)) return st
+        return { ...st, waiters: [...st.waiters, { key, name, label, since: at }] }
+      }, key)
+      if (already?.claimed === true) {
+        return `You already hold a test slot (${already.label}, ${span(at - already.since)}). Release it when your run is over.`
+      }
+      const st = await read($, testSlots)
+      if (!st.holders.some(h => h.key === key)) return undefined
+      return `Test slot granted (${st.holders.length}/${limit}). Run, then release it, also if the run fails. It frees by itself after ${span(LEASE_MS)}.`
+    }
+
+    const wait = Math.min(WAIT_MAX_S, Math.max(0, Number.isFinite(Number(input.wait_s)) ? Number(input.wait_s) : WAIT_DEFAULT_S))
+    const first = await attempt()
+    if (first !== undefined) return { result: first }
+    // The hook's budget bounds this wait; the waiter keeps its place in line between calls.
+    for (let waited = 0; waited < wait; waited++) {
+      await $.clock.sleep(1000)
+      await refresh($)
+      const got = await attempt()
+      if (got !== undefined) return { result: got }
+    }
+    const st = await read($, testSlots)
+    const pos = st.waiters.findIndex(w => w.key === key) + 1
+    const f = grantFile(key)
+    return {
+      result: `No slot after ${wait} s; queued, position ${pos}. Held by ${st.holders.map(h => heldBy(h, t)).join(', ') || 'nobody'}. You keep your place and are granted the slot when it is your turn (it is offered for ${span(CLAIM_MS)}). Don't poll acquire. ${f ? `Wait with Bash (timeout 600000, or run_in_background and continue when notified): until [ -e '${f}' ]; do sleep 3; done . Or do other work; a "your test slot is granted" message arrives.` : 'Do other work; a "your test slot is granted" message arrives.'} Then call acquire once to confirm, run, and release.`,
+    }
+  })
+
   on('tool.call', { tool: 'mcp__flow__status' }, async $ => {
     if (queueOn && (await $.clock.now()) - (await read($, prCache)).fetchedAt > PR_MIN_GAP_MS) await fetchPrs($)
     const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
@@ -1014,9 +1217,11 @@ export const register: Register = (on, options) => {
     for (const a of rows.filter(r => r.parentId === undefined || !ids.has(r.parentId))) walk(a, 0)
     const list = Object.values(hs).sort((a, b) => a.at - b.at)
     const plans = Object.entries(await read($, plan)).filter(([, g]) => Object.keys(g).length > 0)
+    const slots = slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
     return {
       result: [
         limitsLine(rows, settings.maxWorkers),
+        ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
         list.length ? 'Handed-over PRs:' : 'No PRs handed over.', ...list.map(handoverLine),
         ...(unhanded.length ? [

@@ -81,6 +81,11 @@ export type DagNode = {
   readyNotified?: boolean
   blockedNotified?: boolean
 }
+// A holder of, or a waiter for, a test slot (the test_slot tool). key is the agent id, or "main".
+export type SlotEntry = { key: string; name: string; label: string; since: number; claimed?: boolean }
+// claimed is false for a holder granted the slot from the line who has not yet confirmed with acquire.
+
+export type TestSlots = { holders: SlotEntry[]; waiters: SlotEntry[] }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -94,6 +99,7 @@ declare module 'claude-code' {
       prCache: PrCache
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
+      testSlots: TestSlots
     }
   }
 }

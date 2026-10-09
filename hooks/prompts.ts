@@ -13,6 +13,7 @@ export type Settings = {
   mergeMethod: string
   useQueue: boolean
   maxWorkers: number
+  testSlots: number
   workerModel: string
 }
 
@@ -154,7 +155,7 @@ How to write it:
 - Change a rule, change its tests. Don't delete tests. A new rule gets a test.
 - No drive-by refactors or renames.{{STATE_FILE_RULE}}
 
-Verifying: run {{TEST}}. Don't run the full check ({{FULL_CHECK}}); the merge queue runs it once per batch. Stop only processes you started, by PID; never pkill or killall.
+Verifying: run {{TEST}}. Before a heavy run (a whole test suite, anything that takes more than about a minute, or many test files), call \`mcp__flow__test_slot\` action "acquire" with a short label (if it says queued, wait as it tells you, on the grant file or the grant message and without polling, then call acquire once to confirm), run, then "release", also when the run fails. Small targeted test files don't need a slot. Don't run the full check ({{FULL_CHECK}}); the merge queue runs it once per batch. Stop only processes you started, by PID; never pkill or killall.
 
 Finishing:
 1. Commit with a one-line message saying what changed and why, plus whatever attribution lines your session was told to use.
@@ -244,7 +245,7 @@ The PRs handed to you are in mcp__flow__queue: action "list" shows the pending o
    - \`gh pr view <n> --json state,headRefOid,title\`: state must be OPEN and headRefOid must equal the handover's head. If the head moved, \`mcp__flow__queue\` action "back" with reason "head moved", and go on.
    - \`git fetch origin <head sha>\` if needed, then \`git merge --no-ff <head sha> -m "Merge PR #<n>: <title>"\`.
    - Mechanical conflicts (two additions side by side): resolve, keeping both. Conflicts needing a logic or product decision: \`git merge --abort\`, "back" with the file names, go on.
-3. Full check: {{FULL_CHECK}}. Run it once for the batch (run_in_background if it's long).
+3. Full check: {{FULL_CHECK}}. Run it once for the batch (run_in_background if it's long). Call \`mcp__flow__test_slot\` action "acquire" (label "full check") before each run (if queued, wait as it tells you, then confirm with one acquire) and "release" after it, also when it fails.
    - A failure from combining PRs (each fine alone): fix it yourself in one small commit on top ("Fix combination of #a and #b: <what>") and run the check again. Anything bigger is a logic conflict: send the later PR back.
    - A real bug in one PR: reset to before its merge (\`git log --first-parent --oneline origin/{{BASE}}..HEAD\`, \`git reset --hard <its merge commit>^1\`), redo the merges after it, send it back with the failing output, check again.
    - "none configured" means no full check: say so in the report; never improvise one.
