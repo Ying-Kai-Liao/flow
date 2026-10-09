@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.31] - 2026-10-10
+
+### Changed
+
+- Rebrand: flow is presented as a standalone orchestration plugin for software development in
+  Claude Code. The README opens with a short pitch and a quick start, then "How it works" and
+  "Reference"; the plugin and marketplace descriptions say the same. The dispatch skill no longer
+  mentions a separately installed skill in its description. Orca now appears only where it is a
+  real option (`session_host`, workers in other harnesses). No tool, agent, skill or setting
+  names changed.
+
 ## [0.3.30] - 2026-10-10
 
 ### Changed

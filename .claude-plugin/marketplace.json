@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "description": "flow: parallel coding workers in one Claude Code session, with a Flow pane",
+  "description": "Standalone orchestration for software development in Claude Code: managers, workers in git worktrees and one merge queue run your tasks in parallel; only decisions reach you",
   "owner": {
     "name": "Ying-Kai Liao"
   },
