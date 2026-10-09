@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Flow pane's key-hint row (`j next · k prev · o open · c collapse · q reviewer · g ...`) now sits at the very bottom of the tree view, below the Reviewer section and the deploy lines, instead of above them.
+
 ## [0.4.1] - 2026-10-10
 
 ### Added

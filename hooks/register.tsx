@@ -5024,19 +5024,6 @@ export const register: Register = (on, options) => {
           a, depth + 1, fullTree, depth === 0, a.id === hotId, collapsed,
         ))}
         {below > 0 && <Text dimColor>  +{below} more</Text>}
-        {list.length > 0 && (
-          <Box flexDirection="row" gap={1}>
-            <Button key="nav-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>
-            <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>
-            <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>
-            <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
-              const i = await hotItem()
-              if (i) await toggleFold(i.a, i.collapsed)
-            }}>{items[hotIdx]?.collapsed ? 'c expand' : 'c collapse'}</Button>
-            {prs.length > 0 && <Button key="nav-queue" plain dimColor hotkey="q" onPress={toggleQueue}>q reviewer</Button>}
-            {toggle}
-          </Box>
-        )}
         {prs.length > 0 && (
           <Box flexDirection="row">
             <Button key={`fold-${MERGE_QUEUE_KEY}`} plain dimColor onPress={toggleQueue}>{queueOpen ? '  ▾ ' : '  ▸ '}</Button>
@@ -5052,6 +5039,19 @@ export const register: Register = (on, options) => {
           </Text>
         ))}
         {deployLines.map(l => <Text key={`deploy-${l}`} dimColor wrap="truncate-end">{'  '}⏸ {l}</Text>)}
+        {list.length > 0 && (
+          <Box flexDirection="row" gap={1}>
+            <Button key="nav-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>
+            <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>
+            <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>
+            <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
+              const i = await hotItem()
+              if (i) await toggleFold(i.a, i.collapsed)
+            }}>{items[hotIdx]?.collapsed ? 'c expand' : 'c collapse'}</Button>
+            {prs.length > 0 && <Button key="nav-queue" plain dimColor hotkey="q" onPress={toggleQueue}>q reviewer</Button>}
+            {toggle}
+          </Box>
+        )}
       </Box>
     )
     })()
