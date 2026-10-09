@@ -26,7 +26,7 @@ const GLYPH: Record<string, string> = {
   pending: '○', running: '●', waiting: '◐', idle: '◌', completed: '✓', failed: '✗', killed: '■',
 }
 const COLOR: Record<string, string> = {
-  running: 'cyan', waiting: 'yellow', idle: 'yellow', completed: 'green', failed: 'red', killed: 'red',
+  running: 'suggestion', waiting: 'warning', idle: 'warning', completed: 'success', failed: 'error', killed: 'error',
 }
 const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [QUEUE]: 'queue' }
 const ROOT_GLYPH = '◆'
@@ -46,8 +46,51 @@ function describeCall(e: Record<string, unknown>): string {
   const tool = String(e.tool ?? '?').replace(/^mcp__flow__/, '')
   const arg = [e.file_path, e.command, e.pattern, e.path, e.url, e.description, e.action, e.prompt]
     .find(v => typeof v === 'string' && v.length > 0) as string | undefined
-  const short = arg === undefined ? '' : ' ' + arg.replace(/\s+/g, ' ').slice(0, 90)
+  // A command is its first line, cut at a heredoc: its body is code, not news.
+  const text = arg === undefined ? '' : (e.command === arg ? arg.split('\n')[0]!.replace(/<<.*$/, '') : arg)
+  const short = text === '' ? '' : ' ' + text.replace(/\s+/g, ' ').trim().slice(0, 90)
   return tool + short
+}
+
+const base = (path: unknown): string => String(path ?? '').split('/').pop() ?? ''
+
+// What a call is, in a few plain words for a card: never a command's body or a prompt.
+export function summarizeCall(e: Record<string, unknown>): string {
+  const tool = String(e.tool ?? '?').replace(/^mcp__flow__/, '')
+  const file = base(e.file_path)
+  switch (tool) {
+    case 'Edit': case 'MultiEdit': case 'NotebookEdit': return file ? `editing ${file}` : 'editing'
+    case 'Write': return file ? `writing ${file}` : 'writing'
+    case 'Read': return file ? `reading ${file}` : 'reading'
+    case 'Grep': case 'Glob': return 'searching'
+    case 'Agent': {
+      const role = String(e.subagent_type ?? e.subagentType ?? '').replace(/^flow:/, '')
+      const name = String(e.name ?? '')
+      return ['started', role === 'manager' || role === 'worker' ? role : 'agent', name].filter(Boolean).join(' ')
+    }
+    case 'Bash': {
+      const cmd = String(e.command ?? '').split('\n')[0]!.trim()
+      // git and gh first: a commit message may say "test".
+      if (/^git\s+\S+/.test(cmd)) return 'git ' + cmd.split(/\s+/)[1]
+      if (/^gh\s+pr\b/.test(cmd)) return 'gh pr ' + (cmd.split(/\s+/)[2] ?? '')
+      if (/\b(tsc|test|vitest|jest|pytest)\b/.test(cmd)) return 'running tests'
+      return 'running a command'
+    }
+    default: return tool
+  }
+}
+
+// Running time as the native subagent row has it: 12s, 1m 43s, 1h 5m.
+export function elapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+// "↓ 84.0k tokens": the context the agent has taken in, one decimal like the native row.
+export function tokensDown(n: number): string {
+  return `↓ ${n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n} tokens`
 }
 
 function ago(ms: number): string {
@@ -68,7 +111,7 @@ function asksQuestion(answer: string | undefined): boolean {
 
 const DEFAULT_WINDOW = 200_000
 const METER_CELLS = 12
-const CARD_ROWS = 4
+const CARD_ROWS = 5
 const DANGER_PERCENT = 90
 
 // A subagent reports no window of its own: borrow the main session's when it runs the same
@@ -84,14 +127,15 @@ function tokensLabel(n: number): string {
 }
 
 // The bar with a marker cell at the warn threshold, so how close an agent is stays readable.
-function bar(percent: number, warn: number): string {
+function cells(percent: number, warn: number): { ch: string; kind: 'mark' | 'fill' | 'empty' }[] {
   const filled = Math.round(Math.min(100, percent) / 100 * METER_CELLS)
   const mark = Math.min(METER_CELLS - 1, Math.floor(warn / 100 * METER_CELLS))
-  return Array.from({ length: METER_CELLS }, (_, i) => i === mark ? '│' : i < filled ? '█' : '░').join('')
+  return Array.from({ length: METER_CELLS }, (_, i) =>
+    i === mark ? { ch: '│', kind: 'mark' } : i < filled ? { ch: '█', kind: 'fill' } : { ch: '░', kind: 'empty' })
 }
 
 function meterColor(percent: number, warn: number): string | undefined {
-  return percent >= DANGER_PERCENT && percent >= warn ? 'red' : percent >= warn ? 'yellow' : undefined
+  return percent >= DANGER_PERCENT && percent >= warn ? 'error' : percent >= warn ? 'warning' : undefined
 }
 
 function rank(status: string): number {
@@ -127,14 +171,23 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     status: a.status, parentId: a.parentId,
   }))
   const was = new Map(before.map(a => [a.id, a.status]))
+  const ended: string[] = []
   for (const a of rows) {
     const prev = was.get(a.id)
     if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
+    if (ENDED.has(a.status) && acts[a.id] !== undefined) ended.push(a.id)
     if (ENDED.has(a.status) || a.status === 'idle') {
       const asks = asksQuestion(acts[a.id]?.answer)
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
       void $.ui.toast(`${role}${labelOf(a)}: ${asks ? 'asks a question' : a.status === 'idle' ? 'finished its turn' : a.status}`)
     }
+  }
+  if (ended.length > 0) {
+    await update($, activity, all => {
+      const next = { ...all }
+      for (const id of ended) if (next[id] !== undefined && next[id]!.endedAt === undefined) next[id] = { ...next[id]!, endedAt: t }
+      return next
+    })
   }
   if (JSON.stringify(rows) !== JSON.stringify(before)) await update($, roster, () => rows)
   await update($, now, () => t)
@@ -393,6 +446,8 @@ export const register: Register = (on, options) => {
     })
 
     $.clock.every(POLL_MS, () => void refresh($))
+    // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
+    $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
     return next(e)
   })
 
@@ -476,7 +531,7 @@ export const register: Register = (on, options) => {
       const line = describeCall(e as unknown as Record<string, unknown>)
       await update($, activity, acts => {
         const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
-        return { ...acts, [id]: { ...a, lastAt: t, log: [...a.log, line].slice(-LOG_MAX) } }
+        return { ...acts, [id]: { ...a, lastAt: t, doing: summarizeCall(e as unknown as Record<string, unknown>), log: [...a.log, line].slice(-LOG_MAX) } }
       })
     }
     return next(e)
@@ -608,6 +663,13 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // The pane paints with theme keys, which the engine resolves; a theme switch only needs a redraw.
+  on('config.set', { key: 'theme' }, async ($, e, next) => {
+    const r = await next(e)
+    try { $.ui.invalidate('ui.render') } catch { /* pane closed */ }
+    return r
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const [list, acts, pick, t, hs] = await Promise.all([
@@ -616,7 +678,8 @@ export const register: Register = (on, options) => {
     const rows = e.viewport?.rows ?? 24
     const warn = settings.contextWarn
     // Free: no breakdown asked. Main's figures also size a subagent on the same model.
-    const main = await $.session.usage().then(u => u.context, () => undefined)
+    const usage = await $.session.usage().then(u => u, () => undefined)
+    const main = usage?.context
     if (main !== undefined) mainWindow = main.window
 
     const usageOf = (a: AgentRow): { percent: number; tokens: number; window: number } | undefined => {
@@ -625,34 +688,55 @@ export const register: Register = (on, options) => {
       const window = windowOf(u.model, mainModel, mainWindow)
       return { percent: Math.round(u.tokens / window * 100), tokens: u.tokens, window }
     }
-    const meter = (u: { percent: number; tokens: number; window: number } | undefined, dim: boolean) => u === undefined
-      ? <Text dimColor>context ?</Text>
-      : <Text color={meterColor(u.percent, warn)} dimColor={dim}>{bar(u.percent, warn)} {u.percent}% · {tokensLabel(u.tokens)}/{tokensLabel(u.window)}</Text>
+    // Theme keys only: the filled part is legible on any background, the empty cells are 'inactive'
+    // rather than dim, and the colour turns at the warn and danger marks.
+    const meter = (u: { percent: number; tokens: number; window: number } | undefined, dim: boolean, time: string) => {
+      // Time and tokens sit dimmed together after the bar; the window figures are not repeated.
+      const tail = [time, u === undefined ? '' : tokensDown(u.tokens)].filter(Boolean).join(' · ')
+      return u === undefined
+        ? <Text dimColor>context ?{tail ? `   ${tail}` : ''}</Text>
+        : <Text dimColor={dim}>
+          {cells(u.percent, warn).map((c, i) => (
+            <Text key={String(i)} dimColor={dim} color={c.kind === 'empty' ? 'inactive' : c.kind === 'mark' ? 'text' : meterColor(u.percent, warn) ?? 'success'}>{c.ch}</Text>
+          ))}
+          <Text color={meterColor(u.percent, warn)} dimColor={dim}> {u.percent}%</Text>
+          <Text dimColor>{tail ? `   ${tail}` : ''}</Text>
+        </Text>
+    }
+    // Running time: to now while live, frozen at the end once it ended (the moment the roster saw
+    // it end, else its last activity). No start on record, no time.
+    const runTime = (act: Activity | undefined, isEnded: boolean): string =>
+      act?.startedAt === undefined ? '' : elapsed((isEnded ? act.endedAt ?? act.lastAt : t) - act.startedAt)
 
-    // One agent: a bordered card (two lines), or one compact row when the pane is short.
-    const card = (a: AgentRow, depth: number, full: boolean) => {
+    // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
+    // Only a top-level card has a border; deeper ones read as a tree by their indent.
+    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean) => {
       const act = acts[a.id]
       const dim = ENDED.has(a.status)
       const asks = asksQuestion(act?.answer) && !['running', 'pending'].includes(a.status)
-      const last = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.log[act.log.length - 1] ?? ''
+      const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
-      const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
       const head = <Text>
-        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold>{role}{labelOf(a)}</Text>
-        <Text dimColor> {act ? ago(t - act.lastAt) : ''}</Text> <Text color={asks ? 'yellow' : undefined} dimColor={!asks}>{last.slice(0, 70)}</Text>
+        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold>{labelOf(a)}</Text>
+        {under > 0 && <Text dimColor> (+{under})</Text>}
+        <Text dimColor>  {ROLE[a.type] ?? a.type}</Text>
       </Text>
+      // The description shows only while there is nothing done to show; the detail view has it.
+      const second = doing !== undefined && doing !== ''
+        ? <Text color={asks ? 'warning' : undefined} dimColor={!asks}>{doing.slice(0, 60)}</Text>
+        : <Text dimColor>{a.description.slice(0, 60)}</Text>
       return (
-        <Box key={`row-${a.id}`} paddingLeft={depth * 2}>
+        <Box key={`row-${a.id}`} paddingLeft={bordered ? depth * 2 : depth * 2 + 1}>
           {full ? (
             // A Button holds Text only, so the border is drawn around it.
-            <Box flexDirection="column" borderStyle="round" borderDimColor={dim} paddingX={1}>
-              <Button key={a.id} dimColor={dim} onPress={() => update($, selected, () => a.id)}>
-                {head}{'\n'}{meter(u, dim)}<Text dimColor>  {a.description.slice(0, 60)}{under ? ` · ${under} under it` : ''}</Text>
+            <Box flexDirection="column" borderStyle={bordered ? 'round' : undefined} borderDimColor={dim} paddingX={bordered ? 1 : 0}>
+              <Button key={a.id} plain dimColor={dim} onPress={() => update($, selected, () => a.id)}>
+                {head}{'\n'}{second}{'\n'}{meter(u, dim, runTime(act, dim))}
               </Button>
             </Box>
           ) : (
-            <Button key={a.id} dimColor={dim} onPress={() => update($, selected, () => a.id)}>
+            <Button key={a.id} plain dimColor={dim} onPress={() => update($, selected, () => a.id)}>
               {head}{u !== undefined && <Text color={meterColor(u.percent, warn)}> {u.percent}%</Text>}
             </Button>
           )}
@@ -679,15 +763,15 @@ export const register: Register = (on, options) => {
           </Box>
           <Text bold color={COLOR[agent.status]}>
             {GLYPH[agent.status] ?? '?'} {labelOf(agent)} <Text dimColor>{ROLE[agent.type] ?? agent.type} · {agent.status}
-            {act ? ` · started ${ago(t - act.startedAt)} ago` : ''}{children.length ? ` · ${children.length} under it` : ''}</Text>
+            {act ? ` · ${runTime(act, ENDED.has(agent.status))} · last active ${ago(t - act.lastAt)} ago` : ''}{children.length ? ` · ${children.length} under it` : ''}</Text>
           </Text>
           <Text dimColor>{agent.description}</Text>
           {children.length > 0 && <Text bold>Under it</Text>}
-          {children.map(c => card(c, 0, fullChildren))}
+          {children.map(c => card(c, 0, fullChildren, true))}
           <Text bold>Activity</Text>
           {(act?.log ?? []).length === 0 && <Text dimColor>Nothing seen yet.</Text>}
           {(act?.log ?? []).slice(-room).map(line => <Text wrap="truncate-end">{line}</Text>)}
-          {answer !== '' && <Text bold color={asksQuestion(answer) ? 'yellow' : undefined}>
+          {answer !== '' && <Text bold color={asksQuestion(answer) ? 'warning' : undefined}>
             {asksQuestion(answer) ? 'Asks' : 'Last report'}
           </Text>}
           {answer !== '' && <Text>{answer.length > 1200 ? '…' + answer.slice(-1200) : answer}</Text>}
@@ -716,6 +800,7 @@ export const register: Register = (on, options) => {
     const rootFull = fullTree || avail >= CARD_ROWS + flat.length
     const left = avail - (rootFull ? CARD_ROWS : 1)
     const shown = fullTree || flat.length <= left ? flat : flat.slice(0, Math.max(0, left - 1))
+    const mainTime = usage?.startedAt === undefined ? '' : elapsed(t - usage.startedAt)
     const mainU = main?.tokens === undefined ? undefined
       : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
 
@@ -724,8 +809,8 @@ export const register: Register = (on, options) => {
         <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PRs handed over` : ''} · press one to see it</Text>
         {rootFull ? (
           <Box flexDirection="column" borderStyle="round" paddingX={1}>
-            <Text bold>{ROOT_GLYPH} main <Text dimColor>· super manager</Text></Text>
-            {meter(mainU, false)}
+            <Text bold>{ROOT_GLYPH} main <Text dimColor> super manager</Text></Text>
+            {meter(mainU, false, mainTime)}
           </Box>
         ) : (
           <Text bold>{ROOT_GLYPH} main <Text dimColor>· super manager</Text>
@@ -733,7 +818,7 @@ export const register: Register = (on, options) => {
           </Text>
         )}
         {list.length === 0 && <Text dimColor>  Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
-        {shown.map(({ a, depth }) => card(a, depth + 1, fullTree))}
+        {shown.map(({ a, depth }) => card(a, depth + 1, fullTree, depth === 0))}
         {shown.length < flat.length && <Text dimColor>  +{flat.length - shown.length} more</Text>}
         {prs.length > 0 && <Text bold>  Merge queue</Text>}
         {prs.slice(0, 5).map(h => (
