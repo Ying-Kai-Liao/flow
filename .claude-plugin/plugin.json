@@ -1,9 +1,70 @@
 {
   "name": "flow-board",
-  "version": "0.1.0",
-  "description": "Run coding workers in parallel from one Claude Code session: each worker is a background subagent in its own git worktree, watched and switched from a Flow pane",
+  "version": "0.2.0",
+  "description": "The orca-flow pattern in one Claude Code session: a super manager starts managers, managers start workers in their own git worktrees, a merge queue merges and deploys; a Flow pane shows the tree",
   "author": {
     "name": "Ying-Kai Liao"
   },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "test_command": {
+      "type": "string",
+      "title": "Test command",
+      "description": "What a worker runs to check its package, e.g. npm test. Empty: the tests covering the changed files.",
+      "default": ""
+    },
+    "full_check_command": {
+      "type": "string",
+      "title": "Full check",
+      "description": "What the merge queue runs once per batch before pushing, e.g. npm run check. Empty: no full check (the queue says so).",
+      "default": ""
+    },
+    "deploy_command": {
+      "type": "string",
+      "title": "Deploy command",
+      "description": "What the merge queue runs after pushing. Empty: no deploy.",
+      "default": ""
+    },
+    "merge_method": {
+      "type": "string",
+      "title": "Merge method without a queue",
+      "description": "gh pr merge method managers use when the merge queue is off.",
+      "default": "squash",
+      "options": [
+        "squash",
+        "merge",
+        "rebase"
+      ]
+    },
+    "merge_queue": {
+      "type": "boolean",
+      "title": "Merge queue",
+      "description": "On: managers hand PRs to one merge queue. Off: managers merge themselves.",
+      "default": true
+    },
+    "max_workers": {
+      "type": "number",
+      "title": "Workers per manager",
+      "description": "How many workers one manager runs at a time.",
+      "default": 3
+    },
+    "worker_model": {
+      "type": "string",
+      "title": "Worker model",
+      "description": "Model alias for workers.",
+      "default": "sonnet",
+      "options": [
+        "sonnet",
+        "opus",
+        "haiku",
+        "fable"
+      ]
+    },
+    "base_branch": {
+      "type": "string",
+      "title": "Base branch",
+      "description": "Branch PRs target and the queue pushes to. Empty: the remote's default branch.",
+      "default": ""
+    }
+  }
 }

@@ -18,6 +18,23 @@ export type Activity = {
   answer?: string
 }
 
+// A PR a manager handed to the merge queue (flow_handover), and what the queue did with it.
+export type Handover = {
+  pr: number
+  title: string
+  head: string
+  branch: string
+  reportTo: string
+  verified: string
+  pending: string
+  afterDeploy: string
+  status: 'pending' | 'taken' | 'done' | 'returned'
+  at: number
+  sha?: string
+  report?: string
+  reason?: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'flow-board': {
@@ -25,6 +42,8 @@ declare module 'claude-code' {
       activity: Record<string, Activity>
       selected: string | null
       now: number
+      handovers: Record<string, Handover>
+      queueRuns: number
     }
   }
 }
