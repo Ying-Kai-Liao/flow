@@ -6,7 +6,7 @@ export type Graph = Record<string, DagNode>
 export type Plan = Record<string, Graph>
 
 export type AgentFact = { name?: string; status: string; answer?: string }
-export type Facts = { agents: AgentFact[]; handovers: Handover[]; phrases?: string[] }
+export type Facts = { agents: AgentFact[]; handovers: Handover[]; phrases?: string[]; asking?: string[] }
 
 export type NodeInput = { id: string; title?: string; after?: string[]; until?: 'merged' | 'reported' }
 
@@ -19,6 +19,9 @@ export type Notice = {
   // Free manager slots; only set for owner "main".
   slots?: number
 }
+
+// An agent with an open blocking ask in the decision inbox.
+const isAsking = (agent: AgentFact, facts: Facts): boolean => agent.name !== undefined && !!facts.asking?.includes(agent.name)
 
 // A phrase directly after one of these ("不需要你決定") says the opposite.
 const NEGATIONS = ['不', '不用', '不必', '無需', '毋需', '不需要', 'no ', 'not ', "don't ", 'no need to ']
@@ -134,7 +137,7 @@ function judge(owner: string, node: DagNode, facts: Facts): Verdict {
     if (agent.status === 'idle' || agent.status === 'completed') {
       const last = lastLine(agent.answer)
       if (last.startsWith('BLOCKED:')) return { state: 'blocked', info: last }
-      if (!asksQuestion(agent.answer, facts.phrases) && !last.startsWith('HANDOFF:')) return { state: 'done', info: 'reported' }
+      if (!asksQuestion(agent.answer, facts.phrases) && !isAsking(agent, facts) && !last.startsWith('HANDOFF:')) return { state: 'done', info: 'reported' }
     }
     if (failed) return { state: 'blocked', info: `agent ${agent.status}` }
     return { state: 'running' }
@@ -155,7 +158,7 @@ function judge(owner: string, node: DagNode, facts: Facts): Verdict {
   if (agent.status !== 'completed') return { state: 'running' }
   const last = lastLine(agent.answer)
   if (last.startsWith('BLOCKED:')) return { state: 'blocked', info: last }
-  if (asksQuestion(agent.answer, facts.phrases) || last.startsWith('HANDOFF:')) return { state: 'running' }
+  if (asksQuestion(agent.answer, facts.phrases) || isAsking(agent, facts) || last.startsWith('HANDOFF:')) return { state: 'running' }
   const hs = latestPerBranch(facts.handovers.filter(x => reportsTo(x, node.id)))
   const returned = hs.find(x => x.status === 'returned')
   if (returned) return { state: 'blocked', info: `PR #${returned.pr} returned: ${returned.reason ?? 'no reason given'}` }

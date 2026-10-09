@@ -7,6 +7,10 @@ import { ancestryQueries, dirtyFiles, isLive, leftoverLine, parsePorcelain, sele
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
+import {
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, inboxHead, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk,
+} from './inbox'
+import type { Inbox } from './inbox'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
 import {
@@ -77,6 +81,8 @@ const overrideView = atom({ plugin: 'flow', key: 'overrideView' } as const, unde
 const hinted = atom({ plugin: 'flow', key: 'hinted' } as const, false)
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
+// The decision inbox, mirrored from <state dir>/inbox.json.
+const inbox = atom({ plugin: 'flow', key: 'inbox' } as const, EMPTY_INBOX as Inbox)
 const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
@@ -544,6 +550,7 @@ async function syncPlans(
     agents: rows.map(a => ({ name: a.name, status: a.status, answer: acts[a.id]?.answer })),
     handovers: Object.values(hs),
     phrases: decisionPhrases,
+    asking: askingNames(await read($, inbox)),
   }
   const slots = Math.max(0, maxManagers - liveManagers(rows).length)
   let notices: Notice[] = []
@@ -589,6 +596,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   rows.push(...Object.values(await read($, sessions)).map(sessionRow))
   const was = new Map(before.map(a => [a.id, a.status]))
   const ended: string[] = []
+  const askers = askingNames(await read($, inbox))
   for (const a of rows) {
     const prev = was.get(a.id)
     if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
@@ -596,7 +604,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     // The queue's worktree (detached at the base) goes once the queue is gone.
     if (ENDED.has(a.status) && a.type === QUEUE) autoSweep($)
     if (ENDED.has(a.status) || a.status === 'idle') {
-      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases)
+      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases) || askers.includes(a.name)
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
       void $.ui.toast(`${role}${labelOf(a)}: ${asks ? 'asks a question' : a.status === 'idle' ? 'finished its turn' : a.status}`)
     }
@@ -697,6 +705,63 @@ async function readJson($: EngineInterface, path: string): Promise<unknown> {
   } catch {
     return undefined
   }
+}
+
+// Inbox changes run one after another: two answers at once must not each start from the same file.
+let inboxChain: Promise<unknown> = Promise.resolve()
+
+// Read the inbox from disk, let fn change it, write it back and set the atom. fn returns the new inbox (the
+// same object when nothing changed) and whatever the caller wants back.
+function withInbox<T>($: EngineInterface, fn: (cur: Inbox) => { inbox: Inbox; out: T }): Promise<T> {
+  const run = async (): Promise<T> => {
+    const dir = await stateDir($)
+    const cur = dir === undefined ? await read($, inbox) : normalizeInbox(await readJson($, `${dir}/inbox.json`))
+    const { inbox: next, out } = fn(cur)
+    if (next !== cur) {
+      if (dir !== undefined) {
+        await $.process.run(['mkdir', '-p', dir])
+        await writeJsonAtomic($, `${dir}/inbox.json`, next)
+      }
+      await update($, inbox, () => next)
+    }
+    return out
+  }
+  const result = inboxChain.then(run, run)
+  inboxChain = result.catch(() => undefined)
+  return result
+}
+
+const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOString().slice(0, 10)
+
+// The one way a question gets answered: marks it, tells the asker when that is needed, notes the decision.
+// choice null takes the question's default. Returns one result line.
+async function answerQuestion($: EngineInterface, id: string, choice: string | null, by: string): Promise<string> {
+  const at = await $.clock.now()
+  const marked = await withInbox($, cur => {
+    const m = markAnswered(cur, id, choice, by, at)
+    return { inbox: m.kind === 'ok' ? m.inbox : cur, out: m }
+  })
+  if (marked.kind === 'unknown') return `${id}: no such question.`
+  if (marked.kind === 'answered') return `${id}: already answered ("${marked.q.answer ?? ''}" by ${marked.q.answeredBy ?? '?'}).`
+  if (marked.kind === 'refused') return `${id}: refused, it is addressed to ${marked.q.addressee}, not ${by}.`
+  if (marked.kind === 'empty') return `${id}: refused, the choice is empty.`
+  const { q, answer, isDefault } = marked
+  let delivered = true
+  let hint = ''
+  if (needsMessage(q, isDefault)) {
+    const asker = q.askerId === undefined ? undefined : (await $.agent.list()).find(a => a.id === q.askerId)
+    delivered = false
+    if (asker !== undefined && (LIVE.has(asker.status) || asker.status === 'idle')) {
+      delivered = await $.session.send({ to: { agentId: asker.id }, text: answerMessage(q, answer, by, isDefault) })
+        .then(() => true, () => false)
+    }
+    if (!delivered) hint = `; ${q.owner} is gone: main should relay it to ${noteKey(q.owner)}-2`
+  }
+  await withInbox($, cur => ({
+    inbox: { ...cur, items: cur.items.map(x => (x.id === id ? { ...x, delivered } : x)) }, out: undefined,
+  }))
+  await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${q.question}: ${answer}"`)
+  return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.`
 }
 
 const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
@@ -2019,6 +2084,12 @@ export const register: Register = (on, options) => {
       await update($, handovers, hs => ({ ...disk, ...hs }))
       queueDue = Object.values(disk).some(h => h.status === 'pending')
     })
+    await best($, 'loading the inbox', async () => {
+      const dir = await stateDir($)
+      if (dir === undefined) return
+      const disk = normalizeInbox(await readJson($, `${dir}/inbox.json`))
+      await update($, inbox, () => disk)
+    })
     // The base branch: the option, else the remote's default branch, else main.
     // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
     try {
@@ -2054,8 +2125,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[close|resume|approve <pr>|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow inbox lists the open questions to answer, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox|close|resume|approve <pr>|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -2080,6 +2151,52 @@ export const register: Register = (on, options) => {
           mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: it waits for the user\'s /flow approve before the queue merges it. "auto" only marks it safe to merge directly and is refused when the merge_mode setting is confirm. Omit to use the setting.' },
         },
         required: ['pr', 'report_to'],
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
+      name: 'ask',
+      description: 'Ask a structured question (a batch) instead of asking in prose. A worker\'s questions go to its manager, a manager\'s to main. ' +
+        'Give options and the default you recommend. Non-blocking: go ahead on the default now and say in your report that you assumed it; you get a message if the answer differs. ' +
+        'Blocking: end your turn; the answer arrives by message. Main cannot ask.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          from: { type: 'string', description: 'Your agent name' },
+          questions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                question: { type: 'string' },
+                options: { type: 'array', items: { type: 'string' }, description: 'The choices, at least two' },
+                default: { type: 'string', description: 'The option you recommend (its text or its 1-based number)' },
+                blocking: { type: 'boolean', description: 'true when you cannot go on without the answer' },
+                context: { type: 'string', description: 'What the answerer needs to know' },
+                topic: { type: 'string' },
+              },
+              required: ['question', 'options', 'default', 'blocking'],
+            },
+          },
+        },
+        required: ['from', 'questions'],
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
+      name: 'answer',
+      description: 'Answer questions addressed to you in the decision inbox: a manager answers its workers\' asks, main answers the managers\'. ' +
+        'answers: [{id, choice}] (choice is an option\'s letter, number or text, or free text). defaults: true takes every default of your open questions, or only those in ids.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          answers: {
+            type: 'array',
+            items: { type: 'object', properties: { id: { type: 'string' }, choice: { type: 'string' } }, required: ['id', 'choice'] },
+          },
+          defaults: { type: 'boolean', description: 'Answer with the defaults' },
+          ids: { type: 'array', items: { type: 'string' }, description: 'With defaults: only these question ids' },
+        },
       },
       isDeferred: false,
     })
@@ -2231,6 +2348,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'flow' }, async ($, e) => {
     // A plugin's $.command.run may leave args out.
     const arg = (e.args ?? '').trim()
+    if (arg === 'inbox') return { text: renderInbox(await read($, inbox), await $.clock.now()) }
     if (arg === 'close') {
       if (!(await $.ui.panes()).some(p => p.id === PANE)) return { text: 'The Flow pane is not open.' }
       try {
@@ -2290,7 +2408,7 @@ export const register: Register = (on, options) => {
       await refresh($)
       return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -2655,6 +2773,71 @@ export const register: Register = (on, options) => {
     }
   })
 
+  on('tool.call', { tool: 'mcp__flow__ask' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    if (e.agentId === undefined) return { result: 'Refused: main cannot ask; decide, or ask the user in the chat.' }
+    const parsed = parseAsk(input)
+    if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error}` }
+    const rows = await refresh($)
+    const me = rows.find(a => a.id === e.agentId)
+    const name = me?.name ?? (String(input.from ?? '').trim() || 'unknown')
+    const parent = me?.parentId === undefined ? undefined : rows.find(a => a.id === me.parentId)
+    const addressee = parent !== undefined && parent.type === MANAGER ? parent.name : 'main'
+    const at = await $.clock.now()
+    // Standing answers hook: check rules here, before storing, and answer through answerQuestion.
+    const added = await withInbox($, cur => {
+      const r = addQuestions(cur, { name, id: e.agentId, isManager: me?.type === MANAGER }, addressee, parsed.questions, at)
+      return { inbox: r.added.some(a => a.fresh) ? r.inbox : cur, out: r.added }
+    })
+    const date = await today($)
+    for (const { q, fresh } of added) {
+      const owner = notesOwner(q)
+      if (fresh && !q.blocking && owner !== 'main') {
+        await appendNote($, owner, `- ${date} progress: assumed ${q.default} for ${q.id}: ${q.question}`)
+      }
+    }
+    const fresh = added.filter(a => a.fresh).map(a => a.q)
+    if (addressee !== 'main' && fresh.length > 0 && parent !== undefined) {
+      const lines = fresh.map(q =>
+        `${name} asks ${q.id} (${q.blocking ? 'blocking' : 'non-blocking'}): ${q.question} - options ` +
+        `${q.options.map((o, i) => `${String.fromCharCode(97 + i)}) ${o}`).join(' ')} (default: ${q.default})`)
+      await $.session.send({ to: { agentId: parent.id }, text: `${lines.join('\n')}\nAnswer with mcp__flow__answer.` }).catch(() => undefined)
+    } else if (addressee === 'main' && fresh.some(q => q.blocking)) {
+      void $.ui.toast(`${name} asks: ${fresh.length} question(s) in /flow inbox`)
+    }
+    return {
+      result: added.map(({ q, fresh: isNew }) => {
+        if (!isNew) return `${q.id}: already asked as ${q.id}.`
+        return q.blocking
+          ? `${q.id}: end your turn now; the answer arrives by message.`
+          : `${q.id}: proceed on the default (${q.default}), say in your report/PR that you assumed it; you'll get a message if the answer differs.`
+      }).join('\n'),
+    }
+  })
+
+  on('tool.call', { tool: 'mcp__flow__answer' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const by = e.agentId === undefined ? 'main' : await ownerNameOf($, e.agentId)
+    const todo = new Map<string, string | null>()
+    const lines: string[] = []
+    const answers = Array.isArray(input.answers) ? input.answers as Array<{ id?: unknown; choice?: unknown }> : []
+    for (const a of answers) {
+      const id = String(a?.id ?? '').trim()
+      if (id === '' || typeof a?.choice !== 'string') {
+        lines.push(`${id || '(no id)'}: refused, each answer needs an id and a choice.`)
+      } else if (!todo.has(id)) todo.set(id, a.choice)
+    }
+    if (input.defaults === true) {
+      const ids = Array.isArray(input.ids) ? input.ids.map(String) : undefined
+      const open = openFor(await read($, inbox), by).map(q => q.id)
+      for (const id of ids ?? open) if (!todo.has(id)) todo.set(id, null)
+      if (ids === undefined && open.length === 0 && todo.size === 0) lines.push('No open questions for you.')
+    }
+    if (todo.size === 0 && lines.length === 0) lines.push('Nothing to answer: pass answers, or defaults: true.')
+    for (const [id, choice] of todo) lines.push(await answerQuestion($, id, choice, by))
+    return { result: lines.join('\n') }
+  })
+
   on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     const manager = String(input.manager ?? '').trim()
@@ -2717,6 +2900,7 @@ export const register: Register = (on, options) => {
     const slots = slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
     return {
       result: [
+        ...inboxHead(await read($, inbox)),
         limitsLine(rows, settings.maxWorkers),
         ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
@@ -2853,6 +3037,9 @@ export const register: Register = (on, options) => {
       read($, cursor), read($, folded), currentUnhanded($), read($, leftovers),
     ])
     const leftover = leftoverLine(leftCounts)
+    const openQs = openAll(await read($, inbox)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
+    const askers = askingNames(await read($, inbox))
+    const inboxRows = openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
     const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
@@ -2965,7 +3152,7 @@ export const register: Register = (on, options) => {
       const act = acts[a.id]
       const hand = handoffOf(a, act)
       const dim = ENDED.has(a.status) && hand?.kind !== 'done'
-      const asks = asksQuestion(act?.answer, settings.decisionPhrases) && !['running', 'pending'].includes(a.status)
+      const asks = (asksQuestion(act?.answer, settings.decisionPhrases) || askers.includes(a.name)) && !['running', 'pending'].includes(a.status)
       const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
@@ -3161,8 +3348,8 @@ export const register: Register = (on, options) => {
           <Text bold>Activity</Text>
           {(act?.log ?? []).length === 0 && <Text dimColor>Nothing seen yet.</Text>}
           {(act?.log ?? []).slice(-room).map(line => <Text wrap="truncate-end">{line}</Text>)}
-          {answer !== '' && <Text bold color={asksQuestion(answer, settings.decisionPhrases) ? 'warning' : undefined}>
-            {asksQuestion(answer, settings.decisionPhrases) ? 'Asks' : 'Last report'}
+          {answer !== '' && <Text bold color={asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name) ? 'warning' : undefined}>
+            {asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name) ? 'Asks' : 'Last report'}
           </Text>}
           {answer !== '' && <Text>{answer.length > 1200 ? '…' + answer.slice(-1200) : answer}</Text>}
         </Box>
@@ -3178,7 +3365,7 @@ export const register: Register = (on, options) => {
     // path) in a window that follows the highlight.
     const prRows = prs.length > 0 ? 1 + Math.min(prs.length, 5) : 0
     const usageRows = rows >= 20 ? Math.min(4, limits.length) : 0
-    const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0)
+    const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows
     const wide = treeItems(list, fold, cur ?? first, false, acts)
     const fullTree = (wide.items.length + 1) * CARD_ROWS <= avail
     const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
@@ -3223,6 +3410,11 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PRs handed over` : ''} · press one to see it</Text>
+        {openQs.slice(0, 5).map(q => (
+          <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{q.id} {q.owner}: {q.question}</Text>
+        ))}
+        {openQs.length > 5 && <Text dimColor>and {openQs.length - 5} more</Text>}
+        {openQs.length > 0 && <Text dimColor>/flow inbox to read, answer in the chat</Text>}
         {unhanded.length > 0 && (
           <Text color="warning" wrap="truncate-end">
             ⚠ {unhanded.length} PR{unhanded.length > 1 ? 's' : ''} nobody handed over: {unhanded.map(u => `#${u.pr}`).join(' ')}

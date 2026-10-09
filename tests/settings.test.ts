@@ -81,6 +81,14 @@ test('list keys from the overlay are added to the repo file\'s, once each', () =
   expect(r.warnings).toEqual([])
 })
 
+test('decision_phrases warns that it is deprecated and still applies', () => {
+  const r = mergeLayers({}, [{ path: REPO, text: JSON.stringify({ decision_phrases: ['which approach'] }) }])
+  expect(r.warnings.some(x => x.includes(REPO) && x.includes('decision_phrases') && x.includes('deprecated'))).toBe(true)
+  expect(r.raw.decision_phrases).toEqual(['which approach'])
+  const empty = mergeLayers({}, [{ path: REPO, text: JSON.stringify({ decision_phrases: [] }) }])
+  expect(empty.warnings).toEqual([])
+})
+
 test('the repo file replaces a list from /config; only the overlay appends', () => {
   const r = mergeLayers({ worker_checks: ['cfg'] }, [
     { path: REPO, text: JSON.stringify({ worker_checks: ['repo'] }) },

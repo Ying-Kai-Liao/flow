@@ -26,6 +26,14 @@ test('addNodes refuses cycles and names the path', async () => {
   expect('error' in three && three.error).toBe('cycle: a -> b -> c -> a')
 })
 
+test('an agent with an open blocking ask is not reported and stays running', async () => {
+  const g = build([{ id: 'w', until: 'reported' }])
+  const agents: AgentFact[] = [{ name: 'w', status: 'idle', answer: 'All done.' }]
+  expect(stateOf(evaluate('m', g, { ...EMPTY, agents }), 'w')).toBe('done')
+  expect(stateOf(evaluate('m', g, { ...EMPTY, agents, asking: ['w'] }), 'w')).toBe('running')
+  expect(stateOf(evaluate('m', g, { ...EMPTY, agents, asking: ['other'] }), 'w')).toBe('done')
+})
+
 test('a diamond is not a cycle', async () => {
   const g = build([{ id: 'a' }, { id: 'b', after: ['a'] }, { id: 'c', after: ['a'] }, { id: 'd', after: ['b', 'c'] }])
   expect(Object.keys(g)).toEqual(['a', 'b', 'c', 'd'])
