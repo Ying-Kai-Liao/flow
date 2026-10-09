@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { register } from '../hooks/register'
 
 // The engine compiles JSX with `h` as the factory (jsxFactory in .claude-plugin/types/tsconfig.json),
 // so any scope that contains JSX and also binds `h` calls that binding instead of the factory:
@@ -112,7 +113,8 @@ function paramsBindH(params: string): boolean {
   })
 }
 
-const JSX = /(^|[^\w$)\]])<(\/|>|[A-Za-z])/
+// Compiled JSX is a call of the factory, `h(Text, {...})`; a scope that binds `h` and calls it is the bug.
+const JSX = /(^|[^\w$.])h\(/
 
 type Hit = { line: number; text: string }
 
@@ -164,35 +166,32 @@ function shadowsOfFactory(src: string): Hit[] {
   return hits
 }
 
-test('the scan catches h bound in a scope with JSX', () => {
+test('the scan catches h bound in a scope that calls the factory', () => {
   const bad = [
-    'const x = (<Box>{prs.map(h => (<Text key={h.pr}>{h.title}</Text>))}</Box>)',
-    'const x = rows.map((r, h) => <Text>{r}</Text>)',
-    'const x = rows.map(({ h }) => <Text>{h}</Text>)',
-    'function draw(h) { return <Text>{h}</Text> }',
-    'function draw() { const h = 1; return <Text>{h}</Text> }',
-    'function draw() { const { h } = o; return <><Text/></> }',
+    'const x = h(Box, null, prs.map((h) => h(Text, { key: h.pr }, h.title)))',
+    'const x = rows.map((r, h) => h(Text, null, r))',
+    'const x = rows.map(({ h }) => h(Text, null, h))',
+    'function draw(h) { return h(Text, null, h); }',
+    'function draw() { const h = 1; return h(Text, null, h); }',
+    'function draw() { const { h } = o; return h(Fragment, null, h(Text, null)); }',
   ]
   for (const src of bad) expect(shadowsOfFactory(src).length).toBeGreaterThan(0)
 })
 
-test('the scan leaves h bindings alone where no JSX is in their scope', () => {
+test('the scan leaves h bindings alone where the factory is not called in their scope', () => {
   const fine = [
-    'const t = list.filter(h => h.ok).length\nfunction draw(ho) { return <Text>{ho}</Text> }',
-    'function f() { const h = 1; return h }\nfunction g() { return <Text>{`${1 < 2}`}</Text> }',
-    "const s = 'h => <Text/>' // h => <Box/>",
-    'const ok = a < b && b > c, hh = (x) => x',
+    'const t = list.filter((h) => h.ok).length;\nfunction draw(ho) { return h(Text, null, ho); }',
+    'function f() { const h = 1; return h; }\nfunction g() { return h(Text, null, `${1 < 2}`); }',
+    "const s = '(h) => h(Text)'; // (h) => h(Box)",
+    'const ok = a < b && b > c, hh = (x) => x, n = heldBy(h2, t)',
   ]
   for (const src of fine) expect(shadowsOfFactory(src)).toEqual([])
 })
 
-test('no scope in hooks/*.tsx that contains JSX binds h, the JSX factory', async ($) => {
-  // The test sandbox has no fs module, so the sources come through a real process.
-  const ls = await $.process.run(['ls', 'hooks'])
-  const names = ls.stdout.split('\n').filter(n => n.endsWith('.tsx'))
-  expect(names).toContain('register.tsx')
-  for (const n of names) {
-    const { stdout } = await $.process.run(['cat', `hooks/${n}`])
-    expect(shadowsOfFactory(stdout).map(x => `${n}:${x.line}: ${x.text}`)).toEqual([])
-  }
+test('no scope in the compiled pane that calls the JSX factory binds h', () => {
+  // The test sandbox has no fs module; the compiled function keeps its parameter names
+  // and its JSX shows as `h(Text, ...)`, which is what the engine runs.
+  const src = String(register)
+  expect(src).toContain('h(Text')
+  expect(shadowsOfFactory(src).map(x => `${x.line}: ${x.text}`)).toEqual([])
 })
