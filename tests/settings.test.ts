@@ -4,6 +4,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import { isFable, KEYS, mergeLayers } from '../hooks/settings'
 
+type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
 
 const REPO = '/repo/.claude/flow.json'
@@ -42,8 +43,8 @@ function world(on: On, files: Record<string, string>, opts: { git?: boolean; age
   on('agent.list', () => ({ value: opts.agents ?? [] }))
   on('session.start', () => ({ cwd: '/repo' }))
   const clock = mock.clock(on, { now: 1_000_000 })
-  on('command.register', () => ({ value: undefined }))
-  on('tool.register', () => ({ value: undefined }))
+  on('command.register', () => ({ value: undefined } as never))
+  on('tool.register', () => ({ value: undefined } as never))
   return {
     registered, toasts, clock,
     touch: (path: string, text?: string) => { if (text !== undefined) files[path] = text; mtimes[path] = (mtimes[path] ?? 1) + 1 },
@@ -52,7 +53,7 @@ function world(on: On, files: Record<string, string>, opts: { git?: boolean; age
   }
 }
 
-const start = ($: Parameters<Parameters<typeof test>[2] & ((...a: never[]) => unknown)>[0]) =>
+const start = ($: Dollar) =>
   ($ as never as { session: { start: (e: unknown) => Promise<unknown> } }).session.start({ cwd: '/repo', surface: null, isInteractive: false })
 
 test('the repo file lays over /config, the overlay over the repo file', { options: { max_workers: 5, worker_model: 'haiku', test_command: 'npm test' } }, async ($, on) => {
