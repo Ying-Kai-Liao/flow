@@ -52,6 +52,13 @@ export function dirtyFiles(status: string): string[] {
 // An agent that may still use its worktree: running, waiting, or idle between turns.
 export const isLive = (status: string): boolean => ['pending', 'running', 'waiting', 'idle'].includes(status)
 
+// The type-link paths `git status` lists as untracked: the only files apply deletes itself so a
+// plain `git worktree remove` goes through. Exactly the ignored ones, nothing else.
+export function typeLinks(status: string): string[] {
+  return status.split('\n').filter(l => l.startsWith('?? ') && TYPE_LINKS.has(l.slice(3).trim()))
+    .map(l => l.slice(3).trim().replace(/\/$/, ''))
+}
+
 export type PrRow = { number: number; headRefName: string; headRefOid: string; state: string }
 export type RosterEntry = { id: string; name?: string; live: boolean; cwd?: string }
 
@@ -76,6 +83,15 @@ export type CleanInputs = {
   deadPids?: Set<number>
   // Worktree paths a handoff record keeps for a successor not spawned yet.
   waiting?: Set<string>
+  // sha -> the commits (short sha + subject, origin/<base>..sha) whose whole change from the merge
+  // base is already on origin/<base>, file for file; see containedCandidates.
+  contained?: Record<string, string[]>
+  // The pid of the Claude process running this plugin; absent when it could not be told. A lock
+  // that names it was made in this session, so $.agent.list() knows its agent.
+  ownPid?: number
+  // Worktrees whose lock file is older than 10 minutes; a younger or unaged lock may belong to an
+  // agent that is still starting and not yet in the roster.
+  oldLocks?: Set<string>
 }
 
 export type Kept = { kind: 'worktree' | 'branch'; name: string; reason: string; needsLook: boolean }
@@ -84,10 +100,46 @@ export type Sweep = {
   // Locked worktrees whose lock belongs to an agent that ended: unlocked before removal.
   unlock: string[]
   keep: Kept[]
+  // Type links to delete before the plain remove, per worktree path that is in remove.
+  links: Record<string, string[]>
+  // Unpushed commits dropped because a merged PR of the branch family already holds their content.
+  dropped: { kind: 'worktree' | 'branch'; name: string; commits: string[] }[]
 }
 
 const linked = (i: Pick<CleanInputs, 'main'>, w: Worktree) =>
   w.path !== i.main && w.path.startsWith(`${i.main.replace(/\/+$/, '')}/.claude/worktrees/`)
+
+// flow/x and flow/x-2 are one line of work: a continuation or rebase reuses the name with a suffix.
+const family = (b: string) => b.replace(/-\d+$/, '')
+
+const mergedFamily = (i: Pick<CleanInputs, 'prs'>, branch: string) =>
+  (i.prs ?? []).filter(p => p.state === 'MERGED' && family(p.headRefName) === family(branch))
+
+// Worktrees whose handoff record keeps them for a successor: not taken, not continued, and the
+// branch has no merged PR (the work was complete after all, so nobody will come).
+export function waitingPaths(
+  hs: { branch: string; worktree?: string; takenBy?: string; at: number }[],
+  continued: { branch?: string; ts: string }[],
+  prs: PrRow[] | undefined,
+): Set<string> {
+  return new Set(hs.filter(h => h.worktree !== undefined && h.takenBy === undefined
+    && !continued.some(l => l.branch === h.branch && Date.parse(l.ts) >= h.at)
+    && !(prs ?? []).some(p => p.state === 'MERGED' && p.headRefName === h.branch)).map(h => h.worktree!))
+}
+
+// The shas register.tsx checks for content equivalence: tips not on the base whose branch family
+// has a merged PR. It answers with `contained` (every file the commits changed since the merge
+// base has the same tree entry on origin/<base>, so nothing is lost), which landed() trusts.
+export function containedCandidates(i: Omit<CleanInputs, 'ancestry'>): string[] {
+  const out = new Set<string>()
+  const ask = (sha: string | undefined, branch: string | undefined) => {
+    if (sha === undefined || branch === undefined || i.onBase.has(sha)) return
+    if (mergedFamily(i, branch).length > 0) out.add(sha)
+  }
+  for (const w of i.worktrees) if (linked(i, w) && !w.prunable) ask(w.head, w.branch)
+  for (const [b, sha] of Object.entries(i.branches)) ask(sha, b)
+  return [...out]
+}
 
 const merged = (i: Pick<CleanInputs, 'prs'>, branch?: string) =>
   (i.prs ?? []).filter(p => p.state === 'MERGED' && (branch === undefined || p.headRefName === branch))
@@ -107,7 +159,7 @@ export function ancestryQueries(i: Omit<CleanInputs, 'ancestry'>): string[] {
   return [...out]
 }
 
-type Verdict = { ok: true } | { ok: false; reason: string; needsLook: boolean }
+type Verdict = { ok: true; dropped?: string[] } | { ok: false; reason: string; needsLook: boolean }
 
 // Whether a commit's work is safe to drop: on the base, in a merged PR, or (worktrees only)
 // pushed with a closed PR.
@@ -115,6 +167,10 @@ function landed(i: CleanInputs, sha: string, branch: string | undefined, closedO
   if (i.onBase.has(sha)) return { ok: true }
   if (merged(i).some(p => p.headRefOid === sha)) return { ok: true }
   if (branch !== undefined && merged(i, branch).some(p => i.ancestry.has(`${sha} ${p.headRefOid}`))) return { ok: true }
+  const same = i.contained?.[sha]
+  if (branch !== undefined && same !== undefined && mergedFamily(i, branch).length > 0) {
+    return same.length > 0 ? { ok: true, dropped: same } : { ok: true }
+  }
   const pushed = branch !== undefined && (i.remote[branch] === sha || i.ancestry.has(`${sha} origin/${branch}`))
   const prs = branch === undefined ? [] : (i.prs ?? []).filter(p => p.headRefName === branch)
   const closed = prs.find(p => p.state === 'CLOSED')
@@ -137,17 +193,21 @@ function liveOwner(i: CleanInputs, path: string | undefined, branch: string | un
 const LOCK_AGENT = /\bagent-([0-9a-zA-Z]+)\b/
 const LOCK_PID = /\bpid (\d+)\b/
 
-// A lock is stale when the agent it names ended in this session's roster, or its process is gone.
-function staleLock(i: CleanInputs, reason: string): boolean {
+// A lock is stale when the agent it names ended in this session's roster, is unknown to it while
+// the lock is this session's own, or its process is gone.
+function staleLock(i: CleanInputs, reason: string, path: string): boolean {
   const id = LOCK_AGENT.exec(reason)?.[1]
   const pid = Number(LOCK_PID.exec(reason)?.[1] ?? NaN)
   const agent = id === undefined ? undefined : i.roster.find(a => a.id === id)
   if (agent !== undefined) return !agent.live
+  // Same process, same session: the roster lists every agent it started, nested ones included
+  // (AgentInfo.parentId), so an agent missing from it is gone. Another pid proves nothing.
+  if (id !== undefined && Number.isInteger(pid) && pid === i.ownPid) return i.oldLocks?.has(path) === true
   return id !== undefined && Number.isInteger(pid) && i.deadPids?.has(pid) === true
 }
 
 export function selectCleanup(i: CleanInputs): Sweep {
-  const sweep: Sweep = { remove: { worktrees: [], branches: [] }, unlock: [], keep: [] }
+  const sweep: Sweep = { remove: { worktrees: [], branches: [] }, unlock: [], keep: [], links: {}, dropped: [] }
   const keep = (kind: Kept['kind'], name: string, reason: string, needsLook: boolean) =>
     sweep.keep.push({ kind, name, reason, needsLook })
   // Branches checked out in a worktree that stays (the main checkout included).
@@ -193,13 +253,16 @@ export function selectCleanup(i: CleanInputs): Sweep {
       continue
     }
     if (w.locked !== undefined) {
-      if (!staleLock(i, w.locked)) {
+      if (!staleLock(i, w.locked, w.path)) {
         keep('worktree', w.path, 'locked', true)
         hold()
         continue
       }
       sweep.unlock.push(w.path)
     }
+    if (v.dropped) sweep.dropped.push({ kind: 'worktree', name: w.path, commits: v.dropped })
+    const links = typeLinks(status)
+    if (links.length > 0) sweep.links[w.path] = links
     sweep.remove.worktrees.push(w.path)
   }
 
@@ -222,7 +285,10 @@ export function selectCleanup(i: CleanInputs): Sweep {
       continue
     }
     const v = landed(i, tip, b, false)
-    if (v.ok) sweep.remove.branches.push(b)
+    if (v.ok) {
+      sweep.remove.branches.push(b)
+      if (v.dropped) sweep.dropped.push({ kind: 'branch', name: b, commits: v.dropped })
+    }
     else keep('branch', b, v.reason, v.needsLook)
   }
   return sweep
@@ -237,6 +303,11 @@ export function sweepText(s: Sweep, opts: { applied: boolean; removed?: Sweep['r
   if (gone.worktrees.length) lines.push(`${verb} ${gone.worktrees.length} worktree${gone.worktrees.length > 1 ? 's' : ''}:`, ...gone.worktrees.map(p => `  ${p}`))
   if (gone.branches.length) lines.push(`${verb} ${gone.branches.length} branch${gone.branches.length > 1 ? 'es' : ''}:`, ...gone.branches.map(b => `  ${b}`))
   if (!gone.worktrees.length && !gone.branches.length) lines.push(opts.applied ? 'Removed nothing.' : 'Nothing to remove.')
+  const lost = s.dropped.filter(d => gone[d.kind === 'worktree' ? 'worktrees' : 'branches'].includes(d.name))
+  if (lost.length) {
+    lines.push('Dropping unpushed commits whose content a merged PR already holds:')
+    for (const d of lost) lines.push(`  ${d.kind} ${d.name}:`, ...d.commits.map(c => `    ${c}`))
+  }
   const kept = [...(opts.failed ?? []), ...s.keep]
   const look = kept.filter(k => k.needsLook)
   const busy = kept.filter(k => !k.needsLook)
