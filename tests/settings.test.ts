@@ -265,3 +265,10 @@ test('every userConfig key in plugin.json is a settings key', () => {
   const missing = USER_CONFIG_KEYS.filter(k => !(k in KEYS))
   expect(missing).toEqual([])
 })
+
+test("the worker agent carries the repo file required checks", async ($, on) => {
+  const w = world(on, { [REPO]: JSON.stringify({ worker_checks: ["tsc -p ."] }) })
+  await start($)
+  expect(w.last("worker")!.prompt).toContain("`tsc -p .`")
+  expect(w.last("manager")!.prompt).not.toContain("`tsc -p .`")
+})

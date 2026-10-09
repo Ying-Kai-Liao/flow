@@ -204,7 +204,7 @@ worker to fix X".
 | `main_checkout_guard` | on | every agent and the main session: writes to the main checkout are refused (see Guards) |
 | `main_checkout_allow` | `.claude/` | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 
-`language`, `big_files`, `big_file_lines`, `migrations_dir`, `decision_phrases`, `worker_checks` and `always_tests` are read and checked now; a following release wires them into the prompts.
+`decision_phrases` is read and checked now; a following release wires it into the prompts.
 
 An unset full check or deploy is a step that's skipped and reported, never improvised.
 

@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.15] - 2026-10-09
+
+### Added
+
+- Settings now shape the prompts: `worker_checks` and `always_tests` are hard requirements for workers (no PR if a check fails; the report lists every command run), `language` adds a language line to worker, manager and queue, `big_files` and `big_file_lines` tell agents not to read big files whole, `migrations_dir` adds the migration numbering rules for worker, manager and queue.
+
 ## [0.3.14] - 2026-10-09
 
 ### Added
