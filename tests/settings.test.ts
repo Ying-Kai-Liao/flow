@@ -1,9 +1,10 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import { isFable, KEYS, mergeLayers } from '../hooks/settings'
 
-type On = Parameters<Parameters<typeof test>[2] & ((...a: never[]) => unknown)>[1]
+type On = Parameters<TestBody>[1]
 
 const REPO = '/repo/.claude/flow.json'
 const OVERLAY = '/repo/.git/flow/config.json'
@@ -255,7 +256,7 @@ test('a refused [1m] model falls back once to the plain model, tells once, and l
 // A key the loader does not know would be set in the plugin UI and silently ignored.
 const USER_CONFIG_KEYS = [
   'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_queue', 'max_managers', 'max_workers',
-  'test_slots', 'context_warn_percent', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow',
+  'test_slots', 'context_warn_percent', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow', 'max_continues',
   'worker_model', 'manager_model', 'queue_model', 'language', 'base_branch',
 ]
 

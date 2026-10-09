@@ -31,6 +31,7 @@ export const KEYS: Record<string, Kind> = {
   test_slots: 'number',
   context_warn_tokens: 'number',
   max_managers: 'number',
+  max_continues: 'number',
   main_checkout_guard: 'boolean',
   main_checkout_allow: 'string',
 }
