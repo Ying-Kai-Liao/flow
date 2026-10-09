@@ -31,16 +31,19 @@ anything.
 
 - **The Flow pane** (`/flow`): the tree rooted at your main session (the super manager), with
   the managers, what needs you first, and the PRs handed to the queue under it. Every agent is
-  a card: status, role and name, time since it was last active, what it did last or the question
-  it asks (yellow), and underneath its description and how many agents it has under it.
-  Click a card to see the agent's activity and its last report or question. The agents under it
+  a card: a status glyph, the bold name with `(+N)` for the agents under it, the role dimmed, one
+  short activity line (what it is doing, or the question it asks; the description only while
+  there is no activity yet), and the meter below with elapsed time and tokens. Only top-level
+  cards have a border. Colors follow your light or dark theme (the theme's suggestion, warning,
+  success and error colors), and the pane redraws when you switch `/theme`.
+  Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
   `/flow close` closes the pane, `/flow resume` picks up unfinished work (below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
-- **A context meter on each card**: `███│░░░░░░░ 42% · 84k/200k`, with `│` marking the warning
-  threshold (`context_warn_percent`). The meter turns yellow at or past the threshold and red
-  from 90%. Where an agent's usage isn't known yet it says `context ?`, never a guess. A
+- **A context meter on each card**: `███│░░░░░░░ 42%   1m 43s · ↓ 84.0k tokens`, with `│` marking the warning
+  threshold (`context_warn_percent`). The meter turns the theme's warning color at or past the threshold and its error
+  color from 90%. The time runs while the agent runs and freezes when it ends. Where an agent's usage isn't known yet it says `context ?` and shows no tokens, never a guess. A
   subagent's window is the main session's when it runs the same model, else 200k (1M for a
   `[1m]` model).
   On a short terminal the cards shrink to one-line rows (just `42%`), and `+N more` stands in

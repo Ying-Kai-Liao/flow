@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.9] - 2026-10-09
+
+### Changed
+
+- The Flow pane's colors follow the light or dark theme (theme keys instead of fixed colors).
+- Cards are quieter: no brackets around buttons, short activity summaries instead of raw
+  commands, the description only while there is no activity, borders only on top-level cards,
+  and `(+N)` after the name for the agents under it.
+- The meter line shows elapsed time and tokens (`42%   1m 43s · ↓ 84.0k tokens`), like the
+  native subagent row; the detail view says when the agent was last active.
+
+### Added
+
+- The pane redraws when the theme is switched.
+
 ## [0.2.8] - 2026-10-09
 
 ### Added
