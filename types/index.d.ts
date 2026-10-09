@@ -43,6 +43,18 @@ export type Handover = {
   reason?: string
 }
 
+// One line of the state dir's log.jsonl. `handoff` and `continue` are defined for a later package.
+export type LogEvent = {
+  ts: string
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'handoff' | 'continue' | 'note'
+  // The manager that owns the work, or "main".
+  owner: string
+  agent?: string
+  pr?: number
+  branch?: string
+  text?: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'flow': {
