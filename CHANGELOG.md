@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.27] - 2026-10-10
+
+### Fixed
+
+- Cleanup sweep: type links (`types`, `.claude-plugin/types`, symlinks only) are deleted before a plain
+  `git worktree remove`, so a worktree with only those untracked links goes; any other untracked file
+  still keeps it. `--force` is never used.
+- Cleanup sweep: a branch tip not on the base counts as landed when every file its commits changed is
+  identical on origin/main and a merged PR exists for the branch (or its `-N` sibling). The dropped
+  commits (short sha and subject) are listed in the sweep text and the `clean` log event.
+- A handoff whose branch has a merged PR no longer keeps its worktree waiting.
+- A lock `claude agent agent-<id> (pid P ...)` is stale when P is this Claude process and no agent
+  `<id>` is in the roster.
+
 ## [0.3.26] - 2026-10-10
 
 ### Added
