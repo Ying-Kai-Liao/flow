@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-10
+
 ### Added
 
 - After a batch the reviewer fast-forwards the main checkout (`git pull --ff-only`) when it is clean and on the base branch, so merged changes such as `.claude/flow.json` take effect there. Otherwise it leaves it alone and reports "main checkout not updated: <dirty | on branch X | ff failed>".
