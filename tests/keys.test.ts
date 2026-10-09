@@ -8,8 +8,8 @@ type On = Parameters<TestBody>[1]
 
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const
 
-const row = (id: string, parentId?: string, status = 'running') =>
-  ({ id, name: id, description: `d ${id}`, type: parentId ? 'flow:worker' : 'flow:manager', status, parentId }) as never
+const row = (id: string, parentId?: string, status = 'running', type = parentId ? 'flow:worker' : 'flow:manager') =>
+  ({ id, name: id, description: `d ${id}`, type, status, parentId }) as never
 
 // m0..m(n-1), each with `kids` workers m0-w0...
 function fleet(n: number, kids: number): AgentInfo[] {
@@ -42,7 +42,7 @@ const hot = (ui: Awaited<ReturnType<typeof mount>>, id: string) =>
   ui.find({ type: 'Text', text: new RegExp(`^${id}$`), inverse: true } as never)
 
 test('treeItems folds all but the highlight path when crowded, and an explicit fold wins', () => {
-  const list = [row('a'), row('a1', 'a'), row('b'), row('b1', 'b')] as unknown as Parameters<typeof treeItems>[0]
+  const list = [row('a', undefined, 'running', 'flow:worker'), row('a1', 'a'), row('b', undefined, 'running', 'flow:worker'), row('b1', 'b')] as unknown as Parameters<typeof treeItems>[0]
   expect(treeItems(list, {}, 'a1', false).items.map(i => i.a.id)).toEqual(['a', 'a1', 'b', 'b1'])
   const auto = treeItems(list, {}, 'a1', true)
   expect(auto.items.map(i => i.a.id)).toEqual(['a', 'a1', 'b'])
@@ -50,6 +50,18 @@ test('treeItems folds all but the highlight path when crowded, and an explicit f
   expect(treeItems(list, { a: true }, 'a1', true).at).toBe('a')
   expect(treeItems(list, { b: false }, 'a1', true).items.map(i => i.a.id)).toEqual(['a', 'a1', 'b', 'b1'])
   expect(treeItems(list, {}, 'gone', false).at).toBeUndefined()
+})
+
+test('treeItems starts managers and the queue collapsed, workers expanded, and a choice wins', () => {
+  const list = [row('m'), row('w', 'm'), row('q', undefined, 'running', 'flow:queue'), row('s', undefined, 'running', 'flow:worker')] as unknown as Parameters<typeof treeItems>[0]
+  const ids = (fold: Record<string, boolean>, cur?: string) => treeItems(list, fold, cur, false).items.map(i => i.a.id)
+  expect(ids({})).toEqual(['m', 'q', 's'])
+  expect(treeItems(list, {}, undefined, false).items.map(i => i.collapsed)).toEqual([true, true, false])
+  expect(ids({ m: false })).toEqual(['m', 'w', 'q', 's'])
+  const solo = treeItems(list, { s: true }, undefined, false).items
+  expect(solo.find(i => i.a.id === 's')!.collapsed).toBe(true)
+  // The highlight on a hidden worker moves up to its collapsed manager.
+  expect(treeItems(list, {}, 'w', false).at).toBe('m')
 })
 
 test('viewOf centres the highlight and clamps at both ends', () => {
