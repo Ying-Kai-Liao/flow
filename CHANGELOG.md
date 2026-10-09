@@ -44,6 +44,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Two rule forms: `escalate: true` (a matching question is never auto-answered, is recorded blocking
   and flagged, and only main may answer it) and `answer: "default"` (a non-blocking question takes its
   own default). The ask guidance names the stable topics `external-tracker` and `prod-env-change`.
+- Per-target deploy mode: `deploy_targets[].mode` is `auto` (default) or `confirm`; an unknown value counts
+  as `confirm` and the settings warning says so. New tool `mcp__flow__deploy`: the queue calls `gate` before
+  each target (`Go`, `Held: ...` or `Awaits approval: <qid>`) and `deployed` after it; main holds and
+  releases a target (`hold` / `release`, also `/flow hold <target> [batch|released]` and
+  `/flow release <target>`); `list` shows mode, hold, last deployed sha, behind count and approval.
+- A confirm target opens one blocking inbox item (kind deploy) per target; answering `deploy` approves that
+  sha and starts a deploy-only queue run. Standing answers never answer it unless a rule names
+  `kinds: ["deploy"]`.
+- `mcp__flow__status` and the pane show "<target> behind by N commits" (cached, off the render path) and
+  "no deploy recorded". State in `deploys.json` beside `inbox.json`.
+
+### Changed
+
+- The queue skips a held or awaiting target and goes on to the next one; only a failed target stops the rest.
 
 ### Fixed
 

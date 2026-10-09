@@ -19,10 +19,12 @@ import type { Inbox, Question } from './inbox'
 //            of the rules, and is recorded blocking and flagged `escalated: <rule id>`, so only main answers it.
 //            A rule with both `escalate` and an `answer` is invalid (dropped with a warning).
 //   from     the asker's name (a manager's continuation `foo-2` counts as `foo`)
+//   kinds    the kinds of inbox item it may answer ("ask" for an ordinary question, "deploy" for a deploy
+//            approval). Absent: ordinary questions only. A deploy approval is answered only by a rule that names "deploy".
 // A rule without an id gets a derived one from its file and 1-based position in that file's list:
 // `personal:1`, `repo:2`, `config:1`. Positions count every entry, valid or not, so they stay stable.
 
-export type Rule = { id?: string; topic?: string; match?: string; answer?: string; escalate?: boolean; blocking?: boolean; from?: string; note?: string }
+export type Rule = { id?: string; topic?: string; match?: string; answer?: string; escalate?: boolean; blocking?: boolean; from?: string; note?: string; kinds?: string[] }
 export type Source = 'personal' | 'repo' | 'config'
 export type Resolved = { rid: string; source: Source; pos: number; rule: Rule; re?: RegExp }
 
@@ -46,6 +48,8 @@ export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { erro
   if (escalate && answer !== '') return { error: 'an escalate rule takes no answer' }
   if (!escalate && answer === '') return { error: 'needs an answer' }
   if (r.blocking !== undefined && typeof r.blocking !== 'boolean') return { error: 'blocking must be true or false' }
+  const kinds = Array.isArray(r.kinds) ? r.kinds.map(text).filter(k => k !== '') : typeof r.kinds === 'string' && text(r.kinds) !== '' ? [text(r.kinds)] : undefined
+  if (r.kinds !== undefined && (kinds === undefined || kinds.length === 0)) return { error: 'kinds must be a list of kind names' }
   let re: RegExp | undefined
   if (match !== '') {
     try {
@@ -61,6 +65,7 @@ export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { erro
     ...(escalate ? { escalate: true } : { answer }),
     ...(r.blocking === true ? { blocking: true } : {}),
     ...(text(r.from) !== '' ? { from: text(r.from) } : {}),
+    ...(kinds !== undefined ? { kinds } : {}),
     ...(text(r.note) !== '' ? { note: text(r.note) } : {}),
   }
   return { rule, ...(re !== undefined ? { re } : {}) }
@@ -95,7 +100,7 @@ export function parseRules(value: unknown, source: Source, label: string, warnin
   return out
 }
 
-export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner' | 'default'> & { topic?: string }
+export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner' | 'default' | 'kind'> & { topic?: string }
 
 // Topic, match and asker filters of a rule against a question.
 function applies(r: Resolved, q: Askable): boolean {
@@ -117,6 +122,10 @@ export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answ
   for (const r of rules) {
     const { rule } = r
     if (rule.escalate === true || !applies(r, q)) continue
+    // A deploy approval is the user's call: only a rule that names the kind may answer it.
+    const kind = q.kind ?? 'ask'
+    if (kind === 'deploy' && rule.kinds?.includes('deploy') !== true) continue
+    if (rule.kinds !== undefined && !rule.kinds.includes(kind)) continue
     if (rule.answer === DEFAULT_WORD) {
       if (q.blocking) continue
       return { rule: r, answer: q.default }

@@ -41,7 +41,7 @@ export type Settings = {
   harnessNames?: string[]
 }
 
-export type DeployTarget = { name: string; backup: string[]; deploy: string[]; healthUrl?: string; verify: string[] }
+export type DeployTarget = { name: string; mode: 'auto' | 'confirm'; backup: string[]; deploy: string[]; healthUrl?: string; verify: string[] }
 export type StateFile = { path: string; keep: number; archive: string }
 
 function strings(v: unknown): string[] | undefined {
@@ -70,7 +70,25 @@ export function deployTargetsOf(raw: unknown): DeployTarget[] {
     const verify = r.verify === undefined ? [] : strings(r.verify)
     if (typeof r.name !== 'string' || r.name.trim() === '' || !deploy || deploy.length === 0 || !backup || !verify) continue
     const healthUrl = typeof r.health_url === 'string' && r.health_url.trim() !== '' ? r.health_url.trim() : undefined
-    out.push({ name: r.name.trim(), backup, deploy, ...(healthUrl ? { healthUrl } : {}), verify })
+    out.push({ name: r.name.trim(), mode: modeOf(r.mode), backup, deploy, ...(healthUrl ? { healthUrl } : {}), verify })
+  }
+  return out
+}
+
+// Absent is auto. Anything else that is not "auto" is confirm: a typo must never open a gate.
+const modeOf = (v: unknown): 'auto' | 'confirm' => (v === undefined || v === 'auto' ? 'auto' : 'confirm')
+
+// The entries whose mode is neither absent, "auto" nor "confirm": they run as confirm, and the person is told.
+export function deployModeWarnings(raw: unknown): string[] {
+  const list = jsonOf(raw)
+  if (!Array.isArray(list)) return []
+  const out: string[] = []
+  for (const e of list) {
+    if (typeof e !== 'object' || e === null) continue
+    const r = e as Record<string, unknown>
+    if (r.mode !== undefined && r.mode !== 'auto' && r.mode !== 'confirm') {
+      out.push(`deploy_targets: "${String(r.name)}" has mode ${JSON.stringify(r.mode)}; treated as "confirm" (use "auto" or "confirm")`)
+    }
   }
   return out
 }
@@ -93,7 +111,7 @@ export function stateFileOf(raw: unknown): StateFile | undefined {
 // No targets but a deploy_command: one target, so older configs keep working.
 export function targetsOf(s: Pick<Settings, 'deployCommand' | 'deployTargets'>): DeployTarget[] {
   if (s.deployTargets.length > 0) return s.deployTargets
-  return s.deployCommand ? [{ name: 'default', backup: [], deploy: [s.deployCommand], verify: [] }] : []
+  return s.deployCommand ? [{ name: 'default', mode: 'auto', backup: [], deploy: [s.deployCommand], verify: [] }] : []
 }
 
 // Bounds the merge queue works to; prompt constants on purpose, not settings.
@@ -105,9 +123,10 @@ export const HEALTH_RETRY_MINUTES = 10
 export function deploySection(s: Pick<Settings, 'deployCommand' | 'deployTargets'>): string {
   const targets = targetsOf(s)
   if (targets.length === 0) return 'none configured: no deploy; never guess a deploy command.'
-  const lines = [`${targets.length === 1 ? 'one target' : `${targets.length} targets, in this order`}. Stop at the first target that fails: do not deploy the ones after it.`]
+  const lines = [`${targets.length === 1 ? 'one target' : `${targets.length} targets, in this order`}. A target that FAILS stops the ones after it: do not deploy them. A target that is skipped (held, or awaiting approval) does not: go on to the next one.`]
+  lines.push(`   Before each target, call \`mcp__flow__deploy\` action "gate" with the target name and the short sha just pushed (the sha every target of this batch deploys). It answers exactly one of: "Go" (run the steps below); "Held: <why>" (skip this target for this batch and say so in the report); "Awaits approval: <qid>" (the user must approve it in the inbox; skip this target for this batch). Never run a target's steps without a "Go". After the target's steps, call action "deployed" with the target, the sha and ok true or false (false when any step failed).`)
   targets.forEach((t, i) => {
-    lines.push(`   ${i + 1}) Target "${t.name}":`)
+    lines.push(`   ${i + 1}) Target "${t.name}" (mode ${t.mode}${t.mode === 'confirm' ? ": waits for the user's approval" : ''}):`)
     let n = 0
     if (t.backup.length > 0) {
       lines.push(`      ${++n}. Backup, before deploying: run ${t.backup.map(c => `\`${c}\``).join(', then ')}. Check the output is sane (for a restore listing, the counts are above 0). A bad backup fails this target before anything is deployed.`)
@@ -120,7 +139,7 @@ export function deploySection(s: Pick<Settings, 'deployCommand' | 'deployTargets
       lines.push(`      ${++n}. Verify, free text for you to follow and report: ${t.verify.join(' / ')}`)
     }
   })
-  lines.push(`   The PRs are already pushed and merged when a target fails: say so. They are still marked "done", with the failure in the report (not "back"). Report per target, like "deployed: demo ✓, production ✗ at health: <what>", to each PR's report_to and to main.`)
+  lines.push(`   The PRs are already pushed and merged when a target fails: say so. They are still marked "done", with the failure in the report (not "back"). Report per target, like "deployed: demo ✓, production ⏸ awaits approval (q12)", "production ⏸ held until released" or "demo ✓, production ✗ at health: <what>", to each PR's report_to and to main. A skipped target stays behind; the plugin starts a deploy-only run when the user approves or releases it.`)
   return lines.join('\n')
 }
 
@@ -375,6 +394,10 @@ export const NO_QUEUE_RULE = `There is no merge queue in this repo: you merge. F
 export const QUEUE_PROMPT = `You are the flow merge queue. You alone merge PRs into {{BASE}}, run the full check and deploy, so two sessions never overwrite each other's deploy or run the full suite at once. You run in a clean git worktree of your own.{{LANGUAGE}}
 
 The PRs handed to you are in mcp__flow__queue: action "list" shows the pending ones in arrival order. Work in batches: merge the batch's PRs one at a time, then run the full check and deploy once for the whole batch.{{MIGRATIONS_QUEUE}}
+
+## Deploy-only run
+
+At the start of every run, besides the pending PRs, call \`mcp__flow__deploy\` action "list". A target marked DUE is one the user approved or released: deploy it first, before any batch. This is a deploy-only batch: no merge, and no full check (that sha was checked already). \`git fetch origin\`, then \`git checkout --detach\` the sha in "DUE: deploy <sha>" (for "DUE: deploy the base head": \`origin/{{BASE}}\`). For each DUE target, in the configured order: gate, the target's steps and "deployed", exactly as in the batch's deploy step (see step 5), with that sha; leave the targets that are not DUE alone. Report it to main like "deploy-only: production ✓ at <sha>". Then go on to the pending PRs, if any, and start their batch from a clean \`origin/{{BASE}}\` (step 1).
 
 ## A batch
 
