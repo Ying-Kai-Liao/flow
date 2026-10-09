@@ -49,6 +49,8 @@ declare module 'claude-code' {
       roster: AgentRow[]
       activity: Record<string, Activity>
       selected: string | null
+      cursor: string | null
+      folded: Record<string, boolean>
       now: number
       handovers: Record<string, Handover>
       queueRuns: number

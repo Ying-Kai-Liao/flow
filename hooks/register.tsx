@@ -709,6 +709,15 @@ export const register: Register = (on, options) => {
     return r
   })
 
+  // Arrows and Tab move the focus ring over the cards; the highlight follows it.
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    const r = await next(e)
+    if (e.element !== undefined && (await read($, roster)).some(a => a.id === e.element)) {
+      await update($, cursor, () => e.element!)
+    }
+    return r
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const [list, acts, pick, t, hs, cur, fold] = await Promise.all([
@@ -750,6 +759,10 @@ export const register: Register = (on, options) => {
 
     // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
     // Only a top-level card has a border; deeper ones read as a tree by their indent.
+    const open = async (id: string) => {
+      await update($, cursor, () => id)
+      await update($, selected, () => id)
+    }
     const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, chev = '') => {
       const act = acts[a.id]
       const dim = ENDED.has(a.status)
@@ -771,12 +784,12 @@ export const register: Register = (on, options) => {
           {full ? (
             // A Button holds Text only, so the border is drawn around it.
             <Box flexDirection="column" borderStyle={bordered ? 'round' : undefined} borderDimColor={dim} paddingX={bordered ? 1 : 0}>
-              <Button key={a.id} plain dimColor={dim} onPress={() => update($, selected, () => a.id)}>
+              <Button key={a.id} plain dimColor={dim} onPress={() => open(a.id)}>
                 {head}{'\n'}{second}{'\n'}{meter(u, dim, runTime(act, dim))}
               </Button>
             </Box>
           ) : (
-            <Button key={a.id} plain dimColor={dim} onPress={() => update($, selected, () => a.id)}>
+            <Button key={a.id} plain dimColor={dim} onPress={() => open(a.id)}>
               {head}{u !== undefined && <Text color={meterColor(u.percent, warn)}> {u.percent}%</Text>}
             </Button>
           )}
@@ -820,26 +833,40 @@ export const register: Register = (on, options) => {
     }
 
     // The tree: each agent under the one that started it, what needs a person first.
-    const ids = new Set(list.map(a => a.id))
-    const kids = (id: string | undefined) => list
-      .filter(a => (id === undefined ? a.parentId === undefined || !ids.has(a.parentId) : a.parentId === id))
-      .sort((a, b) => rank(a.status) - rank(b.status))
-    const flat: { a: AgentRow; depth: number }[] = []
-    const walk = (a: AgentRow, depth: number) => {
-      flat.push({ a, depth })
-      for (const c of kids(a.id)) walk(c, depth + 1)
-    }
-    for (const a of kids(undefined)) walk(a, 0)
+    const first = treeItems(list, fold, undefined, false).items[0]?.a.id
     const prs = Object.values(hs).sort((a, b) => b.at - a.at)
     const live = list.filter(a => !ENDED.has(a.status)).length
-    // Header and the PR lines are fixed; the root and the agents share what is left. Full cards
-    // (4 rows) if all fit, else compact rows, else compact rows and a "+N more" line.
+    // Header, the PR lines and the hint row are fixed; the root and the agents share what is left.
+    // Full cards if all fit, else the crowded tree (compact rows, folded but for the highlight's
+    // path) in a window that follows the highlight.
     const prRows = prs.length > 0 ? 1 + Math.min(prs.length, 5) : 0
-    const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0)
-    const fullTree = (flat.length + 1) * CARD_ROWS <= avail
-    const rootFull = fullTree || avail >= CARD_ROWS + flat.length
+    const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0)
+    const wide = treeItems(list, fold, cur ?? first, false)
+    const fullTree = (wide.items.length + 1) * CARD_ROWS <= avail
+    const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true)
+    const rootFull = fullTree || avail >= CARD_ROWS + items.length
     const left = avail - (rootFull ? CARD_ROWS : 1)
-    const shown = fullTree || flat.length <= left ? flat : flat.slice(0, Math.max(0, left - 1))
+    const cut = !fullTree && items.length > left
+    const hotIdx = Math.max(0, items.findIndex(i => i.a.id === at))
+    // Two rows of the window go to the "above" and "more" lines.
+    const view = cut ? viewOf(items, hotIdx, Math.max(1, left - 2)) : { top: 0, rows: items }
+    const below = items.length - view.top - view.rows.length
+    const hotId = items[hotIdx]?.a.id
+
+    // Keys read the state fresh, so rapid presses each count once.
+    const step = (d: number) => async () => {
+      if (items.length === 0) return
+      const c = (await read($, cursor)) ?? hotId
+      const i = Math.min(items.length - 1, Math.max(0, items.findIndex(x => x.a.id === c) + d))
+      const id = items[i]!.a.id
+      await update($, cursor, () => id)
+      // Moves the focus ring too; it waits for the next drawing, so it is not awaited.
+      void $.ui.focus({ requestId: PANE, key: id }).catch(() => undefined)
+    }
+    const hotItem = async () => {
+      const c = (await read($, cursor)) ?? hotId
+      return items.find(x => x.a.id === c) ?? items[hotIdx]
+    }
     const mainTime = usage?.startedAt === undefined ? '' : elapsed(t - usage.startedAt)
     const mainU = main?.tokens === undefined ? undefined
       : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
@@ -858,8 +885,22 @@ export const register: Register = (on, options) => {
           </Text>
         )}
         {list.length === 0 && <Text dimColor>  Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
-        {shown.map(({ a, depth }) => card(a, depth + 1, fullTree, depth === 0))}
-        {shown.length < flat.length && <Text dimColor>  +{flat.length - shown.length} more</Text>}
+        {view.top > 0 && <Text dimColor>  ↑ {view.top} above</Text>}
+        {view.rows.map(({ a, depth, kids, collapsed }) => card(
+          a, depth + 1, fullTree, depth === 0, a.id === hotId, kids > 0 ? (collapsed ? '▸ ' : '▾ ') : '',
+        ))}
+        {below > 0 && <Text dimColor>  +{below} more</Text>}
+        {list.length > 0 && (
+          <Box flexDirection="row" gap={1}>
+            <Button key="nav-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>
+            <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>
+            <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>
+            <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
+              const i = await hotItem()
+              if (i && i.kids > 0) await update($, folded, f => ({ ...f, [i.a.id]: !i.collapsed }))
+            }}>c fold</Button>
+          </Box>
+        )}
         {prs.length > 0 && <Text bold>  Merge queue</Text>}
         {prs.slice(0, 5).map(h => (
           <Text key={`pr-${h.pr}`} dimColor={h.status === 'done'} wrap="truncate-end">
