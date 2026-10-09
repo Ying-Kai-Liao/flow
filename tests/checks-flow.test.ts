@@ -19,7 +19,7 @@ function world(on: On, opts: { shaVersion?: string; installed?: string; changed?
   ]
   const files = new Map<string, string>()
   const submitted: string[] = []
-  const calls: string[][] = []
+  const calls: (readonly string[])[] = []
   on('agent.list', () => ({ value: agents }))
   on('session.start', () => ({ cwd: '/r' }))
   on('command.register', () => ({ value: undefined } as never))
