@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.13] - 2026-10-09
+
+### Added
+
+- Graph view in the Flow pane. `g` switches between the tree and the plan's dependency graph, at the
+  top level and inside a manager; `h` `j` `k` `l` move the highlight, `o` opens a node's agent,
+  waiting nodes show without an agent, managers carry `+N workers`, and narrow panes fall back to a list.
+
 ## [0.3.11] - 2026-10-09
 
 ### Added

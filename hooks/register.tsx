@@ -1938,9 +1938,6 @@ export const register: Register = (on, options) => {
     }
 
     if (agent !== undefined && agent.type === MANAGER && mode === 'graph') {
-      // Inline on purpose: two top-level functions share the name ownerOf on main until the queue renames the plan one.
-      const m = agent.name === undefined ? null : /^(.+)-\d+$/.exec(agent.name)
-      const graphOwner = agent.name !== undefined && plans[agent.name] ? agent.name : m && plans[m[1]!] ? m[1]! : agent.name ?? 'main'
       const parent = list.find(a => a.id === agent.parentId)
       return (
         <Box flexDirection="column">
@@ -1948,7 +1945,7 @@ export const register: Register = (on, options) => {
             <Button key="back" hotkey="b" onPress={async () => { await acted(); await update($, selected, () => parent?.id ?? null) }}>Back</Button>
           </Box>
           <Text bold color={COLOR[agent.status]}>{GLYPH[agent.status] ?? '?'} {labelOf(agent)} <Text dimColor>{ROLE[agent.type]} · {agent.status}</Text></Text>
-          {graphView(graphOwner, list.filter(a => a.parentId === agent.id), 5)}
+          {graphView(planOwner(plans, agent.name), list.filter(a => a.parentId === agent.id), 5)}
         </Box>
       )
     }
