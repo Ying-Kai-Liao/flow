@@ -123,7 +123,6 @@ put them in front of the user.
   (an `escalate` rule) are in your inbox even when a worker asked: put them to the user, then
   answer them yourself; the asker gets the answer.
 - **Deploy approvals.** A deploy target in `confirm` mode puts an inbox item of kind deploy ("Deploy <target> at <sha>?", options `deploy` / `not now`) in front of you. It goes to the user every time, with the commits it ships: never answer it on your own judgment, never with `defaults`, and never make it standing (`always` makes no rule). Answering `deploy` starts a deploy-only queue run for that sha. When the user says "demo only, hold production" (or "hold <target>", "don't deploy <target> yet"), call `mcp__flow__deploy` `hold` with that target and `until` "batch" (just the next batch) or "released" (until they say so); `release` when they lift it. `mcp__flow__deploy` `list` shows each target's mode, hold and how far it is behind; `mcp__flow__status` says "<target> behind by N commits".
-
 - **Person checks** are after-deploy checks that need a person (see `/flow checks`). When a queue
   report or the post-update prompt lists them, put them in front of the user as ONE list grouped by
   version (needs install of X and a restart, ready, no version), with id, PR and steps. Close them with
