@@ -70,6 +70,29 @@ without a PR (merged or closed ones are skipped) and leftover worktrees with unc
 unpushed work, then has the main session start one `resume-<slug>` manager per task (at most 3
 at a time). Work owned by a live agent, or already resumed in this session, is not listed again.
 
+## Guards
+
+The plugin's `tool.call` hook refuses three things for every agent of the flow, the main
+session included. A rule in a prompt can be skipped; a refused tool call can't.
+
+- **Managers don't edit code.** A manager's Edit, Write and NotebookEdit calls are refused; the
+  change goes into a worker's brief.
+- **No broad process kills.** `pkill` and `killall` in any form (on macOS, options after the
+  pattern become more patterns: `pkill -f X -n -u 501` once killed every session), `kill` of
+  pid `-1`, `0` or `1` or of a process group (a negative pid), and `kill` fed by `lsof` without
+  `-sTCP:LISTEN`. Every flow agent lives in this one Claude Code session, so a broad kill stops
+  the whole flow. `kill <pid>` stays allowed: find the pid with `lsof -i :PORT` or
+  `pgrep -fl <pattern>`.
+- **Nothing changes the main checkout.** Edit, Write and NotebookEdit aimed at the repo's main
+  checkout are refused, and so are obvious shell writes there: `>`/`>>` redirects, `tee`,
+  `sed -i`/`perl -i`, `cp`/`mv` targets, `rm`, `touch`, and git commands that change the
+  checkout (`commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `am`, `apply`, `reset`,
+  `restore`, `checkout`, `switch`, `stash`). Linked worktrees, `.git/`, files outside the repo
+  and `main_checkout_allow` stay writable; reading, `git fetch`, `git pull` and `gh` are not
+  touched. A shell command's relative paths are placed by the session's directory for the main
+  session and managers, and by any `cd` or `git -C` in the command; a worker's relative paths
+  land in its own worktree and pass. Turn it off with `main_checkout_guard`.
+
 ## Install
 
 In a Claude Code session:
@@ -97,6 +120,8 @@ worker to fix X".
 | `context_warn_percent` | 40 | the pane's context meter: where the marker sits and the meter turns yellow (1 to 100) |
 | `handoff` | on | workers and managers: at `context_warn_percent` they are told to hand off (see Continuing work). Off: the meter only shows |
 | `base_branch` | the remote's default branch | everyone |
+| `main_checkout_guard` | on | every agent and the main session: writes to the main checkout are refused (see Guards) |
+| `main_checkout_allow` | `.claude/` | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 
 An unset full check or deploy is a step that's skipped and reported, never improvised.
 
