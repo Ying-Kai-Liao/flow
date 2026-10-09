@@ -152,6 +152,19 @@
       "description": "How long a round waits for managers that have not filed before it goes to you without them.",
       "default": 10
     },
+    "release": {
+      "type": "string",
+      "title": "Release at merge",
+      "description": "on: workers add changelog lines under `## [Unreleased]` and never change the version; the merge queue, once per batch after merging, moves them into a new version section, bumps the version files (patch by default; minor or major when a PR asks with the handover `release` field or a flow:minor / flow:major label) and commits \"Release x.y.z\". off: nothing changes.",
+      "default": "off",
+      "options": ["on", "off"]
+    },
+    "changelog_file": {
+      "type": "string",
+      "title": "Changelog file",
+      "description": "The changelog (Keep a Changelog style) the release cuts.",
+      "default": "CHANGELOG.md"
+    },
     "cleanup": {
       "type": "string",
       "title": "Cleanup",

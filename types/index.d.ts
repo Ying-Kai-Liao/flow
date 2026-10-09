@@ -69,6 +69,8 @@ export type Handover = {
   mode?: 'auto' | 'confirm'
   // The head the user approved with /flow approve; the queue merges a confirm PR only at this head.
   approvedHead?: string
+  // How far the release at merge bumps for this PR; absent (old handovers) means patch.
+  release?: 'patch' | 'minor' | 'major'
   at: number
   sha?: string
   report?: string
