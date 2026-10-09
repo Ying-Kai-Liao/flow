@@ -73,6 +73,8 @@ export type Handover = {
   approvedHead?: string
   // How far the release at merge bumps for this PR; absent (old handovers) means patch.
   release?: 'patch' | 'minor' | 'major'
+  // Env/secret changes the PR needs on deploy targets, from the handover tool's env field.
+  env?: EnvChange[]
   at: number
   sha?: string
   report?: string
@@ -194,7 +196,13 @@ export type Question = {
   // Absent: a question. 'fyi': a decision the agent took itself (question = the decision, context = why); non-blocking, overturnable.
   // 'deploy' asks the user to approve one deploy target at one sha; standing answers never answer it
   // (unless a rule names the kind), and no agent waits for the reply.
-  kind?: 'question' | 'fyi' | 'deploy'
+  // 'env' asks the user about one env/secret change on a deploy target (or a step they do themselves);
+  // like 'deploy', only a rule that names the kind answers it.
+  kind?: 'question' | 'fyi' | 'deploy' | 'env'
+  // Only on kind 'env': which part of an env change this item is. 'change' asks to set NAME=value, 'secret' asks
+  // the user to set a secret themselves, 'login' is a step they do first, 'apply' asks them to apply an approved
+  // value themselves (the target has no env_command). Never carries a secret value (there is none).
+  env?: { role: 'change' | 'secret' | 'login' | 'apply'; target: string; name: string; pr: number }
   // The asking agent's name, and who answers: a worker's manager, or "main" for a manager.
   owner: string
   addressee: string
@@ -256,6 +264,20 @@ export type Checks = {
   promptedVersion?: string
 }
 
+// One env change a PR needs on a deploy target. A secret has no value: the user sets it themselves.
+export type EnvChange = {
+  target: string
+  name: string
+  value?: string
+  secret?: true
+  why: string
+  login?: string
+  // The inbox items that ask about it (the change itself, and the user's own login step).
+  qid: string
+  loginQid?: string
+}
+export type EnvDone = { pr: number; name: string; how: 'command' | 'user' | 'secret' | 'dropped' | 'superseded'; at: number }
+
 // Deploy gates (hooks/deploy.ts), kept in <state dir>/deploys.json.
 export type DeployMode = 'auto' | 'confirm'
 export type Hold = { until: 'batch' | 'released'; by: string; at: number; reason?: string }
@@ -269,6 +291,8 @@ export type TargetState = {
   // A deploy-only run has work here: set by an approved deploy, or by releasing a hold on an auto
   // target; cleared when the target is deployed.
   due?: boolean
+  // Env changes no longer pending for this target, and how (never a value).
+  envDone?: EnvDone[]
 }
 export type Deploys = { targets: Record<string, TargetState> }
 

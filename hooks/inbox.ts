@@ -62,6 +62,10 @@ export const KEEP = 'Keep'
 export const OVERTURN = 'Overturn'
 export const isFyi = (q: Question): boolean => q.kind === 'fyi'
 
+// How an env item reads in the inbox views.
+export const envLabel = (q: Question): string =>
+  q.env?.role === 'secret' ? ' SECRET' : q.env?.role === 'login' ? ' DO YOURSELF' : q.env?.role === 'apply' ? ' APPLY YOURSELF' : ' ENV CHANGE'
+
 export type AskedFyi = { decision: string; why: string; alternative?: string; topic?: string }
 
 // An FYI batch checked whole, like parseAsk: one bad item refuses the call and nothing is recorded.
@@ -185,7 +189,7 @@ export const askingNames = (inbox: Inbox | undefined): string[] =>
 
 // A non-blocking question answered with its default needs no message: the asker already went on it.
 // A guard_tests suggestion is main's alone to decide: the queue that filed it is not told.
-export const needsMessage = (q: Question, isDefault: boolean): boolean => q.guard === undefined && q.kind !== 'deploy' && (q.blocking || !isDefault)
+export const needsMessage = (q: Question, isDefault: boolean): boolean => q.guard === undefined && q.kind !== 'deploy' && q.kind !== 'env' && (q.blocking || !isDefault)
 
 // What the asker is told when its question is answered.
 export function answerMessage(q: Question, answer: string, by: string, isDefault: boolean): string {
@@ -241,7 +245,7 @@ export function renderInbox(inbox: Inbox | undefined, now: number): string {
   for (const o of owners) {
     lines.push(`${o}:`)
     for (const q of open.filter(x => x.owner === o)) {
-      lines.push(`  ${q.id} ${q.blocking ? 'BLOCKING' : 'non-blocking'}${q.kind === 'deploy' ? ' DEPLOY APPROVAL' : ''}${q.escalated !== undefined ? ` ESCALATED (rule ${q.escalated}), for main` : ''}${q.topic ? ` [${q.topic}]` : ''} (${age(now - q.askedAt)}, for ${q.addressee}): ${q.question}`)
+      lines.push(`  ${q.id} ${q.blocking ? 'BLOCKING' : 'non-blocking'}${q.kind === 'deploy' ? ' DEPLOY APPROVAL' : q.kind === 'env' ? envLabel(q) : ''}${q.escalated !== undefined ? ` ESCALATED (rule ${q.escalated}), for main` : ''}${q.topic ? ` [${q.topic}]` : ''} (${age(now - q.askedAt)}, for ${q.addressee}): ${q.question}`)
       q.options.forEach((opt, i) => lines.push(`      ${String.fromCharCode(97 + i)}) ${opt}${opt === q.default ? '  (default)' : ''}`))
       if (q.context) lines.push(`      context: ${q.context}`)
     }

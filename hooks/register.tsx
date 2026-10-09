@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
@@ -51,10 +51,11 @@ import { ADD_OPTION, addMapping, guardReport, guardTestsFor, parseGuardTests, pa
 import type { GuardMap } from './guardtests'
 import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
 import {
-  applyAnswer, approvalContext, behindLines, decideGate, EMPTY_DEPLOYS, isApprove, normalizeDeploys, openApprovalItem, openDeployIds, recordDeployed,
-  release, renderList, retargetItem, unknownTarget, withApproval, withHold,
+  applyAnswer, applyViewOf, approvalContext, behindLines, closeEnvItems, declinedEntries, decideEnv, decideGate, EMPTY_DEPLOYS, ENV_KIND, envCommandFor, envListLine,
+  envSummary, isApprove, normalizeDeploys, openApplyItem, openApprovalItem, reopenItem, openDeployIds, openEnvItems, parseEnvInput, pendingEnv, recordDeployed,
+  release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
 } from './deploy'
-import type { Deploys, DeployMode, Hold, TargetInfo, TargetState } from './deploy'
+import type { Deploys, DeployMode, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
@@ -142,7 +143,7 @@ let cleanupMode: 'auto' | 'off' = 'auto'
 let cleanupBase = 'main'
 // The deploy targets and their modes; set by register() like queueOn.
 let deployInfos: TargetInfo[] = []
-const infosOf = (s: Parameters<typeof targetsOf>[0]): TargetInfo[] => targetsOf(s).map(t => ({ name: t.name, mode: t.mode }))
+const infosOf = (s: Parameters<typeof targetsOf>[0]): TargetInfo[] => targetsOf(s).map(t => ({ name: t.name, mode: t.mode, ...(t.envCommand !== undefined ? { envCommand: t.envCommand } : {}) }))
 
 export type Unhanded = { pr: number; title: string; branch: string; note: string }
 
@@ -958,7 +959,7 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
   if (marked.kind === 'refused') return `${id}: refused, it is addressed to ${marked.q.addressee}, not ${by}.`
   if (marked.kind === 'empty') return `${id}: refused, the choice is empty.`
   const { q, answer, isDefault } = marked
-  const deployNote = q.kind === 'deploy' ? await onDeployAnswer($, q, answer) : ''
+  const deployNote = q.kind === 'deploy' ? await onDeployAnswer($, q, answer) : q.kind === ENV_KIND ? await onEnvAnswer($, q, answer) : ''
   let delivered = true
   let hint = ''
   if (needsMessage(q, isDefault)) {
@@ -981,10 +982,13 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
   await withInbox($, cur => ({
     inbox: { ...cur, items: cur.items.map(x => (x.id === id ? { ...x, delivered } : x)) }, out: undefined,
   }))
-  if (!(isFyi(q) && isDefault)) await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${q.question}: ${isFyi(q) ? `overturned, ${answer}` : answer}"`)
+  if (!(isFyi(q) && isDefault)) await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${noteText(q)}: ${isFyi(q) ? `overturned, ${answer}` : answer}"`)
   const guard = q.guard !== undefined && answer === ADD_OPTION ? ` ${await addGuardTest($, options, q.guard.glob, q.guard.test)}` : ''
   return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.${guard}${deployNote}`
 }
+
+// The question as a notes line: an env change names the variable, never its value.
+const noteText = (q: Question): string => (q.env === undefined ? q.question : `env ${q.env.name} on ${q.env.target} (${q.env.role})`)
 
 // Deploy gate changes run one after another, like the inbox's.
 let deploysChain: Promise<unknown> = Promise.resolve()
@@ -1049,6 +1053,32 @@ async function onDeployAnswer($: EngineInterface, q: Question, answer: string): 
   return ` ${name} approved. ${await ensureQueue($)}`
 }
 
+// The user's answer to an env item. An applied `apply` item records the change as done by the user. A
+// positive answer that leaves a target with nothing open, on an auto target, starts a deploy-only run (the
+// gate then applies what is approved); a negative one holds the target until main releases it.
+async function onEnvAnswer($: EngineInterface, q: Question, answer: string): Promise<string> {
+  const e = q.env
+  if (e === undefined) return ''
+  const yes = e.role === 'change' ? answer.trim().toLowerCase() === 'yes' : answer.trim().toLowerCase() === 'done'
+  const at = await $.clock.now()
+  const info = deployInfos.find(t => t.name === e.target)
+  const hs = Object.values(await read($, handovers))
+  const waiting = pendingEnv(hs, e.target, (await read($, deploys)).targets[e.target]).length > 0
+  if (e.role === 'apply' && yes) {
+    await withDeploys($, cur => ({ deploys: setTarget(cur, e.target, withEnvDone(cur.targets[e.target], [{ pr: e.pr, name: e.name, how: 'user', at }])), out: undefined }))
+  }
+  if (!yes) {
+    return e.role === 'change'
+      ? ` ${e.target} is held by this: the gate skips it until main runs release on ${e.target}, which drops the declined change.`
+      : ` Not yet: ${e.target} keeps waiting; the next gate opens a fresh item for it.`
+  }
+  const ib = await read($, inbox)
+  const stillOpen = ib.items.some(x => x.state === 'open' && x.kind === ENV_KIND && x.env?.target === e.target)
+  if (!waiting || stillOpen || info === undefined || info.mode !== 'auto') return ''
+  await withDeploys($, cur => ({ deploys: setTarget(cur, e.target, { ...(cur.targets[e.target] ?? {}), due: true }), out: undefined }))
+  return ` ${e.target} has its env answers. ${await ensureQueue($)}`
+}
+
 // A person's (or main's) hold on a target.
 async function holdTarget($: EngineInterface, name: string, until: Hold['until'], by: string, reason: string | undefined): Promise<string> {
   const bad = unknownTarget(deployInfos, name)
@@ -1067,13 +1097,26 @@ async function releaseTarget($: EngineInterface, name: string): Promise<string> 
   const info = deployInfos.find(t => t.name === name)
   const bad = unknownTarget(deployInfos, name)
   if (bad !== undefined || info === undefined) return bad ?? ''
-  const had = await withDeploys($, cur => {
-    const r = release(cur.targets[name], info.mode)
-    return { deploys: r.had ? setTarget(cur, name, r.state) : cur, out: r.had }
+  const hs = Object.values(await read($, handovers))
+  const ib = await read($, inbox)
+  const at = await $.clock.now()
+  // Releasing also drops the env changes the user declined: they are recorded as dropped and stop holding the target.
+  const r = await withDeploys($, cur => {
+    const released = release(cur.targets[name], info.mode)
+    const pending = pendingEnv(hs, name, released.state)
+    const dropped = declinedEntries({ pending, item: itemViewOf(ib) })
+    if (!released.had && dropped.length === 0) return { deploys: cur, out: { had: false, dropped } }
+    const state = withEnvDone(released.state, dropped.map(d => ({ pr: d.pr, name: d.change.name, how: 'dropped' as const, at })))
+    return { deploys: setTarget(cur, name, dropped.length > 0 && info.mode === 'auto' ? { ...state, due: true } : state), out: { had: released.had, dropped } }
   })
-  if (!had) return `${name} has no hold.`
-  if (info.mode === 'confirm') return `${name} released. It is a confirm target: the next gate still asks for approval.`
-  return `${name} released. ${await ensureQueue($)}`
+  if (!r.had && r.dropped.length === 0) return `${name} has no hold.`
+  if (r.dropped.length > 0) {
+    const qids = r.dropped.flatMap(d => [d.change.qid, ...(d.change.loginQid === undefined ? [] : [d.change.loginQid])])
+    await withInbox($, cur => ({ inbox: closeEnvItems(cur, qids, 'dropped: released without it', at), out: undefined }))
+  }
+  const dropNote = r.dropped.length === 0 ? '' : ` Dropped the declined env changes: ${[...new Set(r.dropped.map(d => d.change.name))].join(', ')}.`
+  if (info.mode === 'confirm') return `${name} released.${dropNote} It is a confirm target: the next gate still asks for approval.`
+  return `${name} released.${dropNote} ${await ensureQueue($)}`
 }
 
 // mcp__flow__deploy. The gate is the one place that decides whether a target deploys in this batch.
@@ -1083,9 +1126,14 @@ async function deployTool($: EngineInterface, options: Record<string, unknown>, 
   const sha = typeof input.sha === 'string' ? input.sha.trim() : ''
   if (action === 'list') {
     await refreshBehind($)
-    return renderList(deployInfos, await withDeploys($, cur => ({ deploys: cur, out: cur })), await read($, behind))
+    const d = await withDeploys($, cur => ({ deploys: cur, out: cur }))
+    const hs = Object.values(await read($, handovers))
+    const ib = await read($, inbox)
+    const envLines: Record<string, string> = {}
+    for (const t of deployInfos) envLines[t.name] = envListLine(pendingEnv(hs, t.name, d.targets[t.name]), d.targets[t.name], itemViewOf(ib))
+    return renderList(deployInfos, d, await read($, behind), envLines)
   }
-  if (action !== 'gate' && action !== 'deployed' && action !== 'hold' && action !== 'release') return 'Unknown action: use gate, deployed, hold, release or list.'
+  if (action !== 'gate' && action !== 'deployed' && action !== 'hold' && action !== 'release' && action !== 'env-applied') return 'Unknown action: use gate, deployed, env-applied, hold, release or list.'
   if ((action === 'hold' || action === 'release') && !isMain) return 'Refused: only main holds or releases a target, on the user\'s word. Ask main.'
   const info = deployInfos.find(t => t.name === target)
   if (info === undefined) return `Refused: ${unknownTarget(deployInfos, target)}`
@@ -1095,6 +1143,7 @@ async function deployTool($: EngineInterface, options: Record<string, unknown>, 
     return holdTarget($, target, until, caller, typeof input.reason === 'string' ? input.reason.trim() : undefined)
   }
   if (action === 'release') return releaseTarget($, target)
+  if (action === 'env-applied') return envApplied($, info, Array.isArray(input.names) ? input.names.map(String) : [])
   if (sha === '') return 'Refused: sha is required (the short sha just pushed).'
   const at = await $.clock.now()
   if (action === 'deployed') {
@@ -1103,20 +1152,77 @@ async function deployTool($: EngineInterface, options: Record<string, unknown>, 
     await refreshBehind($)
     return input.ok === true ? `${target}: recorded as deployed at ${sha}.` : `${target}: failure noted; the last good deploy stays recorded.`
   }
-  // gate
-  const open = openDeployIds(await read($, inbox))
+  return runGate($, options, info, sha, at, false)
+}
+
+// What the gate needs to know about a target's env changes now: the pending ones and the user's answers.
+function envInputFor(info: TargetInfo, ts: TargetState | undefined, hs: Handover[], ib: Inbox): EnvInput | undefined {
+  const pending = pendingEnv(hs, info.name, ts)
+  if (pending.length === 0) return undefined
+  return { pending, item: itemViewOf(ib), applyItem: applyViewOf(ib), hasCommand: info.envCommand !== undefined }
+}
+
+const skipText = (target: string) => `Skip ${target} for this batch and go on with the next target.`
+
+// One pass of the gate; `again` is set on the second pass, after a standing rule approved the fresh item.
+async function runGate($: EngineInterface, options: Record<string, unknown>, info: TargetInfo, sha: string, at: number, again: boolean): Promise<string> {
+  const target = info.name
+  const hs = Object.values(await read($, handovers))
+  const ib = await read($, inbox)
+  const open = openDeployIds(ib)
   const decided = await withDeploys($, cur => {
-    const r = decideGate(cur.targets[target], info.mode, sha, qid => open.has(qid))
+    const env = envInputFor(info, cur.targets[target], hs, ib)
+    const r = decideGate(cur.targets[target], info.mode, sha, qid => open.has(qid), env, at)
     return { deploys: r.state === cur.targets[target] ? cur : setTarget(cur, target, r.state), out: r }
   })
   const gate = decided.gate
   if (gate.kind === 'go') return 'Go'
-  if (gate.kind === 'held') return `Held: ${gate.why}. Skip ${target} for this batch and go on with the next target.`
+  if (gate.kind === 'goEnv') {
+    const lines = gate.apply.map(e => `- ${e.change.name}: ${envCommandFor(info.envCommand ?? '', e.change.name, e.change.value ?? '')}`)
+    return `Go, first apply env:\n${lines.join('\n')}\nRun each command in order from the repo root; a non-zero exit fails ${target} (call deployed with ok false and stop). Then call action "env-applied" with target "${target}" and names [${gate.apply.map(e => `"${e.change.name}"`).join(', ')}], then run the target's steps.`
+  }
+  if (gate.kind === 'held') return `Held: ${gate.why}. ${skipText(target)}`
+  if (gate.kind === 'envHeld') return `Held: ${gate.why}. It stays held until main runs release on ${target} (that drops the declined changes). ${skipText(target)}`
+  if (gate.kind === 'envAwaits') return `Awaits env: ${gate.qids.join(', ')}. ${skipText(target)}`
+  if (gate.kind === 'envAsk') {
+    const qids: string[] = [...gate.open]
+    const moved: Array<{ pr: number; name: string; field: 'qid' | 'loginQid'; qid: string }> = []
+    await withInbox($, cur => {
+      let next = cur
+      for (const e of gate.entries) {
+        const r = openApplyItem(next, e, at)
+        next = r.inbox
+        qids.push(r.q.id)
+      }
+      // An item answered "not yet" is replaced by a fresh copy, so the change keeps one open item.
+      for (const re of gate.reopen) {
+        const old = next.items.find(x => x.id === re.entry.change[re.field])
+        if (old === undefined) continue
+        const r = reopenItem(next, old, at)
+        next = r.inbox
+        qids.push(r.q.id)
+        moved.push({ pr: re.entry.pr, name: re.entry.change.name, field: re.field, qid: r.q.id })
+      }
+      return { inbox: next, out: undefined }
+    })
+    for (const pr of new Set(moved.map(m => m.pr))) {
+      const h = (await read($, handovers))[String(pr)]
+      if (h?.env === undefined) continue
+      const next: Handover = { ...h, env: h.env.map(c => {
+        const mine = moved.filter(x => x.pr === pr && x.name === c.name && c.target === target)
+        return mine.length === 0 ? c : { ...c, ...Object.fromEntries(mine.map(m => [m.field, m.qid])) }
+      }) }
+      await update($, handovers, hs => ({ ...hs, [String(pr)]: next }))
+      await best($, 'saving a handover', () => saveHandover($, next))
+    }
+    void $.ui.toast(`Env on ${target} awaits you: /flow inbox (${qids.join(', ')})`)
+    return `Awaits env: ${qids.join(', ')}. ${skipText(target)}`
+  }
   const last = (await read($, deploys)).targets[target]?.deployedSha
   const context = approvalContext(target, sha, last, await commitsSince($, last, sha))
   if (gate.kind === 'awaits') {
     await withInbox($, cur => ({ inbox: retargetItem(cur, gate.qid, target, sha, context), out: undefined }))
-    return `Awaits approval: ${gate.qid}. Skip ${target} for this batch and go on with the next target.`
+    return `Awaits approval: ${gate.qid}. ${skipText(target)}`
   }
   const q = await withInbox($, cur => {
     const r = openApprovalItem(cur, target, sha, context, at)
@@ -1135,12 +1241,102 @@ async function deployTool($: EngineInterface, options: Record<string, unknown>, 
       await withDeploys($, cur => ({ deploys: setTarget(cur, target, applyAnswer(cur.targets[target], marked.answer)), out: undefined }))
       await appendNote($, notesOwner(marked.q), `- ${await today($)} decision: "${q.id} ${q.question}: ${marked.answer}" (standing answer ${m.rule.rid})`)
       await best($, 'logging an auto-answer', () => appendLog($, { event: 'auto-answer', owner: 'main', text: `${q.id} rule ${m.rule.rid}: ${marked.answer}` }))
+      // Approved: the gate runs once more, so the env commands (if any) come with the Go.
+      if (isApprove(marked.answer) && !again) return runGate($, options, info, sha, at, true)
       if (isApprove(marked.answer)) return 'Go'
-      return `Held: standing answer ${m.rule.rid} said "${marked.answer}". Skip ${target} for this batch and go on with the next target.`
+      return `Held: standing answer ${m.rule.rid} said "${marked.answer}". ${skipText(target)}`
     }
   }
   void $.ui.toast(`Deploy ${target} awaits your approval: /flow inbox (${q.id})`)
-  return `Awaits approval: ${q.id}. Skip ${target} for this batch and go on with the next target.`
+  return `Awaits approval: ${q.id}. ${skipText(target)}`
+}
+
+// env-applied: the queue ran the env commands the gate named. Records those changes for the target; asking
+// twice changes nothing more. Only changes the user approved (and that the gate named) are recorded.
+async function envApplied($: EngineInterface, info: TargetInfo, names: string[]): Promise<string> {
+  if (names.length === 0) return 'Refused: env-applied needs names, the variables whose commands you ran.'
+  const at = await $.clock.now()
+  const hs = Object.values(await read($, handovers))
+  const ib = await read($, inbox)
+  const notes: string[] = []
+  await withDeploys($, cur => {
+    const ts = cur.targets[info.name]
+    const pending = pendingEnv(hs, info.name, ts)
+    const d = decideEnv({ pending, item: itemViewOf(ib), applyItem: applyViewOf(ib), hasCommand: info.envCommand !== undefined })
+    const ready = d.kind === 'clear' ? d.apply : []
+    const add = []
+    for (const n of names) {
+      const hit = ready.find(e => e.change.name === n)
+      if (hit !== undefined) add.push({ pr: hit.pr, name: n, how: 'command' as const, at })
+      else if ((ts?.envDone ?? []).some(x => x.name === n)) notes.push(`${n}: already recorded`)
+      else notes.push(`${n}: not recorded, it is not approved and ready (the gate names what to apply)`)
+    }
+    const next = withEnvDone(ts, add)
+    notes.push(...add.map(a => `${a.name}: recorded as applied by command`))
+    return { deploys: next === ts ? cur : setTarget(cur, info.name, next), out: undefined }
+  })
+  return `${info.name}: ${notes.join('; ')}. Now run the target's steps.`
+}
+
+// The inbox items for a handover's env changes. A handover sent again reuses the earlier items by target and
+// name and closes the ones it no longer lists. A standing rule answers an item only if it names the env kind.
+// Returns the text for the handover result; the values never go to the log or a toast.
+async function openHandoverEnv(
+  $: EngineInterface, options: Record<string, unknown>, h: Handover, drafts: Draft[],
+  prev: EnvChange[], at: number,
+): Promise<string> {
+  if (drafts.length === 0 && prev.length === 0) return ''
+  const changes: EnvChange[] = []
+  const fresh: Question[] = []
+  await withInbox($, cur => {
+    let next = cur
+    for (const d of drafts) {
+      const r = openEnvItems(next, h.pr, d, prev.find(p => p.target === d.target && p.name === d.name), at)
+      next = r.inbox
+      changes.push(r.change)
+      fresh.push(...r.fresh)
+    }
+    const kept = new Set(changes.flatMap(c => [c.qid, ...(c.loginQid === undefined ? [] : [c.loginQid])]))
+    const gone = prev.flatMap(p => [p.qid, ...(p.loginQid === undefined ? [] : [p.loginQid])]).filter(q => !kept.has(q))
+    return { inbox: gone.length === 0 ? next : closeEnvItems(next, gone, 'dropped: the PR was handed over again without it', at), out: undefined }
+  })
+  if (changes.length > 0) h.env = changes
+  else delete h.env
+  if (fresh.length > 0) {
+    const { rules } = await loadRules($, options)
+    for (const q of fresh) {
+      const m = matchRule(rules, q)
+      if (m === undefined) continue
+      const marked = await withInbox($, cur => {
+        const r = markAnswered(cur, q.id, m.answer, AUTO, at, m.rule.rid)
+        return { inbox: r.kind === 'ok' ? r.inbox : cur, out: r }
+      })
+      if (marked.kind !== 'ok') continue
+      await onEnvAnswer($, marked.q, marked.answer)
+      await appendNote($, notesOwner(marked.q), `- ${await today($)} decision: "${q.id} ${noteText(marked.q)}: ${marked.answer}" (standing answer ${m.rule.rid})`)
+      await best($, 'logging an auto-answer', () => appendLog($, { event: 'auto-answer', owner: 'main', text: `${q.id} rule ${m.rule.rid}: ${marked.answer}` }))
+    }
+    const ib = await read($, inbox)
+    const stillOpen = fresh.filter(q => ib.items.find(x => x.id === q.id)?.state === 'open')
+    if (stillOpen.length > 0) void $.ui.toast(`PR #${h.pr} has ${stillOpen.length} env item${stillOpen.length === 1 ? '' : 's'} for you: /flow inbox`)
+  }
+  if (changes.length === 0) return ''
+  const ib = await read($, inbox)
+  const open = changes.flatMap(c => [c.loginQid, c.qid]).filter((q): q is string => q !== undefined && ib.items.find(x => x.id === q)?.state === 'open')
+  return ` Env changes for the user (${changes.map(c => `${c.name} on ${c.target}${c.secret === true ? ', secret' : ''}`).join('; ')}): ${open.length === 0 ? 'all answered' : `inbox ${open.join(', ')}`}. Those targets do not deploy until they are answered.`
+}
+
+// A returned PR's env changes are dropped: their open items are closed by "flow" with a note.
+async function closeReturnedEnv($: EngineInterface, h: Handover): Promise<void> {
+  if (h.env === undefined || h.env.length === 0) return
+  const at = await $.clock.now()
+  await best($, 'closing env items', () => withInbox($, cur => {
+    const qids = [
+      ...h.env!.flatMap(c => [c.qid, ...(c.loginQid === undefined ? [] : [c.loginQid])]),
+      ...cur.items.filter(x => x.env?.role === 'apply' && x.env.pr === h.pr).map(x => x.id),
+    ]
+    return { inbox: closeEnvItems(cur, qids, 'dropped: the PR was returned', at), out: undefined }
+  }))
 }
 
 // Standing answers (standing.ts): the rules of both settings files, read fresh so a rule made a moment ago
@@ -1330,6 +1526,7 @@ async function alwaysRule(
   const q = (await read($, inbox)).items.find(x => x.id === id)
   if (q === undefined || q.state !== 'answered' || q.answeredBy !== 'main') return `${id}: no rule made, the answer was not recorded.`
   if (q.kind === 'deploy') return `${id}: no rule made, a deploy approval is the user's call every time.`
+  if (q.kind === ENV_KIND) return `${id}: no rule made, an env change is the user's call every time.`
   if (parseChoice(q.options, choice).free) return `${id}: no rule made, a free-text answer cannot be a rule; pick one of the options.`
   const rule = ruleFromQuestion(q, q.answer ?? '', await today($))
   const r = await addRule($, options, rule)
@@ -2908,6 +3105,22 @@ export const register: Register = (on, options) => {
           verify_command: { type: 'string', description: 'Optional: a shell command that verifies the change after deploy. When the after_deploy check needs a person, the merge queue runs this command at the merged main and closes the check itself (pass on exit 0, fail otherwise).' },
           report_to: { type: 'string', description: 'Optional. Your own agent name (the default), so the queue reports back to you. A name that matches no agent is refused; your own worker\'s name is corrected to yours.' },
           release: { type: 'string', enum: ['patch', 'minor', 'major'], description: 'How far the release at merge bumps the version for this PR (only when the release setting is on). "minor" for a new feature users see; omit for patch; "major" only when the task asks for it. The batch gets the highest of its PRs.' },
+          env: {
+            type: 'array',
+            description: 'Optional: env or secret changes the PR needs on a deploy target. Each goes to the user\'s inbox and the target does not deploy until they are answered. A secret has no value here: "secret: true" means the user sets it themselves. Never put a secret value anywhere, in this field or in the PR text.',
+            items: {
+              type: 'object',
+              properties: {
+                target: { type: 'string', description: 'A deploy target name from the deploy_targets setting' },
+                name: { type: 'string', description: 'The env variable name' },
+                value: { type: 'string', description: 'The new value, for a change that is not secret (the user sees it and says yes or no). Not together with secret.' },
+                secret: { type: 'boolean', description: 'true: the user sets it themselves and answers done. Not together with value.' },
+                why: { type: 'string', description: 'Why the change is needed' },
+                login: { type: 'string', description: 'Optional: a step the user must do themselves first, e.g. log in to the cloud CLI. It becomes its own inbox item the change waits for.' },
+              },
+              required: ['target', 'name', 'why'],
+            },
+          },
           mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: it waits for the user\'s /flow approve before the queue merges it. "auto" only marks it safe to merge directly and is refused when the merge_mode setting is confirm. Omit to use the setting.' },
         },
         required: ['pr'],
@@ -3137,11 +3350,13 @@ export const register: Register = (on, options) => {
       name: 'deploy',
       description: 'Per-target deploy gates. The merge queue calls action "gate" (target, sha) before each deploy target and gets exactly one of "Go", "Held: <why>" or "Awaits approval: <qid>"; on the last two it skips that target for this batch and goes on. ' +
         'A confirm target opens one inbox item for the user; only the user\'s "deploy" answer lets that sha through. The queue calls "deployed" (target, sha, ok) after each target. ' +
-        'Main only, on the user\'s word: "hold" (target, until "batch" or "released", reason?) and "release" (target); "demo only, hold production" is a hold on production. "list" shows every target with mode, hold, last deployed sha, how far behind, and any approval.',
+        'Main only, on the user\'s word: "hold" (target, until "batch" or "released", reason?) and "release" (target; it also drops env changes the user declined); "demo only, hold production" is a hold on production. "list" shows every target with mode, hold, last deployed sha, how far behind, any approval and pending env changes. ' +
+        'Env changes a handed-over PR declared come first in the gate: "Awaits env: <qids>" (the user has not answered; skip the target), "Held: env change NAME declined" (skip it until main releases it), or "Go, first apply env:" with one exact command per change: run each (a non-zero exit fails the target), call "env-applied" (target, names), then deploy.',
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['gate', 'deployed', 'hold', 'release', 'list'] },
+          action: { type: 'string', enum: ['gate', 'deployed', 'env-applied', 'hold', 'release', 'list'] },
+          names: { type: 'array', items: { type: 'string' }, description: 'env-applied: the env variable names whose commands you ran' },
           target: { type: 'string', description: 'A deploy target name from the deploy_targets setting' },
           sha: { type: 'string', description: 'gate, deployed: the short sha the batch deploys' },
           ok: { type: 'boolean', description: 'deployed: true when every step of the target passed' },
@@ -3561,6 +3776,8 @@ export const register: Register = (on, options) => {
     if (info.isDraft) return { result: `Refused: PR #${pr} is a draft. Mark it ready (gh pr ready ${pr}) first.` }
     const dest = await resolveReportTo($, input.report_to, e.agentId)
     if ('refuse' in dest) return { result: dest.refuse }
+    const envParsed = parseEnvInput(input.env, deployInfos)
+    if ('error' in envParsed) return { result: `Refused: ${envParsed.error}` }
     // Guard tests: from the PR's changed files (`gh pr diff` has no file-count cap). Never fail open, never block for good.
     let guard: ReturnType<typeof guardTestsFor> = []
     if (Object.keys(settings.guardTests).length > 0) {
@@ -3591,6 +3808,7 @@ export const register: Register = (on, options) => {
     }
     const hold = effectiveMode(labels, h.mode, setMode) === 'confirm'
     if (hold) h.status = 'awaiting'
+    const envNote = await openHandoverEnv($, options, h, envParsed.drafts, (await read($, handovers))[String(pr)]?.env ?? [], t)
     await update($, handovers, hs => ({ ...hs, [String(pr)]: h }))
     await best($, 'saving a handover', async () => {
       await saveHandover($, h)
@@ -3599,11 +3817,11 @@ export const register: Register = (on, options) => {
     if (hold) {
       void $.ui.toast(`PR #${pr} awaits your approval: /flow approve ${pr}`)
       await refresh($)
-      return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}, but it awaits the user's approval: the queue will not merge it until the user runs /flow approve ${pr}. Tell the user so in your report.${labelNote}` }
+      return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}, but it awaits the user's approval: the queue will not merge it until the user runs /flow approve ${pr}. Tell the user so in your report.${labelNote}${envNote}` }
     }
     const queue = await ensureQueue($)
     await refresh($)
-    return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.${dest.note ?? ''}${labelNote}` }
+    return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.${dest.note ?? ''}${labelNote}${envNote}` }
   })
 
   on('tool.call', { tool: 'mcp__flow__release' }, async ($, e) => {
@@ -3666,9 +3884,12 @@ export const register: Register = (on, options) => {
     if (action === 'list') {
       const open = Object.values(all).filter(h => h.status === 'pending' || h.status === 'taken').sort((a, b) => a.at - b.at)
       if (open.length === 0) return { result: 'No pending handovers.' }
+      const d = await read($, deploys)
+      const ib = await read($, inbox)
+      const envText = (h: Handover, dd: Deploys, inb: Inbox) => (h.env === undefined || h.env.length === 0 ? '' : ` | env: ${envSummary(h, t => dd.targets[t], itemViewOf(inb))}`)
       return {
         result: open.map(h =>
-          `#${h.pr} ${h.status}: "${h.title}" branch ${h.branch} head ${h.head} | report_to: ${h.reportTo} | verified: ${h.verified} | evidence: ${evidenceText(h.evidence)} | pending decisions: ${h.pending} | after deploy: ${h.afterDeploy}${h.release === undefined ? '' : ` | release: ${h.release}`}`,
+          `#${h.pr} ${h.status}: "${h.title}" branch ${h.branch} head ${h.head} | report_to: ${h.reportTo} | verified: ${h.verified} | evidence: ${evidenceText(h.evidence)} | pending decisions: ${h.pending} | after deploy: ${h.afterDeploy}${h.release === undefined ? '' : ` | release: ${h.release}`}${envText(h, d, ib)}`,
         ).join('\n'),
       }
     }
@@ -3706,6 +3927,7 @@ export const register: Register = (on, options) => {
       const text = action === 'done' ? next.report : action === 'back' ? next.reason : undefined
       await appendLog($, { event: action as 'take' | 'done' | 'back', owner: next.reportTo, pr: next.pr, branch: next.branch, text })
     })
+    if (action === 'back') await closeReturnedEnv($, next)
     if (action !== 'take') void $.ui.toast(`PR #${key} ${next.status === 'done' ? `merged ${next.sha ?? ''}` : `returned: ${next.reason ?? ''}`}`)
     if (action === 'done') autoSweep($)
     let verify = ''

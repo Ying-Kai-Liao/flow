@@ -20,7 +20,8 @@ import type { Inbox, Question } from './inbox'
 //            A rule with both `escalate` and an `answer` is invalid (dropped with a warning).
 //   from     the asker's name (a manager's continuation `foo-2` counts as `foo`)
 //   kinds    the kinds of inbox item it may answer ("ask" for an ordinary question, "deploy" for a deploy
-//            approval). Absent: ordinary questions only. A deploy approval is answered only by a rule that names "deploy".
+//            approval, "env" for an env/secret change or a step the user does themselves). Absent: ordinary
+//            questions only. A deploy approval or env item is answered only by a rule that names its kind.
 // A rule without an id gets a derived one from its file and 1-based position in that file's list:
 // `personal:1`, `repo:2`, `config:1`. Positions count every entry, valid or not, so they stay stable.
 
@@ -122,9 +123,9 @@ export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answ
   for (const r of rules) {
     const { rule } = r
     if (rule.escalate === true || !applies(r, q)) continue
-    // A deploy approval is the user's call: only a rule that names the kind may answer it.
+    // A deploy approval or an env change is the user's call: only a rule that names the kind may answer it.
     const kind = q.kind === undefined || q.kind === 'question' ? 'ask' : q.kind
-    if (kind === 'deploy' && rule.kinds?.includes('deploy') !== true) continue
+    if ((kind === 'deploy' || kind === 'env') && rule.kinds?.includes(kind) !== true) continue
     if (rule.kinds !== undefined && !rule.kinds.includes(kind)) continue
     if (rule.answer === DEFAULT_WORD) {
       if (q.blocking) continue
