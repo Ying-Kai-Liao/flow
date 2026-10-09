@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.34] - 2026-10-10
+
+### Added
+
+- `guard_tests` setting (file only; the personal file merges per glob): path globs mapped to repo-wide tests a
+  worker must run when its diff touches them. The new `mcp__flow__guard_tests` tool computes the list from the
+  worker's diff; `mcp__flow__handover` refuses a PR whose `Ran:` lacks a required guard test, naming the glob.
+  `mcp__flow__queue` `back` takes `failed_tests`: for a failed test no glob requires, main gets an inbox question
+  suggesting a mapping, and answering "Add" writes it to the personal config (never the committed file).
+
 ## [0.3.33] - 2026-10-10
 
 ### Fixed
