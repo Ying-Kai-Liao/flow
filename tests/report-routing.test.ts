@@ -183,3 +183,25 @@ test('an idle manager with a live child is woken', async ($, on) => {
   expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toBe('sent')
   expect(w.agents[1]!.parentId).toBe('m1')
 })
+
+test('an idle child with older activity does not keep an idle manager from finishing', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  w.agents[1]!.status = 'idle'
+  await handover($, 'm1')
+  await queueDone($, 7)
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toContain('Not sent')
+})
+
+test('a child active after the manager wakes it', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  w.agents[1]!.status = 'idle'
+  await handover($, 'm1')
+  await queueDone($, 7)
+  // The manager's last activity is older than its worker's.
+  await $.turn.complete({ turnId: 't', agentId: 'm1', answer: 'waiting' } as never)
+  await w.flush()
+  await $.turn.complete({ turnId: 't2', agentId: 'w1', answer: 'PR: x' } as never)
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toBe('sent')
+})

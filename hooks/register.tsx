@@ -1095,7 +1095,12 @@ async function resolveReportTo($: EngineInterface, given: unknown, callerId: str
 }
 
 async function managerFinished($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[]): Promise<boolean> {
-  if (rows.some(a => a.parentId !== undefined && ids.includes(a.parentId) && !ENDED.has(a.status))) return false
+  // A child is live only while running or pending: workers sit 'idle' after their final report. A child
+  // active more recently than the manager may have reported without the manager hearing it yet.
+  const acts = await read($, activity)
+  const mineAt = Math.max(0, ...ids.map(i => acts[i]?.lastAt ?? 0))
+  const kids = rows.filter(a => a.parentId !== undefined && ids.includes(a.parentId))
+  if (kids.some(a => a.status === 'running' || a.status === 'pending' || (acts[a.id]?.lastAt ?? 0) > mineAt)) return false
   const open = new Set(['pending', 'awaiting', 'taken', 'returned'])
   if (Object.values(await read($, handovers)).some(h => open.has(h.status) && isManagerOf(name.replace(/-\d+$/, ''), h.reportTo))) return false
   const plans = await read($, plan)
