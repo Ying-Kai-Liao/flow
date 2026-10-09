@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover } from '../types'
+import type { Activity, AgentRow, Handover, LogEvent } from '../types'
 import {
   fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT,
 } from './prompts'
 import type { Settings } from './prompts'
+import { noteKey, ownerFor } from './state'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
@@ -211,6 +212,182 @@ async function openPane($: EngineInterface): Promise<void> {
   if (!r.isPlaced) void $.ui.toast('flow is running agents: type /flow to watch them')
 }
 
+// flow's state on disk: <git-common-dir>/flow/. Shared by every worktree of the repo, never part
+// of a working tree. Every helper is best-effort: outside a repo, or when a write fails, it
+// does nothing (a failure goes to $.ui.log) and never throws, so a tool call or turn never fails
+// over state. `config.json` in this dir belongs to the settings package: never touched here.
+
+const TEXT_MAX = 300
+const NOTES_MAX = 3000
+
+let cached: string | undefined
+
+// Forget the resolved dir; a new session resolves it again.
+function resetStateDir(): void {
+  cached = undefined
+}
+
+async function warn($: EngineInterface, what: string, err: unknown): Promise<void> {
+  try {
+    await $.ui.log(`flow state: ${what}: ${err instanceof Error ? err.message : String(err)}`)
+  } catch {
+    // No log to write to.
+  }
+}
+
+// The state dir, or undefined when this is not a repo (or the answer is no absolute path).
+async function stateDir($: EngineInterface): Promise<string | undefined> {
+  if (cached !== undefined) return cached
+  try {
+    const r = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+    const out = r.stdout.trim()
+    if (r.exitCode !== 0 || !out.startsWith('/') || out.includes('\n')) return undefined
+    cached = `${out.replace(/\/+$/, '')}/flow`
+    return cached
+  } catch {
+    return undefined
+  }
+}
+
+// Write a temp file next to the target, then rename it over: a reader sees the old file or the new one.
+async function writeJsonAtomic($: EngineInterface, path: string, obj: unknown): Promise<boolean> {
+  try {
+    const tmp = `${path}.${Date.now()}.tmp`
+    await $.fs.write(tmp, `${JSON.stringify(obj, null, 2)}\n`)
+    const r = await $.process.run(['mv', tmp, path])
+    if (r.exitCode !== 0) throw new Error(r.stderr.trim() || 'mv failed')
+    return true
+  } catch (err) {
+    await warn($, `writing ${path}`, err)
+    return false
+  }
+}
+
+// The parsed file, or undefined when it is missing, unreadable or not JSON.
+async function readJson($: EngineInterface, path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await $.fs.read(path))
+  } catch {
+    return undefined
+  }
+}
+
+const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+// One line appended to log.jsonl. A single short append does not interleave with another session's.
+async function appendLog($: EngineInterface, event: Omit<LogEvent, 'ts'>): Promise<void> {
+  try {
+    const dir = await stateDir($)
+    if (dir === undefined) return
+    const ts = new Date(await $.clock.now()).toISOString()
+    const entry: LogEvent = { ts, ...event }
+    if (entry.text !== undefined) entry.text = cap(entry.text.replaceAll('\n', ' '), TEXT_MAX)
+    await $.process.run(['mkdir', '-p', dir])
+    const r = await $.process.run(['sh', '-c', 'printf "%s\\n" "$1" >> "$2"', 'sh', JSON.stringify(entry), `${dir}/log.jsonl`])
+    if (r.exitCode !== 0) throw new Error(r.stderr.trim() || 'append failed')
+  } catch (err) {
+    await warn($, 'appending to log.jsonl', err)
+  }
+}
+
+// Every parsable line, oldest first; a corrupt line is skipped.
+async function readLog($: EngineInterface): Promise<LogEvent[]> {
+  const dir = await stateDir($)
+  if (dir === undefined) return []
+  let raw: string
+  try {
+    raw = await $.fs.read(`${dir}/log.jsonl`)
+  } catch {
+    return []
+  }
+  const events: LogEvent[] = []
+  for (const line of raw.split('\n')) {
+    try {
+      const e = JSON.parse(line) as LogEvent
+      if (typeof e === 'object' && e !== null && typeof e.event === 'string') events.push(e)
+    } catch {
+      // Skip a torn or corrupt line.
+    }
+  }
+  return events
+}
+
+async function notesPath($: EngineInterface, managerName: string): Promise<string | undefined> {
+  const dir = await stateDir($)
+  return dir === undefined ? undefined : `${dir}/managers/${noteKey(managerName)}/notes.md`
+}
+
+async function appendNote($: EngineInterface, name: string, line: string): Promise<boolean> {
+  try {
+    const path = await notesPath($, name)
+    if (path === undefined) return false
+    const old = await $.fs.read(path).catch(() => `# ${name.replace(/-\d+$/, '')}\n`)
+    // fs has no append: the file is rewritten whole. Notes are small and a manager is their only writer.
+    await $.fs.write(path, `${old.endsWith('\n') ? old : `${old}\n`}${line}\n`)
+    return true
+  } catch (err) {
+    await warn($, 'appending a note', err)
+    return false
+  }
+}
+
+// The notes, capped to their tail: the newest lines matter most.
+async function readNotes($: EngineInterface, name: string, max = NOTES_MAX): Promise<string> {
+  try {
+    const path = await notesPath($, name)
+    if (path === undefined) return ''
+    const text = await $.fs.read(path)
+    return text.length > max ? `…${text.slice(text.length - max)}` : text
+  } catch {
+    return ''
+  }
+}
+
+const STATUSES = new Set(['pending', 'taken', 'done', 'returned'])
+
+// One file per PR, rewritten whole on every change. `version` is for readers of the file.
+async function saveHandover($: EngineInterface, h: Handover): Promise<void> {
+  const dir = await stateDir($)
+  if (dir === undefined) return
+  await writeJsonAtomic($, `${dir}/handovers/${h.pr}.json`, { version: 1, ...h })
+}
+
+// Handovers earlier sessions left, keyed by PR. Unknown fields are kept; an unparsable file is absent.
+async function loadHandovers($: EngineInterface): Promise<Record<string, Handover>> {
+  const out: Record<string, Handover> = {}
+  const dir = await stateDir($)
+  if (dir === undefined) return out
+  let names: string[]
+  try {
+    names = (await $.fs.list(`${dir}/handovers`)).filter(f => f.name.endsWith('.json')).map(f => f.name)
+  } catch {
+    return out
+  }
+  for (const name of names) {
+    const h = await readJson($, `${dir}/handovers/${name}`) as Handover | undefined
+    if (typeof h !== 'object' || h === null || !Number.isInteger(h.pr) || !STATUSES.has(h.status)) continue
+    out[String(h.pr)] = h
+  }
+  return out
+}
+
+// State on disk is best-effort: a failure goes to the UI log and never reaches a tool call or turn.
+async function best($: EngineInterface, what: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn()
+  } catch (err) {
+    try { await $.ui.log(`flow state: ${what}: ${err instanceof Error ? err.message : String(err)}`) } catch { /* no log */ }
+  }
+}
+
+// The name of the agent that owns work started by agent `id`: "main" for the main session.
+async function ownerOf($: EngineInterface, id: string | undefined): Promise<string> {
+  if (id === undefined) return 'main'
+  return (await $.agent.list()).find(a => a.id === id)?.name ?? 'main'
+}
+
+const FLOW_TYPES = new Set(['flow:manager', 'flow:worker', 'flow:queue'])
+
 // Starts a merge queue unless one is live. The queue drains every pending handover, then ends;
 // the next handover, or a queue that ended with work left, starts a fresh one.
 async function ensureQueue($: EngineInterface): Promise<string> {
@@ -357,6 +534,14 @@ export const register: Register = (on, options) => {
   const resumed = new Set<string>()
 
   on('session.start', async ($, e, next) => {
+    // Handovers a restart would lose: merge what is on disk under this session's own records.
+    await best($, 'loading handovers', async () => {
+      resetStateDir()
+      const disk = await loadHandovers($)
+      if (Object.keys(disk).length === 0) return
+      await update($, handovers, hs => ({ ...disk, ...hs }))
+      if (Object.values(disk).some(h => h.status === 'pending')) await ensureQueue($)
+    })
     // The base branch: the option, else the remote's default branch, else main.
     // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
     try {
@@ -418,6 +603,21 @@ export const register: Register = (on, options) => {
           report_to: { type: 'string', description: 'Your agent name, so the queue reports back to you' },
         },
         required: ['pr', 'verified', 'report_to'],
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
+      name: 'note',
+      description: 'A manager\'s notes on disk, kept across restarts. With text, appends a dated line (kind "decision" for what the user decided, else "progress"). ' +
+        'Without text, returns the notes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          manager: { type: 'string', description: 'Your agent name' },
+          text: { type: 'string', description: 'The line to add; leave out to read the notes' },
+          kind: { type: 'string', enum: ['decision', 'progress'] },
+        },
+        required: ['manager'],
       },
       isDeferred: false,
     })
