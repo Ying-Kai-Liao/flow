@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.28] - 2026-10-10
+
+### Added
+
+- Pre-flight: a manager main starts must look over its task and call `mcp__flow__preflight`
+  (summary, acceptance criteria, already shipped, dependencies, optional questions) before it may
+  start workers. Until it has, and while any blocking question of its filing is open, a
+  `flow:worker` spawn (and an `mcp__flow__session` start) by it is refused with a message naming
+  the tool. Recon agents (Explore, general-purpose) are not refused. Answering through
+  `mcp__flow__answer` (choices or `defaults: true`) releases it.
+- Main gets one combined round: when every manager started together has filed, skipped or ended,
+  or after `preflight_wait` minutes, one message summarises tasks, already-shipped work,
+  dependencies and the numbered questions. A late filing follows on its own.
+- Exempt: the `preflight` setting `off`, a `Pre-flight: skip` line in the manager's prompt, a
+  handoff successor (inherits the record), and managers not in the record (older data never blocks).
+- `/flow preflight` shows the current or latest round; `mcp__flow__status` shows each manager's
+  pre-flight phase. Settings `preflight` (on or off) and `preflight_wait` (minutes, default 10).
+- State in `<git-common-dir>/flow/preflight.json`. A round left undelivered by an ended session is
+  closed unsent on load, and a round already past its wait is closed when the next manager is
+  spawned, so old rounds never swallow a new one.
+
 ## [0.3.27] - 2026-10-10
 
 ### Fixed

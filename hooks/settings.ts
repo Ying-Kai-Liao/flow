@@ -41,7 +41,12 @@ export const KEYS: Record<string, Kind> = {
   session_host: 'string',
   harnesses: 'object',
   min_quota: 'number',
+  preflight: 'string',
+  preflight_wait: 'number',
 }
+
+// String settings with a closed set of values: another value is dropped with a warning.
+export const CHOICES: Record<string, string[]> = { preflight: ['on', 'off'] }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'big_files', 'decision_phrases']
 
@@ -98,6 +103,8 @@ function checked(source: string, layer: Record<string, unknown>, warnings: strin
       out[k] = v
     } else if (!typeOk(kind, v)) {
       warnings.push(`${source}: "${k}" should be a ${kind === 'list' ? 'list of strings' : kind === 'objects' ? 'list of objects' : kind}; ignored`)
+    } else if (CHOICES[k] !== undefined && !CHOICES[k]!.includes(String(v))) {
+      warnings.push(`${source}: "${k}" is ${JSON.stringify(v)}; use ${CHOICES[k]!.map(c => `"${c}"`).join(' or ')}; ignored`)
     } else if (MODEL_KEYS.includes(k) && isFable(v)) {
       warnings.push(`${source}: "${k}" is ${JSON.stringify(v)}; sub-agents don't run on Fable, using the default`)
     } else {

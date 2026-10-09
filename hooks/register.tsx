@@ -11,6 +11,11 @@ import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, inboxHead, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk,
 } from './inbox'
 import type { Inbox } from './inbox'
+import {
+  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, FILE_HELP, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
+  recordFiling, recordSpawn, renderFollowUp, renderRound, renderStatus,
+} from './preflight'
+import type { Preflight } from './preflight'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
 import {
@@ -86,6 +91,8 @@ const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
 // The decision inbox, mirrored from <state dir>/inbox.json.
 const inbox = atom({ plugin: 'flow', key: 'inbox' } as const, EMPTY_INBOX as Inbox)
+// Pre-flight records, mirrored from <state dir>/preflight.json.
+const preflight = atom({ plugin: 'flow', key: 'preflight' } as const, EMPTY_PREFLIGHT as Preflight)
 const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
@@ -163,6 +170,9 @@ const grantFile = (key: string): string | undefined => slotDir && `${slotDir}/${
 let slotLimit = 1
 // The decision_phrases setting, for the question check in refresh() and syncPlans().
 let decisionPhrases: string[] = []
+// Pre-flight setting and round wait (ms); set by register() like the others.
+let preflightOn = true
+let preflightWaitMs = 10 * 60_000
 
 const span = (ms: number): string => {
   const m = Math.floor(ms / 60_000)
@@ -478,7 +488,7 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number } & Guards {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
@@ -493,6 +503,8 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     mainGuard: options.main_checkout_guard !== false,
     mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
     maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
+    preflight: str('preflight', 'on') !== 'off',
+    preflightWait: Math.max(1, num('preflight_wait', 10)),
     cleanup: str('cleanup', 'auto') === 'off' ? 'off' : 'auto',
     base: str('base_branch', base),
     testCommand: str('test_command', ''),
@@ -611,7 +623,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     // The queue's worktree (detached at the base) goes once the queue is gone.
     if (ENDED.has(a.status) && a.type === QUEUE) autoSweep($)
     if (ENDED.has(a.status) || a.status === 'idle') {
-      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases) || askers.includes(a.name)
+      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases) || askers.includes(a.name ?? '')
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
       void $.ui.toast(`${role}${labelOf(a)}: ${asks ? 'asks a question' : a.status === 'idle' ? 'finished its turn' : a.status}`)
     }
@@ -646,6 +658,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   $.ui.status(rows.length === 0 && hs.length === 0 && !unhanded ? undefined
     : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`}${slotPart} · /flow`)
   await syncPlans($, rows).catch(() => undefined)
+  await preflightTick($, rows).catch(() => undefined)
   return rows
 }
 
@@ -736,6 +749,73 @@ function withInbox<T>($: EngineInterface, fn: (cur: Inbox) => { inbox: Inbox; ou
   const result = inboxChain.then(run, run)
   inboxChain = result.catch(() => undefined)
   return result
+}
+
+// Pre-flight changes run one after another, like the inbox's.
+let preflightChain: Promise<unknown> = Promise.resolve()
+
+function withPreflight<T>($: EngineInterface, fn: (cur: Preflight) => { state: Preflight; out: T }): Promise<T> {
+  const run = async (): Promise<T> => {
+    const dir = await stateDir($)
+    const cur = dir === undefined ? await read($, preflight) : normalizePreflight(await readJson($, `${dir}/preflight.json`))
+    const { state, out } = fn(cur)
+    if (state !== cur) {
+      if (dir !== undefined) {
+        await $.process.run(['mkdir', '-p', dir])
+        await writeJsonAtomic($, `${dir}/preflight.json`, state)
+      }
+      await update($, preflight, () => state)
+    }
+    return out
+  }
+  const result = preflightChain.then(run, run)
+  preflightChain = result.catch(() => undefined)
+  return result
+}
+
+// Managers that ended with no live manager of the same notes key (a successor is the same manager).
+function endedManagers(rows: AgentRow[]): Set<string> {
+  const live = new Set(liveManagers(rows).map(a => noteKey(a.name ?? '')))
+  return new Set(rows.filter(a => a.type === MANAGER && ENDED.has(a.status) && !live.has(noteKey(a.name ?? ''))).map(a => noteKey(a.name ?? '')))
+}
+
+// Sends the round to main once it is due: everyone filed, skipped or ended, or the wait is over. The
+// delivered flag is written inside the update, so two callers deliver it once.
+async function preflightTick($: EngineInterface, rows: AgentRow[]): Promise<void> {
+  if (!(await read($, preflight)).rounds.some(r => !r.delivered)) return
+  const t = await $.clock.now()
+  const ended = endedManagers(rows)
+  const due = await withPreflight($, cur => {
+    const d = dueRound(cur, ended, t, preflightWaitMs)
+    if (d === undefined) return { state: cur, out: undefined }
+    const next = markDelivered(cur, d.round.id, t)
+    return { state: next, out: { ...d, state: next } }
+  })
+  if (due === undefined) return
+  const members = due.round.members.map(k => due.state.entries[k])
+  // A round of skipped managers only has nothing to say.
+  if (members.every(e => e === undefined || e.phase === 'skipped')) return
+  const text = renderRound(due.state, await read($, inbox), due.round, ended, t, due.timedOut)
+  $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
+}
+
+// Why this manager may not start workers yet, or undefined. Only a recorded manager is ever gated.
+async function preflightGate($: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
+  if (!preflightOn || agentId === undefined) return undefined
+  const me = (await $.agent.list()).find(a => a.id === agentId)
+  if (me?.type !== MANAGER || me.name === undefined) return undefined
+  const g = gateOf(await read($, preflight), await read($, inbox), me.name)
+  return g === undefined ? undefined : denyText(g)
+}
+
+// A manager main just started joins the open round, or opens one with a timer for the wait.
+async function recordManager($: EngineInterface, name: string, prompt: string): Promise<void> {
+  const t = await $.clock.now()
+  const opened = await withPreflight($, cur => {
+    const next = recordSpawn(cur, name, isSkip(prompt), t, preflightWaitMs)
+    return { state: next, out: next.rounds.length > cur.rounds.length }
+  })
+  if (opened) $.clock.after(preflightWaitMs, () => void refresh($).catch(() => undefined))
 }
 
 const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOString().slice(0, 10)
@@ -1715,6 +1795,8 @@ const SHELLS = new Set(['zsh', 'bash', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'nu'
 type Caller = { id: string; name: string }
 
 async function startSession($: EngineInterface, input: Record<string, unknown>, caller: Caller, s: ReturnType<typeof settingsOf>): Promise<string> {
+  const gated = await preflightGate($, caller.id === 'main' ? undefined : caller.id)
+  if (gated !== undefined) return `Refused: ${gated}`
   const name = String(input.name ?? '').trim()
   if (!NAME_RULE.test(name)) return 'Refused: name must be letters, digits, "-" or "_" (it becomes the branch flow/<name>).'
   const brief = String(input.brief ?? '').trim()
@@ -2098,6 +2180,8 @@ export const register: Register = (on, options) => {
   maxManagers = settings.maxManagers
   slotLimit = settings.testSlots
   decisionPhrases = settings.decisionPhrases
+  preflightOn = settings.preflight
+  preflightWaitMs = settings.preflightWait * 60_000
   // Settings reloads: the files' paths and mtimes, the detected base branch, whether a check runs.
   let paths: string[] = []
   let seen = ''
@@ -2112,6 +2196,8 @@ export const register: Register = (on, options) => {
     maxManagers = s.maxManagers
     slotLimit = s.testSlots
     decisionPhrases = s.decisionPhrases
+    preflightOn = s.preflight
+    preflightWaitMs = s.preflightWait * 60_000
   }
   // Set once a `[1m]` model was refused for a sub-agent: later spawns go straight to the plain one.
   let noLong = false
@@ -2141,6 +2227,16 @@ export const register: Register = (on, options) => {
       if (dir === undefined) return
       const disk = normalizeInbox(await readJson($, `${dir}/inbox.json`))
       await update($, inbox, () => disk)
+    })
+    await best($, 'loading pre-flight', async () => {
+      const dir = await stateDir($)
+      if (dir === undefined) return
+      const disk = normalizePreflight(await readJson($, `${dir}/preflight.json`))
+      await update($, preflight, () => disk)
+      // A round left undelivered by a session that ended is not sent now.
+      const live = (await $.agent.list()).filter(a => a.type === MANAGER && !ENDED.has(a.status) && a.name !== undefined).map(a => a.name!)
+      const t = await $.clock.now()
+      await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } })
     })
     // The base branch: the option, else the remote's default branch, else main.
     // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
@@ -2177,8 +2273,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow inbox lists the open questions to answer, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox|close|resume|approve <pr>|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow inbox lists the open questions to answer, /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox|preflight|close|resume|approve <pr>|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -2232,6 +2328,46 @@ export const register: Register = (on, options) => {
           },
         },
         required: ['from', 'questions'],
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
+      name: 'preflight',
+      description: 'Managers only. File your pre-flight after looking over your task (read the code, the history and open PRs; no workers yet): the plugin refuses your worker starts until you have, ' +
+        'and, if you ask blocking questions, until they are answered. Main gets one combined round from all managers started together. ' +
+        'questions are stored in the decision inbox for main, like mcp__flow__ask but without a toast. Filing again replaces your earlier filing.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          from: { type: 'string', description: 'Your agent name' },
+          summary: { type: 'string', description: 'One line: what you will do' },
+          workers: { type: 'number', description: 'Estimate of how many workers you will start' },
+          criteria: { type: 'array', items: { type: 'string' }, description: 'Acceptance criteria, at least one' },
+          shipped: {
+            type: 'array', description: 'Work already shipped, duplicated or already running; empty when none',
+            items: { type: 'object', properties: { what: { type: 'string' }, ref: { type: 'string', description: 'PR, commit or branch' } }, required: ['what', 'ref'] },
+          },
+          depends: {
+            type: 'array', description: 'Other tasks or managers this one depends on; empty when none',
+            items: { type: 'object', properties: { on: { type: 'string' }, why: { type: 'string' } }, required: ['on', 'why'] },
+          },
+          questions: {
+            type: 'array', description: 'Optional, same shape as mcp__flow__ask',
+            items: {
+              type: 'object',
+              properties: {
+                question: { type: 'string' },
+                options: { type: 'array', items: { type: 'string' }, description: 'The choices, at least two' },
+                default: { type: 'string', description: 'The option you recommend (its text or its 1-based number)' },
+                blocking: { type: 'boolean', description: 'true when you cannot start without the answer' },
+                context: { type: 'string' },
+                topic: { type: 'string' },
+              },
+              required: ['question', 'options', 'default', 'blocking'],
+            },
+          },
+        },
+        required: ['from', 'summary', 'criteria', 'shipped', 'depends'],
       },
       isDeferred: false,
     })
@@ -2401,6 +2537,9 @@ export const register: Register = (on, options) => {
     // A plugin's $.command.run may leave args out.
     const arg = (e.args ?? '').trim()
     if (arg === 'inbox') return { text: renderInbox(await read($, inbox), await $.clock.now()) }
+    if (arg === 'preflight') {
+      return { text: renderStatus(await read($, preflight), await read($, inbox), endedManagers(await read($, roster)), await $.clock.now(), preflightWaitMs) }
+    }
     if (arg === 'close') {
       if (!(await $.ui.panes()).some(p => p.id === PANE)) return { text: 'The Flow pane is not open.' }
       try {
@@ -2460,7 +2599,7 @@ export const register: Register = (on, options) => {
       await refresh($)
       return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -2490,6 +2629,11 @@ export const register: Register = (on, options) => {
         const deps = node.after.filter(d => graph[d]?.state !== 'done').map(d => `${d} (${graph[d]?.state ?? '?'})`)
         return { deny: `flow plan: ${node.id} waits on ${deps.join(', ')}. Start it when the plugin says it is ready.` }
       }
+    }
+    // A manager may not start workers before its pre-flight is filed (and its blocking questions answered).
+    if (e.subagentType === WORKER) {
+      const gated = await preflightGate($, e.parentAgentId)
+      if (gated !== undefined) return { deny: gated }
     }
     if (await fableDenied($, e)) return { deny: FABLE_DENY }
     // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
@@ -2547,6 +2691,9 @@ export const register: Register = (on, options) => {
       }))
       await refresh($)
       void openPane($)
+      if (preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
+        await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt))
+      }
       if (FLOW_TYPES.has(e.subagentType)) {
         await best($, 'logging a spawn', async () => {
           await appendLog($, { event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerNameOf($, e.parentAgentId) })
@@ -2867,6 +3014,37 @@ export const register: Register = (on, options) => {
     }
   })
 
+  on('tool.call', { tool: 'mcp__flow__preflight' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    if (e.agentId === undefined) return { result: 'Refused: main does not file a pre-flight; it answers the managers\' questions in the round it receives.' }
+    const rows = await refresh($)
+    const me = rows.find(a => a.id === e.agentId)
+    if (me?.type !== MANAGER) return { result: 'Refused: only managers file a pre-flight. A worker asks its manager with mcp__flow__ask.' }
+    const parsed = parseFiling(input)
+    if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error} To file: ${FILE_HELP}.` }
+    const name = me.name ?? (String(input.from ?? '').trim() || 'unknown')
+    const at = await $.clock.now()
+    const added = parsed.questions.length === 0 ? [] : await withInbox($, cur => {
+      const r = addQuestions(cur, { name, id: e.agentId, isManager: true }, 'main', parsed.questions, at)
+      return { inbox: r.added.some(a => a.fresh) ? r.inbox : cur, out: r.added }
+    })
+    const ids = { asked: added.map(a => a.q.id), blocking: added.filter(a => a.q.blocking).map(a => a.q.id) }
+    const late = await withPreflight($, cur => {
+      const f = followUp(recordFiling(cur, name, parsed.filing, ids, at), name)
+      return { state: f.state, out: f.send ? f.state : undefined }
+    })
+    if (late !== undefined) {
+      const text = renderFollowUp(late, await read($, inbox), name, at)
+      $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
+    }
+    await preflightTick($, rows)
+    return {
+      result: ids.blocking.length === 0
+        ? `Pre-flight filed. Start your workers now.${ids.asked.length > 0 ? ` Your non-blocking question(s) ${ids.asked.join(', ')} are with main: go on the defaults, say so in your PRs; you get a message if an answer differs.` : ''}`
+        : `Pre-flight filed with blocking question(s) ${ids.blocking.join(', ')}. End your turn now: main answers once for all managers and the answers arrive by message. Then start workers.`,
+    }
+  })
+
   on('tool.call', { tool: 'mcp__flow__answer' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     const by = e.agentId === undefined ? 'main' : await ownerNameOf($, e.agentId)
@@ -2939,11 +3117,14 @@ export const register: Register = (on, options) => {
     const byParent = new Map<string | undefined, AgentRow[]>()
     for (const a of rows) byParent.set(a.parentId, [...(byParent.get(a.parentId) ?? []), a])
     const ids = new Set(rows.map(a => a.id))
+    const pre = await read($, preflight)
+    const inb = await read($, inbox)
     const walk = (a: AgentRow, depth: number) => {
+      const phase = a.type === MANAGER && a.name !== undefined ? phaseOf(pre, inb, a.name) : undefined
       const answer = (acts[a.id]?.answer ?? '').trim().split('\n').pop() ?? ''
       const h = handoffOf(a, acts[a.id])
       const hand = h === undefined ? '' : h.kind === 'done' ? ` | ${handoffText(h)}` : ` | handoff: wrapping up${h.percent === undefined ? '' : ` (${h.percent}%)`}`
-      lines.push(`${'  '.repeat(depth)}- ${ROLE[a.type] ?? a.type} ${labelOf(a)}: ${a.status}${hand}${answer ? ` | last: ${answer.slice(0, 160)}` : ''}`)
+      lines.push(`${'  '.repeat(depth)}- ${ROLE[a.type] ?? a.type} ${labelOf(a)}: ${a.status}${hand}${phase ? ` | pre-flight: ${phase}` : ''}${answer ? ` | last: ${answer.slice(0, 160)}` : ''}`)
       for (const c of byParent.get(a.id) ?? []) walk(c, depth + 1)
     }
     for (const a of rows.filter(r => r.parentId === undefined || !ids.has(r.parentId))) walk(a, 0)
@@ -3211,7 +3392,7 @@ export const register: Register = (on, options) => {
       const act = acts[a.id]
       const hand = handoffOf(a, act)
       const dim = ENDED.has(a.status) && hand?.kind !== 'done'
-      const asks = (asksQuestion(act?.answer, settings.decisionPhrases) || askers.includes(a.name)) && !['running', 'pending'].includes(a.status)
+      const asks = (asksQuestion(act?.answer, settings.decisionPhrases) || askers.includes(a.name ?? '')) && !['running', 'pending'].includes(a.status)
       const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
@@ -3418,8 +3599,8 @@ export const register: Register = (on, options) => {
           <Text bold>Activity</Text>
           {(act?.log ?? []).length === 0 && <Text dimColor>Nothing seen yet.</Text>}
           {(act?.log ?? []).slice(-room).map(line => <Text wrap="truncate-end">{line}</Text>)}
-          {answer !== '' && <Text bold color={asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name) ? 'warning' : undefined}>
-            {asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name) ? 'Asks' : 'Last report'}
+          {answer !== '' && <Text bold color={asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name ?? '') ? 'warning' : undefined}>
+            {asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name ?? '') ? 'Asks' : 'Last report'}
           </Text>}
           {answer !== '' && <Text>{answer.length > 1200 ? '…' + answer.slice(-1200) : answer}</Text>}
         </Box>
