@@ -194,7 +194,7 @@ worker to fix X".
 | `big_files` | none | files workers grep and never read whole (a list) |
 | `big_file_lines` | 1500 | the line count from which a file counts as big |
 | `migrations_dir` | none | the directory of migrations |
-| `decision_phrases` | none | extra phrases that mark a report as a question for the user (a list) |
+| `decision_phrases` | none | extra phrases that mark a report as a question for the user (a list). A report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it |
 | `worker_checks` | none | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | tests every worker runs on top of the ones for the files it changed (a list) |
 | `context_warn_percent` | 40 | the context limit as a percent of the window (1 to 100) |
@@ -203,8 +203,6 @@ worker to fix X".
 | `base_branch` | the remote's default branch | everyone |
 | `main_checkout_guard` | on | every agent and the main session: writes to the main checkout are refused (see Guards) |
 | `main_checkout_allow` | `.claude/` | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
-
-`decision_phrases` is read and checked now; a following release wires it into the prompts.
 
 An unset full check or deploy is a step that's skipped and reported, never improvised.
 

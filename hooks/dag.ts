@@ -6,7 +6,7 @@ export type Graph = Record<string, DagNode>
 export type Plan = Record<string, Graph>
 
 export type AgentFact = { name?: string; status: string; answer?: string }
-export type Facts = { agents: AgentFact[]; handovers: Handover[] }
+export type Facts = { agents: AgentFact[]; handovers: Handover[]; phrases?: string[] }
 
 export type NodeInput = { id: string; title?: string; after?: string[]; until?: 'merged' | 'reported' }
 
@@ -20,9 +20,25 @@ export type Notice = {
   slots?: number
 }
 
-export function asksQuestion(answer: string | undefined): boolean {
-  const last = (answer ?? '').trim().split('\n').pop() ?? ''
-  return /[?？][*_`'")\s]*$/.test(last)
+// A phrase directly after one of these ("不需要你決定") says the opposite.
+const NEGATIONS = ['不', '不用', '不必', '無需', '毋需', '不需要', 'no ', 'not ', "don't ", 'no need to ']
+
+// The last line ends in a question mark, or the last paragraph holds one of the configured phrases
+// (for agents that write in a language where a question has no "?").
+export function asksQuestion(answer: string | undefined, phrases: string[] = []): boolean {
+  const text = (answer ?? '').trim()
+  const last = text.split('\n').pop() ?? ''
+  if (/[?？][*_`'")\s]*$/.test(last)) return true
+  const paragraph = (text.split(/\n[ \t]*\n/).pop() ?? '').toLowerCase()
+  return phrases.some(p => {
+    const phrase = p.trim().toLowerCase()
+    if (phrase === '') return false
+    for (let i = paragraph.indexOf(phrase); i >= 0; i = paragraph.indexOf(phrase, i + 1)) {
+      const before = paragraph.slice(0, i)
+      if (!NEGATIONS.some(n => before.endsWith(n))) return true
+    }
+    return false
+  })
 }
 
 const lastLine = (answer: string | undefined) => (answer ?? '').trim().split('\n').pop() ?? ''
@@ -118,7 +134,7 @@ function judge(owner: string, node: DagNode, facts: Facts): Verdict {
     if (agent.status === 'idle' || agent.status === 'completed') {
       const last = lastLine(agent.answer)
       if (last.startsWith('BLOCKED:')) return { state: 'blocked', info: last }
-      if (!asksQuestion(agent.answer) && !last.startsWith('HANDOFF:')) return { state: 'done', info: 'reported' }
+      if (!asksQuestion(agent.answer, facts.phrases) && !last.startsWith('HANDOFF:')) return { state: 'done', info: 'reported' }
     }
     if (failed) return { state: 'blocked', info: `agent ${agent.status}` }
     return { state: 'running' }
@@ -139,7 +155,7 @@ function judge(owner: string, node: DagNode, facts: Facts): Verdict {
   if (agent.status !== 'completed') return { state: 'running' }
   const last = lastLine(agent.answer)
   if (last.startsWith('BLOCKED:')) return { state: 'blocked', info: last }
-  if (asksQuestion(agent.answer) || last.startsWith('HANDOFF:')) return { state: 'running' }
+  if (asksQuestion(agent.answer, facts.phrases) || last.startsWith('HANDOFF:')) return { state: 'running' }
   const hs = latestPerBranch(facts.handovers.filter(x => reportsTo(x, node.id)))
   const returned = hs.find(x => x.status === 'returned')
   if (returned) return { state: 'blocked', info: `PR #${returned.pr} returned: ${returned.reason ?? 'no reason given'}` }

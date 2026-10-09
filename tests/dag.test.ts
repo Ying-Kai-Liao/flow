@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { DagNode, Handover } from '../types'
-import { addNodes, agentFor, describe, evaluate, layers, noticeText, settle } from '../hooks/dag'
+import { addNodes, agentFor, asksQuestion, describe, evaluate, layers, noticeText, settle } from '../hooks/dag'
 import type { AgentFact, Facts, Graph, Plan } from '../hooks/dag'
 
 const EMPTY: Facts = { agents: [], handovers: [] }
@@ -131,6 +131,30 @@ test('until reported: idle with a plain answer is done, a question is not', asyn
   expect(stateOf(ev({ name: 'scout', status: 'idle', answer: 'BLOCKED: x' }), 'scout')).toBe('blocked')
   expect(stateOf(ev({ name: 'scout', status: 'completed', answer: 'HANDOFF: x' }), 'scout')).toBe('running')
   expect(stateOf(ev({ name: 'scout', status: 'running' }), 'scout')).toBe('running')
+})
+
+test('asksQuestion: configured phrases count in the last paragraph unless negated', async () => {
+  const P = ['需要你決定', 'Please Confirm']
+  expect(asksQuestion('做完了。\n\n這需要你決定。', P)).toBe(true)
+  expect(asksQuestion('做完了。\n\nplease confirm the plan', P)).toBe(true)
+  expect(asksQuestion('這需要你決定。\n\n全部完成。', P)).toBe(false)
+  expect(asksQuestion('不需要你決定。', P)).toBe(false)
+  expect(asksQuestion('There is no need to please confirm', P)).toBe(false)
+  expect(asksQuestion('不需要你決定，但這需要你決定', P)).toBe(true)
+  expect(asksQuestion('這需要你決定。')).toBe(false)
+  expect(asksQuestion('這需要你決定。', [])).toBe(false)
+  expect(asksQuestion('Which one?')).toBe(true)
+  expect(asksQuestion('Which one?', P)).toBe(true)
+  expect(asksQuestion(undefined, P)).toBe(false)
+  expect(asksQuestion('', P)).toBe(false)
+  expect(asksQuestion('anything', [''])).toBe(false)
+})
+
+test('the DAG treats a report ending in a configured phrase as asking', async () => {
+  const g = build([{ id: 'scout', until: 'reported' }])
+  const agent: AgentFact = { name: 'scout', status: 'idle', answer: '完成了方案。\n\n需要你決定。' }
+  expect(stateOf(evaluate('m', g, { agents: [agent], handovers: [] }), 'scout')).toBe('done')
+  expect(stateOf(evaluate('m', g, { agents: [agent], handovers: [], phrases: ['需要你決定'] }), 'scout')).toBe('running')
 })
 
 test('manual wins over the facts', async () => {
