@@ -90,7 +90,7 @@ test('a failing send never fails the step', async ($, on) => {
 })
 
 // What git and gh answer to `/flow resume`.
-type Repo = { prs?: unknown[]; all?: unknown[]; refs?: string[]; worktrees?: string; dirty?: string[]; agents?: AgentInfo[]; fail?: string }
+type Repo = { prs?: unknown[]; all?: unknown[]; refs?: string[]; worktrees?: string; dirty?: string[]; agents?: AgentInfo[]; fail?: string; heads?: Record<string, string>; ahead?: boolean }
 
 function repo(on: On, start: Repo): { submitted: string[]; set: (o: Repo) => void } {
   let o = start
@@ -108,8 +108,9 @@ function repo(on: On, start: Repo): { submitted: string[]; set: (o: Repo) => voi
     if (a[1] === 'for-each-ref') return out((o.refs ?? []).join('\n'))
     if (a[1] === 'worktree') return out(o.worktrees ?? '')
     if (a[1] === '-C' && a[3] === 'status') return out(o.dirty?.includes(a[2] ?? '') ? ' M a.ts\n' : '')
+    if (a[1] === '-C' && a[3] === 'rev-parse' && a[4] === 'HEAD') return out(o.heads?.[a[2] ?? ''] ?? 'ffff')
     if (a[1] === '-C' && a[3] === 'rev-parse') return out('', 1)
-    if (a[1] === '-C' && a[3] === 'log') return out('')
+    if (a[1] === '-C' && a[3] === 'log') return out(o.ahead ? 'abc commit\n' : '')
     return out('')
   })
   return { submitted, set: next => { o = next } }
@@ -175,4 +176,22 @@ test('/flow close and the unknown-argument line still work', async ($, on) => {
   on('ui.panes', () => ({ value: [] }))
   expect((await $.command.run({ command: 'flow', args: 'close' } as never)).text).toBe('The Flow pane is not open.')
   expect((await $.command.run({ command: 'flow', args: 'shut' } as never)).text).toContain('Unknown argument "shut"')
+})
+
+const WT2 = 'worktree /r/.claude/worktrees/agent-w1\nHEAD aaa\nbranch refs/heads/worktree-agent-w1\n\nworktree /r/.claude/worktrees/agent-old\nHEAD bbb\nbranch refs/heads/flow/squashed\n\nworktree /r/.claude/worktrees/agent-old2\nHEAD ccc\nbranch refs/heads/worktree-agent-old2\n\nworktree /r/.claude/worktrees/agent-left\nHEAD ddd\nbranch refs/heads/worktree-agent-left\n'
+
+test('/flow resume skips a live agent\'s worktree and squash-merged ones', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  repo(on, {
+    worktrees: WT2,
+    ahead: true,
+    agents: [{ id: 'w1', name: 'task-csv', description: 'csv', type: 'flow:worker', status: 'running' }],
+    // agent-old's branch is merged; agent-old2's head is a merged PR's head.
+    all: [{ headRefName: 'flow/squashed', headRefOid: 'x1', state: 'MERGED' }, { headRefName: 'flow/other', headRefOid: 'h2', state: 'MERGED' }],
+    heads: { '/r/.claude/worktrees/agent-old2': 'h2', '/r/.claude/worktrees/agent-left': 'h9' },
+  })
+  const text = (await $.command.run({ command: 'flow', args: 'resume' } as never)).text ?? ''
+  expect(text).not.toContain('agent-w1')
+  expect(text).not.toContain('agent-old')
+  expect(text).toContain('agent-left')
 })

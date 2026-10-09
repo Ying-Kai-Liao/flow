@@ -209,21 +209,27 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
   if (fetched.exitCode !== 0) return fail('git fetch origin', fetched)
   const open = await run(['gh', 'pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,isDraft,url,body', '--limit', '100'])
   if (open.exitCode !== 0) return fail('gh pr list', open)
-  const all = await run(['gh', 'pr', 'list', '--state', 'all', '--json', 'headRefName,state', '--limit', '200'])
+  const all = await run(['gh', 'pr', 'list', '--state', 'all', '--json', 'headRefName,headRefOid,state', '--limit', '200'])
   if (all.exitCode !== 0) return fail('gh pr list', all)
   const refs = await run(['git', 'for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin/flow/'])
   if (refs.exitCode !== 0) return fail('git for-each-ref', refs)
 
   type Pr = { number: number; title: string; headRefName: string; isDraft: boolean; url: string; body: string }
   const prs = (JSON.parse(open.stdout || '[]') as Pr[]).filter(p => p.headRefName.startsWith('flow/'))
-  const closed = new Set((JSON.parse(all.stdout || '[]') as { headRefName: string; state: string }[])
-    .filter(p => p.state !== 'OPEN').map(p => p.headRefName))
+  const ended = (JSON.parse(all.stdout || '[]') as { headRefName: string; headRefOid?: string; state: string }[])
+    .filter(p => p.state !== 'OPEN')
+  const closed = new Set(ended.map(p => p.headRefName))
+  // A squash-merged branch is deleted on the remote, so its worktree looks unpushed: match by head too.
+  const endedHeads = new Set(ended.map(p => p.headRefOid).filter(Boolean))
   const withPr = new Set(prs.map(p => p.headRefName))
   const branches = refs.stdout.split('\n').map(l => l.trim().replace(/^origin\//, ''))
     .filter(b => b.startsWith('flow/') && !withPr.has(b) && !closed.has(b))
 
   // A live agent named like the branch owns it.
-  const owners = new Set((await $.agent.list()).filter(a => OWNED.has(a.status) && a.name !== undefined).map(a => `flow/${a.name}`))
+  const liveAgents = (await $.agent.list()).filter(a => OWNED.has(a.status))
+  const owners = new Set(liveAgents.filter(a => a.name !== undefined).map(a => `flow/${a.name}`))
+  // A worktree path ends in agent-<agentId>: that covers a worker that has not renamed its branch, and the queue.
+  const liveIds = new Set(liveAgents.map(a => `agent-${a.id}`))
 
   const items: Leftover[] = []
   for (const p of prs) {
@@ -243,6 +249,7 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
       const path = /^worktree (.+)$/m.exec(block)?.[1]
       if (path === undefined || !path.includes('/.claude/worktrees/')) continue
       const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1]
+      if (liveIds.has(path.split('/').pop() ?? '') || (branch !== undefined && closed.has(branch))) continue
       const dirty = (await run(['git', '-C', path, 'status', '--porcelain'])).stdout.trim() !== ''
       if (branch === undefined && !dirty) continue
       let unpushed = ''
@@ -253,6 +260,9 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
           : ['git', '-C', path, 'log', '--oneline', `origin/${base}..HEAD`])).stdout.trim()
       }
       if (!dirty && unpushed === '') continue
+      const head = (await run(['git', '-C', path, 'rev-parse', 'HEAD'])).stdout.trim()
+      if (endedHeads.has(head)) continue
+      if (!dirty && (await run(['git', '-C', path, 'branch', '-r', '--contains', 'HEAD'])).stdout.trim() !== '') continue
       const what = dirty ? 'uncommitted changes' : `${unpushed.split('\n').length} unpushed commit(s)`
       const mate = branch === undefined ? undefined : items.find(i => i.key === branch)
       if (mate !== undefined) {
