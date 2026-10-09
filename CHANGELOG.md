@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-09
+
+### Changed
+
+- Cleanup: break stale reviewer locks held by this session; sweep at start (#68)
+
 ## [0.4.2] - 2026-10-09
 
 ### Changed
