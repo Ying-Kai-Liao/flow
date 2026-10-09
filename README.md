@@ -64,6 +64,18 @@ add login-redirect  after: csv-export
   **Back** returns to the agent above it, or to the tree from a top-level agent.
   `/flow close` closes the pane, `/flow resume` picks up unfinished work (below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
+- **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
+  `c` folds or unfolds its children. In an agent's detail, `b` goes back and `m` starts a message.
+  Arrow keys, Tab and Enter go through the pane's focus ring, and the highlight follows it. Esc
+  can't be caught inside a pane, and `g` is reserved for the graph view.
+- **Many agents**: with 10 to 20 managers the tree auto-collapses to the highlight's path, shows
+  `↑ N above` and `+N more` for rows out of the window, and scrolls to keep the highlight in view.
+  `c` overrides the automatic folding for one agent.
+- **Following the chat view**: plugins can't switch the transcript, so the pane follows it. Open an
+  agent from the tasks list (`←`) and the pane shows that agent; back to main restores what you had.
+  Anything you do in the pane wins until the view changes. The first card click shows a one-time
+  hint on how to open that agent's chat. Known limit: if you act while viewing agent X, go to main
+  without acting, and reopen X, the pane doesn't re-follow X until you act on main or open another agent.
 - **A context meter on each card**: `███│░░░░░░░ 42%   1m 43s · ↓ 84.0k tokens`, with `│` marking the warning
   threshold (the lower of `context_warn_tokens` and `context_warn_percent`). The meter turns the theme's warning color at or past the threshold and its error
   color from 90%. The time runs while the agent runs and freezes when it ends. Where an agent's usage isn't known yet it says `context ?` and shows no tokens, never a guess. A

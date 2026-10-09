@@ -44,6 +44,15 @@ const HANDOVER_GLYPH: Record<Handover['status'], string> = {
 const roster = atom({ plugin: 'flow', key: 'roster' } as const, [] as AgentRow[])
 const activity = atom({ plugin: 'flow', key: 'activity' } as const, {} as Record<string, Activity>)
 const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as string | null)
+// The highlighted card of the tree (an agent id), and the folds the person chose: true folds an
+// agent's children away, false keeps them out even when the tree is crowded. Absent = automatic.
+const cursor = atom({ plugin: 'flow', key: 'cursor' } as const, null as string | null)
+const folded = atom({ plugin: 'flow', key: 'folded' } as const, {} as Record<string, boolean>)
+// Following the chat view: the view (an agent id, null for main) in which the person last acted in
+// the pane. While the view differs from it, the pane shows the viewed agent; written by handlers only.
+const overrideView = atom({ plugin: 'flow', key: 'overrideView' } as const, undefined as string | null | undefined)
+// Set once the first card click has told the person how to see that agent's chat.
+const hinted = atom({ plugin: 'flow', key: 'hinted' } as const, false)
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
@@ -201,6 +210,41 @@ function slotLine(state: TestSlots, limit: number, t: number): string {
   if (state.holders.length === 0 && state.waiters.length === 0) return ''
   const held = state.holders.length ? `held by ${state.holders.map(h => heldBy(h, t)).join(', ')}` : 'free'
   return `Test slots: ${state.holders.length}/${limit} ${held}${state.waiters.length ? ` · ${state.waiters.length} waiting` : ''}`
+}
+
+export type TreeItem = { a: AgentRow; depth: number; kids: number; collapsed: boolean }
+
+// The rows of the tree in the order they are drawn and walked. `auto` folds every agent with
+// children except the ones on the way to the highlight (a crowded tree); a fold the person chose
+// wins over it. `at` is the highlight, moved up to the nearest row that is drawn.
+export function treeItems(
+  list: AgentRow[], fold: Record<string, boolean>, cur: string | null | undefined, auto: boolean,
+): { items: TreeItem[]; at: string | undefined } {
+  const ids = new Set(list.map(a => a.id))
+  const kids = (id: string | undefined) => list
+    .filter(a => (id === undefined ? a.parentId === undefined || !ids.has(a.parentId) : a.parentId === id))
+    .sort((a, b) => rank(a.status) - rank(b.status))
+  const path = new Set<string>()
+  for (let a = list.find(x => x.id === cur); a !== undefined && !path.has(a.id); a = list.find(x => x.id === a!.parentId)) path.add(a.id)
+  const items: TreeItem[] = []
+  const walk = (a: AgentRow, depth: number) => {
+    const under = kids(a.id)
+    const collapsed = under.length > 0 && (fold[a.id] ?? (auto && !path.has(a.id)))
+    items.push({ a, depth, kids: under.length, collapsed })
+    if (!collapsed) for (const c of under) walk(c, depth + 1)
+  }
+  for (const a of kids(undefined)) walk(a, 0)
+  const drawn = new Set(items.map(i => i.a.id))
+  let at: string | undefined = cur ?? undefined
+  while (at !== undefined && !drawn.has(at)) at = list.find(a => a.id === at)?.parentId
+  return { items, at }
+}
+
+// The window of rows to draw: all of them, or `size` rows with the highlight in the middle.
+export function viewOf<T>(items: T[], at: number, size: number): { top: number; rows: T[] } {
+  if (items.length <= size) return { top: 0, rows: items }
+  const top = Math.min(Math.max(0, at - Math.floor(size / 2)), items.length - size)
+  return { top, rows: items.slice(top, top + size) }
 }
 
 // One line for a tool call: the tool and its most telling argument.
@@ -745,6 +789,11 @@ export const register: Register = (on, options) => {
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
+  // The view the pane was last drawn under: a focus event carries none, and a focus move is the
+  // person acting in that view.
+  let paneView: string | null = null
+  // What the last drawing showed in place of the stored state while following, else null.
+  let paneFollow: { pick: string; cur: string } | null = null
   // What /flow resume already handed to managers in this session.
   const resumed = new Set<string>()
 
@@ -1309,11 +1358,50 @@ export const register: Register = (on, options) => {
     return r
   })
 
+  // Arrows and Tab move the focus ring over the cards; the highlight follows it.
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    const r = await next(e)
+    if (e.element !== undefined && (await read($, roster)).some(a => a.id === e.element)) {
+      // Acting while following keeps what was shown, then the person's move applies on top.
+      if (paneFollow !== null) {
+        const f = paneFollow
+        await update($, selected, () => f.pick)
+        await update($, cursor, () => f.cur)
+      }
+      await update($, overrideView, () => paneView)
+      await update($, cursor, () => e.element!)
+    }
+    return r
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [list, acts, pick, t, hs, unhanded] = await Promise.all([
-      read($, roster), read($, activity), read($, selected), read($, now), read($, handovers), currentUnhanded($),
+    let [list, acts, pick, t, hs, cur, fold, unhanded] = await Promise.all([
+      read($, roster), read($, activity), read($, selected), read($, now), read($, handovers),
+      read($, cursor), read($, folded), currentUnhanded($),
     ])
+    const shown = await read($, hinted)
+    const override = await read($, overrideView)
+
+    // The pane follows the transcript in view, derived here without writing: the viewed agent wins
+    // until the person acts in the pane under that view. An id not in the roster is ignored.
+    const viewId = (e.props as { view?: { agentId?: string } }).view?.agentId ?? null
+    const following = viewId !== null && list.some(a => a.id === viewId) && viewId !== override
+    if (following) {
+      pick = viewId
+      cur = viewId
+    }
+    paneFollow = following ? { pick: viewId!, cur: viewId! } : null
+    // Handlers record which view they acted in, so a later view change follows again.
+    paneView = viewId
+    const acted = async () => {
+      // Acting while following adopts what was shown, so the stored state does not jump back.
+      if (following) {
+        await update($, selected, () => viewId)
+        await update($, cursor, () => viewId)
+      }
+      await update($, overrideView, () => viewId)
+    }
     const rows = e.viewport?.rows ?? 24
     const warnOf = (window: number) => warnPercent(settings, window)
     // Free: no breakdown asked. Main's figures also size a subagent on the same model.
@@ -1349,7 +1437,18 @@ export const register: Register = (on, options) => {
 
     // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
     // Only a top-level card has a border; deeper ones read as a tree by their indent.
-    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean) => {
+    const open = async (id: string) => {
+      await acted()
+      await update($, cursor, () => id)
+      await update($, selected, () => id)
+      // No API switches the transcript, so say once how to get to it.
+      if (!shown) {
+        await update($, hinted, () => true)
+        const a = list.find(x => x.id === id)
+        void $.ui.toast(`To see its chat: ← then pick ${a === undefined ? 'it' : labelOf(a)}`)
+      }
+    }
+    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, chev = '') => {
       const act = acts[a.id]
       const dim = ENDED.has(a.status)
       const asks = asksQuestion(act?.answer) && !['running', 'pending'].includes(a.status)
@@ -1357,7 +1456,7 @@ export const register: Register = (on, options) => {
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
       const head = <Text>
-        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold>{labelOf(a)}</Text>
+        {chev}<Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold inverse={hot}>{labelOf(a)}</Text>
         {under > 0 && <Text dimColor> (+{under})</Text>}
         <Text dimColor>  {ROLE[a.type] ?? a.type}</Text>
       </Text>
@@ -1370,12 +1469,12 @@ export const register: Register = (on, options) => {
           {full ? (
             // A Button holds Text only, so the border is drawn around it.
             <Box flexDirection="column" borderStyle={bordered ? 'round' : undefined} borderDimColor={dim} paddingX={bordered ? 1 : 0}>
-              <Button key={a.id} plain dimColor={dim} onPress={() => update($, selected, () => a.id)}>
+              <Button key={a.id} plain dimColor={dim} onPress={() => open(a.id)}>
                 {head}{'\n'}{second}{'\n'}{meter(u, dim, runTime(act, dim))}
               </Button>
             </Box>
           ) : (
-            <Button key={a.id} plain dimColor={dim} onPress={() => update($, selected, () => a.id)}>
+            <Button key={a.id} plain dimColor={dim} onPress={() => open(a.id)}>
               {head}{u !== undefined && <Text color={meterColor(u.percent, warnOf(u.window))}> {u.percent}%</Text>}
             </Button>
           )}
@@ -1395,7 +1494,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" gap={1}>
-            <Button key="back" hotkey="b" onPress={() => update($, selected, () => parent?.id ?? null)}>Back</Button>
+            <Button key="back" hotkey="b" onPress={async () => { await acted(); await update($, selected, () => parent?.id ?? null) }}>Back</Button>
             <Button key="msg" hotkey="m" onPress={() => $.prompt.fill({
               text: `Send a message to ${ROLE[agent.type] ?? 'agent'} "${labelOf(agent)}": `, mode: 'replace',
             })}>Message</Button>
@@ -1405,6 +1504,7 @@ export const register: Register = (on, options) => {
             {act ? ` · ${runTime(act, ENDED.has(agent.status))} · last active ${ago(t - act.lastAt)} ago` : ''}{children.length ? ` · ${children.length} under it` : ''}</Text>
           </Text>
           <Text dimColor>{agent.description}</Text>
+          {shown && <Text dimColor>To see its chat: ← then pick {labelOf(agent)}</Text>}
           {children.length > 0 && <Text bold>Under it</Text>}
           {children.map(c => card(c, 0, fullChildren, true))}
           <Text bold>Activity</Text>
@@ -1419,26 +1519,42 @@ export const register: Register = (on, options) => {
     }
 
     // The tree: each agent under the one that started it, what needs a person first.
-    const ids = new Set(list.map(a => a.id))
-    const kids = (id: string | undefined) => list
-      .filter(a => (id === undefined ? a.parentId === undefined || !ids.has(a.parentId) : a.parentId === id))
-      .sort((a, b) => rank(a.status) - rank(b.status))
-    const flat: { a: AgentRow; depth: number }[] = []
-    const walk = (a: AgentRow, depth: number) => {
-      flat.push({ a, depth })
-      for (const c of kids(a.id)) walk(c, depth + 1)
-    }
-    for (const a of kids(undefined)) walk(a, 0)
+    const first = treeItems(list, fold, undefined, false).items[0]?.a.id
     const prs = Object.values(hs).sort((a, b) => b.at - a.at)
     const live = list.filter(a => !ENDED.has(a.status)).length
-    // Header and the PR lines are fixed; the root and the agents share what is left. Full cards
-    // (4 rows) if all fit, else compact rows, else compact rows and a "+N more" line.
+    // Header, the PR lines and the hint row are fixed; the root and the agents share what is left.
+    // Full cards if all fit, else the crowded tree (compact rows, folded but for the highlight's
+    // path) in a window that follows the highlight.
     const prRows = prs.length > 0 ? 1 + Math.min(prs.length, 5) : 0
-    const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0)
-    const fullTree = (flat.length + 1) * CARD_ROWS <= avail
-    const rootFull = fullTree || avail >= CARD_ROWS + flat.length
+    const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0)
+    const wide = treeItems(list, fold, cur ?? first, false)
+    const fullTree = (wide.items.length + 1) * CARD_ROWS <= avail
+    const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true)
+    const rootFull = fullTree || avail >= CARD_ROWS + items.length
     const left = avail - (rootFull ? CARD_ROWS : 1)
-    const shown = fullTree || flat.length <= left ? flat : flat.slice(0, Math.max(0, left - 1))
+    const cut = !fullTree && items.length > left
+    const hotIdx = Math.max(0, items.findIndex(i => i.a.id === at))
+    // Two rows of the window go to the "above" and "more" lines.
+    const view = cut ? viewOf(items, hotIdx, Math.max(1, left - 2)) : { top: 0, rows: items }
+    const below = items.length - view.top - view.rows.length
+    const hotId = items[hotIdx]?.a.id
+
+    // Keys read the state fresh, so rapid presses each count once.
+    const step = (d: number) => async () => {
+      if (items.length === 0) return
+      await acted()
+      const c = (await read($, cursor)) ?? hotId
+      const i = Math.min(items.length - 1, Math.max(0, items.findIndex(x => x.a.id === c) + d))
+      const id = items[i]!.a.id
+      await update($, cursor, () => id)
+      // Moves the focus ring too; it waits for the next drawing, so it is not awaited.
+      void $.ui.focus({ requestId: PANE, key: id }).catch(() => undefined)
+    }
+    const hotItem = async () => {
+      await acted()
+      const c = (await read($, cursor)) ?? hotId
+      return items.find(x => x.a.id === c) ?? items[hotIdx]
+    }
     const mainTime = usage?.startedAt === undefined ? '' : elapsed(t - usage.startedAt)
     const mainU = main?.tokens === undefined ? undefined
       : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
@@ -1462,8 +1578,23 @@ export const register: Register = (on, options) => {
           </Text>
         )}
         {list.length === 0 && <Text dimColor>  Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
-        {shown.map(({ a, depth }) => card(a, depth + 1, fullTree, depth === 0))}
-        {shown.length < flat.length && <Text dimColor>  +{flat.length - shown.length} more</Text>}
+        {view.top > 0 && <Text dimColor>  ↑ {view.top} above</Text>}
+        {view.rows.map(({ a, depth, kids, collapsed }) => card(
+          a, depth + 1, fullTree, depth === 0, a.id === hotId, kids > 0 ? (collapsed ? '▸ ' : '▾ ') : '',
+        ))}
+        {below > 0 && <Text dimColor>  +{below} more</Text>}
+        {list.length > 0 && (
+          <Box flexDirection="row" gap={1}>
+            <Button key="nav-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>
+            <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>
+            <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>
+            <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
+              await acted()
+              const i = await hotItem()
+              if (i && i.kids > 0) await update($, folded, f => ({ ...f, [i.a.id]: !i.collapsed }))
+            }}>c fold</Button>
+          </Box>
+        )}
         {prs.length > 0 && <Text bold>  Merge queue</Text>}
         {prs.slice(0, 5).map(h => (
           <Text key={`pr-${h.pr}`} dimColor={h.status === 'done'} wrap="truncate-end">

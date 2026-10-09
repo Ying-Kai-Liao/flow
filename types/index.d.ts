@@ -93,6 +93,8 @@ declare module 'claude-code' {
       roster: AgentRow[]
       activity: Record<string, Activity>
       selected: string | null
+      cursor: string | null
+      folded: Record<string, boolean>
       now: number
       handovers: Record<string, Handover>
       queueRuns: number
@@ -100,6 +102,8 @@ declare module 'claude-code' {
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots
+      overrideView: string | null | undefined
+      hinted: boolean
     }
   }
 }
