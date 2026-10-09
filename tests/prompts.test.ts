@@ -1,15 +1,15 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 
-import { deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_QUEUE_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT } from '../hooks/prompts'
+import { deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_REVIEWER_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
 
 const base: Settings = {
   base: 'main', testCommand: 'npm test', fullCheck: '', deployCommand: '', deployTargets: [], stateFile: undefined,
-  mergeMethod: 'merge', mergeMode: 'auto', useQueue: true, maxWorkers: 3, testSlots: 1, workerModel: 'sonnet', managerModel: 'opus', queueModel: 'opus',
+  mergeMethod: 'merge', mergeMode: 'auto', useReviewer: true, maxWorkers: 3, testSlots: 1, workerModel: 'sonnet', managerModel: 'opus', reviewerModel: 'opus',
   language: 'English', bigFiles: [], bigFileLines: 1500, migrationsDir: '', decisionPhrases: [], workerChecks: [], alwaysTests: [],
 }
-const all = (s: Settings) => [WORKER_PROMPT, MANAGER_PROMPT.replace('{{QUEUE_RULE}}', QUEUE_RULE), QUEUE_PROMPT].map((p) => fill(p, s))
+const all = (s: Settings) => [WORKER_PROMPT, MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', REVIEWER_RULE), REVIEWER_PROMPT].map((p) => fill(p, s))
 
 test('the defaults leave no slot, no empty bullet and no language line', () => {
   for (const p of all(base)) {
@@ -19,7 +19,7 @@ test('the defaults leave no slot, no empty bullet and no language line', () => {
     expect(p).not.toContain('Required before')
     expect(p).not.toMatch(/New migrations|add migrations|add a migration/)
   }
-  expect(fill(NO_QUEUE_RULE, base)).not.toContain('{{')
+  expect(fill(NO_REVIEWER_RULE, base)).not.toContain('{{')
 })
 
 test('worker checks and always tests are hard requirements in the worker prompt', () => {
@@ -38,14 +38,14 @@ test('always tests go through {files} when the test command has it', () => {
 
 test('questions go through mcp__flow__ask and mcp__flow__answer', () => {
   expect(fill(WORKER_PROMPT, base)).toContain('mcp__flow__ask')
-  const manager = fill(MANAGER_PROMPT.replace('{{QUEUE_RULE}}', QUEUE_RULE), base)
+  const manager = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', REVIEWER_RULE), base)
   expect(manager).toContain('mcp__flow__ask')
   expect(manager).toContain('mcp__flow__answer')
 })
 
 test('worker and manager prompts ask for a stable topic and mention standing answers', () => {
   const worker = fill(WORKER_PROMPT, base)
-  const manager = fill(MANAGER_PROMPT.replace('{{QUEUE_RULE}}', QUEUE_RULE), base)
+  const manager = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', REVIEWER_RULE), base)
   for (const p of [worker, manager]) {
     expect(p).toContain('`topic`')
     expect(p).toContain('standing answer')
@@ -53,7 +53,7 @@ test('worker and manager prompts ask for a stable topic and mention standing ans
 })
 
 test('the manager does recon, then files a pre-flight before starting workers', () => {
-  const manager = fill(MANAGER_PROMPT.replace('{{QUEUE_RULE}}', QUEUE_RULE), base)
+  const manager = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', REVIEWER_RULE), base)
   expect(manager).toContain('mcp__flow__preflight')
   expect(manager).toContain('Recon first, with no workers yet')
   expect(manager).toContain('Pre-flight: skip')
@@ -76,11 +76,11 @@ test('big files render with the threshold, and the threshold alone when the list
 test('migrations reach the worker, the manager and the queue', () => {
   const [w, m, q] = all({ ...base, migrationsDir: 'db/migrations' })
   expect(w).toContain('New migrations go in `db/migrations`, numbered after the highest on origin/main')
-  expect(w).toContain('the merge queue renumbers the later one itself')
-  expect(m).toContain('may run in parallel: the merge queue renumbers a clash.')
+  expect(w).toContain('the reviewer renumbers the later one itself')
+  expect(m).toContain('may run in parallel: the reviewer renumbers a clash.')
   expect(q).toContain('step 2 renumbers a clashing one instead of sending the PR back')
   expect(q).toContain('`mcp__flow__migrations`')
-  expect(q).toContain('Renumber migration <old> to <new> (merge queue)')
+  expect(q).toContain('Renumber migration <old> to <new> (reviewer)')
   expect(q).toContain('plain, never force')
   expect(q).toContain('not "head moved"')
 })
@@ -123,7 +123,7 @@ test('the manager, the no-queue rule and the queue call the cleanup sweep', () =
   const [, m, q] = all(base)
   expect(m).toContain('`mcp__flow__clean` with apply true')
   expect(q).toContain('`mcp__flow__clean` with apply true')
-  expect(fill(NO_QUEUE_RULE, base)).toContain('`mcp__flow__clean` with apply true')
+  expect(fill(NO_REVIEWER_RULE, base)).toContain('`mcp__flow__clean` with apply true')
   expect(m).toContain('Do not remove the old worktree')
 })
 
@@ -132,4 +132,13 @@ test('the manager hands over mode confirm for risky PRs and the queue skips a He
   expect(m).toContain('Pass mode "confirm" for a risky PR')
   expect(m).toContain('/flow approve <n>')
   expect(q).toContain('If "take" answers "Held:"')
+})
+
+test('the reviewer fast-forwards a clean main checkout after a batch and reports it', () => {
+  const q = fill(REVIEWER_PROMPT, base)
+  expect(q).toContain('first entry of `git worktree list --porcelain`')
+  expect(q).toContain('pull --ff-only')
+  expect(q).toContain('Never stash, reset or checkout in the main checkout')
+  expect(q).toContain('main checkout fast-forwarded to <sha>')
+  expect(q).toContain('main checkout not updated: <dirty | on branch X | ff failed>')
 })

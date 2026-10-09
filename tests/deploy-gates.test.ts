@@ -234,7 +234,7 @@ test('answering "deploy" approves that sha and starts a deploy-only queue; the g
   await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' })
   const res = await answer($, { answers: [{ id: 'q1', choice: 'deploy' }] })
   expect(res).toContain('production approved')
-  expect(w.spawned).toEqual(['flow:queue'])
+  expect(w.spawned).toEqual(['flow:reviewer'])
   expect(stored(w.files).targets.production).toMatchObject({ approval: { state: 'approved', sha: 'abc1234' }, due: true })
   expect(await deploy($, { action: 'list' })).toContain('DUE: deploy abc1234')
   expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q2')).toBe('Go')
@@ -274,7 +274,7 @@ test('hold and release are main only; unknown targets list the configured ones; 
   w.agents.length = 0
   const rel = await $.command.run({ command: 'flow', args: 'release demo' } as never).then(r => r.text ?? '')
   expect(rel).toContain('demo released')
-  expect(w.spawned).toEqual(['flow:queue'])
+  expect(w.spawned).toEqual(['flow:reviewer'])
   expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' }, 'q2')).toBe('Go')
   expect(await $.command.run({ command: 'flow', args: 'release demo' } as never).then(r => r.text ?? '')).toContain('has no hold')
 })

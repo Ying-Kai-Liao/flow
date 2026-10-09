@@ -3,7 +3,7 @@ import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
 
-import { isFable, KEYS, mergeLayers } from '../hooks/settings'
+import { isFable, KEYS, mergeLayers, resetRenamedWarnings } from '../hooks/settings'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -146,8 +146,8 @@ test('deploy_targets, state_file and test_slots keep their shape and are replace
 test('a Fable model is refused in every layer, a real one kept', () => {
   expect(isFable('Claude-Fable-1')).toBe(true)
   expect(isFable('opus')).toBe(false)
-  const r = mergeLayers({ worker_model: 'fable' }, [{ path: REPO, text: JSON.stringify({ manager_model: 'Claude-Fable-1', queue_model: 'sonnet' }) }])
-  expect(r.raw).toEqual({ queue_model: 'sonnet' })
+  const r = mergeLayers({ worker_model: 'fable' }, [{ path: REPO, text: JSON.stringify({ manager_model: 'Claude-Fable-1', reviewer_model: 'sonnet' }) }])
+  expect(r.raw).toEqual({ reviewer_model: 'sonnet' })
   expect(r.warnings.length).toBe(2)
 })
 
@@ -159,10 +159,11 @@ test('a Fable model setting is refused at load', async ($, on) => {
   expect(w.toasts.join('\n')).toContain('Fable')
 })
 
-test('agents carry the configured models, opus for manager and queue by default', async ($, on) => {
+test('agents carry the configured models, opus for manager and reviewer by default', async ($, on) => {
   const w = world(on, {})
   await start($)
   expect(w.last('manager')!.model).toBe('opus')
+  expect(w.last('reviewer')!.model).toBe('opus')
   expect(w.last('queue')!.model).toBe('opus')
   expect(w.last('worker')!.model).toBe('sonnet[1m]')
 })
@@ -216,13 +217,13 @@ test('a changed settings file is picked up by the poll, once', async ($, on) => 
 })
 
 test('a reload re-registers the agents with the new models and applies the new limits', async ($, on) => {
-  const w = world(on, { [REPO]: JSON.stringify({ merge_queue: true, max_managers: 7 }) })
+  const w = world(on, { [REPO]: JSON.stringify({ reviewer: true, max_managers: 7 }) })
   on('tool.call', () => ({ result: 'ok' }) as never)
   await start($)
   const call = (input: Record<string, unknown>) => $.tool.call(input as never).then(r => String(r.result))
   expect(w.last('manager')!.model).toBe('opus')
   expect(await call({ tool: 'mcp__flow__status' })).toContain('managers 0/7')
-  expect(await call({ tool: 'mcp__flow__handover', pr: 5, verified: 'x' })).not.toContain('no merge queue')
+  expect(await call({ tool: 'mcp__flow__handover', pr: 5, verified: 'x' })).not.toContain('no reviewer')
 
   // Same mtime: nothing is read again.
   const before = w.registered.length
@@ -235,7 +236,7 @@ test('a reload re-registers the agents with the new models and applies the new l
   await w.clock.settle()
   expect(w.registered.length).toBeGreaterThan(before)
   expect(w.last('manager')!.model).toBe('sonnet')
-  expect(await call({ tool: 'mcp__flow__handover', pr: 6, verified: 'x' })).toContain('no merge queue')
+  expect(await call({ tool: 'mcp__flow__handover', pr: 6, verified: 'x' })).toContain('no reviewer')
   expect(await call({ tool: 'mcp__flow__status' })).toContain('managers 0/2')
 })
 
@@ -266,9 +267,9 @@ test('a refused [1m] model falls back once to the plain model, tells once, and l
 // The test loader cannot import JSON, so the userConfig keys of .claude-plugin/plugin.json are listed by hand: keep in step.
 // A key the loader does not know would be set in the plugin UI and silently ignored.
 const USER_CONFIG_KEYS = [
-  'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_mode', 'merge_queue', 'max_managers', 'max_workers',
+  'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_mode', 'reviewer', 'max_managers', 'max_workers',
   'test_slots', 'context_warn_percent', 'context_warn_percent_1m', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow', 'max_continues',
-  'worker_model', 'manager_model', 'queue_model', 'language', 'base_branch', 'cleanup',
+  'worker_model', 'manager_model', 'reviewer_model', 'language', 'base_branch', 'cleanup',
 ]
 
 test('every userConfig key in plugin.json is a settings key', () => {
@@ -281,4 +282,47 @@ test("the worker agent carries the repo file required checks", async ($, on) => 
   await start($)
   expect(w.last("worker")!.prompt).toContain("`tsc -p .`")
   expect(w.last("manager")!.prompt).not.toContain("`tsc -p .`")
+})
+
+test('the old merge_queue and queue_model keys map onto reviewer and reviewer_model, with one deprecation warning each', () => {
+  resetRenamedWarnings()
+  const text = JSON.stringify({ merge_queue: false, queue_model: 'sonnet' })
+  const r = mergeLayers({}, [{ path: REPO, text }])
+  expect(r.raw).toEqual({ reviewer: false, reviewer_model: 'sonnet' })
+  expect(r.warnings).toEqual([`${REPO}: "merge_queue" is deprecated; use "reviewer"`, `${REPO}: "queue_model" is deprecated; use "reviewer_model"`])
+  // A re-check of the same file does not warn again; the keys still take effect.
+  const again = mergeLayers({}, [{ path: REPO, text }])
+  expect(again.raw).toEqual({ reviewer: false, reviewer_model: 'sonnet' })
+  expect(again.warnings).toEqual([])
+})
+
+test('the old keys are read from /config and the personal file too, and the new key wins in the same layer', () => {
+  resetRenamedWarnings()
+  const r = mergeLayers({ merge_queue: false }, [
+    { path: REPO, text: JSON.stringify({ merge_queue: false, reviewer: true }) },
+    { path: OVERLAY, text: JSON.stringify({ queue_model: 'haiku' }) },
+  ])
+  expect(r.raw).toEqual({ reviewer: true, reviewer_model: 'haiku' })
+  expect(r.warnings.length).toBe(3)
+  expect(r.warnings.some(x => x.startsWith('/config: "merge_queue" is deprecated'))).toBe(true)
+})
+
+test('merge_queue false in flow.json still turns the reviewer off at load, and warns once per session', async ($, on) => {
+  resetRenamedWarnings()
+  const w = world(on, { [REPO]: JSON.stringify({ merge_queue: false }) })
+  on('tool.call', () => ({ result: 'ok' }) as never)
+  await start($)
+  expect(String((await $.tool.call({ tool: 'mcp__flow__handover', pr: 6, verified: 'x' } as never)).result)).toContain('no reviewer')
+  w.touch(REPO, JSON.stringify({ merge_queue: false, max_managers: 4 }))
+  await w.clock.advance(3000)
+  await w.clock.settle()
+  expect(w.toasts.filter(t => t.includes('"merge_queue" is deprecated')).length).toBe(1)
+})
+
+test('a queue_model in flow.json sets the reviewer model, and both agent names are registered', async ($, on) => {
+  resetRenamedWarnings()
+  const w = world(on, { [REPO]: JSON.stringify({ queue_model: 'sonnet' }) })
+  await start($)
+  expect(w.last('reviewer')!.model).toBe('sonnet')
+  expect(w.last('queue')!.model).toBe('sonnet')
 })

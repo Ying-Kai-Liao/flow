@@ -86,7 +86,7 @@ test('a merged worker PR wakes the manager exactly once with the newly ready nod
   s.agents.push({ id: 'w1', name: 'csv', description: 'w', type: 'flow:worker', status: 'running', parentId: 'm1' })
 
   await $.tool.call({ tool: 'mcp__flow__handover', pr: 7, verified: 'x', report_to: 'csv-export', agentId: 'm1' } as never)
-  const q = s.agents.find(a => a.type === 'flow:queue')!
+  const q = s.agents.find(a => a.type === 'flow:reviewer')!
   expect(s.sent).toEqual([])
 
   await $.tool.call({ tool: 'mcp__flow__queue', action: 'done', pr: 7, sha: 'abc1234', report: 'ok', agentId: q.id } as never)
@@ -146,16 +146,16 @@ test('15 handovers back to back start one queue; a queue that ended with work le
   const s = session(on)
   await Promise.all(Array.from({ length: 15 }, (_, i) =>
     $.tool.call({ tool: 'mcp__flow__handover', pr: 100 + i, verified: 'x', report_to: 'csv-export', agentId: 'm1' } as never)))
-  expect(s.spawned.filter(t => t === 'flow:queue').length).toBe(1)
+  expect(s.spawned.filter(t => t === 'flow:reviewer').length).toBe(1)
 
-  const q = s.agents.find(a => a.type === 'flow:queue')!
+  const q = s.agents.find(a => a.type === 'flow:reviewer')!
   q.status = 'completed'
   await s.clock.advance(5_000)
   await Promise.all([
     $.tool.call({ tool: 'mcp__flow__handover', pr: 200, verified: 'x', report_to: 'csv-export', agentId: 'm1' } as never),
     $.tool.call({ tool: 'mcp__flow__handover', pr: 201, verified: 'x', report_to: 'csv-export', agentId: 'm1' } as never),
   ])
-  expect(s.spawned.filter(t => t === 'flow:queue').length).toBe(2)
+  expect(s.spawned.filter(t => t === 'flow:reviewer').length).toBe(2)
 })
 
 test('a manager the host drops from its list keeps its last state and never reads as ready', async ($, on) => {

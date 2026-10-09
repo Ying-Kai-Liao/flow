@@ -447,7 +447,7 @@ test('a manager starts collapsed to one line; its worker shows on the chevron or
   } finally { TREE[1]!.status = 'running' }
 })
 
-test('q toggles the Merge queue section, collapsed to a status-count line', async ($, on) => {
+test('q toggles the Reviewer section, collapsed to a status-count line', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   on('agent.list', () => ({ value: [
     { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
@@ -472,9 +472,9 @@ test('q toggles the Merge queue section, collapsed to a status-count line', asyn
   await ui.unmount()
 })
 
-// The Merge queue rows are JSX inside a map over the handovers; a parameter there named `h`
+// The Reviewer rows are JSX inside a map over the handovers; a parameter there named `h`
 // once shadowed the JSX factory and blanked the whole pane, but only while a handover existed.
-test('the pane draws a Merge queue row for every handover status', async ($, on) => {
+test('the pane draws a Reviewer row for every handover status', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const titles: Record<string, string> = { '7': 'Export CSV', '8': 'Fix login', '9': 'Update docs', '10': 'Bump deps' }
   on('agent.list', () => ({ value: [
@@ -501,7 +501,7 @@ test('the pane draws a Merge queue row for every handover status', async ($, on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'flow', surface, ...PANE })
     expect(await ui.find({ text: /failed to draw/ })).toBeUndefined()
-    expect(await ui.find({ text: /Merge queue/ })).toBeDefined()
+    expect(await ui.find({ text: /Reviewer/ })).toBeDefined()
     // The section starts collapsed; the choice outlives a mount, so open it only when still collapsed.
     if (!await ui.find({ text: /#7 pending/ })) await ui.press({ key: 'fold-#merge-queue' })
     expect(await ui.find({ text: /#7 pending/ })).toBeDefined()

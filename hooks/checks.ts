@@ -1,5 +1,5 @@
 // The pure half of person checks: an after-deploy check that needs a person becomes a durable item the
-// user closes as passed or failed. Captured from the merge queue's `needs a person: PR #<n>: <steps>` report
+// user closes as passed or failed. Captured from the reviewer's `needs a person: PR #<n>: <steps>` report
 // line; kept in <state dir>/checks.json (the disk half is withChecks() in register.tsx). Separate from the
 // decision inbox's questions (inbox.ts), shown alongside them.
 
@@ -13,7 +13,7 @@ export type Needed = { pr: number; steps: string }
 
 const MARK = /needs a person: PR #(\d+): ([^\n]*?)(?= \| |\n|$)/g
 
-// The needs-a-person lines of a queue report; steps end at the next " | " or the end of the line.
+// The needs-a-person lines of a reviewer report; steps end at the next " | " or the end of the line.
 export function parseNeeds(report: string | undefined): Needed[] {
   const out: Needed[] = []
   for (const m of (report ?? '').matchAll(MARK)) {
@@ -176,7 +176,7 @@ export function dueForPrompt(c: Checks, installed: string | undefined): Check[] 
 export type CloseResult = { checks: Checks; text: string; failed?: Check[] }
 
 // Closes checks as passed or failed. A closed or unknown id is refused with its state, and nothing is closed
-// when any id is refused. `scriptedOnly` (the merge queue) may close only checks that carry a command.
+// when any id is refused. `scriptedOnly` (the reviewer) may close only checks that carry a command.
 export function closeChecks(
   cur: Checks, ids: string[], how: 'pass' | 'fail', by: string, note: string | undefined, now: number, scriptedOnly = false,
 ): CloseResult | { error: string } {

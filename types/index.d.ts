@@ -52,7 +52,7 @@ export type Activity = {
   remindedPercent?: number
 }
 
-// A PR a manager handed to the merge queue (the handover tool), and what the queue did with it.
+// A PR a manager handed to the reviewer (the handover tool), and what the reviewer did with it.
 export type Handover = {
   pr: number
   title: string
@@ -62,14 +62,14 @@ export type Handover = {
   verified: string
   pending: string
   afterDeploy: string
-  // A command the merge queue runs to close a needs-a-person check itself.
+  // A command the reviewer runs to close a needs-a-person check itself.
   verifyCommand?: string
   // Parsed from the PR's ## Verification section at handover; absent in handovers saved before it existed.
   evidence?: { ran: string[]; exercised: string; notVerified: string[] }
   status: 'pending' | 'awaiting' | 'taken' | 'done' | 'returned'
   // Set by the handover tool; the PR's flow:* label and the merge_mode setting are checked too.
   mode?: 'auto' | 'confirm'
-  // The head the user approved with /flow approve; the queue merges a confirm PR only at this head.
+  // The head the user approved with /flow approve; the reviewer merges a confirm PR only at this head.
   approvedHead?: string
   // How far the release at merge bumps for this PR; absent (old handovers) means patch.
   release?: 'patch' | 'minor' | 'major'
@@ -245,7 +245,7 @@ export type Check = {
   // The plugin version that must be installed to do the check.
   version?: string
   sha?: string
-  // A command the merge queue runs instead of the user (from the handover's verify_command).
+  // A command the reviewer runs instead of the user (from the handover's verify_command).
   verifyCommand?: string
   createdAt: number
   state: 'open' | 'passed' | 'failed'

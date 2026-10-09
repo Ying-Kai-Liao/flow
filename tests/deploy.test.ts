@@ -1,12 +1,12 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
-import { deployTargetsOf, fill, QUEUE_PROMPT, stateFileOf, WORKER_PROMPT } from '../hooks/prompts'
+import { deployTargetsOf, fill, REVIEWER_PROMPT, stateFileOf, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
 
 const BASE: Settings = {
   base: 'main', testCommand: '', fullCheck: '', deployCommand: '', deployTargets: [], stateFile: undefined,
-  mergeMethod: 'squash', mergeMode: 'auto', useQueue: true, maxWorkers: 3, workerModel: 'sonnet', testSlots: 1,
-  managerModel: 'opus', queueModel: 'opus', language: 'English', bigFiles: [], bigFileLines: 1500,
+  mergeMethod: 'squash', mergeMode: 'auto', useReviewer: true, maxWorkers: 3, workerModel: 'sonnet', testSlots: 1,
+  managerModel: 'opus', reviewerModel: 'opus', language: 'English', bigFiles: [], bigFileLines: 1500,
   migrationsDir: '', decisionPhrases: [], workerChecks: [], alwaysTests: [],
 }
 
@@ -76,11 +76,11 @@ test('deploy_targets win over deploy_command', () => {
 })
 
 test('the status file lines appear only when state_file is set', () => {
-  const off = fill(QUEUE_PROMPT, BASE)
+  const off = fill(REVIEWER_PROMPT, BASE)
   expect(off).not.toContain('Status file')
   expect(fill(WORKER_PROMPT, BASE)).not.toContain('Never edit the status file')
   const s = { ...BASE, stateFile: stateFileOf({ path: 'NOW.md', keep: 5 }) }
-  const on = fill(QUEUE_PROMPT, s)
+  const on = fill(REVIEWER_PROMPT, s)
   expect(on).toContain('Status file `NOW.md`')
   expect(on).toContain('more than 5 entries')
   expect(on).toContain('NOW-archive.md')
@@ -89,7 +89,7 @@ test('the status file lines appear only when state_file is set', () => {
 })
 
 test('the queue acts on after_deploy and pending; workers know check-only briefs', () => {
-  const q = fill(QUEUE_PROMPT, BASE)
+  const q = fill(REVIEWER_PROMPT, BASE)
   expect(q).toContain('<your name>-verify-<pr>')
   expect(q).toContain('needs a person: PR #<n>')
   expect(q).toContain('pending decisions: PR #<n>')

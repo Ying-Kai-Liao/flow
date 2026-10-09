@@ -188,7 +188,7 @@ export const askingNames = (inbox: Inbox | undefined): string[] =>
   (inbox?.items ?? []).filter(x => x.state === 'open' && x.blocking && !isFyi(x)).map(x => x.owner)
 
 // A non-blocking question answered with its default needs no message: the asker already went on it.
-// A guard_tests suggestion is main's alone to decide: the queue that filed it is not told.
+// A guard_tests suggestion is main's alone to decide: the reviewer that filed it is not told.
 export const needsMessage = (q: Question, isDefault: boolean): boolean => q.guard === undefined && q.kind !== 'deploy' && q.kind !== 'env' && (q.blocking || !isDefault)
 
 // What the asker is told when its question is answered.

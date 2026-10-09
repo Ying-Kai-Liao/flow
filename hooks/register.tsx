@@ -29,11 +29,11 @@ import type { Resolved, Rule } from './standing'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
 import {
-  fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, SESSION_PROMPT, WORKER_PROMPT,
+  fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, SESSION_PROMPT, WORKER_PROMPT,
 } from './prompts'
 import type { Settings } from './prompts'
 import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
-import { isFable, mergeLayers } from './settings'
+import { isFable, mergeLayers, renameOptions } from './settings'
 import { bumpVersion, cutChangelog, highestBump, isBump, labelBump, readVersion, setVersion } from './release'
 import type { Bump } from './release'
 import {
@@ -60,7 +60,7 @@ import type { Deploys, DeployMode, Draft, EnvInput, Hold, TargetInfo, TargetStat
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
 // `flow:worker` agents in worktrees of their own and hand approved PRs to the
-// `flow:queue` agent through this plugin's tools. The pane in main shows the tree.
+// `flow:reviewer` agent through this plugin's tools. The pane in main shows the tree.
 
 const PANE = 'flow'
 const POLL_MS = 3000
@@ -72,7 +72,10 @@ const WORKER = 'flow:worker'
 // A worker continued in its predecessor's worktree: the plugin rewrites a spawn to it, the model never picks it.
 const CONTINUE = 'flow:continue'
 const WORKERS = new Set([WORKER, CONTINUE, SESSION])
+const REVIEWER = 'flow:reviewer'
+// The reviewer's old agent type: a reviewer started by an older version still runs under it.
 const QUEUE = 'flow:queue'
+const isReviewer = (type: string): boolean => type === REVIEWER || type === QUEUE
 const ENDED = new Set(['completed', 'failed', 'killed'])
 const LIVE_STATUS = new Set(['running', 'pending'])
 const LIVE = new Set(['pending', 'running', 'waiting'])
@@ -84,7 +87,7 @@ const GLYPH: Record<string, string> = {
 const COLOR: Record<string, string> = {
   running: 'suggestion', waiting: 'warning', idle: 'warning', completed: 'success', failed: 'error', killed: 'error',
 }
-const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [CONTINUE]: 'worker', [SESSION]: 'worker', [QUEUE]: 'queue' }
+const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [CONTINUE]: 'worker', [SESSION]: 'worker', [REVIEWER]: 'reviewer', [QUEUE]: 'reviewer' }
 const ROOT_GLYPH = '◆'
 // Plan states, drawn like the agent statuses they turn into; a waiting node has no agent yet.
 const PLAN_GLYPH: Record<string, string> = { waiting: '○', ready: '◌', running: '●', done: '✓', blocked: '✗' }
@@ -98,8 +101,8 @@ const activity = atom({ plugin: 'flow', key: 'activity' } as const, {} as Record
 const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as string | null)
 // The highlighted card of the tree (an agent id), and the collapse the person chose per card: true
 // is one row with its children hidden, false is expanded even when the tree is crowded. Absent =
-// the role's default (managers and the queue collapsed), else automatic. MERGE_QUEUE_KEY is the
-// Merge queue section's entry.
+// the role's default (managers and the reviewer collapsed), else automatic. MERGE_QUEUE_KEY is the
+// Reviewer section's entry.
 const cursor = atom({ plugin: 'flow', key: 'cursor' } as const, null as string | null)
 const MERGE_QUEUE_KEY = '#merge-queue'
 const folded = atom({ plugin: 'flow', key: 'folded' } as const, {} as Record<string, boolean>)
@@ -136,7 +139,7 @@ const PR_POLL_MS = 5 * 60_000
 const PR_MIN_GAP_MS = 60_000
 // A worker that just ended: its manager is probably reviewing the PR.
 const GRACE_MS = 20 * 60_000
-// Set by register(); refresh() and the pane flag nothing when there is no merge queue.
+// Set by register(); refresh() and the pane flag nothing when there is no reviewer.
 let queueOn = true
 // The cleanup setting and the base it sweeps against; set by register() like queueOn.
 let cleanupMode: 'auto' | 'off' = 'auto'
@@ -147,7 +150,7 @@ const infosOf = (s: Parameters<typeof targetsOf>[0]): TargetInfo[] => targetsOf(
 
 export type Unhanded = { pr: number; title: string; branch: string; note: string }
 
-// Open flow/* PRs that nobody handed to the merge queue and nobody is working on any more.
+// Open flow/* PRs that nobody handed to the reviewer and nobody is working on any more.
 // A draft is a WIP handoff, a pending/taken/done handover is in hand, a returned one needs a
 // manager again. The worker is the agent named like the branch, or its continuation (-2, -3).
 export function unhandedPrs(
@@ -301,8 +304,8 @@ function slotLine(state: TestSlots, limit: number, t: number): string {
 
 export type TreeItem = { a: AgentRow; depth: number; kids: number; collapsed: boolean }
 
-// Managers and the merge queue start collapsed; everything else has no default.
-export const foldDefault = (a: AgentRow): boolean | undefined => (a.type === MANAGER || a.type === QUEUE ? true : undefined)
+// Managers and the reviewer start collapsed; everything else has no default.
+export const foldDefault = (a: AgentRow): boolean | undefined => (a.type === MANAGER || isReviewer(a.type) ? true : undefined)
 
 // The rows of the tree in the order they are drawn and walked. A collapsed agent is one row with
 // its children hidden: the person's choice wins, then the role's default, then `auto`, which folds
@@ -547,13 +550,13 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     stateFile: stateFileOf(options.state_file),
     mergeMethod: str('merge_method', 'squash'),
     mergeMode: str('merge_mode', 'auto'),
-    useQueue: options.merge_queue !== false,
+    useReviewer: options.reviewer !== false,
     maxWorkers: num('max_workers', 3),
     maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
     testSlots: Math.max(1, Math.floor(num('test_slots', 1))),
     workerModel: model('worker_model', DEFAULT_WORKER_MODEL),
     managerModel: model('manager_model', 'opus'),
-    queueModel: model('queue_model', 'opus'),
+    reviewerModel: model('reviewer_model', 'opus'),
     language: str('language', 'English'),
     bigFiles: strs('big_files'),
     bigFileLines: num('big_file_lines', 1500),
@@ -673,8 +676,8 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     const prev = was.get(a.id)
     if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
     if (ENDED.has(a.status) && acts[a.id] !== undefined) ended.push(a.id)
-    // The queue's worktree (detached at the base) goes once the queue is gone.
-    if (ENDED.has(a.status) && a.type === QUEUE) autoSweep($)
+    // The reviewer's worktree (detached at the base) goes once the reviewer is gone.
+    if (ENDED.has(a.status) && isReviewer(a.type)) autoSweep($)
     if (ENDED.has(a.status) || a.status === 'idle') {
       const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases) || askers.includes(a.name ?? '')
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
@@ -701,7 +704,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   const parts = [
     count(MANAGER) && `${count(MANAGER)} managers`,
     count(WORKER) && `${count(WORKER)} workers`,
-    queued && `queue: ${queued} PR${queued > 1 ? 's' : ''}`,
+    queued && `reviewer: ${queued} PR${queued > 1 ? 's' : ''}`,
     awaiting && `${awaiting} awaiting approval`,
   ].filter(Boolean)
   const unhanded = (await currentUnhanded($)).length
@@ -1089,8 +1092,8 @@ async function holdTarget($: EngineInterface, name: string, until: Hold['until']
     return { deploys: setTarget(cur, name, withHold(cur.targets[name], hold)), out: undefined }
   })
   return until === 'batch'
-    ? `${name} held for the next batch: the queue's next gate call for it answers Held and the hold ends. Release earlier with release.`
-    : `${name} held until released: the queue skips it every batch. Release with release (/flow release ${name}).`
+    ? `${name} held for the next batch: the reviewer's next gate call for it answers Held and the hold ends. Release earlier with release.`
+    : `${name} held until released: the reviewer skips it every batch. Release with release (/flow release ${name}).`
 }
 
 async function releaseTarget($: EngineInterface, name: string): Promise<string> {
@@ -1251,7 +1254,7 @@ async function runGate($: EngineInterface, options: Record<string, unknown>, inf
   return `Awaits approval: ${q.id}. ${skipText(target)}`
 }
 
-// env-applied: the queue ran the env commands the gate named. Records those changes for the target; asking
+// env-applied: the reviewer ran the env commands the gate named. Records those changes for the target; asking
 // twice changes nothing more. Only changes the user approved (and that the gate named) are recorded.
 async function envApplied($: EngineInterface, info: TargetInfo, names: string[]): Promise<string> {
   if (names.length === 0) return 'Refused: env-applied needs names, the variables whose commands you ran.'
@@ -1654,7 +1657,7 @@ async function ownerNameOf($: EngineInterface, id: string | undefined): Promise<
   return (await $.agent.list()).find(a => a.id === id)?.name ?? 'main'
 }
 
-// Managers a non-main agent woke (queue, worker): the host sends such a turn's final answer back to
+// Managers a non-main agent woke (reviewer, worker): the host sends such a turn's final answer back to
 // whoever woke it, so the plugin forwards it to main at turn end. Main's own SendMessage clears the mark.
 const wokenByOthers = new Set<string>()
 
@@ -1662,7 +1665,7 @@ const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void
 
 // Where a handover's report goes. Absent -> the caller's own name. A name no agent carries is refused,
 // naming the caller; the caller's own worker is corrected to the caller. An ended agent that exists is
-// accepted: the queue routing (queueSendGuard) handles it.
+// accepted: the reviewer routing (reviewerSendGuard) handles it.
 async function resolveReportTo($: EngineInterface, given: unknown, callerId: string | undefined): Promise<{ name: string; note?: string } | { refuse: string }> {
   const rows = await $.agent.list()
   const me = callerId === undefined ? 'main' : (rows.find(a => a.id === callerId)?.name ?? 'main')
@@ -1693,10 +1696,10 @@ async function managerFinished($: EngineInterface, ids: string[], name: string, 
   return true
 }
 
-// The queue's SendMessage to a manager that has ended would resume it just to say "noted", and its
-// final answer would go back to the queue. Instead the report is noted for that manager and sent to
+// The reviewer's SendMessage to a manager that has ended would resume it just to say "noted", and its
+// final answer would go back to the reviewer. Instead the report is noted for that manager and sent to
 // main. Returns the tool result when it handled the call; undefined passes the call on.
-async function queueSendGuard($: EngineInterface, to: string, text: string): Promise<string | undefined> {
+async function reviewerSendGuard($: EngineInterface, to: string, text: string): Promise<string | undefined> {
   if (to === '' || to === 'main' || to === '*') return undefined
   const rows = await $.agent.list()
   const hits = rows.filter(a => a.id === to || a.name === to)
@@ -1711,9 +1714,9 @@ async function queueSendGuard($: EngineInterface, to: string, text: string): Pro
   }
   let noted = false
   if (hits.length > 0) {
-    noted = await appendNote($, name, `- ${await today($)} progress: queue report: ${text.replace(/\s+/g, ' ').trim()}`)
+    noted = await appendNote($, name, `- ${await today($)} progress: reviewer report: ${text.replace(/\s+/g, ' ').trim()}`)
   }
-  toMain($, `Report for ${hits.length > 0 ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the merge queue:\n${text}`)
+  toMain($, `Report for ${hits.length > 0 ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the reviewer:\n${text}`)
   return `Not sent: ${name} ${hits.length > 0 ? 'has finished' : 'matches no agent'}, so messaging it would only wake it. The plugin ${noted ? `noted the report for ${name} and ` : ''}sent it to main. Do not message ${name} again, and do not repeat this report to main.`
 }
 
@@ -1755,7 +1758,7 @@ async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, o
   }
 }
 
-const FLOW_TYPES = new Set(['flow:manager', 'flow:worker', CONTINUE, 'flow:queue'])
+const FLOW_TYPES = new Set(['flow:manager', 'flow:worker', CONTINUE, REVIEWER, QUEUE])
 
 const DIGEST_MAX = 4000
 const CONTINUE_LINE = /^Continue on branch:\s*(flow\/\S+)\s*$/m
@@ -1878,7 +1881,7 @@ async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev: AgentS
   }
 }
 
-const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / queue_model)."
+const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / reviewer_model)."
 
 // Fable is refused for a flow agent and for anything a flow agent starts.
 async function fableDenied($: EngineInterface, e: { model?: string; subagentType: string; parentAgentId?: string }): Promise<boolean> {
@@ -1896,8 +1899,8 @@ function refusedLong(r: unknown): boolean {
 }
 const withoutLong = (model: string): string => model.replace('[1m]', '')
 
-// Starts a merge queue unless one is live. The queue drains every pending handover, then ends;
-// the next handover, or a queue that ended with work left, starts a fresh one.
+// Starts a reviewer unless one is live. The reviewer drains every pending handover, then ends;
+// the next handover, or a reviewer that ended with work left, starts a fresh one.
 // Calls run one after another: handovers arriving back to back must not each see "no queue yet".
 let queueChain: Promise<unknown> = Promise.resolve()
 function ensureQueue($: EngineInterface): Promise<string> {
@@ -1908,8 +1911,8 @@ function ensureQueue($: EngineInterface): Promise<string> {
 
 async function startQueue($: EngineInterface): Promise<string> {
   const list = await $.agent.list()
-  if (list.some(a => a.type === QUEUE && LIVE.has(a.status))) {
-    return 'The running merge queue picks it up at its next list.'
+  if (list.some(a => isReviewer(a.type) && LIVE.has(a.status))) {
+    return 'The running reviewer picks it up at its next list.'
   }
   const pending = Object.values(await read($, handovers)).filter(h => h.status === 'pending')
   const dueTargets = Object.entries((await read($, deploys)).targets).filter(([name, t]) => t.due === true && deployInfos.some(i => i.name === name)).map(([name]) => name)
@@ -1917,20 +1920,20 @@ async function startQueue($: EngineInterface): Promise<string> {
   const n = (await read($, queueRuns)) + 1
   await update($, queueRuns, () => n)
   const started = await $.agent.spawn({
-    subagentType: QUEUE,
-    name: `merge-queue-${n}`,
-    description: 'merge queue',
-    prompt: `Pending handovers: ${pending.length === 0 ? 'none' : pending.map(h => `#${h.pr}`).join(', ')}.${dueTargets.length === 0 ? '' : ` Deploy-only work due: ${dueTargets.join(', ')}.`} Start with mcp__flow__deploy action "list" and mcp__flow__queue action "list".`,
+    subagentType: REVIEWER,
+    name: `reviewer-${n}`,
+    description: 'reviewer',
+    prompt: `Pending handovers: ${pending.length === 0 ? 'none' : pending.map(h => `#${h.pr}`).join(', ')}.${dueTargets.length === 0 ? '' : ` Deploy-only work due: ${dueTargets.join(', ')}.`} Start with mcp__flow__deploy action "list" and mcp__flow__reviewer action "list".`,
   })
-  if (started.deny !== undefined) return `Could not start a merge queue: ${started.deny}`
-  return `Started merge queue merge-queue-${n}.`
+  if (started.deny !== undefined) return `Could not start a reviewer: ${started.deny}`
+  return `Started reviewer reviewer-${n}.`
 }
 
 const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
 
 // Why a call is refused as a write to the repo's main checkout, or undefined. `cwd` is where
 // the caller's shell runs when that is known: the main session and managers run in the
-// session's directory; a worker's or the queue's worktree isn't known here, so their relative
+// session's directory; a worker's or the reviewer's worktree isn't known here, so their relative
 // paths are let through and only absolute ones judged.
 async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>, cwd: () => Promise<string | undefined>, allow: string[]): Promise<string | undefined> {
   let targets: WriteTarget[]
@@ -2059,7 +2062,7 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
   const liveAgents = (await $.agent.list()).filter(a => OWNED.has(a.status))
   const owners = new Set(liveAgents.filter(a => a.name !== undefined).map(a => `flow/${a.name}`))
   for (const s of Object.values(await read($, sessions))) if (s.status === 'running' || s.status === 'reported') owners.add(s.branch)
-  // A worktree path ends in agent-<agentId>: that covers a worker that has not renamed its branch, and the queue.
+  // A worktree path ends in agent-<agentId>: that covers a worker that has not renamed its branch, and the reviewer.
   const liveIds = new Set(liveAgents.map(a => `agent-${a.id}`))
 
   const items: Leftover[] = []
@@ -2240,7 +2243,7 @@ async function gatherClean($: EngineInterface, base: string): Promise<CleanGathe
   return { inputs: { ...partial, ancestry }, notes }
 }
 
-// One sweep at a time: the queue's `done`, a queue ending and /flow clean may meet.
+// One sweep at a time: the reviewer's `done`, a reviewer ending and /flow clean may meet.
 let sweepChain: Promise<unknown> = Promise.resolve()
 function exclusive<T>(fn: () => Promise<T>): Promise<T> {
   const run = sweepChain.then(fn, fn)
@@ -2405,7 +2408,7 @@ async function warnMain($: EngineInterface, settings: ReturnType<typeof settings
   if (main?.tokens === undefined) return undefined
   if (main.tokens < thresholdOf(settings, main.window)) { state.warned = false; return main.window }
   if (state.warned) return main.window
-  if (!(await $.agent.list()).some(a => a.type === MANAGER || a.type === WORKER || a.type === QUEUE)) return main.window
+  if (!(await $.agent.list()).some(a => a.type === MANAGER || a.type === WORKER || isReviewer(a.type))) return main.window
   state.warned = true
   const percent = main.percent ?? Math.round(main.tokens / main.window * 100)
   const text = `flow: main session at ${percent}% context. It can't be replaced like a worker: run /compact, or restart Claude Code and run /flow resume.`
@@ -2492,9 +2495,9 @@ async function loadSettings($: EngineInterface, options: Record<string, unknown>
 async function registerAgents($: EngineInterface, settings: ReturnType<typeof settingsOf>) {
   await $.agent.register({
     name: 'manager',
-    description: 'A flow manager: owns one task, writes briefs, starts flow:worker agents, reviews their PRs and hands them to the merge queue. ' +
+    description: 'A flow manager: owns one task, writes briefs, starts flow:worker agents, reviews their PRs and hands them to the reviewer. ' +
       'Pass the task in the user\'s words as the prompt and a short task slug as the name; run it in the background.',
-    prompt: fill(MANAGER_PROMPT.replace('{{QUEUE_RULE}}', settings.useQueue ? QUEUE_RULE : NO_QUEUE_RULE), settings),
+    prompt: fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), settings),
     model: settings.managerModel,
     background: true,
   })
@@ -2515,10 +2518,19 @@ async function registerAgents($: EngineInterface, settings: ReturnType<typeof se
     background: true,
   })
   await $.agent.register({
+    name: 'reviewer',
+    description: 'The flow reviewer. Started by the plugin when a PR is handed over; never start it yourself.',
+    prompt: fill(REVIEWER_PROMPT, settings),
+    model: settings.reviewerModel,
+    isolation: 'worktree',
+    background: true,
+  })
+  // The old agent type name, kept so a spawn or a resume under flow:queue still works.
+  await $.agent.register({
     name: 'queue',
-    description: 'The flow merge queue. Started by the plugin when a PR is handed over; never start it yourself.',
-    prompt: fill(QUEUE_PROMPT, settings),
-    model: settings.queueModel,
+    description: 'The old name of flow:reviewer. Never start it; the plugin starts flow:reviewer.',
+    prompt: fill(REVIEWER_PROMPT, settings),
+    model: settings.reviewerModel,
     isolation: 'worktree',
     background: true,
   })
@@ -2949,8 +2961,8 @@ async function sessionTool($: EngineInterface, input: Record<string, unknown>, c
 }
 
 export const register: Register = (on, options) => {
-  let settings = settingsOf(options, 'main')
-  queueOn = settings.useQueue
+  let settings = settingsOf(renameOptions(options), 'main')
+  queueOn = settings.useReviewer
   cleanupMode = settings.cleanup
   cleanupBase = settings.base
   deployInfos = infosOf(settings)
@@ -2967,7 +2979,7 @@ export const register: Register = (on, options) => {
   // Everything that mirrors the settings in a module-level variable is refreshed together.
   const apply = (s: typeof settings) => {
     settings = s
-    queueOn = s.useQueue
+    queueOn = s.useReviewer
     cleanupMode = s.cleanup
     cleanupBase = s.base
     deployInfos = infosOf(s)
@@ -3080,7 +3092,7 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow inbox lists the open questions to answer, /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions to answer, /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
       argumentHint: '[inbox|checks|preflight|close|resume|approve <pr>|clean]',
     })
     await $.command.register({
@@ -3092,7 +3104,7 @@ export const register: Register = (on, options) => {
 
     await $.tool.register({
       name: 'handover',
-      description: 'Hand an approved PR to the flow merge queue. Records the PR at its current head and starts a queue if none is running. ' +
+      description: 'Hand an approved PR to the flow reviewer. Records the PR at its current head and starts a reviewer if none is running. ' +
         'Managers call this after reviewing a worker\'s PR; leave the branch alone afterwards. ' +
         'Refused unless the PR description has a ## Verification section (Ran, Exercised, Not verified); the refusal shows the format.',
       inputSchema: {
@@ -3100,10 +3112,10 @@ export const register: Register = (on, options) => {
         properties: {
           pr: { type: 'number', description: 'The PR number' },
           verified: { type: 'string', description: 'Optional: your own one-line summary of the review. The proof itself is read from the PR\'s ## Verification section.' },
-          pending: { type: 'string', description: '"none", or decisions the user still has to make; the queue puts them in its report and the status file' },
-          after_deploy: { type: 'string', description: '"none", or what to check after deploy; the queue starts a check-only worker for what an agent can check and reports the rest as "needs a person"' },
-          verify_command: { type: 'string', description: 'Optional: a shell command that verifies the change after deploy. When the after_deploy check needs a person, the merge queue runs this command at the merged main and closes the check itself (pass on exit 0, fail otherwise).' },
-          report_to: { type: 'string', description: 'Optional. Your own agent name (the default), so the queue reports back to you. A name that matches no agent is refused; your own worker\'s name is corrected to yours.' },
+          pending: { type: 'string', description: '"none", or decisions the user still has to make; the reviewer puts them in its report and the status file' },
+          after_deploy: { type: 'string', description: '"none", or what to check after deploy; the reviewer starts a check-only worker for what an agent can check and reports the rest as "needs a person"' },
+          verify_command: { type: 'string', description: 'Optional: a shell command that verifies the change after deploy. When the after_deploy check needs a person, the reviewer runs this command at the merged main and closes the check itself (pass on exit 0, fail otherwise).' },
+          report_to: { type: 'string', description: 'Optional. Your own agent name (the default), so the reviewer reports back to you. A name that matches no agent is refused; your own worker\'s name is corrected to yours.' },
           release: { type: 'string', enum: ['patch', 'minor', 'major'], description: 'How far the release at merge bumps the version for this PR (only when the release setting is on). "minor" for a new feature users see; omit for patch; "major" only when the task asks for it. The batch gets the highest of its PRs.' },
           env: {
             type: 'array',
@@ -3121,7 +3133,7 @@ export const register: Register = (on, options) => {
               required: ['target', 'name', 'why'],
             },
           },
-          mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: it waits for the user\'s /flow approve before the queue merges it. "auto" only marks it safe to merge directly and is refused when the merge_mode setting is confirm. Omit to use the setting.' },
+          mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: it waits for the user\'s /flow approve before the reviewer merges it. "auto" only marks it safe to merge directly and is refused when the merge_mode setting is confirm. Omit to use the setting.' },
         },
         required: ['pr'],
       },
@@ -3129,11 +3141,11 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'release',
-      description: 'Release at merge (the release setting must be on). The merge queue calls this once per batch, after the full check and before the push: it moves the changelog\'s ## [Unreleased] lines into a new version section, bumps the version in the release files (patch, or the highest of the PRs\' handover release field and flow:minor / flow:major labels) and returns the commit command. It does not commit or push. A second call for the same PRs is refused as already released.',
+      description: 'Release at merge (the release setting must be on). The reviewer calls this once per batch, after the full check and before the push: it moves the changelog\'s ## [Unreleased] lines into a new version section, bumps the version in the release files (patch, or the highest of the PRs\' handover release field and flow:minor / flow:major labels) and returns the commit command. It does not commit or push. A second call for the same PRs is refused as already released.',
       inputSchema: {
         type: 'object',
         properties: {
-          dir: { type: 'string', description: 'The queue\'s worktree, absolute' },
+          dir: { type: 'string', description: 'The reviewer\'s worktree, absolute' },
           prs: { type: 'array', items: { type: 'number' }, description: 'The PR numbers merged in this batch' },
         },
         required: ['dir', 'prs'],
@@ -3289,7 +3301,7 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'check',
-      description: 'Main only (the merge queue may close checks that carry a verify command). Person checks: the after-deploy checks that need a person, kept across restarts. ' +
+      description: 'Main only (the reviewer may close checks that carry a verify command). Person checks: the after-deploy checks that need a person, kept across restarts. ' +
         'action "list": the open checks grouped by the plugin version they need, and the open follow-ups. "pass": id or ids. "fail": id and a note (required); it creates a follow-up for you to start a manager on. ' +
         '"started": id of a failed check and manager (the follow-up has a manager now).',
       inputSchema: {
@@ -3320,10 +3332,11 @@ export const register: Register = (on, options) => {
       },
       isDeferred: false,
     })
-    await $.tool.register({
-      name: 'queue',
-      description: 'The merge queue\'s worklist. action "list": pending and taken handovers in arrival order. ' +
-        '"take" (pr), "done" (pr, sha, report) or "back" (pr, reason) record what the queue did. Only the merge queue calls this.',
+    // 'queue' is the tool's old name: prompts of a reviewer started by an older version still call it.
+    for (const name of ['reviewer', 'queue']) await $.tool.register({
+      name,
+      description: (name === 'queue' ? '(The old name of the reviewer tool; use reviewer.) ' : '') + 'The reviewer\'s worklist. action "list": pending and taken handovers in arrival order. ' +
+        '"take" (pr), "done" (pr, sha, report) or "back" (pr, reason) record what the reviewer did. Only the reviewer calls this.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -3340,7 +3353,7 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'status',
-      description: 'The flow at a glance: every manager, worker and queue of this session with its status and last report, and every handed-over PR. ' +
+      description: 'The flow at a glance: every manager, worker and reviewer of this session with its status and last report, and every handed-over PR. ' +
         'With pr, who owns that PR and its log lines.',
       inputSchema: { type: 'object', properties: { pr: { type: 'number', description: 'A PR number, to see who owns it' } } },
       isDeferred: false,
@@ -3348,8 +3361,8 @@ export const register: Register = (on, options) => {
 
     await $.tool.register({
       name: 'deploy',
-      description: 'Per-target deploy gates. The merge queue calls action "gate" (target, sha) before each deploy target and gets exactly one of "Go", "Held: <why>" or "Awaits approval: <qid>"; on the last two it skips that target for this batch and goes on. ' +
-        'A confirm target opens one inbox item for the user; only the user\'s "deploy" answer lets that sha through. The queue calls "deployed" (target, sha, ok) after each target. ' +
+      description: 'Per-target deploy gates. The reviewer calls action "gate" (target, sha) before each deploy target and gets exactly one of "Go", "Held: <why>" or "Awaits approval: <qid>"; on the last two it skips that target for this batch and goes on. ' +
+        'A confirm target opens one inbox item for the user; only the user\'s "deploy" answer lets that sha through. The reviewer calls "deployed" (target, sha, ok) after each target. ' +
         'Main only, on the user\'s word: "hold" (target, until "batch" or "released", reason?) and "release" (target; it also drops env changes the user declined); "demo only, hold production" is a hold on production. "list" shows every target with mode, hold, last deployed sha, how far behind, any approval and pending env changes. ' +
         'Env changes a handed-over PR declared come first in the gate: "Awaits env: <qids>" (the user has not answered; skip the target), "Held: env change NAME declined" (skip it until main releases it), or "Go, first apply env:" with one exact command per change: run each (a non-zero exit fails the target), call "env-applied" (target, names), then deploy.',
       inputSchema: {
@@ -3491,8 +3504,8 @@ export const register: Register = (on, options) => {
     refreshLeftovers($)
     // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
     $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
-    // The queue agent type exists only now, and a spawn needs the session bound: start it after the hook.
-    if (queueDue) $.clock.after(0, () => void best($, 'starting the queue', async () => void (await ensureQueue($))))
+    // The reviewer agent type exists only now, and a spawn needs the session bound: start it after the hook.
+    if (queueDue) $.clock.after(0, () => void best($, 'starting the reviewer', async () => void (await ensureQueue($))))
     return next(e)
   })
 
@@ -3597,7 +3610,7 @@ export const register: Register = (on, options) => {
       await refreshBehind($)
       return { text }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -3734,9 +3747,9 @@ export const register: Register = (on, options) => {
       const input = e as unknown as Record<string, unknown>
       const to = String(input.to ?? '')
       const text = String(input.message ?? input.text ?? '')
-      if (id !== undefined && (await whoAmI())?.type === QUEUE) {
+      if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) {
         let handled: string | undefined
-        await best($, 'routing a queue message', async () => { handled = await queueSendGuard($, to, text) })
+        await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard($, to, text) })
         if (handled !== undefined) return { result: handled }
       }
       await best($, 'marking a wake-up', async () => {
@@ -3761,8 +3774,8 @@ export const register: Register = (on, options) => {
     const input = e as unknown as Record<string, unknown>
     const pr = Number(input.pr)
     if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: pr must be a PR number.' }
-    if (!settings.useQueue) {
-      return { result: `Refused: this repo has no merge queue (the plugin's merge_queue option is off). Merge it yourself: full check, then gh pr merge ${pr} --${settings.mergeMethod} --delete-branch.` }
+    if (!settings.useReviewer) {
+      return { result: `Refused: this repo has no reviewer (the plugin's reviewer option is off). Merge it yourself: full check, then gh pr merge ${pr} --${settings.mergeMethod} --delete-branch.` }
     }
     const setMode = parseMode(settings.mergeMode)
     const asked = input.mode === 'confirm' || input.mode === 'auto' ? input.mode : undefined
@@ -3796,7 +3809,7 @@ export const register: Register = (on, options) => {
       evidence: checked.evidence, status: 'pending', at: t, ...(asked !== undefined ? { mode: asked } : {}),
       ...(isBump(input.release) ? { release: input.release } : {}),
     }
-    // A labelling failure is reported, not fatal: the stored mode still gates the queue.
+    // A labelling failure is reported, not fatal: the stored mode still gates the reviewer.
     let labelNote = ''
     const labels = (info.labels ?? []).map(l => l.name)
     if (asked !== undefined) {
@@ -3817,11 +3830,11 @@ export const register: Register = (on, options) => {
     if (hold) {
       void $.ui.toast(`PR #${pr} awaits your approval: /flow approve ${pr}`)
       await refresh($)
-      return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}, but it awaits the user's approval: the queue will not merge it until the user runs /flow approve ${pr}. Tell the user so in your report.${labelNote}${envNote}` }
+      return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}, but it awaits the user's approval: the reviewer will not merge it until the user runs /flow approve ${pr}. Tell the user so in your report.${labelNote}${envNote}` }
     }
     const queue = await ensureQueue($)
     await refresh($)
-    return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.${dest.note ?? ''}${labelNote}${envNote}` }
+    return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The reviewer reports back to ${h.reportTo} by message.${dest.note ?? ''}${labelNote}${envNote}` }
   })
 
   on('tool.call', { tool: 'mcp__flow__release' }, async ($, e) => {
@@ -3877,7 +3890,7 @@ export const register: Register = (on, options) => {
     }
   })
 
-  on('tool.call', { tool: 'mcp__flow__queue' }, async ($, e) => {
+  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     const action = String(input.action)
     const all = await read($, handovers)
@@ -3941,7 +3954,7 @@ export const register: Register = (on, options) => {
       })
     }
     const rows = await refresh($)
-    const filed = action === 'back' ? await suggestGuardTests($, input, next.pr, rows.find(a => a.id === e.agentId)?.name ?? 'merge-queue', e.agentId, settings.guardTests) : ''
+    const filed = action === 'back' ? await suggestGuardTests($, input, next.pr, rows.find(a => a.id === e.agentId)?.name ?? 'reviewer', e.agentId, settings.guardTests) : ''
     return { result: `PR #${key}: ${next.status}.${verify}${filed}` }
   })
 
@@ -4291,13 +4304,13 @@ export const register: Register = (on, options) => {
     const input = e as unknown as Record<string, unknown>
     const me = e.agentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.agentId)
     const isMain = e.agentId === undefined
-    if (!isMain && me?.type !== QUEUE) return { result: 'Refused: only main closes person checks. Tell main in your report.' }
+    if (!isMain && !(me && isReviewer(me.type))) return { result: 'Refused: only main closes person checks. Tell main in your report.' }
     const action = String(input.action ?? 'list')
     if (action === 'list') return { result: renderChecks(await read($, checks), installed) }
     const t = await $.clock.now()
     if (action === 'pass' || action === 'fail') {
       const ids = Array.isArray(input.ids) ? input.ids.map(String) : typeof input.id === 'string' ? [input.id] : []
-      const by = isMain ? 'main' : (me?.name ?? 'queue')
+      const by = isMain ? 'main' : (me?.name ?? 'reviewer')
       const note = typeof input.note === 'string' ? input.note : undefined
       return { result: await withChecks($, cur => {
         const r = closeChecks(cur, ids, action, by, note, t, !isMain)
@@ -4538,7 +4551,7 @@ export const register: Register = (on, options) => {
         const owner = rows.find(a => a.id === me.parentId)?.name ?? 'main'
         await best($, 'recording a handoff', () => recordHandoff($, me, handedOff[1] as string, owner, settings.maxContinues))
       }
-      if (me?.type === QUEUE) await ensureQueue($)
+      if (me && isReviewer(me.type)) await ensureQueue($)
     }
     return next(e)
   })
@@ -5020,14 +5033,14 @@ export const register: Register = (on, options) => {
               const i = await hotItem()
               if (i) await toggleFold(i.a, i.collapsed)
             }}>{items[hotIdx]?.collapsed ? 'c expand' : 'c collapse'}</Button>
-            {prs.length > 0 && <Button key="nav-queue" plain dimColor hotkey="q" onPress={toggleQueue}>q queue</Button>}
+            {prs.length > 0 && <Button key="nav-queue" plain dimColor hotkey="q" onPress={toggleQueue}>q reviewer</Button>}
             {toggle}
           </Box>
         )}
         {prs.length > 0 && (
           <Box flexDirection="row">
             <Button key={`fold-${MERGE_QUEUE_KEY}`} plain dimColor onPress={toggleQueue}>{queueOpen ? '  ▾ ' : '  ▸ '}</Button>
-            <Text bold>Merge queue</Text>
+            <Text bold>Reviewer</Text>
             {!queueOpen && <Text dimColor>  {queueSummary}</Text>}
             {!queueOpen && awaiting > 0 && <Text color="warning"> · {awaiting} awaiting approval</Text>}
             {!queueOpen && returned > 0 && <Text color="warning"> · {returned} returned</Text>}
