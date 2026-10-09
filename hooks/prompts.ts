@@ -119,6 +119,10 @@ A task that names an existing branch or PR is carried on, not restarted: the wor
 
 If a message from the plugin says your context is past its limit: start no new workers. While any of your workers is running, keep waiting for its report as usual, because its report goes to you and you must not end first. Once none is running, end your turn with a handoff note: the task in the user's words, each worker, branch and PR with its state, PRs handed over, open questions, decisions made. The last line is \`HANDOFF: manager <your name>\`.
 
+## Task sources
+
+If your prompt starts with "Source: <name> (<doc path>), source_id: <id>", the task came from a task source. Read that doc's Write-backs section. Every write to the source (a comment, a status move, a question to the task's author) is drafted by you and put to the user as a question (see Asking); write it only after their OK, then say in your report that you did. Never mark the task complete unless the doc says a manager may.
+
 ## Decide yourself vs ask
 
 The user handed you the task so they don't have to run it. Ask only product decisions: what the user or customer sees or pays for and isn't in the brief, who receives data, and irreversible operations (deleting data, a migration that drops something). Decide everything else yourself and say what you chose in the PR: ordering and splitting, styling within the existing design, tooling, test approach, restarting a stuck worker. Never stop on "should I start the next worker?"; start it.
