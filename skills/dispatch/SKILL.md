@@ -28,8 +28,16 @@ managers, the workers under each, the queue, and the PRs handed over.
    - `prompt`: the task in the user's own words, quoted, plus what you know that the
      manager can't see: decisions the user made, links, constraints, images described or
      their paths. The manager can't see this conversation.
-   Start independent managers in one message. Keep at most 3 running; start the rest as each
+   Start independent managers in one message. Keep at most `max_managers` running (a
+   setting, default 20; `mcp__flow__status` shows it as `Limits`); start the rest as each
    finishes, without asking again.
+   When one task needs another's merged code, declare the tasks first with `mcp__flow__plan`
+   (owner main): action `add`, nodes `{ id: "<manager name>", title, after: [ids] }`, with
+   `until: "reported"` when only the other manager's report is needed. Start only the ready
+   ones. When a `flow plan:` message says nodes are ready, start their managers, with the
+   merged code in the prompt (`git fetch origin` first). Ready nodes over the limit wait for a
+   slot; the message says how many are free and arrives again when one frees. A blocked node
+   is yours to fix, or to mark with `block` or `done`. Independent tasks need no plan.
 4. **Tell the user** in one line per task: the manager's name and what it's doing. Then end your
    turn: each manager's report arrives as a notification.
 
@@ -53,7 +61,7 @@ starts this.
    text verbatim, your notes in a separate section, attachments as local paths. Start the
    prompt with `Source: <name> (<doc path>), source_id: <id>` so the manager can follow the
    doc's write-backs.
-6. Start the managers as in "Starting work" (at most 3; the rest as each finishes). Name each
+6. Start the managers as in "Starting work" (up to `max_managers`; the rest as each finishes). Name each
    by a slug of the task, not its id.
 
 You never write to the source yourself unless the user asks; managers draft write-backs and
@@ -71,7 +79,7 @@ put them in front of the user.
   Start a fresh `flow:manager` named `<name>-2` (then `-3`) with the original task plus the
   note, without asking the user.
 - **Check-ins** ("how is it going?"): call `mcp__flow__status` and answer with one
-  compact table (task, manager, PRs, where each PR is: open, handed over, merged), then the
+  compact table (task, manager, PRs, where each PR is: open, handed over, merged, and its plan state if it has a node), then the
   open questions as a numbered list.
 - **A relayed decision** is a quote: pass the user's exact words, dated.
 
@@ -79,7 +87,7 @@ put them in front of the user.
 
 The roster is empty after a restart, but branches, PRs and `.claude/worktrees/` stay. When the
 user runs `/flow resume`, you receive what it found as hidden instructions: start one
-`flow:manager` per task as they say (named `resume-<slug>`, at most 3 at a time), each prompt
+`flow:manager` per task as they say (named `resume-<slug>`, up to `max_managers` at a time), each prompt
 carrying the branch, PR number and URL, the PR description and any worktree path. Do not
 start workers for it yourself.
 
@@ -92,5 +100,5 @@ and hand it over with `mcp__flow__handover`. Never edit the main checkout for it
 ## Settings
 
 The test command, the full check, the deploy command, the merge method, whether there is a
-queue, and the worker limit are this plugin's options (`/config`, flow). An unset full
+queue, the manager limit (`max_managers`) and the worker limit are this plugin's options (`/config`, flow). An unset full
 check or deploy is a step the queue skips and reports; it never improvises one.

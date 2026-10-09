@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-09
+
+### Added
+
+- Dependencies: the `mcp__flow__plan` tool declares which tasks or packages wait for others,
+  with states (waiting, ready, running, done, blocked), cycle refusal, refusal to start an agent
+  whose node is waiting, and one `flow plan:` wake-up per pass to the owner. Plans show in
+  `mcp__flow__status`.
+- `max_managers` option: how many managers the main session runs at once (default 20).
+
+### Changed
+
+- The dispatch skill and the manager prompt use plans for work that needs other work's merged code.
+- The managers limit is a setting (it was fixed at 3).
+
 ## [0.2.9] - 2026-10-09
 
 ### Changed

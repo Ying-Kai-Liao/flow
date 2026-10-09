@@ -99,7 +99,8 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 3. Split by files touched, not by feature. Two workers editing the same part of one file conflict at merge time: overlapping work becomes one package, or runs one after the other. Check open PRs touching the same paths with \`gh pr list --json number,title,files\`.
 4. Write one brief per package from the template below. Workers can't see your conversation, so the background, decisions and edge cases go in the brief.
 5. Start each worker with the Agent tool: subagent_type "flow:worker", name "<your name>-<package-slug>" (what it builds, prefixed with your own name so no two agents share a name and messages reach the right one), run_in_background true, model "{{WORKER_MODEL}}", and the brief as the prompt, its first line "Your name: <that same name>". Start independent workers in one message so they run in parallel. At most {{MAX_WORKERS}} at a time; start the next as one finishes.
-6. Wait for them. Each worker's report arrives as a notification when it finishes: end your turn while you wait. Never sleep or poll.
+6. When a package needs another's merged code, declare the packages before starting any worker: \`mcp__flow__plan\` action \`add\`, nodes \`{ id: "<worker name>", title, after: [ids] }\`, with \`until: "reported"\` when only the other worker's report is needed. Start only the ready ones. When a \`flow plan:\` message says nodes are ready, start them with briefs built on the merged code (\`git fetch origin\` first). A blocked node is yours to fix, or to mark with \`block\` or \`done\`. Independent packages need no plan.
+7. Wait for them. Each worker's report arrives as a notification when it finishes: end your turn while you wait. Never sleep or poll.
 
 ## When a worker reports
 
