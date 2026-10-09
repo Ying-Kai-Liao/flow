@@ -91,14 +91,15 @@ test('a PR already part of ref is not renumbered against itself', () => {
   expect(m.status).toBe('ok')
 })
 
-test('self-references: whole-token number and old name, never the migration\'s own files', () => {
+test('self-references: whole-token number and old name, also inside the migration\'s own files', () => {
   const m = run(base, [{ pr: 1, added: [`${D}/0003_x.up.sql`, `${D}/0003_x.down.sql`] }]).prs[0]!.migrations[0]!
   const refs = findRefs(m, [
-    { path: `${D}/0003_x.up.sql`, text: '-- 0003\n' },
+    { path: `${D}/0003_x.up.sql`, text: 'create table t();\ninsert into schema_version values (3, \'0003\');\n' },
+    { path: `${D}/0003_x.down.sql`, text: 'drop table t;\n' },
     { path: 'db/journal.json', text: '{\n  "tag": "0003_x.up.sql"\n}' },
     { path: 'src/version.ts', text: 'const a = 1\nexport const LATEST = "0003"\nconst b = "00031"' },
   ])
-  expect(refs).toEqual([{ file: 'db/journal.json', line: 2 }, { file: 'src/version.ts', line: 2 }])
+  expect(refs).toEqual([{ file: `${D}/0003_x.up.sql`, line: 2 }, { file: 'db/journal.json', line: 2 }, { file: 'src/version.ts', line: 2 }])
   m.refs = refs
   expect(render({ dir: D, prs: [{ pr: 1, migrations: [m], unnumbered: [] }] })).toContain('references its number in db/journal.json:2')
 })

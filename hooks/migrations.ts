@@ -108,15 +108,14 @@ export function analyze(input: Inputs): Report {
 }
 
 // Lines in the PR's own changed files that mention a flagged migration's number (a whole token) or its
-// file or folder name, other than the migration's own files.
+// file or folder name. The migration's own files count by content (a migration that inserts its own
+// version into a schema-version table), never by path.
 export function findRefs(m: Migration, files: Array<{ path: string; text: string }>): Ref[] {
   const names = new Set<string>()
   for (const f of m.files) for (const s of f.split('/')) if (s.startsWith(m.prefix) && s.length > m.prefix.length) names.add(s)
   const token = new RegExp(`(?<![0-9A-Za-z])${m.prefix}(?![0-9])`)
-  const own = new Set(m.files)
   const out: Ref[] = []
   for (const f of files) {
-    if (own.has(f.path)) continue
     f.text.split('\n').forEach((line, i) => {
       if (token.test(line) || [...names].some(n => line.includes(n))) out.push({ file: f.path, line: i + 1 })
     })
