@@ -1359,6 +1359,11 @@ async function gatherClean($: EngineInterface, base: string): Promise<CleanGathe
     if (log.exitCode === 0) contained[sha] = log.stdout.split('\n').filter(Boolean)
   }
   partial.contained = contained
+  // Only trusted with a roster that lists agents at all; an unreadable pid means no lock is broken.
+  if (roster.some(a => a.id !== 'main')) {
+    const ppid = Number((await run(['sh', '-c', 'echo $PPID'])).stdout.trim())
+    if (Number.isInteger(ppid) && ppid > 1) partial.ownPid = ppid
+  }
   const ancestry = new Set<string>()
   for (const q of ancestryQueries(partial)) {
     const [a, b] = q.split(' ')

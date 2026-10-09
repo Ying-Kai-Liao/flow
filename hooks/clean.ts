@@ -86,6 +86,9 @@ export type CleanInputs = {
   // sha -> the commits (short sha + subject, origin/<base>..sha) whose whole change from the merge
   // base is already on origin/<base>, file for file; see containedCandidates.
   contained?: Record<string, string[]>
+  // The pid of the Claude process running this plugin; absent when it could not be told. A lock
+  // that names it was made in this session, so $.agent.list() knows its agent.
+  ownPid?: number
 }
 
 export type Kept = { kind: 'worktree' | 'branch'; name: string; reason: string; needsLook: boolean }
@@ -187,12 +190,16 @@ function liveOwner(i: CleanInputs, path: string | undefined, branch: string | un
 const LOCK_AGENT = /\bagent-([0-9a-zA-Z]+)\b/
 const LOCK_PID = /\bpid (\d+)\b/
 
-// A lock is stale when the agent it names ended in this session's roster, or its process is gone.
+// A lock is stale when the agent it names ended in this session's roster, is unknown to it while
+// the lock is this session's own, or its process is gone.
 function staleLock(i: CleanInputs, reason: string): boolean {
   const id = LOCK_AGENT.exec(reason)?.[1]
   const pid = Number(LOCK_PID.exec(reason)?.[1] ?? NaN)
   const agent = id === undefined ? undefined : i.roster.find(a => a.id === id)
   if (agent !== undefined) return !agent.live
+  // Same process, same session: the roster lists every agent it started, nested ones included
+  // (AgentInfo.parentId), so an agent missing from it is gone. Another pid proves nothing.
+  if (id !== undefined && Number.isInteger(pid) && pid === i.ownPid) return true
   return id !== undefined && Number.isInteger(pid) && i.deadPids?.has(pid) === true
 }
 

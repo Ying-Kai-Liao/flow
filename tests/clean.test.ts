@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
-import { ancestryQueries, dirtyFiles, leftoverLine, parsePorcelain, selectCleanup, sweepText } from '../hooks/clean'
+import { ancestryQueries, containedCandidates, dirtyFiles, leftoverLine, parsePorcelain, selectCleanup, sweepText, typeLinks, waitingPaths } from '../hooks/clean'
 import type { CleanInputs, PrRow } from '../hooks/clean'
 
 const MAIN = '/repo'
@@ -19,7 +19,7 @@ const porcelain = (wts: Wt[]) => wts.map(w => [
 function inputs(o: {
   wts?: Wt[]; status?: Record<string, string>; branches?: Record<string, string>; onBase?: string[]
   remote?: Record<string, string>; prs?: PrRow[] | undefined; roster?: CleanInputs['roster']; ancestry?: string[]
-  deadPids?: number[]; waiting?: string[]
+  deadPids?: number[]; waiting?: string[]; contained?: Record<string, string[]>; ownPid?: number
 }): CleanInputs {
   const wts = [{ path: MAIN, head: BASE, branch: 'main' }, ...(o.wts ?? [])]
   const status: Record<string, string> = {}
@@ -29,6 +29,7 @@ function inputs(o: {
     branches: { main: BASE, ...o.branches }, onBase: new Set([BASE, ...(o.onBase ?? [])]),
     remote: { main: BASE, ...o.remote }, prs: 'prs' in o ? o.prs : [], roster: o.roster ?? [],
     ancestry: new Set(o.ancestry ?? []), deadPids: new Set(o.deadPids ?? []), waiting: new Set(o.waiting ?? []),
+    ...(o.contained && { contained: o.contained }), ...(o.ownPid !== undefined && { ownPid: o.ownPid }),
   }
 }
 
@@ -188,6 +189,71 @@ test('the listing and the leftover line', () => {
   expect(leftoverLine({ worktrees: 0, branches: 0, needsLook: 0 })).toBeUndefined()
 })
 
+test('type links: only the ignored untracked links are listed for deletion, a tracked or other file is not', () => {
+  expect(typeLinks('?? types\n?? .claude-plugin/types/\n')).toEqual(['types', '.claude-plugin/types'])
+  expect(typeLinks('?? types\n?? notes.md\n M types.ts\n')).toEqual(['types'])
+  const s = selectCleanup(inputs({
+    wts: [{ path: WT('l'), head: BASE, branch: 'flow/l' }, { path: WT('n'), head: BASE, branch: 'flow/n' }],
+    status: { [WT('l')]: '?? types\n?? .claude-plugin/types\n', [WT('n')]: '?? types\n?? scratch.md\n' },
+    branches: { 'flow/l': BASE, 'flow/n': BASE },
+  }))
+  expect(s.remove.worktrees).toEqual([WT('l')])
+  expect(s.links).toEqual({ [WT('l')]: ['types', '.claude-plugin/types'] })
+  // A worktree with another untracked file keeps its files and its links.
+  expect(kept(s, WT('n'))?.reason).toBe('uncommitted changes: scratch.md')
+})
+
+test('commits already on the base file for file go when a merged PR of the branch family exists', () => {
+  const prs: PrRow[] = [{ number: 7, headRefName: 'flow/x', headRefOid: 'r2', state: 'MERGED' }]
+  const wts = [{ path: WT('x'), head: 'w1', branch: 'flow/x-2' }]
+  const base = { wts, branches: { 'flow/x-2': 'w1' }, prs }
+  // The family's PR merged and the content check passed: dropped, the commits listed.
+  const ok = selectCleanup(inputs({ ...base, contained: { w1: ['abc1234 WIP handoff: half done'] } }))
+  expect(ok.remove.worktrees).toEqual([WT('x')])
+  expect(ok.remove.branches).toEqual(['flow/x-2'])
+  expect(ok.dropped).toEqual([
+    { kind: 'worktree', name: WT('x'), commits: ['abc1234 WIP handoff: half done'] },
+    { kind: 'branch', name: 'flow/x-2', commits: ['abc1234 WIP handoff: half done'] },
+  ])
+  expect(sweepText(ok, { applied: false })).toContain('    abc1234 WIP handoff: half done')
+  // The content check did not pass (no entry): kept as unpushed.
+  const no = selectCleanup(inputs(base))
+  expect(no.remove).toEqual({ worktrees: [], branches: [] })
+  expect(kept(no, WT('x'))?.needsLook).toBe(true)
+  // The check passed but no PR of the family merged (open or none): kept.
+  const open = selectCleanup(inputs({ ...base, contained: { w1: ['abc1234 x'] }, prs: [{ ...prs[0]!, state: 'OPEN' }] }))
+  expect(open.remove).toEqual({ worktrees: [], branches: [] })
+  // Which tips need the check: not on the base, with a merged PR in the family.
+  const { ancestry: _, ...rest } = inputs(base)
+  expect(containedCandidates(rest)).toEqual(['w1'])
+  const { ancestry: _2, ...none } = inputs({ ...base, prs: [] })
+  expect(containedCandidates(none)).toEqual([])
+})
+
+test('a handoff waits for its successor, unless its branch has a merged PR', () => {
+  const h = { branch: 'flow/h', worktree: WT('h'), at: 100 }
+  expect([...waitingPaths([h], [], [])]).toEqual([WT('h')])
+  expect([...waitingPaths([h], [], [{ number: 1, headRefName: 'flow/h', headRefOid: 'a', state: 'OPEN' }])]).toEqual([WT('h')])
+  expect([...waitingPaths([h], [], [{ number: 1, headRefName: 'flow/h', headRefOid: 'a', state: 'MERGED' }])]).toEqual([])
+  expect([...waitingPaths([{ ...h, takenBy: 'w2' }], [], [])]).toEqual([])
+  expect([...waitingPaths([h], [{ branch: 'flow/h', ts: new Date(200).toISOString() }], [])]).toEqual([])
+})
+
+test('a lock from this very process goes when its agent is not in the roster; others stay', () => {
+  const lock = 'claude agent agent-q1 (pid 33643 start Fri Oct  9 12:54:11 2026)'
+  const w = [{ path: WT('agent-q1'), head: BASE, locked: lock }]
+  const own = selectCleanup(inputs({ wts: w, ownPid: 33643 }))
+  expect(own.remove.worktrees).toEqual([WT('agent-q1')])
+  expect(own.unlock).toEqual([WT('agent-q1')])
+  // A live agent of this session keeps its lock.
+  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 33643, roster: [{ id: 'q1', live: true }] })), WT('agent-q1'))?.reason).toBe('locked')
+  // Another process's lock, an unreadable own pid, and a lock naming no agent all stay.
+  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 99 })), WT('agent-q1'))?.reason).toBe('locked')
+  expect(kept(selectCleanup(inputs({ wts: w })), WT('agent-q1'))?.reason).toBe('locked')
+  const anon = [{ path: WT('x'), head: BASE, locked: 'pid 33643' }]
+  expect(kept(selectCleanup(inputs({ wts: anon, ownPid: 33643 })), WT('x'))?.reason).toBe('locked')
+})
+
 // --- The hooks: /flow clean and mcp__flow__clean against a scripted git ---
 
 type Dollar = Parameters<TestBody>[0]
@@ -250,4 +316,51 @@ test('with cleanup off, the tool answers so and runs dry', { options: { cleanup:
   expect(res).toContain('Cleanup is off')
   expect(res).toContain('Would remove')
   expect(r.ran).toEqual([])
+})
+
+// A scripted repo for the type-link order: one finished worktree with untracked links.
+function linkRepo(on: On, o: { real?: boolean; removeFails?: boolean }) {
+  const ran: string[] = []
+  mock.clock(on, { now: 1_000_000 })
+  on('agent.list', () => ({ value: [] }))
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('process.run', (_, e) => {
+    const a = e.argv.join(' ')
+    const out = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
+    if (a === 'git worktree list --porcelain') return out(porcelain([{ path: MAIN, head: BASE, branch: 'main' }, { path: WT('a'), head: BASE, branch: 'flow/a' }]))
+    if (a.startsWith('git for-each-ref --merged')) return out(`${BASE}\n`)
+    if (a.endsWith('refs/heads')) return out(`main ${BASE}\nflow/a ${BASE}\n`)
+    if (a.endsWith('refs/remotes/origin')) return out(`origin/main ${BASE}\n`)
+    if (a.startsWith('gh ')) return out('[]')
+    if (a.endsWith('status --porcelain')) return out('?? types\n?? .claude-plugin/types\n')
+    if (e.argv[0] === 'test') { ran.push(a); return out('', o.real && a.endsWith('/.claude-plugin/types') ? 1 : 0) }
+    if (e.argv[0] === 'rm') { ran.push(a); return out('') }
+    if (/^git (worktree (remove|unlock|prune)|branch -D)/.test(a)) {
+      ran.push(a)
+      if (o.removeFails && a.startsWith('git worktree remove')) return out('', 128, "fatal: '/x' contains modified or untracked files")
+    }
+    return out('')
+  })
+  return ran
+}
+
+test('sweep unlinks the type links before git worktree remove, and never a real directory', async ($, on) => {
+  const ran = linkRepo(on, { real: true })
+  await flow($, 'clean --yes')
+  const t = `${WT('a')}/types`
+  const c = `${WT('a')}/.claude-plugin/types`
+  expect(ran).toEqual([
+    `test -L ${t}`, `rm -f -- ${t}`, `test -L ${c}`,
+    `git worktree remove ${WT('a')}`, 'git worktree prune', 'git branch -D flow/a',
+  ])
+})
+
+test('a remove that fails after the links went is reported as kept, and its branch stays', async ($, on) => {
+  const ran = linkRepo(on, { removeFails: true })
+  const text = String((await flow($, 'clean --yes')).text)
+  expect(ran.findIndex(r => r.startsWith('rm ')) < ran.findIndex(r => r.startsWith('git worktree remove'))).toBe(true)
+  expect(text).toContain('Removed nothing.')
+  expect(text).toContain('contains modified or untracked files')
+  expect(ran.some(r => r.startsWith('git branch -D'))).toBe(false)
 })
