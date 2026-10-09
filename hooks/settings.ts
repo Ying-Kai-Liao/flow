@@ -14,6 +14,7 @@ export const KEYS: Record<string, Kind> = {
   merge_queue: 'boolean',
   max_workers: 'number',
   context_warn_percent: 'number',
+  context_warn_percent_1m: 'number',
   handoff: 'boolean',
   worker_model: 'string',
   manager_model: 'string',

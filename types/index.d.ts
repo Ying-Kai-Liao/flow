@@ -37,6 +37,8 @@ export type Activity = {
   // The last turn's final text: a worker's report, or the question it ended on.
   answer?: string
   // The latest turn.step's context fill; absent until the agent has taken one.
+  // The window the agent was started with, from its model; absent when unknown or before this was recorded.
+  spawnWindow?: number
   usage?: { tokens: number; model: string; window?: number }
   // When the roster first saw the agent ended; its running time stops there.
   endedAt?: number

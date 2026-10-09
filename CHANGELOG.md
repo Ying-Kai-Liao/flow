@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.21] - 2026-10-10
+
+### Added
+
+- `context_warn_percent_1m` (default 35): the handoff percent for agents on a 1M window.
+  `context_warn_percent` (40) now applies to smaller windows only.
+
+### Changed
+
+- An agent's window is the one it was started with (`[1m]` in the model it was finally spawned
+  with means 1M), not a guess from the step's model id. A `sonnet[1m]` worker was told to hand
+  off at 80k when the step model lacked `[1m]`.
+- `context_warn_tokens` now defaults to 0 (off); it stays an optional cap over both percents.
+  Set it to 350000 for the old behaviour.
+- Note: a `worker_model` saved in /config as plain `sonnet` (the old default) overrides the
+  `sonnet[1m]` default. Set it to `sonnet[1m]` or clear it.
+
 ## [0.3.20] - 2026-10-10
 
 ### Added

@@ -217,7 +217,7 @@ test('a 1M model hands off at 350k tokens, not at 300k; a 200k model at 80k', as
   use(400_000)
   await step($, 'w1')
   expect(sent.length).toBe(1)
-  expect(sent[0]?.text).toMatch(/past the 350k tokens limit/)
+  expect(sent[0]?.text).toMatch(/past the 35% limit/)
 })
 
 test('a 200k model is told at 80k even with the token limit far above it', async ($, on) => {
@@ -355,7 +355,7 @@ test('a [1m] worker is measured against 1M although usage.model lacks the suffix
   use(350_000)
   await step($, 'w1', ONE_M)
   expect(sent.length).toBe(1)
-  expect(sent[0]?.text).toMatch(/past the 350k tokens limit/)
+  expect(sent[0]?.text).toMatch(/past the 35% limit/)
 })
 
 test('a plain sonnet worker is told at 80k', async ($, on) => {
@@ -370,15 +370,74 @@ test('a plain sonnet worker is told at 80k', async ($, on) => {
   expect(sent.length).toBe(1)
 })
 
-test('the meter shows the token limit next to the marker for a [1m] worker', async ($, on) => {
+test('the meter shows the token limit next to the marker for a [1m] worker', { options: { context_warn_tokens: 300_000 } }, async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   on('agent.list', () => ({ value: AGENTS }))
   on('agent.spawn', () => ({ model: ONE_M, agentId: 'w1' }))
   on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { window: 200_000, tokens: 1000, percent: 1 } } }))
   usageMock(on, 100_000)
   notices(on)
-  await $.agent.spawn({ prompt: 'brief', description: 'A task', subagentType: 'flow:manager' } as never)
+  await $.agent.spawn({ prompt: 'brief', description: 'A task', subagentType: 'flow:manager', model: ONE_M } as never)
   await step($, 'w1', ONE_M)
   const ui = await $.ui.mount({ plugin: 'flow', surface: 'terminal', component: 'Pane', props: { title: 'Flow' }, requestId: 'flow', viewport: { columns: 100, rows: 40 } } as never)
-  expect(await ui.find({ type: 'Text', text: /350k│/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /300k│/ })).toBeDefined()
+})
+
+// A worker spawned with `model`, whose steps report plain ids (as the API does).
+async function spawned($: Dollar, on: On, model: string, tokens: number) {
+  mock.clock(on, { now: 1_000_000 })
+  on('agent.list', () => ({ value: AGENTS }))
+  on('agent.spawn', (_, e) => ({ model: (e as { model?: string }).model ?? 'sonnet', agentId: 'w1' }))
+  on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { window: 200_000, tokens: 1000, percent: 1 } } }))
+  const use = usageMock(on, tokens)
+  const { sent } = notices(on)
+  await $.agent.spawn({ prompt: 'brief', description: 'csv', subagentType: 'flow:worker', model } as never)
+  return { use, sent }
+}
+
+test('a worker spawned with sonnet[1m] is sized 1M although its steps say plain sonnet', async ($, on) => {
+  const { use, sent } = await spawned($, on, 'sonnet[1m]', 80_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  use(300_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  expect(sent).toEqual([])
+  use(350_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  expect(sent.length).toBe(1)
+})
+
+test('a worker spawned with plain sonnet hands off at 80k', async ($, on) => {
+  const { use, sent } = await spawned($, on, 'sonnet', 79_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  expect(sent).toEqual([])
+  use(80_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  expect(sent.length).toBe(1)
+})
+
+test('context_warn_percent_1m moves the 1M handoff', { options: { context_warn_percent_1m: 50 } }, async ($, on) => {
+  const { use, sent } = await spawned($, on, 'sonnet[1m]', 400_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  expect(sent).toEqual([])
+  use(500_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  expect(sent.length).toBe(1)
+})
+
+test('context_warn_tokens caps the 1M handoff', { options: { context_warn_tokens: 100_000 } }, async ($, on) => {
+  const { use, sent } = await spawned($, on, 'sonnet[1m]', 99_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  expect(sent).toEqual([])
+  use(100_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  expect(sent.length).toBe(1)
+  expect(sent[0]?.text).toMatch(/100k tokens/)
+})
+
+test('the meter of a worker spawned with sonnet[1m] shows 1M with the marker at 35%', async ($, on) => {
+  await spawned($, on, 'sonnet[1m]', 100_000)
+  await step($, 'w1', 'claude-sonnet-5')
+  const ui = await $.ui.mount({ plugin: 'flow', surface: 'terminal', component: 'Pane', props: { title: 'Flow' }, requestId: 'flow', viewport: { columns: 100, rows: 40 } } as never)
+  // 12 cells: 10% fills 1, the marker sits at cell 4 (floor of 35% of 12).
+  expect(await ui.find({ type: 'Text', text: /█░{2}░│░{7} 10%/ })).toBeDefined()
 })
