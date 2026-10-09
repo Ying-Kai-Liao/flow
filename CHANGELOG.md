@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.34] - 2026-10-10
+
+### Added
+
+- Person checks: an after-deploy check that needs a person is now a durable item. When the merge
+  queue reports a PR done with a `needs a person: PR #<n>: <steps>` line, the plugin stores an open
+  check in `<state dir>/checks.json` with the version it needs (`plugin.json` at the merged sha, else
+  a version named in the steps). Handovers already done on disk are backfilled once. `/flow checks`
+  groups them by version to install, `/flow checks pass <id...>` and `/flow checks fail <id> <note>`
+  close them, and `/flow inbox`, `/flow resume` and the Flow pane show them. A failed check creates a
+  follow-up for main to start a manager on. New tool `mcp__flow__check` (main only). After a plugin
+  update, main is prompted once per installed version with the checks it now covers.
+- Scripted verification: `mcp__flow__handover` takes an optional `verify_command`. When the PR's
+  check needs a person, the queue is told to run it at the merged main and pass or fail the check
+  itself (the only closing besides main). The new `verify_paths` setting (a list of path globs, file
+  only) limits this to PRs that change a matching file; otherwise the check stays open for a person.
+
 ## [0.3.33] - 2026-10-10
 
 ### Fixed
