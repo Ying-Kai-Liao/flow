@@ -59,6 +59,7 @@ add login-redirect  after: csv-export
   there is no activity yet), and the meter below with elapsed time and tokens. Only top-level
   cards have a border. Colors follow your light or dark theme (the theme's suggestion, warning,
   success and error colors), and the pane redraws when you switch `/theme`.
+  A worker told to hand off shows a `handoff` badge while it wraps up, and "handed off" once it ends with a `HANDOFF:` line.
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
