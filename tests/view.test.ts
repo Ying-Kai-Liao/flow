@@ -17,7 +17,7 @@ async function setup($: Dollar, on: On, toasts: string[] = []) {
   on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { window: 200_000, tokens: 1000, percent: 1 } } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
-  on('ui.toast', (e: unknown) => { toasts.push(JSON.stringify(e)); return { value: undefined } })
+  on('ui.toast', (_: unknown, e: unknown) => { toasts.push(JSON.stringify(e)); return { value: undefined } })
   on('ui.focus', () => ({}))
   await $.agent.spawn({ prompt: 'brief', description: 'A task', subagentType: 'flow:manager' } as never)
 }

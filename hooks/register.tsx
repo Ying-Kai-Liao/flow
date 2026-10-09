@@ -41,11 +41,9 @@ const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as stri
 // agent's children away, false keeps them out even when the tree is crowded. Absent = automatic.
 const cursor = atom({ plugin: 'flow', key: 'cursor' } as const, null as string | null)
 const folded = atom({ plugin: 'flow', key: 'folded' } as const, {} as Record<string, boolean>)
-// Following the chat view: the last view seen (an agent id, null for main) and what the person had
-// before the pane followed it. Restored on return to main only if they have not moved since.
-const viewSeen = atom({ plugin: 'flow', key: 'viewSeen' } as const, null as string | null)
-const beforeFollow = atom({ plugin: 'flow', key: 'beforeFollow' } as const,
-  null as { sel: string | null; cur: string | null; id: string } | null)
+// Following the chat view: the view (an agent id, null for main) in which the person last acted in
+// the pane. While the view differs from it, the pane shows the viewed agent; written by handlers only.
+const overrideView = atom({ plugin: 'flow', key: 'overrideView' } as const, undefined as string | null | undefined)
 // Set once the first card click has told the person how to see that agent's chat.
 const hinted = atom({ plugin: 'flow', key: 'hinted' } as const, false)
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
@@ -399,6 +397,9 @@ export const register: Register = (on, options) => {
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
+  // The view the pane was last drawn under: a focus event carries none, and a focus move is the
+  // person acting in that view.
+  let paneView: string | null = null
   // What /flow resume already handed to managers in this session.
   const resumed = new Set<string>()
 
@@ -720,6 +721,7 @@ export const register: Register = (on, options) => {
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const r = await next(e)
     if (e.element !== undefined && (await read($, roster)).some(a => a.id === e.element)) {
+      await update($, overrideView, () => paneView)
       await update($, cursor, () => e.element!)
     }
     return r
@@ -731,33 +733,19 @@ export const register: Register = (on, options) => {
       read($, roster), read($, activity), read($, selected), read($, now), read($, handovers),
       read($, cursor), read($, folded),
     ])
-    const [seen, before, shown] = await Promise.all([read($, viewSeen), read($, beforeFollow), read($, hinted)])
+    const shown = await read($, hinted)
+    const override = await read($, overrideView)
 
-    // The pane follows the transcript in view; only a change of view acts, so the person's own
-    // clicks and keys win until it changes again. An agent not in the roster is ignored.
+    // The pane follows the transcript in view, derived here without writing: the viewed agent wins
+    // until the person acts in the pane under that view. An id not in the roster is ignored.
     const viewId = (e.props as { view?: { agentId?: string } }).view?.agentId ?? null
-    if (viewId !== seen) {
-      if (viewId === null) {
-        await update($, viewSeen, () => null)
-        if (before !== null) {
-          await update($, beforeFollow, () => null)
-          if (pick === before.id && cur === before.id) {
-            pick = before.sel
-            cur = before.cur
-            await update($, selected, () => before.sel)
-            await update($, cursor, () => before.cur)
-          }
-        }
-      } else if (list.some(a => a.id === viewId)) {
-        await update($, viewSeen, () => viewId)
-        if (before === null) await update($, beforeFollow, () => ({ sel: pick, cur, id: viewId }))
-        else await update($, beforeFollow, () => ({ ...before, id: viewId }))
-        pick = viewId
-        cur = viewId
-        await update($, selected, () => viewId)
-        await update($, cursor, () => viewId)
-      }
+    if (viewId !== null && list.some(a => a.id === viewId) && viewId !== override) {
+      pick = viewId
+      cur = viewId
     }
+    // Handlers record which view they acted in, so a later view change follows again.
+    paneView = viewId
+    const acted = () => update($, overrideView, () => viewId)
     const rows = e.viewport?.rows ?? 24
     const warn = settings.contextWarn
     // Free: no breakdown asked. Main's figures also size a subagent on the same model.
@@ -794,6 +782,7 @@ export const register: Register = (on, options) => {
     // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
     // Only a top-level card has a border; deeper ones read as a tree by their indent.
     const open = async (id: string) => {
+      await acted()
       await update($, cursor, () => id)
       await update($, selected, () => id)
       // No API switches the transcript, so say once how to get to it.
@@ -849,7 +838,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" gap={1}>
-            <Button key="back" hotkey="b" onPress={() => update($, selected, () => parent?.id ?? null)}>Back</Button>
+            <Button key="back" hotkey="b" onPress={async () => { await acted(); await update($, selected, () => parent?.id ?? null) }}>Back</Button>
             <Button key="msg" hotkey="m" onPress={() => $.prompt.fill({
               text: `Send a message to ${ROLE[agent.type] ?? 'agent'} "${labelOf(agent)}": `, mode: 'replace',
             })}>Message</Button>
@@ -897,6 +886,7 @@ export const register: Register = (on, options) => {
     // Keys read the state fresh, so rapid presses each count once.
     const step = (d: number) => async () => {
       if (items.length === 0) return
+      await acted()
       const c = (await read($, cursor)) ?? hotId
       const i = Math.min(items.length - 1, Math.max(0, items.findIndex(x => x.a.id === c) + d))
       const id = items[i]!.a.id
@@ -937,6 +927,7 @@ export const register: Register = (on, options) => {
             <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>
             <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>
             <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
+              await acted()
               const i = await hotItem()
               if (i && i.kids > 0) await update($, folded, f => ({ ...f, [i.a.id]: !i.collapsed }))
             }}>c fold</Button>
