@@ -210,6 +210,11 @@ export const register: Register = (on, options) => {
       description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it',
       argumentHint: '[close]',
     })
+    await $.command.register({
+      name: 'flow-tasks',
+      description: 'Pick tasks from a task source (.claude/flow/sources/<name>.md) and start a manager for each',
+      argumentHint: '[source] [ids or filter]',
+    })
     await $.agent.register({
       name: 'manager',
       description: 'A flow manager: owns one task, writes briefs, starts flow:worker agents, reviews their PRs and hands them to the merge queue. ' +
@@ -295,6 +300,16 @@ export const register: Register = (on, options) => {
     if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it.` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
+  })
+
+  // Hands the request to the main session's model, which runs it with the dispatch skill. A
+  // command can't submit a prompt itself (it would wait on its own turn), so a timer queues it
+  // once the command has returned.
+  on('command.run', { command: 'flow-tasks' }, async ($, e) => {
+    const args = e.args.trim()
+    const text = `Use the flow:dispatch skill, "Tasks from a source": pick tasks from ${args ? `the task source and selection "${args}"` : 'this project\'s task source'} and start a manager for each.`
+    $.clock.after(1, () => void $.prompt.submit({ text }))
+    return { text: `Picking tasks${args ? ` from ${args}` : ''}.` }
   })
 
   on('agent.spawn', async ($, e, next) => {

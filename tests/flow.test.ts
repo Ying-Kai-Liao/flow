@@ -91,3 +91,18 @@ test('the pane draws workers under their manager, and the queue', async ($, on) 
     await ui.unmount()
   }
 })
+
+test('/flow-tasks hands the source and selection to the super manager', async ($, on) => {
+  const clock = mock.clock(on, { now: 0 })
+  const sent: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  const r = await $.command.run({ command: 'flow-tasks', args: 'issues 12 14' } as never)
+  expect(JSON.stringify(r)).toContain('Picking tasks from issues 12 14')
+  await clock.advance(5)
+  expect(sent.length).toBe(1)
+  expect(sent[0]).toContain('flow:dispatch')
+  expect(sent[0]).toContain('"issues 12 14"')
+})
