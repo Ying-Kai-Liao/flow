@@ -131,9 +131,11 @@ function windowOf(model: string, mainModel: string | undefined, mainWindow: numb
   return tokens > window ? Math.max(window, LARGE_WINDOW) : window
 }
 
-// The trigger: the absolute token setting when set, else the percent of the window.
+// The trigger: the lower of the token setting and the percent of the window, so a 200k model
+// still hands off at the percent when the token limit is far above its window.
 function thresholdOf(s: { contextWarn: number; contextWarnTokens: number }, window: number): number {
-  return s.contextWarnTokens > 0 ? s.contextWarnTokens : Math.round(window * s.contextWarn / 100)
+  const byPercent = Math.round(window * s.contextWarn / 100)
+  return s.contextWarnTokens > 0 ? Math.min(s.contextWarnTokens, byPercent) : byPercent
 }
 
 // The same threshold as a percent of the window, for the meter's marker and colour.
@@ -142,13 +144,14 @@ function warnPercent(s: { contextWarn: number; contextWarnTokens: number }, wind
 }
 
 // What the threshold is called in a message: "40%" or "100k tokens".
-function limitLabel(s: { contextWarn: number; contextWarnTokens: number }): string {
-  return s.contextWarnTokens > 0 ? `${tokensLabel(s.contextWarnTokens)} tokens` : `${s.contextWarn}%`
+function limitLabel(s: { contextWarn: number; contextWarnTokens: number }, window: number): string {
+  return s.contextWarnTokens > 0 && s.contextWarnTokens < Math.round(window * s.contextWarn / 100)
+    ? `${tokensLabel(s.contextWarnTokens)} tokens` : `${s.contextWarn}%`
 }
 
 // The line an agent past the threshold reads. A manager keeps going until its workers are done.
 function wrapUpText(role: string, percent: number, limit: string): string {
-  const handoff = 'follow the Handoff section of your instructions now: commit WIP, push, update the draft PR's ## Handoff note, end with HANDOFF: <branch>.'
+  const handoff = 'follow the Handoff section of your instructions now: commit WIP, push, update the draft PR\'s ## Handoff note, end with HANDOFF: <branch>.'
   return role === 'manager'
     ? `flow: WRAP UP: your context is at ${percent}% (past the ${limit} limit). Start no new work; once none of your workers is running, ${handoff}`
     : `flow: WRAP UP: your context is at ${percent}% (past the ${limit} limit). Stop new work, ${handoff}`
@@ -182,7 +185,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   return {
     contextWarn: Math.min(100, Math.max(1, Math.round(num('context_warn_percent', 40)))),
-    contextWarnTokens: Math.max(0, Math.round(num('context_warn_tokens', 0))),
+    contextWarnTokens: Math.max(0, Math.round(num('context_warn_tokens', 350000))),
     handoff: options.handoff !== false,
     base: str('base_branch', base),
     testCommand: str('test_command', ''),
@@ -382,6 +385,57 @@ function resumeInstructions(items: Leftover[]): string {
   ].join('\n')
 }
 
+// The wrap-up as a message, for an agent idle or waiting between turns. A refused send is logged, not retried.
+async function sendWrapUp($: EngineInterface, me: { id: string; type: string; name?: string }, percent: number, limit: string): Promise<void> {
+  const text = wrapUpText(ROLE[me.type] ?? 'worker', percent, limit)
+  const sent = await $.session.send({ to: { agentId: me.id }, text }).catch(() => undefined)
+  if (sent !== undefined && !sent.isDelivered) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered: ${sent.reason ?? 'unknown'}`)
+}
+
+// An agent past the threshold reads the wrap-up after a tool result: on its first tool call
+// past it, every 10th after, and when usage rises another 10 points. The result passes untouched.
+async function wrapUpReminder($: EngineInterface, e: { agentId?: string }, r: any, settings: ReturnType<typeof settingsOf>, mainModel: string | undefined, mainWindow: number | undefined): Promise<any> {
+  try {
+    const id = e.agentId
+    if (id === undefined || !settings.handoff || r.deny !== undefined) return r
+    const a = (await read($, activity))[id]
+    if (a?.handoffNotifiedAt === undefined || a.usage === undefined) return r
+    const window = windowOf(a.usage.model, mainModel, mainWindow, a.usage.tokens)
+    const percent = Math.min(100, Math.round(a.usage.tokens / window * 100))
+    const calls = (a.callsPastLimit ?? 0) + 1
+    const due = calls === 1 || calls % 10 === 0 || percent >= (a.remindedPercent ?? a.handoffPercent ?? percent) + 10
+    await update($, activity, acts => {
+      const cur = acts[id]
+      if (cur === undefined) return acts
+      const n = (cur.callsPastLimit ?? 0) + 1
+      return { ...acts, [id]: { ...cur, callsPastLimit: n, ...(due ? { remindersSent: (cur.remindersSent ?? 0) + 1, remindedPercent: percent } : {}) } }
+    })
+    if (!due) return r
+    const me = (await $.agent.list()).find(x => x.id === id)
+    return { ...r, context: [...(r.context ?? []), wrapUpText(ROLE[me?.type ?? WORKER] ?? 'worker', percent, limitLabel(settings, window))] } 
+  } catch {
+    return r
+  }
+}
+
+// Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
+// Re-armed when usage drops back below the threshold (after a /compact).
+async function warnMain($: EngineInterface, settings: ReturnType<typeof settingsOf>, state: { warned: boolean }): Promise<number | undefined> {
+  if (!settings.handoff) return undefined
+  const usage = await $.session.usage().then(u => u, () => undefined)
+  const main = usage?.context
+  if (main?.tokens === undefined) return undefined
+  if (main.tokens < thresholdOf(settings, main.window)) { state.warned = false; return main.window }
+  if (state.warned) return main.window
+  if (!(await $.agent.list()).some(a => a.type === MANAGER || a.type === WORKER || a.type === QUEUE)) return main.window
+  state.warned = true
+  const percent = main.percent ?? Math.round(main.tokens / main.window * 100)
+  const text = `flow: main session at ${percent}% context. It can't be replaced like a worker: run /compact, or restart Claude Code and run /flow resume.`
+  void $.ui.toast(text)
+  $.ui.log(text)
+  return main.window
+}
+
 export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
   // Main's model and window, to size a subagent that runs the same model.
@@ -568,7 +622,7 @@ export const register: Register = (on, options) => {
         return { ...acts, [id]: { ...a, lastAt: t, doing: summarizeCall(e as unknown as Record<string, unknown>), log: [...a.log, line].slice(-LOG_MAX) } }
       })
     }
-    return next(e)
+    return wrapUpReminder($, e, await next(e), settings, mainModel, mainWindow)
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'mcp__flow__handover' }, async ($, e) => {
@@ -643,59 +697,9 @@ export const register: Register = (on, options) => {
       ].join('\n'),
     }
   })
-
-  // The wrap-up as a message, for an agent idle or waiting between turns. A refused send is logged, not retried.
-  async function sendWrapUp($: EngineInterface, me: { id: string; type: string; name?: string }, percent: number): Promise<void> {
-    const text = wrapUpText(ROLE[me.type] ?? 'worker', percent, limitLabel(settings))
-    const sent = await $.session.send({ to: { agentId: me.id }, text }).catch(() => undefined)
-    if (sent !== undefined && !sent.isDelivered) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered: ${sent.reason ?? 'unknown'}`)
-  }
-
   // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
   // Re-armed when usage drops back below the threshold (after a /compact).
-  let mainWarned = false
-  async function warnMain($: EngineInterface): Promise<void> {
-    if (!settings.handoff) return
-    const usage = await $.session.usage().then(u => u, () => undefined)
-    const main = usage?.context
-    if (main?.tokens === undefined) return
-    mainWindow = main.window
-    if (main.tokens < thresholdOf(settings, main.window)) { mainWarned = false; return }
-    if (mainWarned) return
-    if (!(await $.agent.list()).some(a => a.type === MANAGER || a.type === WORKER || a.type === QUEUE)) return
-    mainWarned = true
-    const percent = main.percent ?? Math.round(main.tokens / main.window * 100)
-    const text = `flow: main session at ${percent}% context. It can't be replaced like a worker: run /compact, or restart Claude Code and run /flow resume.`
-    void $.ui.toast(text)
-    $.ui.log(text)
-  }
-
-  // An agent past the threshold reads the wrap-up after a tool result: on its first tool call
-  // past it, every 10th after, and when usage rises another 10 points. The result passes untouched.
-  on('tool.call', async ($, e, next) => {
-    const r = await next(e)
-    try {
-      const id = e.agentId
-      if (id === undefined || !settings.handoff || r.deny !== undefined) return r
-      const a = (await read($, activity))[id]
-      if (a?.handoffNotifiedAt === undefined || a.usage === undefined) return r
-      const window = windowOf(a.usage.model, mainModel, mainWindow, a.usage.tokens)
-      const percent = Math.min(100, Math.round(a.usage.tokens / window * 100))
-      const calls = (a.callsPastLimit ?? 0) + 1
-      const due = calls === 1 || calls % 10 === 0 || percent >= (a.remindedPercent ?? a.handoffPercent ?? percent) + 10
-      await update($, activity, acts => {
-        const cur = acts[id]
-        if (cur === undefined) return acts
-        const n = (cur.callsPastLimit ?? 0) + 1
-        return { ...acts, [id]: { ...cur, callsPastLimit: n, ...(due ? { remindersSent: (cur.remindersSent ?? 0) + 1, remindedPercent: percent } : {}) } }
-      })
-      if (!due) return r
-      const me = (await $.agent.list()).find(x => x.id === id)
-      return { ...r, context: [...(r.context ?? []), wrapUpText(ROLE[me?.type ?? WORKER] ?? 'worker', percent, limitLabel(settings))] } as typeof r
-    } catch {
-      return r
-    }
-  })
+  const mainWarn = { warned: false }
 
   // Context used by a subagent: the input side of its latest step. Observe only; the step passes untouched.
   on('turn.step', async function* ($, e, next) {
@@ -723,7 +727,7 @@ export const register: Register = (on, options) => {
           await update($, activity, acts => {
             const a = acts[id]
             if (a === undefined) return acts
-            const { handoffNotifiedAt: _n, handoffPercent: _p, remindedAtCall: _c, remindedPercent: _r, callsPastLimit: _k, ...rest } = a
+            const { handoffNotifiedAt: _n, handoffPercent: _p, remindedPercent: _r, callsPastLimit: _k, ...rest } = a
             return { ...acts, [id]: rest }
           })
         }
@@ -734,13 +738,13 @@ export const register: Register = (on, options) => {
               const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
               return { ...acts, [id]: { ...a, handoffNotifiedAt: t, handoffPercent: percent, remindedPercent: percent, callsPastLimit: 0, remindersSent: a.remindersSent ?? 0 } }
             })
-            void $.ui.toast(`${ROLE[me.type]} ${labelOf(me)}: past ${limitLabel(settings)} context, handing off`)
+            void $.ui.toast(`${ROLE[me.type]} ${labelOf(me)}: past ${limitLabel(settings, window)} context, handing off`)
             // For an agent between turns; one in a turn reads the reminder on its next tool call.
-            await sendWrapUp($, me, percent)
+            await sendWrapUp($, me, percent, limitLabel(settings, window))
           }
         }
       }
-      if (id === undefined) await warnMain($)
+      if (id === undefined) mainWindow = (await warnMain($, settings, mainWarn)) ?? mainWindow
     } catch {
       // The meter is cosmetic: never fail the agent's step over it.
     }

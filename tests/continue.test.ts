@@ -195,3 +195,149 @@ test('/flow resume skips a live agent\'s worktree and squash-merged ones', async
   expect(text).not.toContain('agent-old')
   expect(text).toContain('agent-left')
 })
+
+// A subagent tool call; the reminder rides on the result's context.
+const call = async ($: Dollar, agentId: string) => {
+  const r = await $.tool.call({ tool: 'Read', file_path: '/x', agentId } as never)
+  return ((r as { context?: string[] }).context ?? []).filter(c => c.includes('WRAP UP'))
+}
+
+function toolEnd(on: On) {
+  on('tool.call', () => ({ result: 'ok' }) as never)
+}
+
+test('a 1M model hands off at 350k tokens, not at 300k; a 200k model at 80k', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  const use = usageMock(on, 300_000)
+  const { sent } = notices(on)
+  // 300k proves a 1M window: 30%, below both limits.
+  await step($, 'w1')
+  expect(sent).toEqual([])
+  use(400_000)
+  await step($, 'w1')
+  expect(sent.length).toBe(1)
+  expect(sent[0]?.text).toMatch(/past the 350k tokens limit/)
+})
+
+test('a 200k model is told at 80k even with the token limit far above it', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  const use = usageMock(on, 79_000)
+  const { sent } = notices(on)
+  await step($, 'w1')
+  expect(sent).toEqual([])
+  use(81_000)
+  await step($, 'w1')
+  expect(sent.length).toBe(1)
+})
+
+test('context_warn_tokens lower than the percent wins; 0 leaves the percent', { options: { context_warn_tokens: 50_000 } }, async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  usageMock(on, 60_000)
+  const { sent } = notices(on)
+  await step($, 'w1')
+  expect(sent.length).toBe(1)
+  expect(sent[0]?.text).toMatch(/50k tokens/)
+})
+
+test('context_warn_tokens 0 falls back to the percent', { options: { context_warn_tokens: 0 } }, async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  const use = usageMock(on, 70_000)
+  const { sent } = notices(on)
+  await step($, 'w1')
+  expect(sent).toEqual([])
+  use(85_000)
+  await step($, 'w1')
+  expect(sent.length).toBe(1)
+})
+
+test('the reminder comes on the first call past the limit, every 10th, and on a 10 point rise', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  const use = usageMock(on, 90_000)
+  notices(on)
+  toolEnd(on)
+  expect((await call($, 'w1')).length).toBe(0) // not past yet: no step has crossed
+  await step($, 'w1')
+  expect((await call($, 'w1')).length).toBe(1)
+  for (let i = 0; i < 8; i++) expect((await call($, 'w1')).length).toBe(0)
+  expect((await call($, 'w1')).length).toBe(1) // the 10th past the limit
+  use(114_000) // 45% -> 57%
+  await step($, 'w1')
+  expect((await call($, 'w1')).length).toBe(1)
+  expect((await call($, 'w1')).length).toBe(0)
+})
+
+test('a manager gets manager wording; the queue and a worker below the limit get nothing', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  const use = usageMock(on, 90_000)
+  notices(on)
+  toolEnd(on)
+  await step($, 'm1')
+  const m = await call($, 'm1')
+  expect(m[0]).toMatch(/once none of your workers is running/)
+  await step($, 'q1')
+  expect(await call($, 'q1')).toEqual([])
+  use(30_000)
+  await step($, 'w1')
+  expect(await call($, 'w1')).toEqual([])
+})
+
+test('no reminder with handoff off', { options: { handoff: false } }, async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  usageMock(on, 90_000)
+  notices(on)
+  toolEnd(on)
+  await step($, 'w1')
+  expect(await call($, 'w1')).toEqual([])
+})
+
+test('after a compaction the reminders stop until the next crossing', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  const use = usageMock(on, 90_000)
+  const { sent } = notices(on)
+  toolEnd(on)
+  await step($, 'w1')
+  expect((await call($, 'w1')).length).toBe(1)
+  use(20_000)
+  await step($, 'w1')
+  expect(await call($, 'w1')).toEqual([])
+  use(90_000)
+  await step($, 'w1')
+  expect(sent.length).toBe(2)
+  expect((await call($, 'w1')).length).toBe(1)
+})
+
+test('main gets one toast per crossing, re-armed after the usage drops', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: AGENTS }))
+  usageMock(on, 10_000)
+  const { toasts } = notices(on)
+  let tokens = 90_000
+  on('session.usage', () => ({ value: { context: { tokens, window: 200_000, percent: Math.round(tokens / 2000) } } }) as never)
+  const mainToasts = () => toasts.filter(t => t.includes('main session'))
+  await step($)
+  await step($)
+  expect(mainToasts().length).toBe(1)
+  tokens = 20_000
+  await step($)
+  tokens = 100_000
+  await step($)
+  expect(mainToasts().length).toBe(2)
+})
+
+test('main gets no warning when no flow agents exist', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  on('agent.list', () => ({ value: [] }))
+  usageMock(on, 10_000)
+  const { toasts } = notices(on)
+  on('session.usage', () => ({ value: { context: { tokens: 150_000, window: 200_000, percent: 75 } } }) as never)
+  await step($)
+  expect(toasts.filter(t => t.includes('main session'))).toEqual([])
+})

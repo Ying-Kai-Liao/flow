@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-10-09
+
+### Added
+
+- `context_warn_tokens` (default 350000, 0 = off). The handoff limit is the lower of it and
+  `context_warn_percent` of the window; it also places the meter marker and yellow point.
+- The wrap-up reaches a busy agent: a reminder is appended to its tool results (first call past
+  the limit, every 10th, every +10 points), besides the message for an idle one. Never denies.
+- The main session gets one toast and log line per crossing while flow agents exist; no auto-compact.
+
+### Fixed
+
+- The context window guess strips `[1m]`, date suffixes and `-latest` when matching models, and
+  usage above 200k means a 1M window, so percents are no longer inflated.
+
 ## [0.2.9] - 2026-10-09
 
 ### Changed
