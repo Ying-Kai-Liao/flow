@@ -826,7 +826,7 @@ async function prepareContinue($: EngineInterface, e: AgentSpawnInput): Promise<
   if (branch === undefined) return e
   const name = (e as { name?: string }).name ?? e.description
   try {
-    const owner = await ownerOf($, e.parentAgentId)
+    const owner = await ownerNameOf($, e.parentAgentId)
     let rec = (await read($, handoffs))[branch]
     if (rec === undefined) {
       const ev = (await readLog($)).filter(l => l.event === 'handoff' && l.branch === branch).pop()
@@ -888,6 +888,24 @@ async function prepareContinue($: EngineInterface, e: AgentSpawnInput): Promise<
     return e
   }
 }
+
+const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / queue_model)."
+
+// Fable is refused for a flow agent and for anything a flow agent starts.
+async function fableDenied($: EngineInterface, e: { model?: string; subagentType: string; parentAgentId?: string }): Promise<boolean> {
+  if (!isFable(e.model)) return false
+  if (FLOW_TYPES.has(e.subagentType)) return true
+  if (e.parentAgentId === undefined) return false
+  const parent = (await $.agent.list()).find(a => a.id === e.parentAgentId)
+  return parent !== undefined && FLOW_TYPES.has(parent.type)
+}
+
+// A refusal of a long-context model: a deny, or an error that names the model or its context.
+function refusedLong(r: unknown): boolean {
+  const text = r instanceof Error ? r.message : typeof r === 'object' && r !== null && 'deny' in r ? String((r as { deny: unknown }).deny) : ''
+  return /model|1m|context/i.test(text)
+}
+const withoutLong = (model: string): string => model.replace('[1m]', '')
 
 // Starts a merge queue unless one is live. The queue drains every pending handover, then ends;
 // the next handover, or a queue that ended with work left, starts a fresh one.
@@ -1281,6 +1299,13 @@ async function registerAgents($: EngineInterface, settings: ReturnType<typeof se
     background: true,
   })
   await $.agent.register({
+    name: 'continue',
+    description: 'A flow worker that continues a handed-off branch in the same worktree. The plugin picks it when a flow:worker spawn says "Continue on branch:"; never start it yourself.',
+    prompt: fill(WORKER_PROMPT, settings),
+    model: settings.workerModel,
+    background: true,
+  })
+  await $.agent.register({
     name: 'queue',
     description: 'The flow merge queue. Started by the plugin when a PR is handed over; never start it yourself.',
     prompt: fill(QUEUE_PROMPT, settings),
@@ -1583,9 +1608,28 @@ export const register: Register = (on, options) => {
         return { deny: `flow plan: ${node.id} waits on ${deps.join(', ')}. Start it when the plugin says it is ready.` }
       }
     }
+    if (await fableDenied($, e)) return { deny: FABLE_DENY }
+    // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
+    // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
     const spawn = e.subagentType === WORKER ? await prepareContinue($, e) : e
-    const started = await next(spawn)
-    if (started.agentId !== undefined) {
+    const role = ROLE[spawn.subagentType]
+    const wanted = role === undefined ? undefined : (spawn.model ?? (settings as Record<string, unknown>)[`${role}Model`])
+    const long = typeof wanted === 'string' && wanted.includes('[1m]') ? wanted : undefined
+    let ev = long !== undefined && noLong ? { ...spawn, model: withoutLong(long) } : spawn
+    let started: Awaited<ReturnType<typeof next>> | { deny: string }
+    try {
+      started = await next(ev)
+    } catch (err) {
+      if (long === undefined || noLong || !refusedLong(err)) throw err
+      started = { deny: String((err as Error).message) }
+    }
+    if (long !== undefined && !noLong && refusedLong(started)) {
+      noLong = true
+      ev = { ...spawn, model: withoutLong(long) }
+      void $.ui.toast(`flow: ${long} was refused for sub-agents; using ${ev.model}`)
+      started = await next(ev)
+    }
+    if ('agentId' in started && started.agentId !== undefined) {
       const t = await $.clock.now()
       const id = started.agentId
       await update($, activity, acts => ({

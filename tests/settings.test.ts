@@ -202,3 +202,27 @@ test('a changed settings file is picked up by the poll, once', async ($, on) => 
   await clock.settle()
   expect(w.last('worker')!.model).toBe('sonnet')
 })
+
+test('a refused [1m] model falls back once to the plain model, tells once, and later spawns skip the try', { options: { worker_model: 'sonnet[1m]' } }, async ($, on) => {
+  const w = world(on, {})
+  const tried: (string | undefined)[] = []
+  on('agent.spawn', (_, e) => {
+    const model = (e as unknown as { model?: string }).model
+    tried.push(model)
+    if (model?.includes('[1m]')) return { deny: 'model sonnet[1m] is not available for sub-agents' }
+    return { model: model ?? 'none', agentId: `a${tried.length}` }
+  })
+  await start($)
+  const spawn = (model?: string) => $.agent.spawn({ prompt: 'p', description: 'd', subagentType: 'flow:worker', model } as never)
+  const first = await spawn('sonnet[1m]')
+  expect(JSON.stringify(first)).toContain('a2')
+  expect(tried).toEqual(['sonnet[1m]', 'sonnet'])
+  expect(w.toasts.filter(t => t.includes('was refused'))).toEqual(['flow: sonnet[1m] was refused for sub-agents; using sonnet'])
+
+  await spawn('sonnet[1m]')
+  expect(tried.slice(2)).toEqual(['sonnet'])
+  // No model given: the registered worker model is the one tried and stripped.
+  await spawn()
+  expect(tried.at(-1)).toBe('sonnet')
+  expect(w.toasts.filter(t => t.includes('was refused')).length).toBe(1)
+})
