@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
 import type { Activity, AgentRow, Handover, OpenPr, PrCache } from '../types'
 import {
@@ -7,6 +7,10 @@ import {
 } from './prompts'
 import type { Settings } from './prompts'
 import { deployTargetsOf, stateFileOf } from './prompts'
+import {
+  allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
+} from './guards'
+import type { WriteTarget } from './guards'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
@@ -228,13 +232,17 @@ function rank(status: string): number {
 }
 
 // The pane's context meter marks this percent; the rest of the settings go into the prompts.
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean } {
+type Guards = { mainGuard: boolean; mainAllow: string[] }
+
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   return {
     contextWarn: Math.min(100, Math.max(1, Math.round(num('context_warn_percent', 40)))),
     contextWarnTokens: Math.max(0, Math.round(num('context_warn_tokens', 350000))),
     handoff: options.handoff !== false,
+    mainGuard: options.main_checkout_guard !== false,
+    mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
     base: str('base_branch', base),
     testCommand: str('test_command', ''),
     fullCheck: str('full_check_command', ''),
@@ -319,6 +327,39 @@ async function ensureQueue($: EngineInterface): Promise<string> {
   })
   if (started.deny !== undefined) return `Could not start a merge queue: ${started.deny}`
   return `Started merge queue merge-queue-${n}.`
+}
+
+const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
+
+// Why a call is refused as a write to the repo's main checkout, or undefined. `cwd` is where
+// the caller's shell runs when that is known: the main session and managers run in the
+// session's directory; a worker's or the queue's worktree isn't known here, so their relative
+// paths are let through and only absolute ones judged.
+async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>, cwd: () => Promise<string | undefined>, allow: string[]): Promise<string | undefined> {
+  let targets: WriteTarget[]
+  if (WRITE_TOOLS.includes(String(e.tool))) {
+    const file = e.file_path ?? e.notebook_path
+    const path = typeof file === 'string' ? resolvePath(file, await cwd()) : undefined
+    targets = path === undefined ? [] : [{ path }]
+  } else if (e.tool === 'Bash' && typeof e.command === 'string') {
+    targets = writeTargets(e.command, await cwd())
+  } else {
+    return undefined
+  }
+  if (targets.length === 0) return undefined
+  // Asked on every judged write, so a worktree made a minute ago counts as one.
+  // Not a git repo, or git failing: nothing to guard.
+  const wt = await $.process.run(['git', 'worktree', 'list', '--porcelain'], { timeoutMs: 10_000 }).catch(() => undefined)
+  const co = wt?.exitCode === 0 ? parseWorktrees(wt.stdout) : undefined
+  if (co === undefined) return undefined
+  for (const t of targets) {
+    const rel = mainRelative(t.path, co)
+    if (rel === undefined) continue
+    // A git command changes the whole checkout, whichever directory of it runs it.
+    if (t.git) return mainCheckoutRefusal(co.main, `\`git\` in ${t.path}`, allow)
+    if (!allowed(rel, allow)) return mainCheckoutRefusal(co.main, t.path, allow)
+  }
+  return undefined
 }
 
 function handoverLine(h: Handover): string {
@@ -683,18 +724,28 @@ export const register: Register = (on, options) => {
     return started
   }).catch(($, e, next) => next(e))
 
-  // Every subagent tool call: refuse code edits from managers (a change goes into a worker's
-  // brief), then keep the call as a line of the agent's activity log. The guard judges before
-  // `next`, so the catch passes the call on only when the hook failed before it ran.
+  // Every tool call, the main session's too: refuse broad process kills and writes to the main
+  // checkout. Then, for a subagent: refuse code edits from managers (a change goes into a
+  // worker's brief), and keep the call as a line of the agent's activity log. The guards judge
+  // before `next`, so the catch passes the call on only when the hook failed before it ran: a
+  // broken guard must not block every call.
   on('tool.call', async ($, e, next) => {
     const id = e.agentId
+    if (e.tool === 'Bash') {
+      const why = killRefusal(e.command)
+      if (why !== undefined) return { deny: why }
+    }
+    let me: AgentInfo | undefined
+    const whoAmI = async () => (me ??= (await $.agent.list()).find(a => a.id === id))
+    if (id !== undefined && WRITE_TOOLS.includes(e.tool) && (await whoAmI())?.type === MANAGER) {
+      return { deny: 'flow: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
+    }
+    if (settings.mainGuard) {
+      const cwd = async () => (id === undefined || (await whoAmI())?.type === MANAGER ? $.session.cwd() : undefined)
+      const why = await mainCheckoutGuard($, e as unknown as Record<string, unknown>, cwd, settings.mainAllow)
+      if (why !== undefined) return { deny: why }
+    }
     if (id !== undefined) {
-      if (['Edit', 'Write', 'NotebookEdit', 'MultiEdit'].includes(e.tool)) {
-        const me = (await $.agent.list()).find(a => a.id === id)
-        if (me?.type === MANAGER) {
-          return { deny: 'flow: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
-        }
-      }
       const t = await $.clock.now()
       const line = describeCall(e as unknown as Record<string, unknown>)
       await update($, activity, acts => {

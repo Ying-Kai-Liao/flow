@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "The orca-flow pattern in one Claude Code session: a super manager starts managers, managers start workers in their own git worktrees, a merge queue merges and deploys; a Flow pane shows the tree",
   "author": {
     "name": "Ying-Kai Liao"
@@ -65,6 +65,18 @@
       "title": "Handoff",
       "description": "On: a worker or manager that reaches the context warning percent is told to commit, push and write a handoff note, and its parent continues on a fresh agent. Off: the meter only shows.",
       "default": true
+    },
+    "main_checkout_guard": {
+      "type": "boolean",
+      "title": "Main-checkout guard",
+      "description": "On: Edit, Write and obvious shell writes (redirects, sed -i, git commit and friends) aimed at the repo's main checkout are refused, for every flow agent and the main session. Worktrees and .git/ stay writable.",
+      "default": true
+    },
+    "main_checkout_allow": {
+      "type": "string",
+      "title": "Main checkout: still writable",
+      "description": "Comma-separated paths relative to the repo root that stay writable in the main checkout; one ending in / covers a directory.",
+      "default": ".claude/"
     },
     "worker_model": {
       "type": "string",

@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-10-09
+
+### Added
+
+- Process guard: `pkill`, `killall`, `kill` of pid `-1`, `0`, `1` or a process group, and
+  `kill` fed by `lsof` without `-sTCP:LISTEN` are refused for every agent and the main session,
+  with a refusal that says to find the pid and `kill <pid>`.
+- Main-checkout guard: Edit, Write, NotebookEdit and obvious shell writes (redirects, `tee`,
+  `sed -i`, `cp`/`mv`, `rm`, `touch`, `git commit` and other checkout-changing git commands)
+  aimed at the repo's main checkout are refused for every agent and the main session.
+  Worktrees, `.git/` and files outside the repo stay writable. New settings
+  `main_checkout_guard` (default on) and `main_checkout_allow` (default `.claude/`).
+
 ## [0.3.3] - 2026-10-09
 
 ### Added
