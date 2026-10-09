@@ -756,7 +756,7 @@ async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, o
     if ('deny' in msgs) return
     const path = `${dir}/handoffs/${branch.replaceAll('/', '-')}/${count}.md`
     await $.process.run(['mkdir', '-p', path.slice(0, path.lastIndexOf('/'))])
-    await $.fs.write(path, buildDigest(msgs, branch, me.name))
+    await $.fs.write(path, buildDigest(msgs, branch, me.name ?? me.id))
     digestPath = path
   })
   let wt: { path: string; head?: string } | undefined
@@ -766,7 +766,7 @@ async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, o
   })
   await appendLog($, { event: 'handoff', agent: me.name, owner, branch, text: digestPath })
   const record: HandoffRecord = {
-    branch, agent: me.name, agentId: me.id, owner, at: await $.clock.now(), count,
+    branch, agent: me.name ?? me.id, agentId: me.id, owner, at: await $.clock.now(), count,
     ...(digestPath && { digestPath }), ...(wt && { worktree: wt.path, ...(wt.head && { head: wt.head }) }),
   }
   await update($, handoffs, hs => ({ ...hs, [branch]: record }))

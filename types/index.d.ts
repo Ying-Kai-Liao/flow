@@ -132,6 +132,7 @@ declare module 'claude-code' {
       testSlots: TestSlots
       overrideView: string | null | undefined
       hinted: boolean
+      handoffs: Record<string, HandoffRecord>
     }
   }
 }
