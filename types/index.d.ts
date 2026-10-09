@@ -39,6 +39,26 @@ export type Handover = {
   reason?: string
 }
 
+// One node of an owner's plan: a task (owner "main") or a package (owner is a manager).
+export type DagState = 'waiting' | 'ready' | 'running' | 'done' | 'blocked'
+
+export type DagNode = {
+  id: string
+  title: string
+  // Ids of the nodes that must be done before this one starts.
+  after: string[]
+  // What "done" means for a dependency: its PR merged (default), or the agent reported back.
+  until: 'merged' | 'reported'
+  state: DagState
+  // Why the node is in its state: "merged abc123", "PR returned: reason".
+  info?: string
+  // Set by the owner by hand; wins over what the plugin sees.
+  manual?: 'done' | 'blocked'
+  // The owner was already told this node is ready / blocked.
+  readyNotified?: boolean
+  blockedNotified?: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'flow': {
@@ -48,6 +68,8 @@ declare module 'claude-code' {
       now: number
       handovers: Record<string, Handover>
       queueRuns: number
+      // Per owner ("main" or a manager's name), the plan's nodes by id.
+      plan: Record<string, Record<string, DagNode>>
     }
   }
 }
