@@ -19,10 +19,11 @@ import {
 } from './guards'
 import type { WriteTarget } from './guards'
 import {
-  codexRemaining, commandFor, findHandle, findWorktreePath, goneMessage, harnessesOf, idleMessage, keysOf, NAME_RULE, percentOf,
-  pickHost, programOf, reportMessage, screenHash, SESSION, sessionKey, sessionLine, sessionRow, tmuxName,
+  claudeLimits, claudeProjectDir, codexLimits, codexRemaining, commandFor, findHandle, findWorktreePath, goneMessage, harnessesOf,
+  idleMessage, keysOf, NAME_RULE, parseClaudeTranscript, parseCodexRollout, percentOf, pickHost, programOf, reportMessage, runsOutIn,
+  screenHash, SESSION, sessionKey, sessionLine, sessionRow, tmuxName,
 } from './sessions'
-import type { HarnessSpec } from './sessions'
+import type { Digest, HarnessSpec, Limit } from './sessions'
 import { buildDigest, findWorktree, noteKey, ownerFor } from './state'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
@@ -80,6 +81,8 @@ const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 const prCache = atom({ plugin: 'flow', key: 'prCache' } as const, { prs: [], fetchedAt: 0 } as PrCache)
 // The last dry cleanup sweep, refreshed with the PR list so a render never runs git.
 const sessions = atom({ plugin: 'flow', key: 'sessions' } as const, {} as Record<string, Session>)
+const harnessLimits = atom({ plugin: 'flow', key: 'harnessLimits' } as const, [] as Limit[])
+const armed = atom({ plugin: 'flow', key: 'armed' } as const, null as { key: string; at: number } | null)
 const leftovers = atom({ plugin: 'flow', key: 'leftovers' } as const, { worktrees: 0, branches: 0, needsLook: 0 } as Leftovers)
 
 const PR_POLL_MS = 5 * 60_000
@@ -1547,6 +1550,13 @@ const ALIVE_MS = 30_000
 // IDLE_MS (and wrote no new report) is told to its manager as idle.
 const LOOK_MS = 10_000
 const IDLE_MS = 90_000
+// A harness whose own log says its turn ended is idle this long after, when no report came:
+// time for it to write the report file as its turn's last step.
+const TURN_GRACE_MS = 15_000
+// Quota readings for the pane are refreshed this often.
+const LIMITS_MS = 60_000
+// A second press within this long confirms restart or stop from the pane.
+const ARM_MS = 5000
 // A report file younger than this may still be being written: it waits for the next poll.
 const SETTLE_MS = 2000
 const SHELLS = new Set(['zsh', 'bash', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'nu'])
@@ -1638,6 +1648,7 @@ async function startSession($: EngineInterface, input: Record<string, unknown>, 
   const session: Session = {
     name, harness, host, handle, worktree, branch, promptFile, reportFile, start: template,
     ...(spec.resume !== undefined && { resume: spec.resume }),
+    ...(spec.digest !== undefined && { digestKind: spec.digest }),
     owner: caller.id, ownerName: caller.name, status: 'running', startedAt: t,
   }
   await update($, sessions, all => ({ ...all, [name]: session }))
@@ -1647,6 +1658,63 @@ async function startSession($: EngineInterface, input: Record<string, unknown>, 
   void openPane($)
   return `Started ${name}: ${harness} in ${host} (${host === 'tmux' ? `tmux attach -t ${handle}` : handle}), worktree ${worktree}, branch ${branch}. ` +
     'Its report comes to you as a "flow session:" message: end your turn while you wait.'
+}
+
+// The newest lines with Codex rate limits, newest file first.
+async function codexRateLines($: EngineInterface): Promise<string[]> {
+  const r = await runCmd($, ['sh', '-c',
+    'ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -5 | while read -r f; do grep -h \'"rate_limits":{\' "$f" | tail -1; done'], 10_000)
+  return r.stdout.split('\n')
+}
+
+async function codexLimitsNow($: EngineInterface): Promise<Limit[]> {
+  const t = await $.clock.now()
+  for (const line of await codexRateLines($)) {
+    const limits = codexLimits(line, t)
+    if (limits !== undefined) return limits
+  }
+  return []
+}
+
+// The harness's own log for this session: the newest file written since it started, in its worktree.
+async function findDigestFile($: EngineInterface, s: Session): Promise<string | undefined> {
+  const script = s.digestKind === 'codex-rollout'
+    ? 'fs=$(find "$HOME/.codex/sessions" -name "rollout-*.jsonl" -newer "$1" 2>/dev/null | while read -r f; do head -c 20000 "$f" | grep -q -F "\\"cwd\\":\\"$2\\"" && echo "$f"; done); [ -n "$fs" ] && ls -t $fs | head -1'
+    : 'fs=$(find "$HOME/.claude/projects/$2" -maxdepth 1 -name "*.jsonl" -newer "$1" 2>/dev/null); [ -n "$fs" ] && ls -t $fs | head -1'
+  const arg = s.digestKind === 'codex-rollout' ? s.worktree : claudeProjectDir(s.worktree)
+  const r = await runCmd($, ['sh', '-c', script, 'sh', s.promptFile, arg], 10_000)
+  const file = r.stdout.trim().split('\n')[0]
+  return file === undefined || file === '' ? undefined : file
+}
+
+// Reads the tail of the harness's log when it moved, and mirrors it on the card: the newest
+// action as what it is doing, new actions in its activity, its context fill on the meter.
+async function refreshDigest($: EngineInterface, s: Session, t: number): Promise<Digest | undefined> {
+  if (s.digestKind === undefined) return undefined
+  const file = (await findDigestFile($, s)) ?? s.digestFile
+  if (file === undefined) return undefined
+  const st = await $.fs.stat(file).catch(() => undefined)
+  if (st === undefined) return s.digest
+  if (file === s.digestFile && st.mtimeMs === s.digestSeen) return s.digest
+  const r = await runCmd($, ['tail', '-c', '65536', file], 10_000)
+  if (r.exitCode !== 0) return s.digest
+  const d = s.digestKind === 'codex-rollout' ? parseCodexRollout(r.stdout) : parseClaudeTranscript(r.stdout)
+  await update($, sessions, all => ({ ...all, [s.name]: { ...all[s.name]!, digestFile: file, digestSeen: st.mtimeMs, digest: d } }))
+  const before = s.digest?.actions ?? []
+  const fresh = d.actions.filter(a => !before.includes(a))
+  const key = sessionKey(s.name)
+  await update($, activity, acts => {
+    const a = acts[key] ?? { startedAt: t, lastAt: t, log: [] }
+    return {
+      ...acts,
+      [key]: {
+        ...a, lastAt: d.at ?? a.lastAt, log: [...a.log, ...fresh].slice(-LOG_MAX),
+        ...(d.actions.length > 0 && { doing: d.actions[d.actions.length - 1] }),
+        ...(d.tokens !== undefined && { usage: { tokens: d.tokens, model: s.harness, ...(d.window !== undefined && { window: d.window }) } }),
+      },
+    }
+  })
+  return d
 }
 
 // The share of a harness's quota left: "codex-logs" reads Codex's own rate-limit logs, anything
@@ -1660,10 +1728,8 @@ async function quotaLeft($: EngineInterface, how: string): Promise<number | unde
 // The newest Codex rate-limit reading, from the five newest rollout files; undefined when there is
 // none or it is too old to say anything.
 async function codexQuotaLeft($: EngineInterface): Promise<number | undefined> {
-  const r = await runCmd($, ['sh', '-c',
-    'ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -5 | while read -r f; do grep -h \'"rate_limits":{\' "$f" | tail -1; done'], 10_000)
   const t = await $.clock.now()
-  for (const line of r.stdout.split('\n')) {
+  for (const line of await codexRateLines($)) {
     const left = codexRemaining(line, t)
     if (left !== undefined) return left
   }
@@ -1719,11 +1785,17 @@ async function noteSession($: EngineInterface, name: string, t: number, line: st
 
 // One poll: a settled, newer report file goes to the owner; a terminal that went away is told once.
 let watching = false
+let limitsAt = -Infinity
 async function watchSessions($: EngineInterface): Promise<void> {
   if (watching) return
   watching = true
   try {
     const t = await $.clock.now()
+    if (t - limitsAt >= LIMITS_MS) {
+      limitsAt = t
+      const limits = await codexLimitsNow($)
+      await update($, harnessLimits, () => limits)
+    }
     for (const s of Object.values(await read($, sessions))) {
       if (s.status === 'stopped' || s.status === 'exited') continue
       const st = await $.fs.stat(s.reportFile).catch(() => undefined)
@@ -1738,18 +1810,31 @@ async function watchSessions($: EngineInterface): Promise<void> {
         }
       }
       // A running harness whose screen stopped changing is told once as idle; a change wakes it again.
+      // Idle is told once per quiet spell: the harness's own log says its turn ended, or (for any
+      // harness) its screen stopped changing; either way with no report written since.
       if ((s.status === 'running' || s.status === 'idle') && t - (s.lookedAt ?? s.startedAt) >= LOOK_MS) {
-        const screen = await sessionScreen($, s)
+        const [screen, digest] = await Promise.all([sessionScreen($, s), refreshDigest($, s, t)])
         if (screen !== undefined) {
           const hash = screenHash(screen)
           const changed = hash !== s.screen
           const since = changed ? t : s.screenAt ?? t
-          const idle = !changed && s.status === 'running' && t - since >= IDLE_MS && (s.reportAt ?? 0) < since
+          const reported = s.reportAt ?? 0
+          const ended = digest?.turnDone
+          const why = ended !== undefined && t - ended >= TURN_GRACE_MS && reported < ended
+            ? { key: `turn:${ended}`, text: `ended its turn ${ago(t - ended)} ago` }
+            : !changed && t - since >= IDLE_MS && reported < since
+            ? { key: `quiet:${since}`, text: `has shown nothing new for ${ago(t - since)}` }
+            : undefined
+          const idle = why !== undefined && s.status === 'running' && why.key !== s.idleKey
           const status = changed && s.status === 'idle' ? 'running' as const : idle ? 'idle' as const : s.status
-          await update($, sessions, all => ({ ...all, [s.name]: { ...all[s.name]!, screen: hash, screenAt: since, lookedAt: t, status } }))
+          const text = screen.split('\n').slice(-40).join('\n')
+          await update($, sessions, all => ({
+            ...all,
+            [s.name]: { ...all[s.name]!, screen: hash, screenAt: since, lookedAt: t, status, screenText: text, ...(idle && { idleKey: why!.key }) },
+          }))
           if (idle) {
             await noteSession($, s.name, t, 'idle')
-            await tellOwner($, s, idleMessage(s, ago(t - since), screen.split('\n').slice(-40).join('\n')))
+            await tellOwner($, s, idleMessage(s, why!.text, text, digest?.lastWords))
           }
         }
       }
@@ -2641,6 +2726,7 @@ export const register: Register = (on, options) => {
     const shown = await read($, hinted)
     const override = await read($, overrideView)
     const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
+    const [sessionMap, hLimits, arm] = await Promise.all([read($, sessions), read($, harnessLimits), read($, armed)])
 
     // The pane follows the transcript in view, derived here without writing: the viewed agent wins
     // until the person acts in the pane under that view. An id not in the roster is ignored.
@@ -2671,7 +2757,7 @@ export const register: Register = (on, options) => {
     const usageOf = (a: AgentRow): { percent: number; tokens: number; window: number } | undefined => {
       const u = acts[a.id]?.usage
       if (u === undefined) return undefined
-      const window = windowOf(u.model, mainModel, mainWindow, u.tokens)
+      const window = u.window ?? windowOf(u.model, mainModel, mainWindow, u.tokens)
       return { percent: Math.round(u.tokens / window * 100), tokens: u.tokens, window }
     }
     // Theme keys only: the filled part is legible on any background, the empty cells are 'inactive'
@@ -2694,6 +2780,43 @@ export const register: Register = (on, options) => {
     // it end, else its last activity). No start on record, no time.
     const runTime = (act: Activity | undefined, isEnded: boolean): string =>
       act?.startedAt === undefined ? '' : elapsed((isEnded ? act.endedAt ?? act.lastAt : t) - act.startedAt)
+
+    // Quota left per window, for Claude (this session's account) and the harnesses flow can read:
+    // the share left as a bar that turns at 40% and 20%, the reset, and when the pace runs it out.
+    const limits = [...claudeLimits(usage?.rateLimits ?? []), ...hLimits]
+    const limitLine = (l: Limit) => {
+      const left = Math.max(0, Math.min(100, Math.round(100 - l.used)))
+      const tone = left <= 20 ? 'error' : left <= 40 ? 'warning' : 'success'
+      const filled = left > 0 ? Math.max(1, Math.round(left / 100 * METER_CELLS)) : 0
+      const out = runsOutIn(l, t)
+      return (
+        <Text key={`lim-${l.tool}-${l.label}`} wrap="truncate-end">
+          <Text dimColor>{`${l.tool} ${l.label}`.padEnd(12)}</Text>
+          <Text color={tone}>{'█'.repeat(filled)}</Text><Text color="inactive">{'░'.repeat(METER_CELLS - filled)}</Text>
+          <Text color={tone}> {left}% left</Text>
+          {l.resetsAt !== undefined && l.resetsAt > t && <Text dimColor> · resets in {elapsed(l.resetsAt - t)}</Text>}
+          {out !== undefined && <Text color={out < 3600_000 ? 'error' : 'warning'}> · empty in {elapsed(out)} at this pace</Text>}
+        </Text>
+      )
+    }
+
+    // A control on a session worker, run here without a model turn. Restart and stop take a second
+    // press within ARM_MS, so a stray key never kills a worker.
+    const control = (name: string, input: Record<string, unknown>, confirm?: string) => async () => {
+      await acted()
+      if (confirm !== undefined) {
+        const key = `${name}:${String(input.action)}`
+        const now2 = await $.clock.now()
+        const was = await read($, armed)
+        if (was?.key !== key || now2 - was.at > ARM_MS) {
+          await update($, armed, () => ({ key, at: now2 }))
+          return
+        }
+        await update($, armed, () => null)
+      }
+      const result = await sessionTool($, { name, ...input }, { id: 'main', name: 'main' }, settings)
+      void $.ui.toast(result.length > 200 ? `${result.slice(0, 199)}…` : result)
+    }
 
     // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
     // Only a top-level card has a border; deeper ones read as a tree by their indent.
@@ -2856,6 +2979,49 @@ export const register: Register = (on, options) => {
             {act ? ` · ${runTime(act, ENDED.has(agent.status))} · last active ${ago(t - act.lastAt)} ago` : ''}{children.length ? ` · ${children.length} under it` : ''}</Text>
           </Text>
           <Text dimColor>{agent.description}</Text>
+          {agent.type === SESSION && sessionMap[agent.name ?? ''] !== undefined && (() => {
+            const ss = sessionMap[agent.name ?? '']!
+            const name = ss.name
+            const live = ss.status !== 'exited' && ss.status !== 'stopped'
+            const armedFor = arm !== null && t - arm.at <= ARM_MS && arm.key.startsWith(`${name}:`) ? arm.key.slice(name.length + 1) : undefined
+            const key = (k: string, label: string, keys: string) => (
+              <Button key={`key-${k}`} plain hotkey={k} onPress={control(name, { action: 'keys', keys })}>{label}</Button>
+            )
+            const dg = ss.digest
+            return (
+              <Box flexDirection="column">
+                <Text dimColor wrap="truncate-end">
+                  {ss.host === 'tmux' ? `tmux attach -t ${ss.handle}` : `orca ${ss.handle}`} · {ss.worktree} · {ss.branch}
+                </Text>
+                {live && (
+                  <Box flexDirection="row" gap={1}>
+                    <Text dimColor>keys</Text>
+                    {key('1', '1', '1')}{key('2', '2', '2')}{key('3', '3', '3')}{key('y', 'y', 'y')}{key('n', 'n', 'n')}
+                    {key('e', 'e ⏎', 'enter')}{key('z', 'z esc', 'escape')}{key('i', 'i ^C', 'interrupt')}
+                  </Box>
+                )}
+                <Box flexDirection="row" gap={1}>
+                  <Text dimColor>do</Text>
+                  <Button key="ctl-restart" plain hotkey="r" onPress={control(name, { action: 'restart' }, 'restart')}>
+                    {armedFor === 'restart' ? 'r again to restart' : 'r restart'}
+                  </Button>
+                  {live && <Button key="ctl-stop" plain hotkey="x" onPress={control(name, { action: 'stop' }, 'stop')}>
+                    {armedFor === 'stop' ? 'x again to stop' : 'x stop'}
+                  </Button>}
+                </Box>
+                {armedFor !== undefined && <Text color="warning">Press {armedFor === 'restart' ? 'r' : 'x'} again within {ARM_MS / 1000}s to {armedFor} {name}.</Text>}
+                {dg !== undefined && dg.actions.length > 0 && <Text wrap="truncate-end"><Text dimColor>did    </Text>{dg.actions.join(' → ')}</Text>}
+                {dg?.at !== undefined && <Text dimColor>active {ago(t - dg.at)} ago{dg.turnDone !== undefined ? ' · turn ended' : ''}</Text>}
+                {dg?.lastWords !== undefined && <Text wrap="truncate-end"><Text dimColor>said   </Text>{dg.lastWords.replace(/\s+/g, ' ').slice(-160)}</Text>}
+                {ss.screenText !== undefined && ss.screenText.trim() !== '' && <Text bold>Screen</Text>}
+                {ss.screenText !== undefined && ss.screenText.trim() !== '' && (
+                  ss.screenText.trimEnd().split('\n').slice(-Math.max(3, Math.min(12, rows - 22))).map((l, i) => (
+                    <Text key={`scr-${i}`} dimColor wrap="truncate-end">{l || ' '}</Text>
+                  ))
+                )}
+              </Box>
+            )
+          })()}
           {act?.handoffNotifiedAt !== undefined && <Text color="warning">
             Handoff: told {ago(t - act.handoffNotifiedAt)} ago{act.handoffPercent === undefined ? '' : ` at ${act.handoffPercent}%`}, {act.remindersSent ?? 0} reminders
           </Text>}
@@ -2881,7 +3047,8 @@ export const register: Register = (on, options) => {
     // Full cards if all fit, else the crowded tree (compact rows, folded but for the highlight's
     // path) in a window that follows the highlight.
     const prRows = prs.length > 0 ? 1 + Math.min(prs.length, 5) : 0
-    const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0)
+    const usageRows = rows >= 20 ? Math.min(4, limits.length) : 0
+    const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0)
     const wide = treeItems(list, fold, cur ?? first, false, acts)
     const fullTree = (wide.items.length + 1) * CARD_ROWS <= avail
     const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
@@ -2936,12 +3103,14 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column" borderStyle="round" paddingX={1}>
             <Text bold>{ROOT_GLYPH} main <Text dimColor> super manager</Text></Text>
             {meter(mainU, false, mainTime)}
+            {limits.slice(0, usageRows).map(limitLine)}
           </Box>
         ) : (
           <Text bold>{ROOT_GLYPH} main <Text dimColor>· super manager</Text>
             {mainU !== undefined && <Text color={meterColor(mainU.percent, warnOf(mainU.window))}> {mainU.percent}%</Text>}
           </Text>
         )}
+        {!rootFull && limits.slice(0, usageRows).map(limitLine)}
         {list.length === 0 && <Text dimColor>  Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
         {view.top > 0 && <Text dimColor>  ↑ {view.top} above</Text>}
         {view.rows.map(({ a, depth, kids, collapsed }) => card(

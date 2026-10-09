@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.20] - 2026-10-10
+
+### Added
+
+- Digest of a worker in another harness, from the harness's own log (`digest` in a harness spec;
+  built in for codex, from its rollout file in `~/.codex/sessions`, and for claude, from its
+  transcript): its last three actions, its last words and its context fill, on its card, in its
+  detail view and in the idle notice to its manager.
+- A turn that the harness's log says ended, with no report 15 s later, makes the worker idle at
+  once, ahead of the 90 s quiet-screen rule.
+- Controls in a session's detail view, run without a model turn: keys `1` `2` `3` `y` `n`, `e`
+  Enter, `z` Esc, `i` Ctrl-C; `r` restart and `x` stop on a second press within 5 s. The view
+  also shows where it runs and the last lines of its screen.
+- Quota meters on the root card: Claude's windows (`$.session.usage()`) and Codex's (its logs),
+  the share left, the reset, and when the current pace runs it out.
+
 ## [0.3.19] - 2026-10-09
 
 ### Added

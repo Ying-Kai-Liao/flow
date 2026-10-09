@@ -1,3 +1,21 @@
+// Where a harness logs what it does: Codex's rollout files, or a Claude Code transcript.
+export type DigestKind = 'codex-rollout' | 'claude-transcript'
+
+// What a worker in another harness last did, read from the harness's own log.
+export type Digest = {
+  // The last three tool calls, oldest first: "exec: npm test", "Edit: src/app.ts".
+  actions: string[]
+  lastWords?: string
+  // When the log last moved, and when its last turn ended (only while no newer turn started).
+  at?: number
+  turnDone?: number
+  tokens?: number
+  window?: number
+}
+
+// One quota window as the pane draws it: how much is used, when it resets, how long it is.
+export type Limit = { tool: string; label: string; used: number; resetsAt?: number; windowMs?: number }
+
 // One agent of this session as the board shows it: the roster row from
 // $.agent.list(), plus what the mod saw it do.
 export type AgentRow = {
@@ -19,7 +37,7 @@ export type Activity = {
   // The last turn's final text: a worker's report, or the question it ended on.
   answer?: string
   // The latest turn.step's context fill; absent until the agent has taken one.
-  usage?: { tokens: number; model: string }
+  usage?: { tokens: number; model: string; window?: number }
   // When the roster first saw the agent ended; its running time stops there.
   endedAt?: number
   // When the plugin told this agent to hand off; once per agent.
@@ -137,6 +155,15 @@ export type Session = {
   screen?: string
   screenAt?: number
   lookedAt?: number
+  // The last screen itself (its last lines), for the pane.
+  screenText?: string
+  // The quiet spell already told to the manager as idle: "turn:<ended at>" or "quiet:<since>".
+  idleKey?: string
+  // Where the harness logs what it does, the file found for this session, and what it said.
+  digestKind?: DigestKind
+  digestFile?: string
+  digestSeen?: number
+  digest?: Digest
 }
 
 export type LogEvent = {
@@ -172,6 +199,10 @@ declare module 'claude-code' {
       handoffs: Record<string, HandoffRecord>
       leftovers: Leftovers
       sessions: Record<string, Session>
+      // Quota windows of the harnesses flow can read (Codex's own logs), for the pane.
+      harnessLimits: Limit[]
+      // A control pressed once that needs a second press: "<session>:<action>", and when.
+      armed: { key: string; at: number } | null
     }
   }
 }

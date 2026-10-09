@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "description": "The orca-flow pattern in one Claude Code session: a super manager starts managers, managers start workers in their own git worktrees, a merge queue merges and deploys; a Flow pane shows the tree",
   "author": {
     "name": "Ying-Kai Liao"
@@ -146,7 +146,7 @@
     "harnesses": {
       "type": "string",
       "title": "Harnesses",
-      "description": "JSON object of harness name to a start command line, or to {start, resume?, program?, quota?}, over the built-ins, e.g. {\"aider\": {\"start\": \"aider --yes-always --message-file {prompt_file}\", \"resume\": \"aider --restore-chat-history\"}}. {prompt} is the prompt as one shell word, {prompt_file} its path; quota is a shell command printing a percent left; \"\" removes a built-in.",
+      "description": "JSON object of harness name to a start command line, or to {start, resume?, program?, quota?, digest?}, over the built-ins, e.g. {\"aider\": {\"start\": \"aider --yes-always --message-file {prompt_file}\", \"resume\": \"aider --restore-chat-history\"}}. {prompt} is the prompt as one shell word, {prompt_file} its path; quota is a shell command printing a percent left; digest is codex-rollout or claude-transcript; \"\" removes a built-in.",
       "default": ""
     },
     "min_quota": {

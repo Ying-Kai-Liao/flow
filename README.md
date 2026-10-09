@@ -164,9 +164,13 @@ built-in.
   - The report file: the worker writes `<git-common-dir>/flow/sessions/<name>/report.md`
     (rewritten each time); a new one, settled for 2 s, goes to the manager as a `flow session:`
     message, the way an agent's report wakes it.
+  - The harness's own log, when it has one (`digest`): Codex's rollout file in `~/.codex/sessions`
+    (found by its `cwd`), Claude's transcript in `~/.claude/projects/<worktree path>`. Its last
+    three tool calls, last words and context fill go on the card and the meter (Codex's own
+    window size), and a turn that ended 15 s ago with no new report makes it idle at once.
   - The screen, every 10 s: unchanged for 90 s with no new report, the manager is told once that
-    it is idle, with the screen, since it may be on a question, a permission prompt or a menu.
-    It answers with `send` or `keys`; a change on screen makes it running again.
+    it is idle, with the screen and its last words, since it may be on a question, a permission
+    prompt or a menu. It answers with `send` or `keys`; a change on screen makes it running again.
   - The terminal, every 30 s: closed, or back at its shell, without a new report, the manager is
     told once with the last lines, and can `restart` it.
 - **Harnesses.** A harness is a start line plus what flow can't find out by itself:
@@ -177,6 +181,7 @@ built-in.
   | `resume` | the command line that continues its last conversation in the worktree, for `restart` |
   | `program` | what must be on PATH; default the first word of `start` |
   | `quota` | `codex-logs` (Codex's own rate-limit logs), or a shell command printing the percent left |
+  | `digest` | `codex-rollout` or `claude-transcript`: where its log of what it did is (built in for codex and claude) |
 
   Built in, each set to run unattended so it can push and open its PR:
 
@@ -197,8 +202,20 @@ built-in.
 - **What it reads.** The prompt (`…/sessions/<name>/prompt.md`) is a short preamble, the usual
   worker rules, then the brief. The preamble says: no flow tools, the report is a file, answers
   arrive typed into this terminal.
-- **In the pane** it is a worker card under its manager (yellow while idle); the plans, `status`,
-  `/flow resume` and the cleanup treat a live session's branch and worktree as owned.
+- **In the pane** it is a worker card under its manager (yellow while idle), showing its newest
+  action and its context meter. Its detail view has:
+  - where it runs (`tmux attach -t …` or the Orca handle), worktree and branch;
+  - keys you press there, sent to it without a model turn: `1` `2` `3` `y` `n`, `e` Enter, `z` Esc,
+    `i` Ctrl-C;
+  - `r` restart and `x` stop, each taking a second press within 5 s;
+  - `did` (its last three actions), `said` (its last words), when it was last active;
+  - the last lines of its screen.
+
+  The plans, `status`, `/flow resume` and the cleanup treat a live session's branch and worktree
+  as owned.
+- **Quota on the root card.** One line per window: Claude's own (`5h`, `week`, per model, from
+  this session) and Codex's (from its logs, under 6 h old), as the share left, coloured at 40% and
+  20%, when it resets, and `empty in …` when the pace so far runs it out before the reset.
 - **Limits.** No context meter and no handoff notice: it hands off by itself if it notices.
   Sessions live in this Claude Code session's memory: after a restart the terminals keep running,
   but their reports reach nobody; `/flow resume` picks up their branches like any other.
@@ -308,7 +325,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `cleanup` | `auto` | `/config`, file | `auto`: the plugin removes finished, clean worktrees and branches after each merge and when the queue ends (see Cleanup). `off`: only `/flow clean --yes` |
 | `worker_harness` | `agent` | `/config`, file | managers: `agent` starts `flow:worker` agents; a harness name (`codex`, …) starts every worker in a terminal instead (see Workers in other harnesses) |
 | `session_host` | `auto` | `/config`, file | where session workers run: `auto` (Orca when it runs, else tmux), `orca`, `tmux` |
-| `harnesses` | the four built-ins | `/config` (JSON string), file | harness name to a start line or `{start, resume?, program?, quota?}`, over the built-ins; `""` removes one |
+| `harnesses` | the four built-ins | `/config` (JSON string), file | harness name to a start line or `{start, resume?, program?, quota?, digest?}`, over the built-ins; `""` removes one |
 | `min_quota` | 10 | `/config`, file | a session worker whose harness has a `quota` is refused below this percent left; 0 = never |
 | `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 
