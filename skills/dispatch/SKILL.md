@@ -96,6 +96,16 @@ carrying the branch, PR number and URL, the PR description and any worktree path
 instructions name an owner and its notes, the prompt says to read those notes first. Do not
 start workers for it yourself.
 
+## Cleanup
+
+Merged workers' worktrees and local branches are removed by the plugin's sweep (setting
+`cleanup`, default `auto`) and by managers and the queue after each merge. You sweep what's
+left: when all managers are finished, or when the user asks about leftovers or cleanup, run
+`mcp__flow__clean` (a dry run) and show the user what it lists. With `cleanup: auto` you may
+then apply the safe sweep yourself (`apply: true`); the user can also run `/flow clean --yes`.
+Anything it keeps (uncommitted, unpushed, locked or live work) goes in front of the user to
+decide; never delete it.
+
 ## Small changes
 
 For a change the user wants right now with no fan-out, you may start a single
