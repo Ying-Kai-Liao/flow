@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "The orca-flow pattern in one Claude Code session: a super manager starts managers, managers start workers in their own git worktrees, a merge queue merges and deploys; a Flow pane shows the tree",
   "author": {
     "name": "Ying-Kai Liao"
@@ -89,6 +89,12 @@
       "title": "Main checkout: still writable",
       "description": "Comma-separated paths relative to the repo root that stay writable in the main checkout; one ending in / covers a directory.",
       "default": ".claude/"
+    },
+    "max_continues": {
+      "type": "number",
+      "title": "Max continues",
+      "description": "After a branch has handed off this many times, the owning manager is told the package is too big and should be split. It only warns.",
+      "default": 2
     },
     "worker_model": {
       "type": "string",

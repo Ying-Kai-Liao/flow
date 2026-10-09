@@ -103,12 +103,22 @@ flow agents exist it gets one toast and log line per crossing (run `/compact`, o
 `/flow resume`), never an automatic compaction. A worker finishes
 its small step, commits everything as `WIP handoff: …`, pushes `flow/<name>`, opens or updates a
 draft PR, writes the note into the PR description under `## Handoff` (Done / Remaining /
-Decisions / Gotchas) and ends its report with `HANDOFF: <branch>`. Its manager checks the push,
-starts `<name>-2` on the same branch (`Continue on branch: flow/<name>`) with the original brief
-and the note, and removes the old worktree only if it is clean and fully pushed. A manager
-hands off the same way, but only when none of its workers is running; the main session starts
-`<name>-2` from its note. The note lives in the PR description and the report, never in a file
-on the branch.
+Decisions / Gotchas) and ends its report with `HANDOFF: <branch>`. On `HANDOFF: <branch>` the plugin writes a digest of the worker's transcript to
+`<state dir>/handoffs/<branch-slug>/<n>.md`, logs a `handoff` event and keeps a handoff record.
+Its manager checks the push and starts `<name>-2` on the same branch (`Continue on branch:
+flow/<x>`) with the original brief and the note; the plugin appends the digest (capped at 4k).
+Managers no longer remove worktrees on handoff.
+
+The continuation runs in the old worktree (the spawn is rewritten to the non-isolated
+`flow:continue` type with that cwd) when all four hold: the worktree is clean, it is at
+`origin/flow/<x>`, its old agent has ended, and no other spawn has claimed it (first spawn wins).
+Otherwise the worker gets a new worktree and the plugin removes the old one if it is clean and
+behind. The worker skips the checkout when it already stands on the branch.
+
+`max_continues` (default 2): once a branch has handed off more often than that, the owning manager
+gets a message to split the package. Nothing is refused. A manager hands off the same way, but only
+when none of its workers is running; the main session starts `<name>-2` from its note. The note
+lives in the PR description and the report, never in a file on the branch.
 
 **`/flow resume`.** After a restart the roster is empty but branches, PRs and
 `.claude/worktrees/` stay. `/flow resume` lists open `flow/*` PRs, pushed `flow/*` branches
@@ -164,6 +174,7 @@ worker to fix X".
 | `merge_queue` | on | off: managers merge themselves with `merge_method` |
 | `merge_method` | `squash` | managers, when there is no queue |
 | `max_managers` | 20 | managers the main session runs at a time |
+| `max_continues` | 2 | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `max_workers` | 3 | workers per manager at a time |
 | `test_slots` | 1 | how many heavy test runs may run at once across all agents (minimum 1) |
 | `worker_model` | `sonnet` | workers |
@@ -230,6 +241,7 @@ stops a tool call.
 <git-common-dir>/flow/
   handovers/<pr>.json      one file per handed-over PR, rewritten on every change
   log.jsonl                append-only event log
+  handoffs/<branch-slug>/<n>.md  transcript digest of a worker's n-th handoff
   managers/<key>/notes.md  a manager's notes
   config.json              not state: the settings loader's file, never touched by flow
 ```

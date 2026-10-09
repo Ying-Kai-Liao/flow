@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, EngineInterface, Register } from 'claude-code'
+import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover, LogEvent, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, Handover, HandoffRecord, LogEvent, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
 import {
@@ -13,7 +13,7 @@ import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
-import { noteKey, ownerFor } from './state'
+import { buildDigest, findWorktree, noteKey, ownerFor } from './state'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
@@ -25,6 +25,9 @@ const POLL_MS = 3000
 const LOG_MAX = 40
 const MANAGER = 'flow:manager'
 const WORKER = 'flow:worker'
+// A worker continued in its predecessor's worktree: the plugin rewrites a spawn to it, the model never picks it.
+const CONTINUE = 'flow:continue'
+const WORKERS = new Set([WORKER, CONTINUE])
 const QUEUE = 'flow:queue'
 const ENDED = new Set(['completed', 'failed', 'killed'])
 const LIVE = new Set(['pending', 'running', 'waiting'])
@@ -36,7 +39,7 @@ const GLYPH: Record<string, string> = {
 const COLOR: Record<string, string> = {
   running: 'suggestion', waiting: 'warning', idle: 'warning', completed: 'success', failed: 'error', killed: 'error',
 }
-const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [QUEUE]: 'queue' }
+const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [CONTINUE]: 'worker', [QUEUE]: 'queue' }
 const ROOT_GLYPH = '◆'
 const HANDOVER_GLYPH: Record<Handover['status'], string> = {
   pending: '…', taken: '●', done: '✓', returned: '↩',
@@ -56,6 +59,7 @@ const overrideView = atom({ plugin: 'flow', key: 'overrideView' } as const, unde
 const hinted = atom({ plugin: 'flow', key: 'hinted' } as const, false)
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
+const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
 const prCache = atom({ plugin: 'flow', key: 'prCache' } as const, { prs: [], fetchedAt: 0 } as PrCache)
@@ -417,7 +421,7 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 // The pane's context meter marks this percent; the rest of the settings go into the prompts.
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number } & Guards {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   return {
@@ -426,6 +430,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     handoff: options.handoff !== false,
     mainGuard: options.main_checkout_guard !== false,
     mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
+    maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
     base: str('base_branch', base),
     testCommand: str('test_command', ''),
     fullCheck: str('full_check_command', ''),
@@ -540,7 +545,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
 
   const hs = Object.values(await read($, handovers))
   const live = rows.filter(a => !ENDED.has(a.status))
-  const count = (type: string) => live.filter(a => a.type === type).length
+  const count = (type: string) => live.filter(a => a.type === type || (type === WORKER && WORKERS.has(a.type))).length
   const queued = hs.filter(h => h.status === 'pending' || h.status === 'taken').length
   const parts = [
     count(MANAGER) && `${count(MANAGER)} managers`,
@@ -736,7 +741,124 @@ async function ownerOf($: EngineInterface, id: string | undefined): Promise<stri
   return (await $.agent.list()).find(a => a.id === id)?.name ?? 'main'
 }
 
-const FLOW_TYPES = new Set(['flow:manager', 'flow:worker', 'flow:queue'])
+// A worker's HANDOFF: write the digest, log it, remember where its worktree is, and warn the owner when the
+// package keeps handing off. Best-effort throughout: a missing digest still leaves the record.
+async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, owner: string, maxContinues: number): Promise<void> {
+  const prior = (await readLog($)).filter(ev => ev.event === 'handoff' && ev.branch === branch)
+  // turn.complete can fire again for the same agent; count its handoff once.
+  if (prior.some(ev => ev.agent === me.name)) return
+  const count = prior.length + 1
+  let digestPath: string | undefined
+  await best($, 'writing a handoff digest', async () => {
+    const dir = await stateDir($)
+    if (dir === undefined) return
+    const msgs = await $.session.messages({ agentId: me.id })
+    if ('deny' in msgs) return
+    const path = `${dir}/handoffs/${branch.replaceAll('/', '-')}/${count}.md`
+    await $.process.run(['mkdir', '-p', path.slice(0, path.lastIndexOf('/'))])
+    await $.fs.write(path, buildDigest(msgs, branch, me.name ?? me.id))
+    digestPath = path
+  })
+  let wt: { path: string; head?: string } | undefined
+  await best($, 'finding the worktree', async () => {
+    const r = await $.process.run(['git', 'worktree', 'list', '--porcelain'])
+    if (r.exitCode === 0) wt = findWorktree(r.stdout, me.id, branch)
+  })
+  await appendLog($, { event: 'handoff', agent: me.name, owner, branch, text: digestPath })
+  const record: HandoffRecord = {
+    branch, agent: me.name ?? me.id, agentId: me.id, owner, at: await $.clock.now(), count,
+    ...(digestPath && { digestPath }), ...(wt && { worktree: wt.path, ...(wt.head && { head: wt.head }) }),
+  }
+  await update($, handoffs, hs => ({ ...hs, [branch]: record }))
+  if (count > maxContinues && me.parentId !== undefined) {
+    void $.ui.toast(`${branch} has handed off ${count} times: split it`)
+    await $.session.send({
+      to: { agentId: me.parentId },
+      text: `flow: ${branch} has handed off ${count} times (max_continues ${maxContinues}). The package is too big for one worker: split the Remaining part of its handoff note into smaller briefs instead of another plain continuation.`,
+    }).catch(() => undefined)
+  }
+}
+
+const FLOW_TYPES = new Set(['flow:manager', 'flow:worker', CONTINUE, 'flow:queue'])
+
+const DIGEST_MAX = 4000
+const CONTINUE_LINE = /^Continue on branch:\s*(flow\/\S+)\s*$/m
+
+const gitOut = async ($: EngineInterface, argv: string[]): Promise<string | undefined> => {
+  const r = await $.process.run(['git', ...argv])
+  return r.exitCode === 0 ? r.stdout.trim() : undefined
+}
+
+// A continuing worker's spawn: add the previous worker's digest, then either run it in the old worktree
+// (rewritten to flow:continue with that cwd) or in a new one, removing the old one when that is safe.
+// Best-effort: anything that fails leaves the spawn as the manager wrote it.
+async function prepareContinue($: EngineInterface, e: AgentSpawnInput): Promise<AgentSpawnInput> {
+  const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
+  if (branch === undefined) return e
+  const name = (e as { name?: string }).name ?? e.description
+  try {
+    const owner = await ownerOf($, e.parentAgentId)
+    let rec = (await read($, handoffs))[branch]
+    if (rec === undefined) {
+      const ev = (await readLog($)).filter(l => l.event === 'handoff' && l.branch === branch).pop()
+      if (ev !== undefined) {
+        const wl = await gitOut($, ['worktree', 'list', '--porcelain'])
+        const wt = wl === undefined ? undefined : findWorktree(wl, '', branch)
+        rec = {
+          branch, agent: ev.agent ?? '', agentId: '', owner: ev.owner, at: 0, count: 1,
+          ...(ev.text && { digestPath: ev.text }), ...(wt && { worktree: wt.path }),
+        }
+      }
+    }
+    // No handoff on record: a manual continuation, spawned as written.
+    if (rec === undefined) return e
+    const old = rec
+    let prompt = e.prompt
+    if (old.digestPath) {
+      const digest = await $.fs.read(old.digestPath).catch(() => undefined)
+      if (digest) prompt += `\n\n## Transcript digest of the previous worker (${old.digestPath})\n\n${digest.slice(0, DIGEST_MAX)}`
+    }
+    let where = 'new worktree'
+    let out: AgentSpawnInput = e
+    const path = old.worktree
+    if (path !== undefined && (await $.process.run(['test', '-d', path])).exitCode === 0) {
+      const live = (await $.agent.list()).some(a =>
+        (old.agentId !== '' ? a.id === old.agentId : a.name === old.agent) && (LIVE.has(a.status) || a.status === 'idle'))
+      const clean = (await gitOut($, ['-C', path, 'status', '--porcelain'])) === ''
+      await $.process.run(['git', 'fetch', 'origin', branch])
+      const pushed = await gitOut($, ['rev-parse', `origin/${branch}`])
+      const head = clean ? await gitOut($, ['-C', path, 'rev-parse', 'HEAD']) : undefined
+      let won = false
+      if (clean && !live && pushed !== undefined && head === pushed) {
+        // Claimed in the same update, so a second spawn for the branch does not get the worktree too.
+        await update($, handoffs, hs => {
+          const r = hs[branch] ?? old
+          if (r.takenBy !== undefined) return hs
+          won = true
+          return { ...hs, [branch]: { ...r, takenBy: name } }
+        })
+      }
+      if (won && pushed !== undefined) {
+        where = `same worktree ${path}`
+        prompt += `\n\nYou continue in the same worktree ${path}, on ${branch} at ${pushed.slice(0, 7)}: skip the branch checkout, check \`git status\` is clean, and go on.`
+        out = { ...e, subagentType: CONTINUE, cwd: path }
+      } else {
+        // Clean and fully pushed (at the head or behind it) and nobody uses it: the successor needs the branch free.
+        const behind = clean && pushed !== undefined
+          && (await $.process.run(['git', '-C', path, 'merge-base', '--is-ancestor', 'HEAD', `origin/${branch}`])).exitCode === 0
+        const removable = behind && !live && old.takenBy === undefined
+        if (!(removable && (await gitOut($, ['worktree', 'remove', path])) !== undefined)) {
+          prompt += `\n\nThe previous worker's worktree ${path} is kept, and ${branch} may be checked out there: if \`git checkout -B\` fails, work on a local branch and push \`HEAD:${branch}\`.`
+        }
+      }
+    }
+    await appendLog($, { event: 'continue', agent: name, owner, branch, text: where })
+    return { ...out, prompt }
+  } catch (err) {
+    await warn($, 'preparing a continuation', err)
+    return e
+  }
+}
 
 // Starts a merge queue unless one is live. The queue drains every pending handover, then ends;
 // the next handover, or a queue that ended with work left, starts a fresh one.
@@ -1143,6 +1265,12 @@ export const register: Register = (on, options) => {
       background: true,
     })
     await $.agent.register({
+      name: 'continue',
+      description: 'A flow worker that continues a handed-off branch in the same worktree. The plugin picks it when a flow:worker spawn says "Continue on branch:"; never start it yourself.',
+      prompt: fill(WORKER_PROMPT, settings),
+      background: true,
+    })
+    await $.agent.register({
       name: 'queue',
       description: 'The flow merge queue. Started by the plugin when a PR is handed over; never start it yourself.',
       prompt: fill(QUEUE_PROMPT, settings),
@@ -1323,6 +1451,9 @@ export const register: Register = (on, options) => {
     return { text: `Picking tasks${args ? ` from ${args}` : ''}.` }
   })
 
+  // The plugin starts flow:continue itself; the model is never offered it.
+  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: false }))
+
   on('agent.spawn', async ($, e, next) => {
     // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
     const plans = await read($, plan)
@@ -1335,7 +1466,8 @@ export const register: Register = (on, options) => {
         return { deny: `flow plan: ${node.id} waits on ${deps.join(', ')}. Start it when the plugin says it is ready.` }
       }
     }
-    const started = await next(e)
+    const spawn = e.subagentType === WORKER ? await prepareContinue($, e) : e
+    const started = await next(spawn)
     if (started.agentId !== undefined) {
       const t = await $.clock.now()
       const id = started.agentId
@@ -1675,7 +1807,7 @@ export const register: Register = (on, options) => {
         }
         if (settings.handoff && past && was?.handoffNotifiedAt === undefined) {
           const me = (await $.agent.list()).find(a => a.id === id)
-          if (me?.type === WORKER || me?.type === MANAGER) {
+          if ((me && WORKERS.has(me.type)) || me?.type === MANAGER) {
             await update($, activity, acts => {
               const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
               return { ...acts, [id]: { ...a, handoffNotifiedAt: t, handoffPercent: percent, remindedPercent: percent, callsPastLimit: 0, remindersSent: a.remindersSent ?? 0 } }
@@ -1709,6 +1841,12 @@ export const register: Register = (on, options) => {
           const last = e.answer.trim().split('\n').pop() ?? ''
           await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: last })
         })
+      }
+      // `HANDOFF: manager <name>` is a manager's own note, not a worker's branch.
+      const handedOff = /^HANDOFF:\s*(?!manager\b)(\S+)\s*$/.exec(e.answer.trim().split('\n').pop() ?? '')
+      if (me && WORKERS.has(me.type) && handedOff?.[1] !== undefined) {
+        const owner = rows.find(a => a.id === me.parentId)?.name ?? 'main'
+        await best($, 'recording a handoff', () => recordHandoff($, me, handedOff[1] as string, owner, settings.maxContinues))
       }
       if (me?.type === QUEUE) await ensureQueue($)
     }
