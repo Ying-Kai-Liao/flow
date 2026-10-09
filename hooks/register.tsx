@@ -70,9 +70,12 @@ const HANDOVER_GLYPH: Record<Handover['status'], string> = {
 const roster = atom({ plugin: 'flow', key: 'roster' } as const, [] as AgentRow[])
 const activity = atom({ plugin: 'flow', key: 'activity' } as const, {} as Record<string, Activity>)
 const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as string | null)
-// The highlighted card of the tree (an agent id), and the folds the person chose: true folds an
-// agent's children away, false keeps them out even when the tree is crowded. Absent = automatic.
+// The highlighted card of the tree (an agent id), and the collapse the person chose per card: true
+// is one row with its children hidden, false is expanded even when the tree is crowded. Absent =
+// the role's default (managers and the queue collapsed), else automatic. MERGE_QUEUE_KEY is the
+// Merge queue section's entry.
 const cursor = atom({ plugin: 'flow', key: 'cursor' } as const, null as string | null)
+const MERGE_QUEUE_KEY = '#merge-queue'
 const folded = atom({ plugin: 'flow', key: 'folded' } as const, {} as Record<string, boolean>)
 // Following the chat view: the view (an agent id, null for main) in which the person last acted in
 // the pane. While the view differs from it, the pane shows the viewed agent; written by handlers only.
@@ -256,9 +259,13 @@ function slotLine(state: TestSlots, limit: number, t: number): string {
 
 export type TreeItem = { a: AgentRow; depth: number; kids: number; collapsed: boolean }
 
-// The rows of the tree in the order they are drawn and walked. `auto` folds every agent with
-// children except the ones on the way to the highlight (a crowded tree); a fold the person chose
-// wins over it. `at` is the highlight, moved up to the nearest row that is drawn.
+// Managers and the merge queue start collapsed; everything else has no default.
+export const foldDefault = (a: AgentRow): boolean | undefined => (a.type === MANAGER || a.type === QUEUE ? true : undefined)
+
+// The rows of the tree in the order they are drawn and walked. A collapsed agent is one row with
+// its children hidden: the person's choice wins, then the role's default, then `auto`, which folds
+// every agent with children except the ones on the way to the highlight (a crowded tree).
+// `at` is the highlight, moved up to the nearest row that is drawn.
 export function treeItems(
   list: AgentRow[], fold: Record<string, boolean>, cur: string | null | undefined, auto: boolean,
   acts: Record<string, Activity> = {},
@@ -272,7 +279,7 @@ export function treeItems(
   const items: TreeItem[] = []
   const walk = (a: AgentRow, depth: number) => {
     const under = kids(a.id)
-    const collapsed = under.length > 0 && (fold[a.id] ?? (auto && !path.has(a.id)))
+    const collapsed = fold[a.id] ?? foldDefault(a) ?? (under.length > 0 && auto && !path.has(a.id))
     items.push({ a, depth, kids: under.length, collapsed })
     if (!collapsed) for (const c of under) walk(c, depth + 1)
   }
@@ -3148,7 +3155,14 @@ export const register: Register = (on, options) => {
         void $.ui.toast(`To see its chat: ← then pick ${a === undefined ? 'it' : labelOf(a)}`)
       }
     }
-    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, chev = '') => {
+    // Flips a card from what is drawn now; the choice is read fresh so rapid presses each count once.
+    const toggleFold = async (a: AgentRow, shown: boolean) => {
+      await acted()
+      await update($, folded, f => ({ ...f, [a.id]: !(f[a.id] ?? foldDefault(a) ?? shown) }))
+    }
+    const asksOf = (x: AgentRow) => asksQuestion(acts[x.id]?.answer, settings.decisionPhrases) && !['running', 'pending'].includes(x.status)
+    // `collapsed` undefined draws no chevron (the detail view's cards).
+    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, collapsed?: boolean) => {
       const act = acts[a.id]
       const hand = handoffOf(a, act)
       const dim = ENDED.has(a.status) && hand?.kind !== 'done'
@@ -3156,11 +3170,19 @@ export const register: Register = (on, options) => {
       const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
+      // What a collapsed card hides that needs a person.
+      const hidden = (id: string): AgentRow[] => list.filter(c => c.parentId === id).flatMap(c => [c, ...hidden(c.id)])
+      const below = collapsed ? hidden(a.id) : []
+      const nAsk = below.filter(asksOf).length
+      const nHand = below.filter(c => handoffOf(c, acts[c.id])?.kind === 'wrapping').length
       const head = <Text>
-        {chev}<Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold inverse={hot}>{labelOf(a)}</Text>
+        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold inverse={hot}>{labelOf(a)}</Text>
         {under > 0 && <Text dimColor> (+{under})</Text>}
         <Text dimColor>  {ROLE[a.type] ?? a.type}</Text>
         {hand?.kind === 'wrapping' && <Text bold color="warning">  handoff</Text>}
+        {collapsed && asks && <Text color="warning"> asks</Text>}
+        {nAsk > 0 && <Text color="warning"> · {nAsk} asks</Text>}
+        {nHand > 0 && <Text color="warning"> · {nHand} handoff</Text>}
       </Text>
       // The description shows only while there is nothing done to show; the detail view has it.
       const second = hand !== undefined && !asks
@@ -3170,7 +3192,10 @@ export const register: Register = (on, options) => {
         : <Text dimColor>{a.description.slice(0, 60)}</Text>
       return (
         <Box key={`row-${a.id}`} paddingLeft={bordered ? depth * 2 : depth * 2 + 1}>
-          {full ? (
+          {collapsed !== undefined && (
+            <Button key={`fold-${a.id}`} plain dimColor={dim} onPress={() => toggleFold(a, collapsed)}>{collapsed ? '▸ ' : '▾ '}</Button>
+          )}
+          {full && !collapsed ? (
             // A Button holds Text only, so the border is drawn around it.
             <Box flexDirection="column" borderStyle={bordered ? 'round' : undefined} borderDimColor={dim} paddingX={bordered ? 1 : 0}>
               <Button key={a.id} plain dimColor={dim} onPress={() => open(a.id)}>
@@ -3363,11 +3388,12 @@ export const register: Register = (on, options) => {
     // Header, the PR lines and the hint row are fixed; the root and the agents share what is left.
     // Full cards if all fit, else the crowded tree (compact rows, folded but for the highlight's
     // path) in a window that follows the highlight.
-    const prRows = prs.length > 0 ? 1 + Math.min(prs.length, 5) : 0
+    const queueOpen = fold[MERGE_QUEUE_KEY] === false
+    const prRows = prs.length > 0 ? 1 + (queueOpen ? Math.min(prs.length, 5) : 0) : 0
     const usageRows = rows >= 20 ? Math.min(4, limits.length) : 0
     const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows
     const wide = treeItems(list, fold, cur ?? first, false, acts)
-    const fullTree = (wide.items.length + 1) * CARD_ROWS <= avail
+    const fullTree = CARD_ROWS + wide.items.reduce((n, i) => n + (i.collapsed ? 1 : CARD_ROWS), 0) <= avail
     const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
     const rootFull = fullTree || avail >= CARD_ROWS + items.length
     const left = avail - (rootFull ? CARD_ROWS : 1)
@@ -3377,6 +3403,14 @@ export const register: Register = (on, options) => {
     const view = cut ? viewOf(items, hotIdx, Math.max(1, left - 2)) : { top: 0, rows: items }
     const below = items.length - view.top - view.rows.length
     const hotId = items[hotIdx]?.a.id
+    const countOf = (s: Handover['status']) => prs.filter(p => p.status === s).length
+    const returned = countOf('returned')
+    const awaiting = countOf('awaiting')
+    const queueSummary = (['pending', 'taken', 'done'] as const).map(s => `${countOf(s)} ${s}`).join(' · ')
+    const toggleQueue = async () => {
+      await acted()
+      await update($, folded, f => ({ ...f, [MERGE_QUEUE_KEY]: f[MERGE_QUEUE_KEY] === false }))
+    }
 
     // Keys read the state fresh, so rapid presses each count once.
     const step = (d: number) => async () => {
@@ -3436,7 +3470,7 @@ export const register: Register = (on, options) => {
         {list.length === 0 && <Text dimColor>  Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
         {view.top > 0 && <Text dimColor>  ↑ {view.top} above</Text>}
         {view.rows.map(({ a, depth, kids, collapsed }) => card(
-          a, depth + 1, fullTree, depth === 0, a.id === hotId, kids > 0 ? (collapsed ? '▸ ' : '▾ ') : '',
+          a, depth + 1, fullTree, depth === 0, a.id === hotId, collapsed,
         ))}
         {below > 0 && <Text dimColor>  +{below} more</Text>}
         {list.length > 0 && (
@@ -3445,15 +3479,23 @@ export const register: Register = (on, options) => {
             <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>
             <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>
             <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
-              await acted()
               const i = await hotItem()
-              if (i && i.kids > 0) await update($, folded, f => ({ ...f, [i.a.id]: !i.collapsed }))
-            }}>c fold</Button>
+              if (i) await toggleFold(i.a, i.collapsed)
+            }}>{items[hotIdx]?.collapsed ? 'c expand' : 'c collapse'}</Button>
+            {prs.length > 0 && <Button key="nav-queue" plain dimColor hotkey="q" onPress={toggleQueue}>q queue</Button>}
             {toggle}
           </Box>
         )}
-        {prs.length > 0 && <Text bold>  Merge queue</Text>}
-        {prs.slice(0, 5).map(ho => (
+        {prs.length > 0 && (
+          <Box flexDirection="row">
+            <Button key={`fold-${MERGE_QUEUE_KEY}`} plain dimColor onPress={toggleQueue}>{queueOpen ? '  ▾ ' : '  ▸ '}</Button>
+            <Text bold>Merge queue</Text>
+            {!queueOpen && <Text dimColor>  {queueSummary}</Text>}
+            {!queueOpen && awaiting > 0 && <Text color="warning"> · {awaiting} awaiting approval</Text>}
+            {!queueOpen && returned > 0 && <Text color="warning"> · {returned} returned</Text>}
+          </Box>
+        )}
+        {queueOpen && prs.slice(0, 5).map(ho => (
           <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} color={ho.status === 'awaiting' ? 'warning' : undefined} wrap="truncate-end">
             {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}` : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
           </Text>

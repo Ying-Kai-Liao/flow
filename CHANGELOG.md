@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.25] - 2026-10-10
+
+### Added
+
+- Collapsible cards in the Flow pane: `c` collapses or expands the highlighted card, and the
+  chevron (clicking elsewhere on the card still opens it) does the same. Managers and the merge
+  queue start collapsed to one line, with asks, handoff and awaiting-approval warnings summed for
+  hidden workers; workers start expanded. `q` toggles the Merge queue section. Choices stick
+  while the pane is open.
+
 ## [0.3.24] - 2026-10-10
 
 ### Added
