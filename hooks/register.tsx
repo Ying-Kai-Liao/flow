@@ -158,9 +158,15 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     // The base branch: the option, else the remote's default branch, else main.
+    // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
     try {
-      const head = await $.process.run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-      if (head.exitCode === 0) settings = settingsOf(options, head.stdout.trim().replace(/^origin\//, '') || 'main')
+      const local = await $.process.run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+      let base = local.exitCode === 0 ? local.stdout.trim().replace(/^origin\//, '') : ''
+      if (base === '') {
+        const remote = await $.process.run(['git', 'ls-remote', '--symref', 'origin', 'HEAD'], { timeoutMs: 10_000 })
+        base = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(remote.stdout)?.[1] ?? ''
+      }
+      if (base !== '') settings = settingsOf(options, base)
     } catch {
       // Not a git repo, or no remote: keep "main".
     }

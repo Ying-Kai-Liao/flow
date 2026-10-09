@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-09
+
+### Fixed
+
+- Managers name workers `<manager>-<package>`, so a worker never shares its manager's name and
+  messages reach the right agent (a manager and its worker were both named `changelog`).
+- The base branch is found on a fresh clone with no `origin/HEAD`, by asking the remote.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
