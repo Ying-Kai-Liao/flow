@@ -26,7 +26,7 @@ const GLYPH: Record<string, string> = {
   pending: '○', running: '●', waiting: '◐', idle: '◌', completed: '✓', failed: '✗', killed: '■',
 }
 const COLOR: Record<string, string> = {
-  running: 'cyan', waiting: 'yellow', idle: 'yellow', completed: 'green', failed: 'red', killed: 'red',
+  running: 'suggestion', waiting: 'warning', idle: 'warning', completed: 'success', failed: 'error', killed: 'error',
 }
 const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [QUEUE]: 'queue' }
 const ROOT_GLYPH = '◆'
@@ -46,8 +46,37 @@ function describeCall(e: Record<string, unknown>): string {
   const tool = String(e.tool ?? '?').replace(/^mcp__flow__/, '')
   const arg = [e.file_path, e.command, e.pattern, e.path, e.url, e.description, e.action, e.prompt]
     .find(v => typeof v === 'string' && v.length > 0) as string | undefined
-  const short = arg === undefined ? '' : ' ' + arg.replace(/\s+/g, ' ').slice(0, 90)
+  // A command is its first line, cut at a heredoc: its body is code, not news.
+  const text = arg === undefined ? '' : (e.command === arg ? arg.split('\n')[0]!.replace(/<<.*$/, '') : arg)
+  const short = text === '' ? '' : ' ' + text.replace(/\s+/g, ' ').trim().slice(0, 90)
   return tool + short
+}
+
+const base = (path: unknown): string => String(path ?? '').split('/').pop() ?? ''
+
+// What a call is, in a few plain words for a card: never a command's body or a prompt.
+export function summarizeCall(e: Record<string, unknown>): string {
+  const tool = String(e.tool ?? '?').replace(/^mcp__flow__/, '')
+  const file = base(e.file_path)
+  switch (tool) {
+    case 'Edit': case 'MultiEdit': case 'NotebookEdit': return file ? `editing ${file}` : 'editing'
+    case 'Write': return file ? `writing ${file}` : 'writing'
+    case 'Read': return file ? `reading ${file}` : 'reading'
+    case 'Grep': case 'Glob': return 'searching'
+    case 'Agent': {
+      const role = String(e.subagent_type ?? e.subagentType ?? '').replace(/^flow:/, '')
+      const name = String(e.name ?? '')
+      return ['started', role === 'manager' || role === 'worker' ? role : 'agent', name].filter(Boolean).join(' ')
+    }
+    case 'Bash': {
+      const cmd = String(e.command ?? '').split('\n')[0]!.trim()
+      if (/\b(tsc|test|vitest|jest|pytest)\b/.test(cmd)) return 'running tests'
+      if (/^git\s+\S+/.test(cmd)) return 'git ' + cmd.split(/\s+/)[1]
+      if (/^gh\s+pr\b/.test(cmd)) return 'gh pr ' + (cmd.split(/\s+/)[2] ?? '')
+      return 'running a command'
+    }
+    default: return tool
+  }
 }
 
 function ago(ms: number): string {
@@ -68,7 +97,7 @@ function asksQuestion(answer: string | undefined): boolean {
 
 const DEFAULT_WINDOW = 200_000
 const METER_CELLS = 12
-const CARD_ROWS = 4
+const CARD_ROWS = 5
 const DANGER_PERCENT = 90
 
 // A subagent reports no window of its own: borrow the main session's when it runs the same
@@ -84,14 +113,15 @@ function tokensLabel(n: number): string {
 }
 
 // The bar with a marker cell at the warn threshold, so how close an agent is stays readable.
-function bar(percent: number, warn: number): string {
+function cells(percent: number, warn: number): { ch: string; kind: 'mark' | 'fill' | 'empty' }[] {
   const filled = Math.round(Math.min(100, percent) / 100 * METER_CELLS)
   const mark = Math.min(METER_CELLS - 1, Math.floor(warn / 100 * METER_CELLS))
-  return Array.from({ length: METER_CELLS }, (_, i) => i === mark ? '│' : i < filled ? '█' : '░').join('')
+  return Array.from({ length: METER_CELLS }, (_, i) =>
+    i === mark ? { ch: '│', kind: 'mark' } : i < filled ? { ch: '█', kind: 'fill' } : { ch: '░', kind: 'empty' })
 }
 
 function meterColor(percent: number, warn: number): string | undefined {
-  return percent >= DANGER_PERCENT && percent >= warn ? 'red' : percent >= warn ? 'yellow' : undefined
+  return percent >= DANGER_PERCENT && percent >= warn ? 'error' : percent >= warn ? 'warning' : undefined
 }
 
 function rank(status: string): number {
@@ -476,7 +506,7 @@ export const register: Register = (on, options) => {
       const line = describeCall(e as unknown as Record<string, unknown>)
       await update($, activity, acts => {
         const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
-        return { ...acts, [id]: { ...a, lastAt: t, log: [...a.log, line].slice(-LOG_MAX) } }
+        return { ...acts, [id]: { ...a, lastAt: t, doing: summarizeCall(e as unknown as Record<string, unknown>), log: [...a.log, line].slice(-LOG_MAX) } }
       })
     }
     return next(e)
@@ -608,6 +638,13 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // The pane paints with theme keys, which the engine resolves; a theme switch only needs a redraw.
+  on('config.set', { key: 'theme' }, async ($, e, next) => {
+    const r = await next(e)
+    try { $.ui.invalidate('ui.render') } catch { /* pane closed */ }
+    return r
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const [list, acts, pick, t, hs] = await Promise.all([
@@ -625,34 +662,46 @@ export const register: Register = (on, options) => {
       const window = windowOf(u.model, mainModel, mainWindow)
       return { percent: Math.round(u.tokens / window * 100), tokens: u.tokens, window }
     }
+    // Theme keys only: the filled part is legible on any background, the empty cells are 'inactive'
+    // rather than dim, and the colour turns at the warn and danger marks.
     const meter = (u: { percent: number; tokens: number; window: number } | undefined, dim: boolean) => u === undefined
       ? <Text dimColor>context ?</Text>
-      : <Text color={meterColor(u.percent, warn)} dimColor={dim}>{bar(u.percent, warn)} {u.percent}% · {tokensLabel(u.tokens)}/{tokensLabel(u.window)}</Text>
+      : <Text dimColor={dim}>
+        {cells(u.percent, warn).map((c, i) => (
+          <Text key={i} dimColor={dim} color={c.kind === 'empty' ? 'inactive' : c.kind === 'mark' ? 'text' : meterColor(u.percent, warn) ?? 'success'}>{c.ch}</Text>
+        ))}
+        <Text color={meterColor(u.percent, warn)} dimColor={dim}> {u.percent}% · {tokensLabel(u.tokens)}/{tokensLabel(u.window)}</Text>
+      </Text>
 
-    // One agent: a bordered card (two lines), or one compact row when the pane is short.
-    const card = (a: AgentRow, depth: number, full: boolean) => {
+    // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
+    // Only a top-level card has a border; deeper ones read as a tree by their indent.
+    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean) => {
       const act = acts[a.id]
       const dim = ENDED.has(a.status)
       const asks = asksQuestion(act?.answer) && !['running', 'pending'].includes(a.status)
-      const last = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.log[act.log.length - 1] ?? ''
+      const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
-      const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
+      const meta = [ROLE[a.type], act ? ago(t - act.lastAt) : ''].filter(Boolean).join(' · ')
       const head = <Text>
-        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold>{role}{labelOf(a)}</Text>
-        <Text dimColor> {act ? ago(t - act.lastAt) : ''}</Text> <Text color={asks ? 'yellow' : undefined} dimColor={!asks}>{last.slice(0, 70)}</Text>
+        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold>{labelOf(a)}</Text>
+        <Text dimColor>  {meta}</Text>
       </Text>
+      // The description shows only while there is nothing done to show; the detail view has it.
+      const second = doing !== undefined && doing !== ''
+        ? <Text color={asks ? 'warning' : undefined} dimColor={!asks}>{doing.slice(0, 60)}</Text>
+        : <Text dimColor>{a.description.slice(0, 60)}{under ? ` · ${under} under it` : ''}</Text>
       return (
-        <Box key={`row-${a.id}`} paddingLeft={depth * 2}>
+        <Box key={`row-${a.id}`} paddingLeft={bordered ? depth * 2 : depth * 2 + 1}>
           {full ? (
             // A Button holds Text only, so the border is drawn around it.
-            <Box flexDirection="column" borderStyle="round" borderDimColor={dim} paddingX={1}>
-              <Button key={a.id} dimColor={dim} onPress={() => update($, selected, () => a.id)}>
-                {head}{'\n'}{meter(u, dim)}<Text dimColor>  {a.description.slice(0, 60)}{under ? ` · ${under} under it` : ''}</Text>
+            <Box flexDirection="column" borderStyle={bordered ? 'round' : undefined} borderDimColor={dim} paddingX={bordered ? 1 : 0}>
+              <Button key={a.id} plain dimColor={dim} onPress={() => update($, selected, () => a.id)}>
+                {head}{'\n'}{second}{'\n'}{meter(u, dim)}
               </Button>
             </Box>
           ) : (
-            <Button key={a.id} dimColor={dim} onPress={() => update($, selected, () => a.id)}>
+            <Button key={a.id} plain dimColor={dim} onPress={() => update($, selected, () => a.id)}>
               {head}{u !== undefined && <Text color={meterColor(u.percent, warn)}> {u.percent}%</Text>}
             </Button>
           )}
@@ -683,11 +732,11 @@ export const register: Register = (on, options) => {
           </Text>
           <Text dimColor>{agent.description}</Text>
           {children.length > 0 && <Text bold>Under it</Text>}
-          {children.map(c => card(c, 0, fullChildren))}
+          {children.map(c => card(c, 0, fullChildren, true))}
           <Text bold>Activity</Text>
           {(act?.log ?? []).length === 0 && <Text dimColor>Nothing seen yet.</Text>}
           {(act?.log ?? []).slice(-room).map(line => <Text wrap="truncate-end">{line}</Text>)}
-          {answer !== '' && <Text bold color={asksQuestion(answer) ? 'yellow' : undefined}>
+          {answer !== '' && <Text bold color={asksQuestion(answer) ? 'warning' : undefined}>
             {asksQuestion(answer) ? 'Asks' : 'Last report'}
           </Text>}
           {answer !== '' && <Text>{answer.length > 1200 ? '…' + answer.slice(-1200) : answer}</Text>}
@@ -733,7 +782,7 @@ export const register: Register = (on, options) => {
           </Text>
         )}
         {list.length === 0 && <Text dimColor>  Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
-        {shown.map(({ a, depth }) => card(a, depth + 1, fullTree))}
+        {shown.map(({ a, depth }) => card(a, depth + 1, fullTree, depth === 0))}
         {shown.length < flat.length && <Text dimColor>  +{flat.length - shown.length} more</Text>}
         {prs.length > 0 && <Text bold>  Merge queue</Text>}
         {prs.slice(0, 5).map(h => (

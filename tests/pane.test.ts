@@ -140,13 +140,13 @@ test('a subagent meter comes from its turn.step; unknown usage shows no number',
   await ui.unmount()
 })
 
-test('the meter marks the threshold (default 40) and goes yellow at or past it', async ($, on) => {
+test('the meter marks the threshold (default 40) and goes warning-coloured at or past it', async ($, on) => {
   await setup($, on, 84_000)
   const ui = await mount($)
   // 12 cells: the marker sits at cell 4 (40%), 42% fills 5 cells.
   const meter = await ui.find({ type: 'Text', text: /█{4}│░{7} 42%/ })
   expect(meter).toBeDefined()
-  expect(JSON.stringify(meter)).toContain('yellow')
+  expect(JSON.stringify(meter)).toContain('"warning"')
   await ui.unmount()
 })
 
@@ -155,7 +155,7 @@ test('a configured threshold moves the marker and the colour', { options: { cont
   const ui = await mount($)
   const meter = await ui.find({ type: 'Text', text: /█{5}░{2}│░{4} 42%/ })
   expect(meter).toBeDefined()
-  expect(JSON.stringify(meter)).not.toContain('yellow')
+  expect(JSON.stringify(meter)).not.toContain('warning')
   await ui.unmount()
 })
 
@@ -230,4 +230,33 @@ test('a closed pane stays closed while agents run, until a new agent starts', as
   await $.agent.spawn({ prompt: 'brief', description: 'Fix it', subagentType: 'flow:worker' } as never)
   await clock.settle()
   expect(host.isOpen()).toBe(true)
+})
+
+const RAW = /"(yellow|red|green|cyan|gray|white)"/
+
+test('the pane paints with theme keys, in a light and a dark theme', async ($, on) => {
+  on('config.set', (_, e) => ({ value: e.value }))
+  await setup($, on, 95_000)
+  for (const theme of ['light', 'dark']) {
+    await $.config.set({ key: 'theme', value: theme } as never)
+    const ui = await mount($)
+    const meter = JSON.stringify(await ui.find({ type: 'Text', text: /47% · 95k/ }))
+    expect(meter).toContain('"error"')
+    const running = JSON.stringify(await ui.find({ type: 'Text', text: '●' }))
+    expect(running).toContain('"suggestion"')
+    const done = JSON.stringify(await ui.find({ type: 'Text', text: '✓' }))
+    expect(done).toContain('"success"')
+    for (const j of [meter, running, done]) expect(j).not.toMatch(RAW)
+    await ui.unmount()
+  }
+})
+
+test('a theme change redraws the pane and leaves the value alone', async ($, on) => {
+  on('config.set', (_, e) => ({ value: e.value }))
+  await setup($, on, 84_000)
+  const ui = await mount($)
+  await $.config.set({ key: 'theme', value: 'light' } as never)
+  expect(await ui.find({ type: 'Text', text: /42% · 84k\/200k/ })).toBeDefined()
+  await ui.unmount()
+  await $.config.set({ key: 'theme', value: 'dark' } as never)
 })
