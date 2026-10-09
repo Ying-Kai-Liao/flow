@@ -10,7 +10,7 @@ import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Graph, Notice, Plan } from './dag'
 import {
-  addQuestions, answerMessage, askingNames, EMPTY_INBOX, inboxHead, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
 } from './inbox'
 import {
   closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, FILE_HELP, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
@@ -859,16 +859,24 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
   if (needsMessage(q, isDefault)) {
     const asker = q.askerId === undefined ? undefined : (await $.agent.list()).find(a => a.id === q.askerId)
     delivered = false
-    if (asker !== undefined && (LIVE.has(asker.status) || asker.status === 'idle')) {
+    const alive = (a: AgentInfo | undefined): a is AgentInfo => a !== undefined && (LIVE.has(a.status) || a.status === 'idle')
+    if (alive(asker)) {
       delivered = await $.session.send({ to: { agentId: asker.id }, text: answerMessage(q, answer, by, isDefault) })
         .then(() => true, () => false)
+    } else if (isFyi(q) && q.addressee !== 'main') {
+      // A finished owner cannot act on an overturn: its manager (the notes owner) gets it, naming the owner.
+      const mgr = (await $.agent.list()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && alive(a))
+      if (mgr !== undefined) {
+        delivered = await $.session.send({ to: { agentId: mgr.id }, text: `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s FYI; ${q.owner} is no longer running, so act on it yourself or with a new worker.)` })
+          .then(() => true, () => false)
+      }
     }
     if (!delivered) hint = `; ${q.owner} is gone: main should relay it to ${noteKey(q.owner)}-2`
   }
   await withInbox($, cur => ({
     inbox: { ...cur, items: cur.items.map(x => (x.id === id ? { ...x, delivered } : x)) }, out: undefined,
   }))
-  await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${q.question}: ${answer}"`)
+  if (!(isFyi(q) && isDefault)) await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${q.question}: ${isFyi(q) ? `overturned, ${answer}` : answer}"`)
   return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.`
 }
 
@@ -2484,6 +2492,33 @@ export const register: Register = (on, options) => {
       isDeferred: false,
     })
     await $.tool.register({
+      name: 'fyi',
+      description: 'Record a decision you took yourself on a reversible choice (a threshold, wording, a name, a default, styling within the existing design) as a non-blocking FYI: "I decided X because Y; say if wrong". ' +
+        'A worker\'s FYIs go to its manager, a manager\'s to main. Never stop for it: carry on. You get a message only if it is overturned; then change your work. ' +
+        'Irreversible or product-defining choices (what customers pay for, who receives data, deleting data) are asks, not FYIs. Main cannot call it.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          from: { type: 'string', description: 'Your agent name' },
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                decision: { type: 'string', description: 'What you decided' },
+                why: { type: 'string', description: 'Why that is the conservative choice' },
+                alternative: { type: 'string', description: 'Optional: what you would otherwise have done' },
+                topic: { type: 'string', description: 'Optional short kebab-case label' },
+              },
+              required: ['decision', 'why'],
+            },
+          },
+        },
+        required: ['from', 'items'],
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
       name: 'preflight',
       description: 'Managers only. File your pre-flight after looking over your task (read the code, the history and open PRs; no workers yet): the plugin refuses your worker starts until you have, ' +
         'and, if you ask blocking questions, until they are answered. Main gets one combined round from all managers started together. ' +
@@ -2526,6 +2561,7 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'answer',
       description: 'Answer questions addressed to you in the decision inbox: a manager answers its workers\' asks, main answers the managers\'. ' +
+        'FYIs (mcp__flow__fyi) are answered the same way: the choice Keep, or defaults: true, acknowledges; any other choice or free text overturns and messages the owner. Main may answer any FYI. ' +
         'answers: [{id, choice}] (choice is an option\'s letter, number or text, or free text). defaults: true takes every default of your open questions, or only those in ids.',
       inputSchema: {
         type: 'object',
@@ -3212,6 +3248,26 @@ export const register: Register = (on, options) => {
     }
   })
 
+  on('tool.call', { tool: 'mcp__flow__fyi' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    if (e.agentId === undefined) return { result: 'Refused: main cannot record an FYI; just decide.' }
+    const parsed = parseFyi(input)
+    if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error}` }
+    const rows = await refresh($)
+    const me = rows.find(a => a.id === e.agentId)
+    const name = me?.name ?? (String(input.from ?? '').trim() || 'unknown')
+    const parent = me?.parentId === undefined ? undefined : rows.find(a => a.id === me.parentId)
+    const addressee = parent !== undefined && parent.type === MANAGER && parent.name !== undefined ? parent.name : 'main'
+    const at = await $.clock.now()
+    const added = await withInbox($, cur => {
+      const r = addQuestions(cur, { name, id: e.agentId, isManager: me?.type === MANAGER }, addressee, parsed.items.map(fyiAsked), at, 'fyi')
+      return { inbox: r.added.some(a => a.fresh) ? r.inbox : cur, out: r.added }
+    })
+    // Quiet by design: a log line, no message or toast.
+    await best($, 'logging an FYI', () => appendLog($, { event: 'fyi', owner: noteKey(name), agent: name, text: added.map(a => a.q.id).join(' ') }))
+    return { result: `Recorded ${added.map(a => a.q.id).join(', ')}. Carry on; you get a message only if it is overturned.` }
+  })
+
   on('tool.call', { tool: 'mcp__flow__preflight' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     if (e.agentId === undefined) return { result: 'Refused: main does not file a pre-flight; it answers the managers\' questions in the round it receives.' }
@@ -3283,7 +3339,7 @@ export const register: Register = (on, options) => {
     for (const [id, choice] of todo) {
       const before = always.has(id) ? (await read($, inbox)).items.find(x => x.id === id) : undefined
       lines.push(await answerQuestion($, id, choice, by))
-      if (always.has(id) && choice !== null) lines.push(await alwaysRule($, options, id, choice, e.agentId === undefined, before))
+      if (always.has(id) && choice !== null && before !== undefined && !isFyi(before)) lines.push(await alwaysRule($, options, id, choice, e.agentId === undefined, before))
     }
     return { result: lines.join('\n') }
   })
@@ -3565,9 +3621,10 @@ export const register: Register = (on, options) => {
       read($, cursor), read($, folded), currentUnhanded($), read($, leftovers),
     ])
     const leftover = leftoverLine(leftCounts)
-    const openQs = openAll(await read($, inbox)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
+    const openQs = openAll(await read($, inbox)).filter(q => !isFyi(q)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
     const askers = askingNames(await read($, inbox))
-    const inboxRows = openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)
+    const fyiCount = openAll(await read($, inbox)).filter(isFyi).length
+    const inboxRows = (openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)) + (fyiCount > 0 ? 1 : 0)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
     const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
@@ -3970,6 +4027,7 @@ export const register: Register = (on, options) => {
         ))}
         {openQs.length > 5 && <Text dimColor>and {openQs.length - 5} more</Text>}
         {openQs.length > 0 && <Text dimColor>/flow inbox to read, answer in the chat</Text>}
+        {fyiCount > 0 && <Text dimColor>{fyiCount} FYI (decided by agents; /flow inbox)</Text>}
         {unhanded.length > 0 && (
           <Text color="warning" wrap="truncate-end">
             ⚠ {unhanded.length} PR{unhanded.length > 1 ? 's' : ''} nobody handed over: {unhanded.map(u => `#${u.pr}`).join(' ')}

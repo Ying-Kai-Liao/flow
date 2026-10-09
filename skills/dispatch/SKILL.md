@@ -101,6 +101,12 @@ put them in front of the user.
   If the result says an answer was undelivered (the asker is gone), relay it to the successor
   (`<name>-2`) by SendMessage and `mcp__flow__note`. A manager report ending in "?" with no
   inbox entry is still a question: relay it as before, answering by SendMessage.
+- **FYIs** (`mcp__flow__fyi`) are decisions agents took themselves, shown under "FYI" in
+  `/flow inbox`. Put them in front of the user as a short skimmable list (id, owner, decision, why),
+  separate from the questions. When the user says fine, ack them in bulk with
+  `mcp__flow__answer {defaults: true, ids: [...]}` (main can ack any FYI by `ids`); overturn only what the
+  user names, with `answers: [{id, choice}]` (their words as the choice). The owner is messaged on an
+  overturn only.
 - **Standing answers.** When the user says so ("always", "from now on", "every time"), make that
   answer standing by passing `always: true` on it; never on your own initiative. When putting
   questions to the user, say if one looks recurring (same `topic` as before) and offer "always".

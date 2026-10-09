@@ -176,7 +176,7 @@ export type Session = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string
@@ -187,6 +187,8 @@ export type LogEvent = {
 
 export type Question = {
   id: string
+  // Absent: a question. 'fyi': a decision the agent took itself (question = the decision, context = why); non-blocking, overturnable.
+  kind?: 'question' | 'fyi'
   // The asking agent's name, and who answers: a worker's manager, or "main" for a manager.
   owner: string
   addressee: string

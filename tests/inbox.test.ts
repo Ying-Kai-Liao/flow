@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import {
-  addQuestions, answerMessage, askingNames, EMPTY_INBOX, inboxHead, markAnswered, needsMessage, normalizeInbox,
-  openAll, openFor, parseAsk, parseChoice, renderInbox,
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, markAnswered, needsMessage, normalizeInbox,
+  openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox,
 } from '../hooks/inbox'
 import type { AskedQuestion, Inbox } from '../hooks/inbox'
 
@@ -202,4 +202,77 @@ test('normalizeInbox turns garbage into an empty inbox and keeps ids moving', ()
   const inbox = store([ask('a'), ask('b')])
   expect(normalizeInbox(JSON.parse(JSON.stringify(inbox)))).toEqual(inbox)
   expect(normalizeInbox({ next: 1, items: inbox.items }).next).toBe(3)
+})
+
+// FYI items
+
+const fyiOf = (decision: string, asker = W, addressee = 'mgr', base: Inbox = EMPTY_INBOX) =>
+  addQuestions(base, asker, addressee, [fyiAsked({ decision, why: 'safer' })], 1000, 'fyi').inbox
+
+test('parseFyi checks the batch whole and keeps the optional fields', () => {
+  expect(parseFyi({ items: [{ decision: ' Use 30 s ', why: ' conservative ', alternative: '10 s', topic: 'timeout' }] }))
+    .toEqual({ items: [{ decision: 'Use 30 s', why: 'conservative', alternative: '10 s', topic: 'timeout' }] })
+  expect('error' in parseFyi({ items: [{ decision: 'a', why: 'b' }, { decision: 'c' }] })).toBe(true)
+  expect('error' in parseFyi({ items: [] })).toBe(true)
+})
+
+test('an FYI is stored non-blocking with Keep as default, and an identical open one dedupes', () => {
+  const a = fyiOf('Use 30 s')
+  const q = a.items[0]!
+  expect(q).toMatchObject({ id: 'q1', kind: 'fyi', blocking: false, options: ['Keep', 'Overturn'], default: 'Keep', question: 'Use 30 s', context: 'safer' })
+  const again = addQuestions(a, W, 'mgr', [fyiAsked({ decision: ' use 30  s ', why: 'x' })], 2000, 'fyi')
+  expect(again.added[0]!.fresh).toBe(false)
+  expect(again.inbox.items.length).toBe(1)
+  // a question with the same text is not an FYI duplicate
+  expect(addQuestions(a, W, 'mgr', [ask('Use 30 s')], 2000).added[0]!.fresh).toBe(true)
+})
+
+test('old rows without kind read back as questions; kind fyi is kept', () => {
+  const raw = { next: 3, items: [
+    { id: 'q1', owner: 'w', addressee: 'm', question: 'Q', options: ['a', 'b'], default: 'a', blocking: false, askedAt: 1, state: 'open', delivered: false },
+    { id: 'q2', kind: 'fyi', owner: 'w', addressee: 'm', question: 'D', options: ['Keep', 'Overturn'], default: 'Keep', blocking: false, askedAt: 1, state: 'open', delivered: false },
+  ] }
+  const n = normalizeInbox(raw)
+  expect(n.items.map(x => x.kind)).toEqual([undefined, 'fyi'])
+})
+
+test('renderInbox puts FYIs in their own section after the questions; inboxHead counts them', () => {
+  const base = store([ask('Which db?')])
+  const box = fyiOf('Use 30 s', W, 'mgr', base)
+  const text = renderInbox(box, 2000)
+  expect(text.indexOf('Open questions: 1')).toBeLessThan(text.indexOf('FYI (decided'))
+  expect(text).toContain('q2 worker-1')
+  expect(text).toContain('Use 30 s - why: safer')
+  const head = inboxHead(box, 2000)
+  expect(head.filter(l => l.includes('FYI')).length).toBe(1)
+  expect(head.some(l => l.includes('q2'))).toBe(false)
+  const only = renderInbox(fyiOf('Use 30 s'), 2000)
+  expect(only.startsWith('No open questions.')).toBe(true)
+  expect(only).toContain('FYI (decided')
+})
+
+test('askingNames ignores FYIs', () => {
+  expect(askingNames(fyiOf('Use 30 s'))).toEqual([])
+})
+
+test('an FYI is acked by Keep (no message) and overturned by anything else (message)', () => {
+  const box = fyiOf('Use 30 s')
+  const ack = markAnswered(box, 'q1', null, 'mgr', 5000)
+  expect(ack.kind === 'ok' && needsMessage(ack.q, ack.isDefault)).toBe(false)
+  const keep = markAnswered(box, 'q1', 'keep', 'mgr', 5000)
+  expect(keep.kind === 'ok' && keep.isDefault).toBe(true)
+  const over = markAnswered(box, 'q1', 'use 60 s', 'mgr', 5000)
+  expect(over.kind).toBe('ok')
+  if (over.kind !== 'ok') return
+  expect(needsMessage(over.q, over.isDefault)).toBe(true)
+  expect(answerMessage(over.q, over.answer, 'mgr', over.isDefault)).toBe(
+    'flow: mgr overturned your FYI q1: you decided "Use 30 s". Instead: use 60 s. Change your work (on your branch / PR if it is still open) and say so in your report.')
+  expect(markAnswered(over.inbox, 'q1', null, 'mgr', 6000).kind).toBe('answered')
+})
+
+test('main may answer any FYI but not another addressee\'s question', () => {
+  const box = fyiOf('Use 30 s', W, 'mgr', store([ask('Which db?')]))
+  expect(markAnswered(box, 'q2', null, 'main', 5000).kind).toBe('ok')
+  expect(markAnswered(box, 'q1', null, 'main', 5000).kind).toBe('refused')
+  expect(markAnswered(box, 'q2', null, 'other-mgr', 5000).kind).toBe('refused')
 })

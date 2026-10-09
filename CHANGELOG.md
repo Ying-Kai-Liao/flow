@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.37] - 2026-10-10
+
+### Added
+
+- FYI inbox items: `mcp__flow__fyi` records "I decided X because Y; say if wrong" as a non-blocking inbox
+  item (`kind: "fyi"`). `mcp__flow__answer` acks it (Keep, or `defaults: true`) or overturns it, which
+  messages the owner (its manager if the owner is gone). Main may answer any FYI. `/flow inbox` lists
+  FYIs in their own section; status and the pane show a count. Worker and manager prompts now say to
+  pick the conservative option for reversible choices, record it as an FYI and continue.
+
 ## [0.3.36] - 2026-10-10
 
 ### Changed
