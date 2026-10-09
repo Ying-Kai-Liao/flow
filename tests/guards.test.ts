@@ -173,6 +173,14 @@ test('main_checkout_allow keeps files writable', { options: { main_checkout_allo
   expect(denied(await $.tool.call({ tool: 'Bash', command: 'cd docs && git commit -am x' } as never))).toBe(true)
 })
 
+test('cleanup from the main checkout is not refused: worktree remove, prune, branch -D', async ($, on) => {
+  repo(on)
+  for (const command of [`git worktree remove ${WT}`, 'git worktree prune', 'git branch -D flow/x', `git worktree unlock ${WT}`]) {
+    expect(writeTargets(command, ROOT)).toEqual([])
+    expect([command, (await $.tool.call({ tool: 'Bash', command } as never)).result]).toEqual([command, 'ran'])
+  }
+})
+
 test('main_checkout_guard off lets every write through', { options: { main_checkout_guard: false } }, async ($, on) => {
   repo(on)
   expect((await $.tool.call({ tool: 'Write', file_path: '/repo/README.md', content: 'x' } as never)).result).toBe('ran')

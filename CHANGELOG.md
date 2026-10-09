@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.17] - 2026-10-09
+
+### Added
+
+- Cleanup of finished work: `/flow clean` lists leftover worktrees under `.claude/worktrees/` and
+  local branches, what would be removed and what is kept for a person and why; `/flow clean --yes`
+  and the `clean` tool (`apply`) remove only clean work that is on the base or in a merged PR (by
+  head sha, so squash merges count), or pushed with its PR closed. Uncommitted, unpushed, locked
+  and live work is never touched. Removals are logged as `clean` events.
+- `cleanup` setting (`auto` default, `off`): with `auto` the safe sweep runs in the background after
+  each PR the queue marks done and when the queue ends.
+- The pane and `status` show one line while leftovers exist.
+
+### Changed
+
+- A handed-off worktree whose only untracked files are the `types` links counts as clean for the
+  continuation in place.
+
 ## [0.3.16] - 2026-10-09
 
 ### Added
