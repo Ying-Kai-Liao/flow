@@ -1,6 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { DagNode, Handover } from '../types'
 import { addNodes, agentFor, asksQuestion, describe, evaluate, layers, noticeText, settle } from '../hooks/dag'
+import { branchOwners } from '../hooks/state'
+import type { LogEvent } from '../types'
 import type { AgentFact, Facts, Graph, Plan } from '../hooks/dag'
 
 const EMPTY: Facts = { agents: [], handovers: [] }
@@ -226,4 +228,58 @@ test('layers and describe on a diamond', async () => {
     '- c: waiting | after: a (running)',
     '- d: waiting | after: b (waiting), c (waiting)',
   ])
+})
+
+test('an idle manager is done once its report is final, its handovers merged, no live workers and no planned work', async () => {
+  const g = build([{ id: 'ev' }, { id: 'next', after: ['ev'] }])
+  const merged = handover('flow/ev-worker', 'done', 5, { reportTo: 'ev' })
+  const ev = (agent: AgentFact, hs: Handover[]) => evaluate('main', g, { agents: [agent], handovers: hs })
+  const idle = { name: 'ev', status: 'idle', answer: 'Nothing else waits on you.' }
+  expect(stateOf(ev(idle, [merged]), 'ev')).toBe('done')
+  expect(stateOf(ev(idle, [merged]), 'next')).toBe('ready')
+  // An investigation that never opened a PR finishes too.
+  expect(stateOf(ev(idle, []), 'ev')).toBe('done')
+  expect(stateOf(ev({ ...idle, answer: 'Which one?' }, []), 'ev')).toBe('running')
+  expect(stateOf(ev({ ...idle, answer: 'HANDOFF: flow/x' }, []), 'ev')).toBe('running')
+  expect(stateOf(ev({ ...idle, answer: 'BLOCKED: x' }, []), 'ev')).toBe('blocked')
+  // Work still planned in the manager's own graph keeps it running.
+  const own = build([{ id: 'w1' }])
+  const open = settle({ main: g, ev: own }, { agents: [idle], handovers: [] }).plan
+  expect(open['main']!['ev']!.state).toBe('running')
+  const closed = settle({ main: g, ev: { w1: { ...own['w1']!, state: 'done' } } }, { agents: [idle], handovers: [] }).plan
+  expect(closed['main']!['ev']!.state).toBe('done')
+  expect(stateOf(ev({ ...idle, children: 1 }, [merged]), 'ev')).toBe('running')
+  expect(stateOf(ev(idle, [{ ...merged, status: 'pending' }]), 'ev')).toBe('running')
+})
+
+test('a handover with a wrong report_to still counts for the manager that started the worker', async () => {
+  const g = build([{ id: 'ask-inbox' }])
+  const events = [
+    { ts: 't', event: 'spawn', agent: 'ask-inbox', owner: 'main' },
+    { ts: 't', event: 'spawn', agent: 'decision-inbox-ask-tool', owner: 'ask-inbox' },
+    { ts: 't', event: 'continue', agent: 'decision-inbox-ask-tool-2', owner: 'ask-inbox', branch: 'flow/decision-inbox-ask-tool' },
+    { ts: 't', event: 'handover', owner: 'decision-inbox', pr: 33, branch: 'flow/decision-inbox-ask-tool' },
+  ] as LogEvent[]
+  const owners = branchOwners(events)
+  expect(owners['flow/decision-inbox-ask-tool']).toBe('ask-inbox')
+  const h = handover('flow/decision-inbox-ask-tool', 'pending', 5, { reportTo: 'decision-inbox' })
+  const agent = { name: 'ask-inbox', status: 'completed', answer: 'Done.' }
+  const facts = { agents: [agent], handovers: [h], owners }
+  expect(stateOf(evaluate('main', g, facts), 'ask-inbox')).toBe('running')
+  expect(stateOf(evaluate('main', g, { ...facts, handovers: [{ ...h, status: 'done' }] }), 'ask-inbox')).toBe('done')
+})
+
+test('with two rows of one name the live one decides', async () => {
+  const rows = [{ name: 'm', status: 'completed' }, { name: 'm', status: 'running' }]
+  expect(agentFor('m', rows)?.status).toBe('running')
+})
+
+test('an idle manager is not done while a worker reported after the manager last acted', async () => {
+  const g = build([{ id: 'ev' }])
+  const idle = { name: 'ev', status: 'idle', answer: "I'm waiting for its report.", at: 100 }
+  const stateWith = (a: AgentFact) => stateOf(evaluate('main', g, { agents: [a], handovers: [] }), 'ev')
+  // The worker ended at 150, the manager has not been resumed with its notification yet.
+  expect(stateWith({ ...idle, childAt: 150 })).toBe('running')
+  // The manager acted after its last worker reported.
+  expect(stateWith({ ...idle, childAt: 90 })).toBe('done')
 })

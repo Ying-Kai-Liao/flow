@@ -8,7 +8,7 @@ import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
-import type { Facts, Graph, Notice, Plan } from './dag'
+import type { AgentFact, Facts, Graph, Notice, Plan } from './dag'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, inboxHead, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
 } from './inbox'
@@ -38,7 +38,7 @@ import {
   screenHash, SESSION, sessionKey, sessionLine, sessionRow, tmuxName,
 } from './sessions'
 import type { Digest, HarnessSpec, Limit } from './sessions'
-import { buildDigest, findWorktree, noteKey, ownerFor } from './state'
+import { branchOwners, buildDigest, findWorktree, noteKey, ownerFor } from './state'
 import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
@@ -58,6 +58,7 @@ const CONTINUE = 'flow:continue'
 const WORKERS = new Set([WORKER, CONTINUE, SESSION])
 const QUEUE = 'flow:queue'
 const ENDED = new Set(['completed', 'failed', 'killed'])
+const LIVE_STATUS = new Set(['running', 'pending'])
 const LIVE = new Set(['pending', 'running', 'waiting'])
 // Display order: what may need a person first, finished agents last.
 const ORDER = ['waiting', 'idle', 'running', 'pending', 'failed', 'killed', 'completed']
@@ -94,6 +95,9 @@ const hinted = atom({ plugin: 'flow', key: 'hinted' } as const, false)
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
 // The decision inbox, mirrored from <state dir>/inbox.json.
+// The last status and answer seen per agent name, so an agent the host drops from its list keeps its
+// last known state instead of reading as never started.
+const seenAgents = atom({ plugin: 'flow', key: 'seen-agents' } as const, {} as Record<string, AgentFact>)
 const inbox = atom({ plugin: 'flow', key: 'inbox' } as const, EMPTY_INBOX as Inbox)
 // Pre-flight records, mirrored from <state dir>/preflight.json.
 const preflight = atom({ plugin: 'flow', key: 'preflight' } as const, EMPTY_PREFLIGHT as Preflight)
@@ -570,8 +574,20 @@ async function syncPlans(
   for (const a of freed) freedSeen.add(a.id)
   if (edit === undefined && Object.keys(await read($, plan)).length === 0) return {}
   const [acts, hs] = await Promise.all([read($, activity), read($, handovers)])
+  const agents: AgentFact[] = rows.map(a => ({
+    name: a.name, status: a.status, answer: acts[a.id]?.answer,
+    children: rows.filter(c => c.parentId === a.id && LIVE_STATUS.has(c.status)).length,
+    at: acts[a.id]?.lastAt,
+    childAt: Math.max(0, ...rows.filter(c => c.parentId === a.id).map(c => acts[c.id]?.lastAt ?? 0)),
+  }))
+  const known = { ...(await read($, seenAgents)) }
+  const present = new Set(rows.map(a => a.name))
+  for (const a of agents) if (a.name !== undefined) known[a.name] = a
+  for (const [name, a] of Object.entries(known)) if (!present.has(name)) agents.push(a)
+  if (JSON.stringify(known) !== JSON.stringify(await read($, seenAgents))) await update($, seenAgents, () => known)
+  const owners = branchOwners(await readLog($))
   const facts: Facts = {
-    agents: rows.map(a => ({ name: a.name, status: a.status, answer: acts[a.id]?.answer })),
+    agents, owners,
     handovers: Object.values(hs),
     phrases: decisionPhrases,
     asking: askingNames(await read($, inbox)),

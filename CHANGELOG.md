@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.35] - 2026-10-10
+
+### Fixed
+
+- Plan nodes of managers no longer fall back to "ready" or stay "running" forever. A manager
+  that ends its turn is `idle`, which the plan never counted as finished; it now does, once its
+  last report is final, every handover it owns is merged, none of its workers is live or has
+  reported after the manager's last turn, and its own plan graph has nothing open (so an
+  investigation without a PR finishes too). An agent the host drops from its list keeps its last
+  known state instead of reading as never started. A handover with a wrong `report_to` still
+  counts for the manager that started its worker (read from the spawn log). With two rows of one
+  name, the live one decides.
+
 ## [0.3.34] - 2026-10-10
 
 ### Added

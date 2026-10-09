@@ -156,3 +156,17 @@ test('15 handovers back to back start one queue; a queue that ended with work le
   ])
   expect(s.spawned.filter(t => t === 'flow:queue').length).toBe(2)
 })
+
+test('a manager the host drops from its list keeps its last state and never reads as ready', async ($, on) => {
+  const s = session(on)
+  s.agents.length = 0
+  s.agents.push({ id: 'a', name: 'alpha', description: 'a', type: 'flow:manager', status: 'running' })
+  await plan($, { action: 'add', nodes: [{ id: 'alpha' }, { id: 'beta', after: ['alpha'] }] }, null)
+  await s.clock.advance(10)
+  s.agents.length = 0
+  const listed = await plan($, { action: 'list' }, null)
+  expect(listed).toContain('- alpha: running')
+  expect(listed).toContain('- beta: waiting')
+  await s.clock.advance(10)
+  expect(s.submitted).toEqual([])
+})

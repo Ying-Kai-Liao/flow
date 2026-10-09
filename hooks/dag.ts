@@ -5,8 +5,12 @@ import type { DagNode, Handover } from '../types'
 export type Graph = Record<string, DagNode>
 export type Plan = Record<string, Graph>
 
-export type AgentFact = { name?: string; status: string; answer?: string }
-export type Facts = { agents: AgentFact[]; handovers: Handover[]; phrases?: string[]; asking?: string[] }
+// `children`: how many live agents work under this one (a manager with workers is not finished).
+// `at`: when this agent was last active; `childAt`: the newest activity among its children, live or not.
+export type AgentFact = { name?: string; status: string; answer?: string; children?: number; at?: number; childAt?: number }
+// `owners`: branch -> the manager that started its worker, from the session log; it survives a wrong report_to.
+// `open`: owners whose own plan graph still has waiting, ready or running nodes (settle fills it in).
+export type Facts = { agents: AgentFact[]; handovers: Handover[]; phrases?: string[]; asking?: string[]; owners?: Record<string, string>; open?: string[] }
 
 export type NodeInput = { id: string; title?: string; after?: string[]; until?: 'merged' | 'reported' }
 
@@ -102,12 +106,13 @@ export function addNodes(graph: Graph, nodes: NodeInput[]): { graph: Graph } | {
 }
 
 // The agent named `id`, or its handoff continuations `<id>-N`; the newest has the highest N.
-export function agentFor<T extends { name?: string }>(id: string, agents: T[]): T | undefined {
+// Among rows with the same name a live one beats a stale one.
+export function agentFor<T extends { name?: string; status?: string }>(id: string, agents: T[]): T | undefined {
   let best: T | undefined
   let bestN = -1
   for (const a of agents) {
     const m = a.name === id ? 1 : a.name?.startsWith(id + '-') && /^\d+$/.test(a.name.slice(id.length + 1)) ? Number(a.name.slice(id.length + 1)) : 0
-    if (m && m > bestN) {
+    if (m && (m > bestN || (m === bestN && best !== undefined && !LIVE.has(best.status ?? '') && LIVE.has(a.status ?? '')))) {
       best = a
       bestN = m
     }
@@ -117,6 +122,11 @@ export function agentFor<T extends { name?: string }>(id: string, agents: T[]): 
 
 const ownsBranch = (h: Handover, id: string) => h.branch === `flow/${id}`
 const reportsTo = (h: Handover, id: string) => h.reportTo === id || (h.reportTo.startsWith(id + '-') && /^\d+$/.test(h.reportTo.slice(id.length + 1)))
+
+const ownedBy = (h: Handover, id: string, facts: Facts) => {
+  const o = facts.owners?.[h.branch]
+  return o !== undefined && (o === id || (o.startsWith(id + '-') && /^\d+$/.test(o.slice(id.length + 1))))
+}
 
 // The newest handover per branch.
 function latestPerBranch(hs: Handover[]): Handover[] {
@@ -155,11 +165,16 @@ function judge(owner: string, node: DagNode, facts: Facts): Verdict {
   // A manager's task: it finished cleanly and everything it handed over is merged.
   if (!agent) return undefined
   if (failed) return { state: 'blocked', info: `agent ${agent.status}` }
-  if (agent.status !== 'completed') return { state: 'running' }
+  // A background manager that is done with its turn sits 'idle' (the host does not complete it), so
+  // idle counts as finished unless it has live workers, work still planned in its own graph, or a
+  // worker that reported after the manager's last turn (its notification has not reached the manager yet).
+  // Without a handover it is an investigation that never opened a PR.
+  const owned = latestPerBranch(facts.handovers.filter(x => reportsTo(x, node.id) || ownedBy(x, node.id, facts)))
+  if (agent.status === 'idle' ? (agent.children ?? 0) > 0 || (agent.childAt ?? 0) > (agent.at ?? 0) || (facts.open ?? []).some(o => o === node.id || (o.startsWith(node.id + '-') && /^\d+$/.test(o.slice(node.id.length + 1)))) : agent.status !== 'completed') return { state: 'running' }
   const last = lastLine(agent.answer)
   if (last.startsWith('BLOCKED:')) return { state: 'blocked', info: last }
   if (asksQuestion(agent.answer, facts.phrases) || isAsking(agent, facts) || last.startsWith('HANDOFF:')) return { state: 'running' }
-  const hs = latestPerBranch(facts.handovers.filter(x => reportsTo(x, node.id)))
+  const hs = owned
   const returned = hs.find(x => x.status === 'returned')
   if (returned) return { state: 'blocked', info: `PR #${returned.pr} returned: ${returned.reason ?? 'no reason given'}` }
   if (hs.some(x => x.status !== 'done')) return { state: 'running' }
@@ -208,6 +223,8 @@ export function evaluate(owner: string, graph: Graph, facts: Facts): Graph {
 export function settle(plan: Plan, facts: Facts, opts: { slots?: number } = {}): { plan: Plan; notices: Notice[] } {
   const next: Plan = {}
   const notices: Notice[] = []
+  const open = Object.entries(plan).filter(([, g]) => Object.values(g).some(n => n.state === 'waiting' || n.state === 'ready' || n.state === 'running')).map(([o]) => o)
+  facts = { ...facts, open: facts.open ?? open }
   for (const [owner, graph] of Object.entries(plan)) {
     const evaluated = evaluate(owner, graph, facts)
     const ready: DagNode[] = []
