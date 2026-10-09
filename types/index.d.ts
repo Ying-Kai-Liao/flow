@@ -62,6 +62,9 @@ export type OpenPr = {
 // The last gh listing of open flow/* PRs; `error` is the last failure, the list stays.
 export type PrCache = { prs: OpenPr[]; fetchedAt: number; error?: string }
 
+// The last dry cleanup sweep: what it would remove, and how many it keeps for a person.
+export type Leftovers = { worktrees: number; branches: number; needsLook: number }
+
 // One node of an owner's plan: a task (owner "main") or a package (owner is a manager).
 export type DagState = 'waiting' | 'ready' | 'running' | 'done' | 'blocked'
 
@@ -106,7 +109,7 @@ export type HandoffRecord = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'handoff' | 'continue' | 'note'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'handoff' | 'continue' | 'note' | 'clean'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string
@@ -135,6 +138,7 @@ declare module 'claude-code' {
       overrideView: string | null | undefined
       hinted: boolean
       handoffs: Record<string, HandoffRecord>
+      leftovers: Leftovers
     }
   }
 }

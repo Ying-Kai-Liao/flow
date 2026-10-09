@@ -123,6 +123,13 @@
       "description": "The language agents write PRs, briefs and reports in.",
       "default": "English"
     },
+    "cleanup": {
+      "type": "string",
+      "title": "Cleanup",
+      "description": "auto: after each PR the queue merges, and when the queue ends, remove worktrees and local branches of finished work that are clean and on the base or in a merged PR. off: only /flow clean. Uncommitted, unpushed, locked and live work is never removed.",
+      "default": "auto",
+      "options": ["auto", "off"]
+    },
     "base_branch": {
       "type": "string",
       "title": "Base branch",

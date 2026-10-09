@@ -258,7 +258,7 @@ test('a refused [1m] model falls back once to the plain model, tells once, and l
 const USER_CONFIG_KEYS = [
   'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_queue', 'max_managers', 'max_workers',
   'test_slots', 'context_warn_percent', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow', 'max_continues',
-  'worker_model', 'manager_model', 'queue_model', 'language', 'base_branch',
+  'worker_model', 'manager_model', 'queue_model', 'language', 'base_branch', 'cleanup',
 ]
 
 test('every userConfig key in plugin.json is a settings key', () => {

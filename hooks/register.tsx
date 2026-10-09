@@ -1,7 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover, HandoffRecord, LogEvent, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
+import { ancestryQueries, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText } from './clean'
+import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
@@ -71,6 +73,8 @@ const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
 const prCache = atom({ plugin: 'flow', key: 'prCache' } as const, { prs: [], fetchedAt: 0 } as PrCache)
+// The last dry cleanup sweep, refreshed with the PR list so a render never runs git.
+const leftovers = atom({ plugin: 'flow', key: 'leftovers' } as const, { worktrees: 0, branches: 0, needsLook: 0 } as Leftovers)
 
 const PR_POLL_MS = 5 * 60_000
 const PR_MIN_GAP_MS = 60_000
@@ -78,6 +82,9 @@ const PR_MIN_GAP_MS = 60_000
 const GRACE_MS = 20 * 60_000
 // Set by register(); refresh() and the pane flag nothing when there is no merge queue.
 let queueOn = true
+// The cleanup setting and the base it sweeps against; set by register() like queueOn.
+let cleanupMode: 'auto' | 'off' = 'auto'
+let cleanupBase = 'main'
 
 export type Unhanded = { pr: number; title: string; branch: string; note: string }
 
@@ -440,7 +447,7 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number } & Guards {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; cleanup: 'auto' | 'off' } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
@@ -453,6 +460,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     mainGuard: options.main_checkout_guard !== false,
     mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
     maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
+    cleanup: str('cleanup', 'auto') === 'off' ? 'off' : 'auto',
     base: str('base_branch', base),
     testCommand: str('test_command', ''),
     fullCheck: str('full_check_command', ''),
@@ -557,6 +565,8 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     const prev = was.get(a.id)
     if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
     if (ENDED.has(a.status) && acts[a.id] !== undefined) ended.push(a.id)
+    // The queue's worktree (detached at the base) goes once the queue is gone.
+    if (ENDED.has(a.status) && a.type === QUEUE) autoSweep($)
     if (ENDED.has(a.status) || a.status === 'idle') {
       const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases)
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
@@ -855,8 +865,9 @@ async function prepareContinue($: EngineInterface, e: AgentSpawnInput): Promise<
     const path = old.worktree
     if (path !== undefined && (await $.process.run(['test', '-d', path])).exitCode === 0) {
       const live = (await $.agent.list()).some(a =>
-        (old.agentId !== '' ? a.id === old.agentId : a.name === old.agent) && (LIVE.has(a.status) || a.status === 'idle'))
-      const clean = (await gitOut($, ['-C', path, 'status', '--porcelain'])) === ''
+        (old.agentId !== '' ? a.id === old.agentId : a.name === old.agent) && isLive(a.status))
+      const status = await gitOut($, ['-C', path, 'status', '--porcelain'])
+      const clean = status !== undefined && dirtyFiles(status).length === 0
       await $.process.run(['git', 'fetch', 'origin', branch])
       const pushed = await gitOut($, ['rev-parse', `origin/${branch}`])
       const head = clean ? await gitOut($, ['-C', path, 'rev-parse', 'HEAD']) : undefined
@@ -1086,10 +1097,8 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
 
   const wt = await run(['git', 'worktree', 'list', '--porcelain'])
   if (wt.exitCode === 0) {
-    for (const block of wt.stdout.split('\n\n')) {
-      const path = /^worktree (.+)$/m.exec(block)?.[1]
-      if (path === undefined || !path.includes('/.claude/worktrees/')) continue
-      const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1]
+    for (const { path, branch } of parsePorcelain(wt.stdout)) {
+      if (!path.includes('/.claude/worktrees/')) continue
       if (liveIds.has(path.split('/').pop() ?? '') || (branch !== undefined && closed.has(branch))) continue
       const dirty = (await run(['git', '-C', path, 'status', '--porcelain'])).stdout.trim() !== ''
       if (branch === undefined && !dirty) continue
@@ -1128,6 +1137,174 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
     items: items.filter(i => !live(i) && !resumed.has(i.key)),
     skipped: items.filter(i => !live(i) && resumed.has(i.key)),
   }
+}
+
+// --- Cleanup: leftover worktrees and local branches of finished work ---------------------------
+
+type CleanGathered = { inputs?: CleanInputs; notes: string[]; error?: string }
+
+// Everything selectCleanup needs, read once: one fetch, one gh call, then local git.
+async function gatherClean($: EngineInterface, base: string): Promise<CleanGathered> {
+  const run = async (argv: string[]) => {
+    try {
+      return await $.process.run(argv, { timeoutMs: 60_000 })
+    } catch (err) {
+      return { exitCode: 1, stdout: '', stderr: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  const first = (r: { stderr: string }) => r.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no output'
+  const notes: string[] = []
+  const fetched = await run(['git', 'fetch', 'origin', '--prune'])
+  if (fetched.exitCode !== 0) notes.push(`git fetch origin failed (${first(fetched)}): judged against the refs as they were.`)
+  const wl = await run(['git', 'worktree', 'list', '--porcelain'])
+  if (wl.exitCode !== 0) return { notes, error: `git worktree list failed: ${first(wl)}` }
+  const worktrees = parsePorcelain(wl.stdout)
+  const main = worktrees[0]?.path
+  if (main === undefined) return { notes, error: 'git worktree list gave no checkout.' }
+  const refs = async (prefix: string) => {
+    const r = await run(['git', 'for-each-ref', '--format=%(refname:short) %(objectname)', prefix])
+    const out: Record<string, string> = {}
+    for (const l of r.stdout.split('\n')) {
+      const [name, sha] = l.trim().split(' ')
+      if (name && sha) out[name] = sha
+    }
+    return out
+  }
+  const branches = await refs('refs/heads')
+  const remote: Record<string, string> = {}
+  for (const [name, sha] of Object.entries(await refs('refs/remotes/origin'))) {
+    if (name.startsWith('origin/') && name !== 'origin/HEAD') remote[name.slice('origin/'.length)] = sha
+  }
+  if (remote[base] === undefined) return { notes, error: `origin/${base} not found: nothing is judged without the base.` }
+  const onBase = new Set((await run(['git', 'for-each-ref', '--merged', `origin/${base}`, '--format=%(objectname)', 'refs/heads'])).stdout
+    .split('\n').map(l => l.trim()).filter(Boolean))
+  const status: Record<string, string> = {}
+  const deadPids = new Set<number>()
+  for (const w of worktrees.slice(1)) {
+    if (w.prunable) continue
+    const st = await run(['git', '-C', w.path, 'status', '--porcelain'])
+    if (st.exitCode === 0) status[w.path] = st.stdout
+    if (w.head !== undefined && !onBase.has(w.head)
+      && (await run(['git', 'merge-base', '--is-ancestor', w.head, `origin/${base}`])).exitCode === 0) onBase.add(w.head)
+    const pid = /\bpid (\d+)\b/.exec(w.locked ?? '')?.[1]
+    if (pid !== undefined && (await run(['ps', '-p', pid])).exitCode !== 0) deadPids.add(Number(pid))
+  }
+  let prs: PrRow[] | undefined
+  const gh = await run(['gh', 'pr', 'list', '--state', 'all', '--limit', '300', '--json', 'number,headRefName,headRefOid,state'])
+  try {
+    if (gh.exitCode !== 0) throw new Error(first(gh))
+    const parsed = JSON.parse(gh.stdout || '[]') as unknown
+    if (!Array.isArray(parsed)) throw new Error('unexpected gh output')
+    prs = parsed as PrRow[]
+  } catch (err) {
+    notes.push(`gh pr list failed (${err instanceof Error ? err.message : String(err)}): squash-merged work is not recognised, only what is on origin/${base}.`)
+  }
+  // A successor continuing in a handed-off worktree runs there; one not spawned yet may still claim it.
+  const hs = Object.values(await read($, handoffs))
+  const continued = (await readLog($)).filter(l => l.event === 'continue')
+  const cwdOf = new Map(hs.filter(h => h.takenBy !== undefined && h.worktree !== undefined).map(h => [h.takenBy!, h.worktree!]))
+  const waiting = new Set(hs.filter(h => h.worktree !== undefined && h.takenBy === undefined
+    && !continued.some(l => l.branch === h.branch && Date.parse(l.ts) >= h.at)).map(h => h.worktree!))
+  const roster = (await $.agent.list()).map(a => ({
+    id: a.id, live: isLive(a.status), ...(a.name !== undefined && { name: a.name }),
+    ...(a.name !== undefined && cwdOf.has(a.name) && { cwd: cwdOf.get(a.name) }),
+  }))
+  // The main session may itself run in a linked worktree: never pull the floor from under it.
+  const here = await $.session.cwd().catch(() => undefined)
+  if (here) roster.push({ id: 'main', live: true, name: 'the main session', cwd: here })
+  const partial = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting }
+  const ancestry = new Set<string>()
+  for (const q of ancestryQueries(partial)) {
+    const [a, b] = q.split(' ')
+    if ((await run(['git', 'merge-base', '--is-ancestor', a!, b!])).exitCode === 0) ancestry.add(q)
+  }
+  return { inputs: { ...partial, ancestry }, notes }
+}
+
+// One sweep at a time: the queue's `done`, a queue ending and /flow clean may meet.
+let sweepChain: Promise<unknown> = Promise.resolve()
+function exclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const run = sweepChain.then(fn, fn)
+  sweepChain = run.catch(() => undefined)
+  return run
+}
+
+const leftoverCounts = (s: Sweep, failed: Kept[] = [], applied = false): Leftovers => ({
+  worktrees: applied ? 0 : s.remove.worktrees.length,
+  branches: applied ? 0 : s.remove.branches.length,
+  needsLook: s.keep.filter(k => k.needsLook).length + failed.length,
+})
+
+// A sweep: the listing, and with apply the removal of what selectCleanup marked safe. A removal
+// that fails is kept with git's message; nothing is forced. `started` runs once it holds the lock.
+async function sweep($: EngineInterface, base: string, apply: boolean, dryHint?: string, started?: () => void): Promise<string> {
+  return exclusive(async () => {
+    started?.()
+    const g = await gatherClean($, base)
+    if (g.inputs === undefined) return [...g.notes, g.error ?? 'Cleanup failed.'].join('\n')
+    const s = selectCleanup(g.inputs)
+    const note = g.notes.join('\n') || undefined
+    if (!apply) {
+      await update($, leftovers, () => leftoverCounts(s))
+      return sweepText(s, { applied: false, ...(note && { note }), ...(dryHint && { dryHint }) })
+    }
+    const git = async (argv: string[]) => {
+      try {
+        return await $.process.run(['git', ...argv], { timeoutMs: 60_000 })
+      } catch (err) {
+        return { exitCode: 1, stdout: '', stderr: err instanceof Error ? err.message : String(err) }
+      }
+    }
+    const failed: Kept[] = []
+    const removed: Sweep['remove'] = { worktrees: [], branches: [] }
+    const stuck = new Set<string>()
+    const byPath = new Map(g.inputs.worktrees.map(w => [w.path, w]))
+    for (const path of s.remove.worktrees) {
+      const w = byPath.get(path)
+      // A missing directory: prune drops the entry.
+      if (w?.prunable) { removed.worktrees.push(path); continue }
+      if (s.unlock.includes(path)) await git(['worktree', 'unlock', path])
+      const r = await git(['worktree', 'remove', path])
+      if (r.exitCode === 0) removed.worktrees.push(path)
+      else {
+        failed.push({ kind: 'worktree', name: path, reason: `kept: ${r.stderr.trim().split('\n')[0] || 'git worktree remove failed'}`, needsLook: true })
+        if (w?.branch !== undefined) stuck.add(w.branch)
+      }
+    }
+    await git(['worktree', 'prune'])
+    for (const b of s.remove.branches) {
+      if (stuck.has(b)) {
+        failed.push({ kind: 'branch', name: b, reason: 'its worktree could not be removed', needsLook: true })
+        continue
+      }
+      const r = await git(['branch', '-D', b])
+      if (r.exitCode === 0) removed.branches.push(b)
+      else failed.push({ kind: 'branch', name: b, reason: `kept: ${r.stderr.trim().split('\n')[0] || 'git branch -D failed'}`, needsLook: true })
+    }
+    await update($, leftovers, () => leftoverCounts(s, failed, true))
+    if (removed.worktrees.length || removed.branches.length) {
+      await appendLog($, {
+        event: 'clean', owner: 'main',
+        text: `removed ${[...removed.worktrees.map(p => `worktree ${p.split('/').pop()}`), ...removed.branches.map(b => `branch ${b}`)].join(', ')}`,
+      })
+    }
+    return sweepText(s, { applied: true, removed, failed, ...(note && { note }) })
+  })
+}
+
+// The automatic sweep (cleanup "auto"): in the background, at most one waiting behind a running
+// sweep, failures to the log only.
+let autoQueued = false
+function autoSweep($: EngineInterface): void {
+  if (cleanupMode !== 'auto' || autoQueued) return
+  autoQueued = true
+  void sweep($, cleanupBase, true, undefined, () => { autoQueued = false })
+    .catch(err => warn($, 'cleaning up', err))
+}
+
+// The dry sweep behind the pane's leftover line, on the PR list's cadence.
+function refreshLeftovers($: EngineInterface): void {
+  void sweep($, cleanupBase, false).catch(err => warn($, 'looking for leftovers', err))
 }
 
 type OwnerNotes = { path: string; text: string }
@@ -1334,6 +1511,8 @@ async function recheck($: EngineInterface, options: Record<string, unknown>, pat
 export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
   queueOn = settings.useQueue
+  cleanupMode = settings.cleanup
+  cleanupBase = settings.base
   maxManagers = settings.maxManagers
   slotLimit = settings.testSlots
   decisionPhrases = settings.decisionPhrases
@@ -1346,6 +1525,8 @@ export const register: Register = (on, options) => {
   const apply = (s: typeof settings) => {
     settings = s
     queueOn = s.useQueue
+    cleanupMode = s.cleanup
+    cleanupBase = s.base
     maxManagers = s.maxManagers
     slotLimit = s.testSlots
     decisionPhrases = s.decisionPhrases
@@ -1408,8 +1589,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it, /flow resume picks up unfinished flow work',
-      argumentHint: '[close|resume]',
+      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it, /flow resume picks up unfinished flow work, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[close|resume|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -1476,6 +1657,14 @@ export const register: Register = (on, options) => {
     })
 
     await $.tool.register({
+      name: 'clean',
+      description: 'Leftover worktrees under .claude/worktrees/ and local branches of finished work. Without apply, a dry run: what would be removed and what is kept and why. ' +
+        'With apply true, removes only clean work that is on the base or in a merged PR (or pushed with its PR closed); uncommitted, unpushed, locked and live work is never touched.',
+      inputSchema: { type: 'object', properties: { apply: { type: 'boolean', description: 'Remove the safe candidates (default false: dry run)' } } },
+      isDeferred: false,
+    })
+
+    await $.tool.register({
       name: 'plan',
       description: 'Declare which packages (or, for main, tasks) wait for others, so the plugin can refuse to start them early and tell you when they are ready. ' +
         'action "add": nodes [{id, title, after?, until?}]; id is the agent name you will start (or its prefix before -N), after lists node ids, until is "merged" (default: the PR is merged) or "reported" (the agent reported back). ' +
@@ -1533,8 +1722,9 @@ export const register: Register = (on, options) => {
       }).finally(() => { checking = false })
     })
     // gh is not free: a slow timer, one look shortly after the start, and status when the list is stale.
-    $.clock.every(PR_POLL_MS, () => void fetchPrs($))
+    $.clock.every(PR_POLL_MS, () => { void fetchPrs($); refreshLeftovers($) })
     void fetchPrs($)
+    refreshLeftovers($)
     // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
     $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
     // The queue agent type exists only now, and a spawn needs the session bound: start it after the hook.
@@ -1583,7 +1773,12 @@ export const register: Register = (on, options) => {
       }
       return { text, context: [resumeInstructions(found.items, settings.maxManagers, notes)] }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work.` }
+    const words = arg.split(/\s+/)
+    if (words[0] === 'clean' && words.slice(1).every(w => w === '--yes')) {
+      // A person's command: --yes removes whatever the cleanup setting says.
+      return { text: await sweep($, settings.base, words.length > 1, 'Run /flow clean --yes to remove them.') }
+    }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -1740,6 +1935,7 @@ export const register: Register = (on, options) => {
       await appendLog($, { event: action as 'take' | 'done' | 'back', owner: next.reportTo, pr: next.pr, branch: next.branch, text })
     })
     if (action !== 'take') void $.ui.toast(`PR #${key} ${next.status === 'done' ? `merged ${next.sha ?? ''}` : `returned: ${next.reason ?? ''}`}`)
+    if (action === 'done') autoSweep($)
     await refresh($)
     return { result: `PR #${key}: ${next.status}.` }
   })
@@ -1891,6 +2087,14 @@ export const register: Register = (on, options) => {
     return { result: `Noted in ${await notesPath($, manager)}.` }
   })
 
+  on('tool.call', { tool: 'mcp__flow__clean' }, async ($, e) => {
+    const apply = (e as unknown as Record<string, unknown>).apply === true
+    if (apply && settings.cleanup === 'off') {
+      return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await sweep($, settings.base, false)}` }
+    }
+    return { result: await sweep($, settings.base, apply) }
+  })
+
   on('tool.call', { tool: 'mcp__flow__status' }, async ($, e) => {
     const asked = Number((e as unknown as Record<string, unknown>).pr)
     if (Number.isInteger(asked) && asked > 0) {
@@ -1905,6 +2109,7 @@ export const register: Register = (on, options) => {
     if (queueOn && (await $.clock.now()) - (await read($, prCache)).fetchedAt > PR_MIN_GAP_MS) await fetchPrs($)
     const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
     const [unhanded, cache] = [await currentUnhanded($), await read($, prCache)]
+    const leftover = leftoverLine(await read($, leftovers))
     const lines: string[] = []
     const byParent = new Map<string | undefined, AgentRow[]>()
     for (const a of rows) byParent.set(a.parentId, [...(byParent.get(a.parentId) ?? []), a])
@@ -1931,6 +2136,7 @@ export const register: Register = (on, options) => {
           'A manager reviews it and hands it over, or closes it.',
         ] : []),
         ...(queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
+        ...(leftover ? [leftover] : []),
         ...(plans.length ? ['Plans:', ...plans.flatMap(([who, g]) => [`${who}:`, ...describe(g).map(l => `  ${l}`)])] : []),
         `State: ${await stateDir($) ?? 'none (not a git repo)'}`,
       ].join('\n'),
@@ -2044,10 +2250,11 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    let [list, acts, pick, t, hs, cur, fold, unhanded] = await Promise.all([
+    let [list, acts, pick, t, hs, cur, fold, unhanded, leftCounts] = await Promise.all([
       read($, roster), read($, activity), read($, selected), read($, now), read($, handovers),
-      read($, cursor), read($, folded), currentUnhanded($),
+      read($, cursor), read($, folded), currentUnhanded($), read($, leftovers),
     ])
+    const leftover = leftoverLine(leftCounts)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
     const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
@@ -2288,7 +2495,7 @@ export const register: Register = (on, options) => {
     // Full cards if all fit, else the crowded tree (compact rows, folded but for the highlight's
     // path) in a window that follows the highlight.
     const prRows = prs.length > 0 ? 1 + Math.min(prs.length, 5) : 0
-    const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0)
+    const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0)
     const wide = treeItems(list, fold, cur ?? first, false, acts)
     const fullTree = (wide.items.length + 1) * CARD_ROWS <= avail
     const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
@@ -2338,6 +2545,7 @@ export const register: Register = (on, options) => {
             ⚠ {unhanded.length} PR{unhanded.length > 1 ? 's' : ''} nobody handed over: {unhanded.map(u => `#${u.pr}`).join(' ')}
           </Text>
         )}
+        {leftover && <Text dimColor wrap="truncate-end">{leftover}</Text>}
         {rootFull ? (
           <Box flexDirection="column" borderStyle="round" paddingX={1}>
             <Text bold>{ROOT_GLYPH} main <Text dimColor> super manager</Text></Text>

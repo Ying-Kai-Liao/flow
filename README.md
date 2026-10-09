@@ -63,7 +63,7 @@ add login-redirect  after: csv-export
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
-  `/flow close` closes the pane, `/flow resume` picks up unfinished work (below). It stays closed while agents keep running, until the next
+  `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
   `c` folds or unfolds its children. In an agent's detail, `b` goes back and `m` starts a message.
@@ -136,6 +136,42 @@ without a PR (merged or closed ones are skipped) and leftover worktrees with unc
 unpushed work, then has the main session start one `resume-<slug>` manager per task (up to `max_managers`
 at a time). Work owned by a live agent, or already resumed in this session, is not listed again.
 
+## Cleanup
+
+Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
+`flow/*-N`, `worktree-agent-*`, anything else). Most PRs are squash-merged, so `git branch -d`
+does not see them as merged; the plugin judges each by ancestry and by the PR's head sha instead
+of by name.
+
+**What goes.** A worktree under `.claude/worktrees/` (never the main checkout) when its HEAD is on
+`origin/<base>`, or its branch has a merged PR whose head is HEAD (or contains it), or its branch's
+PR was closed and HEAD is pushed; and `git status` is empty apart from the untracked type links
+`types` and `.claude-plugin/types`; and no live agent works in it; and it is not locked, unless the
+lock names an agent that has ended or a process that is gone. It goes with `git worktree remove`
+(never `--force`), then `git worktree prune`; a directory already missing is pruned. A local
+branch when it is not checked out anywhere (a worktree removed in the same sweep doesn't count),
+is not the base, has no open PR, and its tip is on `origin/<base>` or is the head of a merged PR
+of that branch (or contained in it). It goes with `git branch -D`. Remote branches are never
+deleted: the queue's `gh pr merge --delete-branch` does that.
+
+**What stays, listed for a person.** Uncommitted changes (the files named), unpushed commits,
+locked worktrees, a closed PR's branch, a worktree or branch a live agent uses, an open PR's
+branch, and a handed-off worktree whose successor has not started yet. Nothing in that list is
+touched in any mode.
+
+**`/flow clean`** lists what would be removed and what is kept, and why; **`/flow clean --yes`**
+removes. The tool `clean` (`apply`, default false) does the same for agents. One `git fetch
+origin --prune` and one `gh pr list --state all` per sweep; when gh fails the sweep says so and
+goes by ancestry only. Every sweep that removed something adds a `clean` line to `log.jsonl`.
+
+**The automatic sweep** (`cleanup` = `auto`, the default) runs the same safe sweep in the
+background after each PR the queue marks done, and when a queue agent ends (its worktree, detached
+at the base, goes once the queue is gone). Never two sweeps at once; errors go to the log. With
+`cleanup` = `off` nothing runs by itself, the tool's `apply` runs dry and says so, and only
+`/flow clean --yes` removes. The pane and `status` show one dim line while there are leftovers,
+e.g. `3 leftover worktrees · 12 branches · 1 needs a look · /flow clean`, from a dry sweep
+refreshed with the PR list (every 5 minutes).
+
 ## Guards
 
 The plugin's `tool.call` hook refuses three things for every agent of the flow, the main
@@ -202,6 +238,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `handoff` | on | `/config`, file | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
 | `base_branch` | the remote's default branch | `/config`, file | everyone |
 | `main_checkout_guard` | on | `/config`, file | every agent and the main session: writes to the main checkout are refused (see Guards) |
+| `cleanup` | `auto` | `/config`, file | `auto`: the plugin removes finished, clean worktrees and branches after each merge and when the queue ends (see Cleanup). `off`: only `/flow clean --yes` |
 | `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 
 `decision_phrases`: a report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it.
@@ -259,6 +296,7 @@ After deploying, a PR whose `after_deploy` an agent can check gets a check-only 
 - `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
 - `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
   `text` it returns the notes.
+- `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.
 - `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`). See below.
 
 ## The test lock
