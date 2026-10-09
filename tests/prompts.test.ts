@@ -138,6 +138,7 @@ test('the reviewer fast-forwards a clean main checkout after a batch and reports
   const q = fill(REVIEWER_PROMPT, base)
   expect(q).toContain('first entry of `git worktree list --porcelain`')
   expect(q).toContain('pull --ff-only')
+  expect(q).toContain('status --porcelain --untracked-files=no')
   expect(q).toContain('Never stash, reset or checkout in the main checkout')
   expect(q).toContain('main checkout fast-forwarded to <sha>')
   expect(q).toContain('main checkout not updated: <dirty | on branch X | ff failed>')
