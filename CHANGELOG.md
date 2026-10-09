@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.11] - 2026-10-09
+
+### Added
+
+- `test_slot` tool and `test_slots` option (default 1): at most that many heavy test runs
+  at once across all agents. Workers acquire before a whole suite or any long run and release
+  after; the queue does so around the full check. Waiters queue first come, first served;
+  slots free when the agent ends or after a 45 minute lease. `mcp__flow__status` and the
+  status line show the holders.
+
 ## [0.2.9] - 2026-10-09
 
 ### Changed

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover } from '../types'
+import type { Activity, AgentRow, Handover, SlotEntry, TestSlots } from '../types'
 import {
   fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT,
 } from './prompts'
@@ -40,6 +40,47 @@ const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as stri
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
+const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders: [], waiters: [] } as TestSlots)
+
+// A hook has a 10 s budget, a $.clock wait included, so acquire blocks only briefly and the
+// caller asks again; a waiter that has not asked again for STALE_MS has gone away.
+const LEASE_MS = 45 * 60_000
+const WAIT_MAX_S = 8
+const WAIT_DEFAULT_S = 5
+const STALE_MS = 3 * 60_000
+// The test_slots setting, for refresh()'s status line (set where the settings are read).
+let slotLimit = 1
+
+const span = (ms: number): string => {
+  const m = Math.floor(ms / 60_000)
+  return m < 1 ? `${Math.max(0, Math.round(ms / 1000))}s` : `${m}m`
+}
+const heldBy = (h: SlotEntry, t: number): string => `${h.name} (${h.label}, ${span(t - h.since)})`
+
+// Drops holders and waiters whose agent ended or is gone, holders past the lease and waiters
+// that stopped asking. The main session (key "main") never ends. Returns the new state and what was dropped.
+export function reapSlots(state: TestSlots, rows: AgentRow[], t: number): { state: TestSlots; notes: string[] } {
+  const status = new Map(rows.map(a => [a.id, a.status]))
+  const gone = (key: string) => key !== 'main' && (status.get(key) === undefined || ENDED.has(status.get(key)!))
+  const notes: string[] = []
+  const holders = state.holders.filter(h => {
+    if (gone(h.key)) return false
+    if (t - h.since >= LEASE_MS) {
+      notes.push(`test slot of ${h.name} (${h.label}) released after ${span(LEASE_MS)}: its lease ran out`)
+      return false
+    }
+    return true
+  })
+  const waiters = state.waiters.filter(w => !gone(w.key) && t - w.lastAt < STALE_MS)
+  const changed = holders.length !== state.holders.length || waiters.length !== state.waiters.length
+  return { state: changed ? { holders, waiters } : state, notes }
+}
+
+function slotLine(state: TestSlots, limit: number, t: number): string {
+  if (state.holders.length === 0 && state.waiters.length === 0) return ''
+  const held = state.holders.length ? `held by ${state.holders.map(h => heldBy(h, t)).join(', ')}` : 'free'
+  return `Test slots: ${state.holders.length}/${limit} ${held}${state.waiters.length ? ` · ${state.waiters.length} waiting` : ''}`
+}
 
 // One line for a tool call: the tool and its most telling argument.
 function describeCall(e: Record<string, unknown>): string {
@@ -157,6 +198,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     mergeMethod: str('merge_method', 'squash'),
     useQueue: options.merge_queue !== false,
     maxWorkers: num('max_workers', 3),
+    testSlots: Math.max(1, Math.floor(num('test_slots', 1))),
     workerModel: str('worker_model', 'sonnet'),
   }
 }
@@ -191,6 +233,14 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   }
   if (JSON.stringify(rows) !== JSON.stringify(before)) await update($, roster, () => rows)
   await update($, now, () => t)
+  // Free the test slots of ended agents; update() keeps the same state object when nothing changed.
+  const notes: string[] = []
+  await update($, testSlots, st => {
+    const r = reapSlots(st, rows, t)
+    notes.push(...r.notes)
+    return r.state
+  })
+  for (const n of notes) void $.ui.toast(n)
 
   const hs = Object.values(await read($, handovers))
   const live = rows.filter(a => !ENDED.has(a.status))
@@ -201,8 +251,10 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     count(WORKER) && `${count(WORKER)} workers`,
     queued && `queue: ${queued} PR${queued > 1 ? 's' : ''}`,
   ].filter(Boolean)
+  const slots = await read($, testSlots)
+  const slotPart = slots.holders.length || slots.waiters.length ? ` · tests ${slots.holders.length}/${slotLimit}` : ''
   $.ui.status(rows.length === 0 && hs.length === 0 ? undefined
-    : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`} · /flow`)
+    : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`}${slotPart} · /flow`)
   return rows
 }
 
@@ -350,6 +402,7 @@ function resumeInstructions(items: Leftover[]): string {
 
 export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
+  slotLimit = settings.testSlots
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
@@ -366,7 +419,10 @@ export const register: Register = (on, options) => {
         const remote = await $.process.run(['git', 'ls-remote', '--symref', 'origin', 'HEAD'], { timeoutMs: 10_000 })
         base = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(remote.stdout)?.[1] ?? ''
       }
-      if (base !== '') settings = settingsOf(options, base)
+      if (base !== '') {
+        settings = settingsOf(options, base)
+        slotLimit = settings.testSlots
+      }
     } catch {
       // Not a git repo, or no remote: keep "main".
     }
@@ -442,6 +498,23 @@ export const register: Register = (on, options) => {
       name: 'status',
       description: 'The flow at a glance: every manager, worker and queue of this session with its status and last report, and every handed-over PR.',
       inputSchema: { type: 'object', properties: {} },
+      isDeferred: false,
+    })
+
+    await $.tool.register({
+      name: 'test_slot',
+      description: 'A lock on heavy test runs, so only test_slots of them run at once across all worktrees of this session. ' +
+        'action "acquire" before a whole suite or any run over about a minute (waits a few seconds; if it says queued, call acquire again), ' +
+        '"release" when the run is over or failed, "status" to see holders and waiters.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['acquire', 'release', 'status'] },
+          label: { type: 'string', description: 'What you will run, e.g. "full suite"' },
+          wait_s: { type: 'number', description: `Seconds to wait for a slot before answering queued (default ${WAIT_DEFAULT_S}, at most ${WAIT_MAX_S})` },
+        },
+        required: ['action'],
+      },
       isDeferred: false,
     })
 
@@ -589,6 +662,69 @@ export const register: Register = (on, options) => {
     return { result: `PR #${key}: ${next.status}.` }
   })
 
+  on('tool.call', { tool: 'mcp__flow__test_slot' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const action = String(input.action)
+    const key = typeof input.agentId === 'string' ? input.agentId : 'main'
+    const rows = await refresh($)
+    const name = key === 'main' ? 'main' : labelOf(rows.find(a => a.id === key) ?? { id: key, description: '', type: '', status: '' })
+    const label = typeof input.label === 'string' && input.label.trim() !== '' ? input.label.trim().slice(0, 60) : 'tests'
+    const limit = settings.testSlots
+    const t = await $.clock.now()
+
+    if (action === 'status') {
+      return { result: slotLine(await read($, testSlots), limit, t) || `Test slots: 0/${limit} held, nobody waiting.` }
+    }
+    if (action === 'release') {
+      let freed = false
+      await update($, testSlots, st => {
+        freed = st.holders.some(h => h.key === key)
+        return freed ? { ...st, holders: st.holders.filter(h => h.key !== key) } : st
+      })
+      return { result: freed ? 'Released your test slot.' : 'You held no test slot; nothing to release.' }
+    }
+    if (action !== 'acquire') return { result: `Unknown action "${action}".` }
+
+    // Check and take inside one update(), so two callers never both get the last slot.
+    const attempt = async (): Promise<string | undefined> => {
+      let outcome: string | undefined
+      const at = await $.clock.now()
+      await update($, testSlots, st => {
+        const mine = st.holders.find(h => h.key === key)
+        if (mine) {
+          outcome = `You already hold a test slot (${mine.label}, ${span(at - mine.since)}). Release it when your run is over.`
+          return st
+        }
+        const waiters = st.waiters.some(w => w.key === key)
+          ? st.waiters.map(w => w.key === key ? { ...w, lastAt: at, label } : w)
+          : [...st.waiters, { key, name, label, since: at, lastAt: at }]
+        if (st.holders.length < limit && waiters[0]!.key === key) {
+          outcome = `Test slot granted (${st.holders.length + 1}/${limit}). Run, then release it, also if the run fails. It frees by itself after ${span(LEASE_MS)}.`
+          return { holders: [...st.holders, { key, name, label, since: at, lastAt: at }], waiters: waiters.slice(1) }
+        }
+        outcome = undefined
+        return { ...st, waiters }
+      })
+      return outcome
+    }
+
+    const wait = Math.min(WAIT_MAX_S, Math.max(0, Number.isFinite(Number(input.wait_s)) ? Number(input.wait_s) : WAIT_DEFAULT_S))
+    const first = await attempt()
+    if (first !== undefined) return { result: first }
+    // The hook's budget bounds this wait; the waiter keeps its place in line between calls.
+    for (let waited = 0; waited < wait; waited++) {
+      await $.clock.sleep(1000)
+      await refresh($)
+      const got = await attempt()
+      if (got !== undefined) return { result: got }
+    }
+    const st = await read($, testSlots)
+    const pos = st.waiters.findIndex(w => w.key === key) + 1
+    return {
+      result: `No slot after ${wait} s; queued, position ${pos}. Held by ${st.holders.map(h => heldBy(h, t)).join(', ') || 'nobody'}. Call acquire again (your place in line is kept while you keep asking).`,
+    }
+  })
+
   on('tool.call', { tool: 'mcp__flow__status' }, async $ => {
     const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
     const lines: string[] = []
@@ -602,8 +738,10 @@ export const register: Register = (on, options) => {
     }
     for (const a of rows.filter(r => r.parentId === undefined || !ids.has(r.parentId))) walk(a, 0)
     const list = Object.values(hs).sort((a, b) => a.at - b.at)
+    const slots = slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
     return {
       result: [
+        ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
         list.length ? 'Handed-over PRs:' : 'No PRs handed over.', ...list.map(handoverLine),
       ].join('\n'),

@@ -43,6 +43,11 @@ export type Handover = {
   reason?: string
 }
 
+// A holder of, or a waiter for, a test slot (the test_slot tool). key is the agent id, or "main".
+export type SlotEntry = { key: string; name: string; label: string; since: number; lastAt: number }
+
+export type TestSlots = { holders: SlotEntry[]; waiters: SlotEntry[] }
+
 declare module 'claude-code' {
   interface PluginState {
     'flow': {
@@ -52,6 +57,7 @@ declare module 'claude-code' {
       now: number
       handovers: Record<string, Handover>
       queueRuns: number
+      testSlots: TestSlots
     }
   }
 }

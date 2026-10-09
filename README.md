@@ -93,6 +93,7 @@ worker to fix X".
 | `merge_queue` | on | off: managers merge themselves with `merge_method` |
 | `merge_method` | `squash` | managers, when there is no queue |
 | `max_workers` | 3 | workers per manager at a time |
+| `test_slots` | 1 | how many heavy test runs may run at once across all agents (minimum 1) |
 | `worker_model` | `sonnet` | workers |
 | `context_warn_percent` | 40 | the pane's context meter: where the marker sits and the meter turns yellow (1 to 100) |
 | `handoff` | on | workers and managers: at `context_warn_percent` they are told to hand off (see Continuing work). Off: the meter only shows |
@@ -106,6 +107,19 @@ An unset full check or deploy is a step that's skipped and reported, never impro
   a queue if none is running.
 - `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
 - `status`: the tree and the handovers as text, for check-ins.
+- `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`). See below.
+
+## The test lock
+
+Six worktrees running the whole suite at once can exhaust memory and time out the real check.
+Workers call `test_slot` `acquire` before a heavy run (a whole suite, anything over about a
+minute) and `release` after it; the queue does the same around the full check. At most
+`test_slots` runs hold a slot; the rest wait first come, first served. A hook has a 10 second
+budget, so `acquire` waits at most 8 seconds and then answers "queued, position N"; the caller
+asks again, and its place in line is kept while it keeps asking (about 3 minutes). A slot is
+freed when its agent ends, when released, or after a 45 minute lease (with a toast). The Flow
+status line shows `tests 1/1`. The lock lives in this session's plugin state: it covers every
+worktree of the session's agents, not other Claude sessions, and a plugin reload empties it.
 
 ## Limits
 
