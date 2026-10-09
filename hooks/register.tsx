@@ -2303,20 +2303,25 @@ export const register: Register = (on, options) => {
     const role = ROLE[spawn.subagentType]
     const wanted = role === undefined ? undefined : (spawn.model ?? (settings as Record<string, unknown>)[`${role}Model`])
     const long = typeof wanted === 'string' && wanted.includes('[1m]') ? wanted : undefined
-    let ev = long !== undefined && noLong ? { ...spawn, model: withoutLong(long) } : spawn
-    let started: Awaited<ReturnType<typeof next>> | { deny: string }
-    try {
-      started = await dispatch(next, ev)
-    } catch (err) {
-      if (long === undefined || noLong || !refusedLong(err)) throw err
-      started = { deny: String((err as Error).message) }
+    // One try, with the [1m] retry; a fallback try below goes through it too.
+    const go = async (t: AgentSpawnInput) => {
+      let ev = long !== undefined && noLong ? { ...t, model: withoutLong(long) } : t
+      let started: Awaited<ReturnType<typeof next>> | { deny: string }
+      try {
+        started = await dispatch(next, ev)
+      } catch (err) {
+        if (long === undefined || noLong || !refusedLong(err)) throw err
+        started = { deny: String((err as Error).message) }
+      }
+      if (long !== undefined && !noLong && refusedLong(started)) {
+        noLong = true
+        ev = { ...t, model: withoutLong(long) }
+        void $.ui.toast(`flow: ${long} was refused for sub-agents; using ${ev.model}`)
+        started = await dispatch(next, ev)
+      }
+      return { ev, started }
     }
-    if (long !== undefined && !noLong && refusedLong(started)) {
-      noLong = true
-      ev = { ...spawn, model: withoutLong(long) }
-      void $.ui.toast(`flow: ${long} was refused for sub-agents; using ${ev.model}`)
-      started = await dispatch(next, ev)
-    }
+    let { ev, started } = await go(spawn)
     // The host refused our flow:continue rewrite: never fail the spawn for it. Start a plain worker in a
     // new worktree and give the claimed worktree back.
     if (spawn.subagentType === CONTINUE && !('agentId' in started && started.agentId !== undefined)) {
@@ -2333,7 +2338,7 @@ export const register: Register = (on, options) => {
       const note = `The previous worker's worktree ${path} is kept, and ${branch} may be checked out there: if \`git checkout -B\` fails, work on a local branch and push \`HEAD:${branch}\`.`
       ev = { ...plain, subagentType: WORKER, prompt: ev.prompt.replace(/\n\nYou continue in the same worktree [^\n]*/, `\n\n${note}`) }
       await best($, 'logging a continuation fallback', async () => appendLog($, { event: 'continue', agent: name, owner: await ownerNameOf($, e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
-      started = await next(ev)
+      ;({ ev, started } = await go(ev))
     }
     if ('agentId' in started && started.agentId !== undefined) {
       const t = await $.clock.now()
