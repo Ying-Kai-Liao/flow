@@ -430,12 +430,16 @@ test('a manager starts collapsed to one line; its worker shows on the chevron or
     expect(await ui.find({ type: 'Button', key: 'm1' })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'w1' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: / · 1 asks/ })).toBeDefined()
-    // TODO(handoff): the hint reads the highlighted card; the highlight starts on main, so assert it after j.
+    // The highlight starts on main's first item; j moves it to the manager, which the hint reads.
+    await ui.press({ key: 'nav-next' })
+    expect(await ui.find({ type: 'Button', key: 'nav-fold', text: /c expand/ })).toBeDefined()
     await ui.press({ key: 'fold-m1' })
     expect(await ui.find({ type: 'Button', key: 'w1' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: / · 1 asks/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'nav-fold', text: /c collapse/ })).toBeDefined()
     await ui.press({ key: 'nav-fold' })
     expect(await ui.find({ type: 'Button', key: 'w1' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'nav-fold', text: /c expand/ })).toBeDefined()
     await ui.press({ key: 'nav-fold' })
     expect(await ui.find({ type: 'Button', key: 'w1' })).toBeDefined()
     await ui.unmount()

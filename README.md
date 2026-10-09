@@ -68,7 +68,7 @@ add login-redirect  after: csv-export
   `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
-  `c` folds or unfolds its children. In an agent's detail, `b` goes back and `m` starts a message.
+  `c` collapses or expands the highlighted card, `q` the Merge queue section. In an agent's detail, `b` goes back and `m` starts a message.
   Arrow keys, Tab and Enter go through the pane's focus ring, and the highlight follows it. Esc
   can't be caught inside a pane. `g` switches between the tree and the graph view (below).
 - **The graph view** (`g`): the plan's dependency graph instead of the cards. At the top level it
@@ -81,9 +81,12 @@ add login-redirect  after: csv-export
   agent (a waiting node only says what it waits on), and `b` goes back from a manager. A pane
   too narrow for columns falls back to a list with `after:` lines; a graph taller than the pane
   scrolls with `↑ N more` / `↓ N more`.
-- **Many agents**: with 10 to 20 managers the tree auto-collapses to the highlight's path, shows
+- **Collapsible cards**: `c` collapses or expands the highlighted card; clicking a card's ▸/▾
+  toggles it, clicking elsewhere on the card opens it. Managers and the merge queue start collapsed
+  (one line each, with asks and handoff shown, including for hidden workers); workers start
+  expanded. `q` toggles the Merge queue section. Your choices stick while the pane is open.
+- **Many agents**: with 10 to 20 managers the tree shows one line per collapsed manager,
   `↑ N above` and `+N more` for rows out of the window, and scrolls to keep the highlight in view.
-  `c` overrides the automatic folding for one agent.
 - **Following the chat view**: plugins can't switch the transcript, so the pane follows it. Open an
   agent from the tasks list (`←`) and the pane shows that agent; back to main restores what you had.
   Anything you do in the pane wins until the view changes. The first card click shows a one-time
