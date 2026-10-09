@@ -6,7 +6,8 @@ export type Graph = Record<string, DagNode>
 export type Plan = Record<string, Graph>
 
 // `children`: how many live agents work under this one (a manager with workers is not finished).
-export type AgentFact = { name?: string; status: string; answer?: string; children?: number }
+// `at`: when this agent was last active; `childAt`: the newest activity among its children, live or not.
+export type AgentFact = { name?: string; status: string; answer?: string; children?: number; at?: number; childAt?: number }
 // `owners`: branch -> the manager that started its worker, from the session log; it survives a wrong report_to.
 // `open`: owners whose own plan graph still has waiting, ready or running nodes (settle fills it in).
 export type Facts = { agents: AgentFact[]; handovers: Handover[]; phrases?: string[]; asking?: string[]; owners?: Record<string, string>; open?: string[] }
@@ -165,10 +166,11 @@ function judge(owner: string, node: DagNode, facts: Facts): Verdict {
   if (!agent) return undefined
   if (failed) return { state: 'blocked', info: `agent ${agent.status}` }
   // A background manager that is done with its turn sits 'idle' (the host does not complete it), so
-  // idle counts as finished unless it has live workers or work still planned in its own graph.
+  // idle counts as finished unless it has live workers, work still planned in its own graph, or a
+  // worker that reported after the manager's last turn (its notification has not reached the manager yet).
   // Without a handover it is an investigation that never opened a PR.
   const owned = latestPerBranch(facts.handovers.filter(x => reportsTo(x, node.id) || ownedBy(x, node.id, facts)))
-  if (agent.status === 'idle' ? (agent.children ?? 0) > 0 || (facts.open ?? []).some(o => o === node.id || (o.startsWith(node.id + '-') && /^\d+$/.test(o.slice(node.id.length + 1)))) : agent.status !== 'completed') return { state: 'running' }
+  if (agent.status === 'idle' ? (agent.children ?? 0) > 0 || (agent.childAt ?? 0) > (agent.at ?? 0) || (facts.open ?? []).some(o => o === node.id || (o.startsWith(node.id + '-') && /^\d+$/.test(o.slice(node.id.length + 1)))) : agent.status !== 'completed') return { state: 'running' }
   const last = lastLine(agent.answer)
   if (last.startsWith('BLOCKED:')) return { state: 'blocked', info: last }
   if (asksQuestion(agent.answer, facts.phrases) || isAsking(agent, facts) || last.startsWith('HANDOFF:')) return { state: 'running' }

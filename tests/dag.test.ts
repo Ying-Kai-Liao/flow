@@ -273,3 +273,13 @@ test('with two rows of one name the live one decides', async () => {
   const rows = [{ name: 'm', status: 'completed' }, { name: 'm', status: 'running' }]
   expect(agentFor('m', rows)?.status).toBe('running')
 })
+
+test('an idle manager is not done while a worker reported after the manager last acted', async () => {
+  const g = build([{ id: 'ev' }])
+  const idle = { name: 'ev', status: 'idle', answer: "I'm waiting for its report.", at: 100 }
+  const stateWith = (a: AgentFact) => stateOf(evaluate('main', g, { agents: [a], handovers: [] }), 'ev')
+  // The worker ended at 150, the manager has not been resumed with its notification yet.
+  expect(stateWith({ ...idle, childAt: 150 })).toBe('running')
+  // The manager acted after its last worker reported.
+  expect(stateWith({ ...idle, childAt: 90 })).toBe('done')
+})

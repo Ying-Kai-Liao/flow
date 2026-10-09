@@ -574,6 +574,8 @@ async function syncPlans(
   const agents: AgentFact[] = rows.map(a => ({
     name: a.name, status: a.status, answer: acts[a.id]?.answer,
     children: rows.filter(c => c.parentId === a.id && LIVE_STATUS.has(c.status)).length,
+    at: acts[a.id]?.lastAt,
+    childAt: Math.max(0, ...rows.filter(c => c.parentId === a.id).map(c => acts[c.id]?.lastAt ?? 0)),
   }))
   const known = { ...(await read($, seenAgents)) }
   const present = new Set(rows.map(a => a.name))

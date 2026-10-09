@@ -10,11 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Plan nodes of managers no longer fall back to "ready" or stay "running" forever. A manager
-  that ends its turn is `idle`, which the plan never counted as finished; it now does, once the
-  manager owns at least one handover, all of them are merged and no worker of its is still live.
-  An agent the host drops from its list keeps its last known state instead of reading as never
-  started. A handover with a wrong `report_to` still counts for the manager that owns its branch
-  (read from the session log). With two rows of one name, the live one decides.
+  that ends its turn is `idle`, which the plan never counted as finished; it now does, once its
+  last report is final, every handover it owns is merged, none of its workers is live or has
+  reported after the manager's last turn, and its own plan graph has nothing open (so an
+  investigation without a PR finishes too). An agent the host drops from its list keeps its last
+  known state instead of reading as never started. A handover with a wrong `report_to` still
+  counts for the manager that started its worker (read from the spawn log). With two rows of one
+  name, the live one decides.
 
 ## [0.3.31] - 2026-10-10
 
