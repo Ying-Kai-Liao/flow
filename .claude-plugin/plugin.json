@@ -90,6 +90,12 @@
       "description": "Comma-separated paths relative to the repo root that stay writable in the main checkout; one ending in / covers a directory.",
       "default": ".claude/"
     },
+    "max_continues": {
+      "type": "number",
+      "title": "Max continues",
+      "description": "After a branch has handed off this many times, the owning manager is told the package is too big and should be split. It only warns.",
+      "default": 2
+    },
     "worker_model": {
       "type": "string",
       "title": "Worker model",

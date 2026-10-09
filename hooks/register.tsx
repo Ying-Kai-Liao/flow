@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover, LogEvent, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, Handover, HandoffRecord, LogEvent, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
 import {
@@ -13,7 +13,7 @@ import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
-import { noteKey, ownerFor } from './state'
+import { buildDigest, findWorktree, noteKey, ownerFor } from './state'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
@@ -56,6 +56,7 @@ const overrideView = atom({ plugin: 'flow', key: 'overrideView' } as const, unde
 const hinted = atom({ plugin: 'flow', key: 'hinted' } as const, false)
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
+const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
 const prCache = atom({ plugin: 'flow', key: 'prCache' } as const, { prs: [], fetchedAt: 0 } as PrCache)
@@ -417,7 +418,7 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 // The pane's context meter marks this percent; the rest of the settings go into the prompts.
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number } & Guards {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   return {
@@ -426,6 +427,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     handoff: options.handoff !== false,
     mainGuard: options.main_checkout_guard !== false,
     mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
+    maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
     base: str('base_branch', base),
     testCommand: str('test_command', ''),
     fullCheck: str('full_check_command', ''),
@@ -734,6 +736,44 @@ async function best($: EngineInterface, what: string, fn: () => Promise<void>): 
 async function ownerOf($: EngineInterface, id: string | undefined): Promise<string> {
   if (id === undefined) return 'main'
   return (await $.agent.list()).find(a => a.id === id)?.name ?? 'main'
+}
+
+// A worker's HANDOFF: write the digest, log it, remember where its worktree is, and warn the owner when the
+// package keeps handing off. Best-effort throughout: a missing digest still leaves the record.
+async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, owner: string, maxContinues: number): Promise<void> {
+  const prior = (await readLog($)).filter(ev => ev.event === 'handoff' && ev.branch === branch)
+  // turn.complete can fire again for the same agent; count its handoff once.
+  if (prior.some(ev => ev.agent === me.name)) return
+  const count = prior.length + 1
+  let digestPath: string | undefined
+  await best($, 'writing a handoff digest', async () => {
+    const dir = await stateDir($)
+    if (dir === undefined) return
+    const msgs = await $.session.messages({ agentId: me.id })
+    if ('deny' in msgs) return
+    const path = `${dir}/handoffs/${branch.replaceAll('/', '-')}/${count}.md`
+    await $.process.run(['mkdir', '-p', path.slice(0, path.lastIndexOf('/'))])
+    await $.fs.write(path, buildDigest(msgs, branch, me.name))
+    digestPath = path
+  })
+  let wt: { path: string; head?: string } | undefined
+  await best($, 'finding the worktree', async () => {
+    const r = await $.process.run(['git', 'worktree', 'list', '--porcelain'])
+    if (r.exitCode === 0) wt = findWorktree(r.stdout, me.id, branch)
+  })
+  await appendLog($, { event: 'handoff', agent: me.name, owner, branch, text: digestPath })
+  const record: HandoffRecord = {
+    branch, agent: me.name, agentId: me.id, owner, at: await $.clock.now(), count,
+    ...(digestPath && { digestPath }), ...(wt && { worktree: wt.path, ...(wt.head && { head: wt.head }) }),
+  }
+  await update($, handoffs, hs => ({ ...hs, [branch]: record }))
+  if (count > maxContinues && me.parentId !== undefined) {
+    void $.ui.toast(`${branch} has handed off ${count} times: split it`)
+    await $.session.send({
+      to: { agentId: me.parentId },
+      text: `flow: ${branch} has handed off ${count} times (max_continues ${maxContinues}). The package is too big for one worker: split the Remaining part of its handoff note into smaller briefs instead of another plain continuation.`,
+    }).catch(() => undefined)
+  }
 }
 
 const FLOW_TYPES = new Set(['flow:manager', 'flow:worker', 'flow:queue'])
@@ -1709,6 +1749,12 @@ export const register: Register = (on, options) => {
           const last = e.answer.trim().split('\n').pop() ?? ''
           await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: last })
         })
+      }
+      // `HANDOFF: manager <name>` is a manager's own note, not a worker's branch.
+      const handedOff = /^HANDOFF:\s*(?!manager\b)(\S+)\s*$/.exec(e.answer.trim().split('\n').pop() ?? '')
+      if (me?.type === WORKER && handedOff?.[1] !== undefined) {
+        const owner = rows.find(a => a.id === me.parentId)?.name ?? 'main'
+        await best($, 'recording a handoff', () => recordHandoff($, me, handedOff[1] as string, owner, settings.maxContinues))
       }
       if (me?.type === QUEUE) await ensureQueue($)
     }

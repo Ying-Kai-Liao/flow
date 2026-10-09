@@ -88,6 +88,20 @@ export type SlotEntry = { key: string; name: string; label: string; since: numbe
 export type TestSlots = { holders: SlotEntry[]; waiters: SlotEntry[] }
 
 // One line of the state dir's log.jsonl. `handoff` and `continue` are defined for a later package.
+// Where a worker stood when it handed off; the successor reads it.
+export type HandoffRecord = {
+  branch: string
+  agent: string
+  agentId: string
+  owner: string
+  at: number
+  digestPath?: string
+  worktree?: string
+  head?: string
+  // Handoffs of this branch so far, this one included.
+  count: number
+}
+
 export type LogEvent = {
   ts: string
   event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'handoff' | 'continue' | 'note'
