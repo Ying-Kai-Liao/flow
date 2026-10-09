@@ -3,7 +3,7 @@ import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'clau
 
 import type { Activity, AgentRow, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
-import { ancestryQueries, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText } from './clean'
+import { ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
@@ -1327,8 +1327,7 @@ async function gatherClean($: EngineInterface, base: string): Promise<CleanGathe
   const hs = Object.values(await read($, handoffs))
   const continued = (await readLog($)).filter(l => l.event === 'continue')
   const cwdOf = new Map(hs.filter(h => h.takenBy !== undefined && h.worktree !== undefined).map(h => [h.takenBy!, h.worktree!]))
-  const waiting = new Set(hs.filter(h => h.worktree !== undefined && h.takenBy === undefined
-    && !continued.some(l => l.branch === h.branch && Date.parse(l.ts) >= h.at)).map(h => h.worktree!))
+  const waiting = waitingPaths(hs, continued, prs)
   const roster = (await $.agent.list()).map(a => ({
     id: a.id, live: isLive(a.status), ...(a.name !== undefined && { name: a.name }),
     ...(a.name !== undefined && cwdOf.has(a.name) && { cwd: cwdOf.get(a.name) }),
@@ -1340,7 +1339,26 @@ async function gatherClean($: EngineInterface, base: string): Promise<CleanGathe
   for (const s of Object.values(await read($, sessions))) {
     roster.push({ id: sessionKey(s.name), live: s.status === 'running' || s.status === 'reported', name: s.name, cwd: s.worktree })
   }
-  const partial = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting }
+  const partial: Omit<CleanInputs, 'ancestry'> = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting }
+  // Content equivalence for tips a merged PR of the branch family may have replaced (a rebase
+  // leaves the old commits behind): contained when every file they changed since the merge base
+  // has the very same tree entry on origin/<base>. Anything odd (quoted names, many files) is not.
+  const contained: Record<string, string[]> = {}
+  for (const sha of containedCandidates(partial)) {
+    const mb = (await run(['git', 'merge-base', sha, `origin/${base}`])).stdout.trim()
+    const diff = await run(['git', 'diff', '--name-only', '--no-renames', mb, sha])
+    const files = diff.stdout.split('\n').filter(Boolean)
+    if (!mb || diff.exitCode !== 0 || files.length > 200 || files.some(f => f.startsWith('"'))) continue
+    let same = true
+    for (const f of files) {
+      const [a, b] = await Promise.all([sha, `origin/${base}`].map(r => run(['git', 'ls-tree', r, '--', f])))
+      if (a!.exitCode !== 0 || b!.exitCode !== 0 || a!.stdout.trim() !== b!.stdout.trim()) { same = false; break }
+    }
+    if (!same) continue
+    const log = await run(['git', 'log', '--format=%h %s', `origin/${base}..${sha}`])
+    if (log.exitCode === 0) contained[sha] = log.stdout.split('\n').filter(Boolean)
+  }
+  partial.contained = contained
   const ancestry = new Set<string>()
   for (const q of ancestryQueries(partial)) {
     const [a, b] = q.split(' ')
@@ -1392,6 +1410,13 @@ async function sweep($: EngineInterface, base: string, apply: boolean, dryHint?:
       // A missing directory: prune drops the entry.
       if (w?.prunable) { removed.worktrees.push(path); continue }
       if (s.unlock.includes(path)) await git(['worktree', 'unlock', path])
+      // Untracked type links block a plain remove: unlink the links themselves (never followed). A real directory under that name is somebody's files: left for git to refuse.
+      for (const l of s.links[path] ?? []) {
+        const at = `${path}/${l}`
+        // `test -L` then `rm` (no trailing slash, no -r): removes the link, never its target.
+        const isLink = await $.process.run(['test', '-L', at], { timeoutMs: 10_000 }).then(r => r.exitCode === 0, () => false)
+        if (isLink) await $.process.run(['rm', '-f', '--', at], { timeoutMs: 10_000 }).catch(() => undefined)
+      }
       const r = await git(['worktree', 'remove', path])
       if (r.exitCode === 0) removed.worktrees.push(path)
       else {
@@ -1413,7 +1438,9 @@ async function sweep($: EngineInterface, base: string, apply: boolean, dryHint?:
     if (removed.worktrees.length || removed.branches.length) {
       await appendLog($, {
         event: 'clean', owner: 'main',
-        text: `removed ${[...removed.worktrees.map(p => `worktree ${p.split('/').pop()}`), ...removed.branches.map(b => `branch ${b}`)].join(', ')}`,
+        text: `removed ${[...removed.worktrees.map(p => `worktree ${p.split('/').pop()}`), ...removed.branches.map(b => `branch ${b}`)].join(', ')}`
+          + s.dropped.filter(d => (d.kind === 'worktree' ? removed.worktrees : removed.branches).includes(d.name))
+            .map(d => `; dropped unpushed in ${d.kind} ${d.name.split('/').pop()}: ${d.commits.join(' | ')}`).join(''),
       })
     }
     return sweepText(s, { applied: true, removed, failed, ...(note && { note }) })
