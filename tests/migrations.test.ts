@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from './support'
 import { analyze, findRefs, render, UNSET_TEXT } from '../hooks/migrations'
 import type { PrInput } from '../hooks/migrations'
 
