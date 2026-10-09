@@ -16,6 +16,8 @@ export type Activity = {
   log: string[]
   // The last turn's final text: a worker's report, or the question it ended on.
   answer?: string
+  // The latest turn.step's context fill; absent until the agent has taken one.
+  usage?: { tokens: number; model: string }
 }
 
 // A PR a manager handed to the merge queue (the handover tool), and what the queue did with it.

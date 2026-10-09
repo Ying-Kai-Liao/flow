@@ -30,10 +30,19 @@ anything.
 ## What you see
 
 - **The Flow pane** (`/flow`): the tree rooted at your main session (the super manager), with
-  the managers, what needs you first, and the PRs handed to the queue under it.
-  Click any agent to see its activity and its last report or question. The agents under it are
-  listed as buttons: click one to open it. **Message** starts a message to it in your prompt;
+  the managers, what needs you first, and the PRs handed to the queue under it. Every agent is
+  a card: status, role and name, time since it was last active, what it did last or the question
+  it asks (yellow), and underneath its description and how many agents it has under it.
+  Click a card to see the agent's activity and its last report or question. The agents under it
+  are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
+- **A context meter on each card**: `███│░░░░░░░ 42% · 84k/200k`, with `│` marking the warning
+  threshold (`context_warn_percent`). The meter turns yellow at or past the threshold and red
+  from 90%. Where an agent's usage isn't known yet it says `context ?`, never a guess. A
+  subagent's window is the main session's when it runs the same model, else 200k (1M for a
+  `[1m]` model).
+  On a short terminal the cards shrink to one-line rows (just `42%`), and `+N more` stands in
+  for rows that don't fit.
 - **The status line**: `flow: 2 managers · 3 workers · queue: 1 PR · /flow`.
 - **Toasts** when an agent finishes, asks a question, or a PR merges or comes back.
 
@@ -61,6 +70,7 @@ worker to fix X".
 | `merge_method` | `squash` | managers, when there is no queue |
 | `max_workers` | 3 | workers per manager at a time |
 | `worker_model` | `sonnet` | workers |
+| `context_warn_percent` | 40 | the pane's context meter: where the marker sits and the meter turns yellow (1 to 100) |
 | `base_branch` | the remote's default branch | everyone |
 
 An unset full check or deploy is a step that's skipped and reported, never improvised.

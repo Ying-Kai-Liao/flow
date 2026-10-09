@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-10-09
+
+### Added
+
+- Every agent in the Flow pane (the main root, managers, workers, the merge queue, and the
+  agents under one in its detail view) is a card with a context meter: a bar, percent and
+  tokens, with a marker at the warning threshold. The meter turns yellow past the threshold and
+  red from 90%; unknown usage shows `context ?`.
+- Option `context_warn_percent` (default 40, 1 to 100): where the meter's marker sits.
+
+### Changed
+
+- On a short terminal the cards shrink to one-line rows, and `+N more` shows what doesn't fit
+  instead of dropping it silently; the header and the root row stay visible.
+
 ## [0.2.4] - 2026-10-09
 
 ### Added
