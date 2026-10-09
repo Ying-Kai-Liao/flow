@@ -15,7 +15,7 @@ const handover = (branch: string, status: Handover['status'], at: number, extra:
   pr: 1, title: 't', head: 'abc1234def', branch, reportTo: 'm', verified: '', pending: '', afterDeploy: '', status, at, ...extra,
 })
 
-const stateOf = (g: Graph, id: string) => g[id].state
+const stateOf = (g: Graph, id: string) => g[id]!.state
 
 test('addNodes refuses cycles and names the path', async () => {
   const self = addNodes({}, [{ id: 'a', after: ['a'] }])
@@ -45,7 +45,7 @@ test('addNodes refuses unknown dependencies and duplicates, atomically', async (
   // A dependency within the same call is fine, whatever the order.
   const ok = addNodes(base, [{ id: 'c', after: ['b'] }, { id: 'b', after: ['a'] }])
   expect('graph' in ok && Object.keys(ok.graph)).toEqual(['a', 'c', 'b'])
-  expect('graph' in ok && ok.graph.b.until).toBe('merged')
+  expect('graph' in ok && ok.graph.b!.until).toBe('merged')
 })
 
 test('agentFor picks the newest continuation', async () => {
@@ -64,7 +64,7 @@ test('a worker node waits for its dependency, then is ready, running, done', asy
 
   const merged = evaluate('m', running, { agents: [{ name: 'a', status: 'completed' }], handovers: [handover('flow/a', 'done', 5, { sha: 'abc123' })] })
   expect([stateOf(merged, 'a'), stateOf(merged, 'b')]).toEqual(['done', 'ready'])
-  expect(merged.a.info).toBe('merged abc123')
+  expect(merged.a!.info).toBe('merged abc123')
 
   // Done is sticky, even when the facts disappear.
   expect(stateOf(evaluate('m', merged, EMPTY), 'a')).toBe('done')
@@ -76,7 +76,7 @@ test('a returned PR blocks, a continuation lifts it, the latest handover decides
   const done = { agents: [{ name: 'a', status: 'completed' }], handovers: [returned] }
   const blocked = evaluate('m', g, done)
   expect(stateOf(blocked, 'a')).toBe('blocked')
-  expect(blocked.a.info).toBe('PR returned: check failed')
+  expect(blocked.a!.info).toBe('PR returned: check failed')
   expect(stateOf(blocked, 'b')).toBe('waiting')
 
   const lifted = evaluate('m', blocked, { agents: [...done.agents, { name: 'a-2', status: 'running' }], handovers: [returned] })
@@ -103,7 +103,7 @@ test('a manager node is done when it finished cleanly and its PRs are merged', a
 
   expect(stateOf(ev([{ name: 'csv', status: 'running' }]), 'csv')).toBe('running')
   expect(stateOf(ev(finished('All merged.')), 'csv')).toBe('done')
-  expect(ev(finished('All merged.')).csv.info).toBe('completed')
+  expect(ev(finished('All merged.')).csv!.info).toBe('completed')
   expect(stateOf(ev(finished('All merged.')), 'login')).toBe('ready')
 
   expect(stateOf(ev(finished('Shall I go on?')), 'csv')).toBe('running')
@@ -114,7 +114,7 @@ test('a manager node is done when it finished cleanly and its PRs are merged', a
   const pending = handover('flow/p1', 'pending', 1, { reportTo: 'csv' })
   expect(stateOf(ev(finished('ok'), [pending]), 'csv')).toBe('running')
   const merged = handover('flow/p1', 'done', 2, { reportTo: 'csv-2', sha: 'abc' })
-  expect(ev(finished('ok'), [pending, merged]).csv.info).toBe('merged abc')
+  expect(ev(finished('ok'), [pending, merged]).csv!.info).toBe('merged abc')
   expect(stateOf(ev(finished('ok'), [pending, merged]), 'csv')).toBe('done')
   expect(stateOf(ev(finished('ok'), [merged, handover('flow/p2', 'returned', 3, { reportTo: 'csv' })]), 'csv')).toBe('blocked')
   // Handovers for other managers do not count.
@@ -135,10 +135,10 @@ test('until reported: idle with a plain answer is done, a question is not', asyn
 
 test('manual wins over the facts', async () => {
   const g = build([{ id: 'a' }, { id: 'b', after: ['a'] }])
-  g.a = { ...g.a, manual: 'done' }
+  g.a = { ...g.a!, manual: 'done' }
   const ev = evaluate('m', g, { agents: [{ name: 'a', status: 'failed' }], handovers: [] })
   expect([stateOf(ev, 'a'), stateOf(ev, 'b')]).toEqual(['done', 'ready'])
-  g.a = { ...g.a, manual: 'blocked' }
+  g.a = { ...g.a!, manual: 'blocked' }
   expect(stateOf(evaluate('m', g, EMPTY), 'a')).toBe('blocked')
 })
 
@@ -156,7 +156,7 @@ test('settle sends one notice per owner for 15 nodes ready at once, and none on 
   const text = noticeText(main)
   expect(text).toContain('flow plan: base is done (completed).')
   expect(text).toContain('Start 3 now and let the other 12 wait for a free manager slot')
-  expect(first.plan.main.t0.readyNotified).toBe(true)
+  expect(first.plan.main!.t0!.readyNotified).toBe(true)
 
   const second = settle(first.plan, facts, { slots: 3 })
   expect(second.notices).toEqual([])
@@ -167,13 +167,13 @@ test('settle notices blocked nodes once, and again after they recover and fail a
   const plan: Plan = { m: build([{ id: 'a' }]) }
   const failed: Facts = { agents: [{ name: 'a', status: 'failed' }], handovers: [] }
   const first = settle(plan, failed)
-  expect(first.notices[0].blocked.map(n => n.id)).toEqual(['a'])
-  expect(noticeText(first.notices[0])).toContain('Blocked: a (agent failed)')
+  expect(first.notices[0]!.blocked.map(n => n.id)).toEqual(['a'])
+  expect(noticeText(first.notices[0]!)).toContain('Blocked: a (agent failed)')
   expect(settle(first.plan, failed).notices).toEqual([])
   const live = settle(first.plan, { agents: [{ name: 'a', status: 'failed' }, { name: 'a-2', status: 'running' }], handovers: [] })
   expect(live.notices).toEqual([])
   const again = settle(live.plan, failed)
-  expect(again.notices[0].blocked.map(n => n.id)).toEqual(['a'])
+  expect(again.notices[0]!.blocked.map(n => n.id)).toEqual(['a'])
 })
 
 test('noticeText for a single ready node and no free slot', async () => {

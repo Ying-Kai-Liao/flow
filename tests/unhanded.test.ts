@@ -1,5 +1,6 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 import { unhandedPrs } from '../hooks/register'
 import type { Activity, AgentRow, Handover, OpenPr } from '../types'
 
@@ -45,7 +46,7 @@ test('a worker that ended inside the grace period is not flagged yet, after it i
 const RUN = (exitCode: number, stdout: string, stderr = '') =>
   ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const
-const hostStubs = (on: Parameters<Parameters<typeof test>[1]>[1]) => {
+const hostStubs = (on: Parameters<TestBody>[1]) => {
   on('agent.list', () => ({ value: [] as AgentInfo[] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))

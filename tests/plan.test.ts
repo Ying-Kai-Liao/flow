@@ -1,5 +1,6 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 const run = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 const pr = (branch: string) => JSON.stringify({ state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: branch, title: `PR ${branch}` })
@@ -7,7 +8,7 @@ const pr = (branch: string) => JSON.stringify({ state: 'OPEN', isDraft: false, h
 type Sent = { to: string; text: string }
 
 // A session with a manager "csv-export" (m1) and whatever else the test pushes onto `agents`.
-function session(on: Parameters<Parameters<typeof test>[1]>[1], branch = 'flow/csv') {
+function session(on: Parameters<TestBody>[1], branch = 'flow/csv') {
   const clock = mock.clock(on, { now: 1_000_000 })
   const agents: AgentInfo[] = [
     { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
