@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.18] - 2026-10-09
+
+### Fixed
+
+- The Flow pane was blank whenever a PR had been handed over: the Merge queue rows used a callback
+  parameter named `h`, which shadowed the JSX factory, so every draw threw `h is not a function`.
+  The parameter is renamed, and a new test fails if any `hooks/*.tsx` scope containing JSX binds `h`.
+- If drawing the pane throws, it now shows `flow: pane failed to draw: <message>` instead of nothing.
+
 ## [0.3.17] - 2026-10-09
 
 ### Added

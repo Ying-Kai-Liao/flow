@@ -408,3 +408,42 @@ test('a completed agent whose report ends with HANDOFF shows "handed off", other
     expect(await statusText($)).toMatch(/fix-login.*\| handed off → flow\/fix-login/)
   } finally { TREE[1]!.status = 'running' }
 })
+
+// The Merge queue rows are JSX inside a map over the handovers; a parameter there named `h`
+// once shadowed the JSX factory and blanked the whole pane, but only while a handover existed.
+test('the pane draws a Merge queue row for every handover status', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const titles: Record<string, string> = { '7': 'Export CSV', '8': 'Fix login', '9': 'Update docs', '10': 'Bump deps' }
+  on('agent.list', () => ({ value: [
+    { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
+    { id: 'q1', name: 'queue', description: 'q', type: 'flow:queue', status: 'running' },
+  ] as AgentInfo[] }))
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'q1' }))
+  on('process.run', (_, e) => {
+    const pr = e.argv[3] ?? ''
+    const view = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: `flow/p${pr}`, title: titles[pr] }
+    return { value: { exitCode: 0, stdout: JSON.stringify(view), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+
+  for (const pr of [7, 8, 9, 10]) {
+    await $.tool.call({ tool: 'mcp__flow__handover', pr, verified: 'x', report_to: 'csv-export', agentId: 'm1' } as never)
+  }
+  await $.tool.call({ tool: 'mcp__flow__queue', action: 'take', pr: 8, agentId: 'q1' } as never)
+  await $.tool.call({ tool: 'mcp__flow__queue', action: 'done', pr: 9, sha: 'abc1234', report: 'ok', agentId: 'q1' } as never)
+  await $.tool.call({ tool: 'mcp__flow__queue', action: 'back', pr: 10, reason: 'head moved', agentId: 'q1' } as never)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'flow', surface, ...PANE })
+    expect(await ui.find({ text: /failed to draw/ })).toBeUndefined()
+    expect(await ui.find({ text: /Merge queue/ })).toBeDefined()
+    expect(await ui.find({ text: /#7 pending/ })).toBeDefined()
+    expect(await ui.find({ text: /#8 taken/ })).toBeDefined()
+    expect(await ui.find({ text: /#9 done/ })).toBeDefined()
+    expect(await ui.find({ text: /#10 returned: head moved/ })).toBeDefined()
+    expect(await ui.find({ text: /Export CSV/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
