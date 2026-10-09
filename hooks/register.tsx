@@ -3192,13 +3192,14 @@ export const register: Register = (on, options) => {
     // Same standing-answer check as ask: a fresh question a rule matches is answered at once, so it is not
     // open, never gates the manager and stays out of the round.
     const { rules } = await loadRules($, options)
-    // A filing is often sent again whole, and an answered question no longer dedupes in addQuestions: one a
-    // rule already answered for this manager is reported again, not stored again.
+    // A filing is often sent again whole, and an answered question no longer dedupes in addQuestions: one
+    // already answered for this manager (by a rule or by main) is reported again, not stored again, so it
+    // neither re-gates the manager nor asks the user twice.
     const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase()
     const { added, auto, earlier } = parsed.questions.length === 0 ? { added: [], auto: new Map() as AutoHits, earlier: [] as string[] } : await withInbox($, cur => {
-      const before = (text: string) => cur.items.find(x => x.owner === name && x.state === 'answered' && x.answeredBy === AUTO && norm(x.question) === norm(text))
+      const before = (text: string) => cur.items.find(x => x.owner === name && x.state === 'answered' && norm(x.question) === norm(text))
       const fresh = parsed.questions.filter(a => before(a.question) === undefined)
-      const earlier = parsed.questions.flatMap(a => { const x = before(a.question); return x === undefined ? [] : [`${x.id} by standing answer ${x.rule ?? '?'}: ${x.answer ?? ''}`] })
+      const earlier = parsed.questions.flatMap(a => { const x = before(a.question); return x === undefined ? [] : [`${x.id} already answered${x.answeredBy === AUTO ? ` by standing answer ${x.rule ?? '?'}` : ''}: ${x.answer ?? ''}`] })
       const r = autoAnswer(cur, addQuestions(cur, { name, id: e.agentId, isManager: true }, 'main', fresh, at), rules, at)
       return { inbox: r.inbox, out: { added: r.added, auto: r.hits, earlier } }
     })
@@ -3206,7 +3207,7 @@ export const register: Register = (on, options) => {
     const kept = added.filter(a => !auto.has(a.q.id))
     const ids = { asked: kept.map(a => a.q.id), blocking: kept.filter(a => a.q.blocking).map(a => a.q.id) }
     const answered = [...earlier, ...added.filter(a => auto.has(a.q.id)).map(a => `${a.q.id} by standing answer ${auto.get(a.q.id)!.rid}: ${auto.get(a.q.id)!.answer}`)]
-    const answeredLine = answered.length > 0 ? ` Answered by standing answer, carry on from them: ${answered.join('; ')}.` : ''
+    const answeredLine = answered.length > 0 ? ` Answered, carry on from them: ${answered.join('; ')}.` : ''
     const late = await withPreflight($, cur => {
       const f = followUp(recordFiling(cur, name, parsed.filing, ids, at), name)
       return { state: f.state, out: f.send ? f.state : undefined }

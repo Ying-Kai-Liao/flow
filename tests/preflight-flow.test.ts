@@ -298,3 +298,18 @@ test('a pre-flight whose only blocking question matches a rule is not gated', as
   expect(await worker($, 'a1')).not.toContain('pre-flight')
   expect(storedItems(w)[0]).toMatchObject({ state: 'answered' })
 })
+
+test('re-filing after main answered a blocking question reports the answer and does not gate again', async ($, on) => {
+  const w = world(on)
+  await manager($, 'csv')
+  await file($, 'a1', { questions: [BLOCK] })
+  await answer($, { answers: [{ id: 'q1', choice: 'b' }] })
+  expect(await worker($, 'a1')).not.toContain('pre-flight')
+
+  const r = await file($, 'a1', { questions: [BLOCK], summary: 'new plan' })
+  expect(r).toContain('Start your workers now')
+  expect(r).toContain('q1 already answered: tsv')
+  expect(storedItems(w).length).toBe(1)
+  expect(storedItems(w).filter(q => q.state === 'open').length).toBe(0)
+  expect(await worker($, 'a1', 'w3')).not.toContain('pre-flight')
+})
