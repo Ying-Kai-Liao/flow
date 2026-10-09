@@ -17,6 +17,18 @@ export function ownerFor(events: LogEvent[], match: { pr?: number; branch?: stri
   return undefined
 }
 
+// branch -> the manager that started its worker. A handover's own owner is its report_to, which a
+// worker may get wrong; the spawn (and continue/handoff) records are not.
+export function branchOwners(events: LogEvent[]): Record<string, string> {
+  const owners: Record<string, string> = {}
+  for (const e of events) {
+    if (e.owner === undefined) continue
+    if (e.event === 'spawn' && e.agent !== undefined) owners[`flow/${e.agent.replace(/-\d+$/, '')}`] = e.owner
+    if ((e.event === 'continue' || e.event === 'handoff') && e.branch !== undefined) owners[e.branch] = e.owner
+  }
+  return owners
+}
+
 type Msg = { role: string; text: string; toolUses?: { tool: string; input: Record<string, unknown>; text?: string; isError?: true }[] }
 
 // The old session's working set, read from its transcript: what it touched and ran, not only what it wrote down.

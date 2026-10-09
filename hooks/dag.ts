@@ -7,8 +7,9 @@ export type Plan = Record<string, Graph>
 
 // `children`: how many live agents work under this one (a manager with workers is not finished).
 export type AgentFact = { name?: string; status: string; answer?: string; children?: number }
-// `owners`: branch -> the manager that handed it over, from the session log; it survives a wrong report_to.
-export type Facts = { agents: AgentFact[]; handovers: Handover[]; phrases?: string[]; asking?: string[]; owners?: Record<string, string> }
+// `owners`: branch -> the manager that started its worker, from the session log; it survives a wrong report_to.
+// `open`: owners whose own plan graph still has waiting, ready or running nodes (settle fills it in).
+export type Facts = { agents: AgentFact[]; handovers: Handover[]; phrases?: string[]; asking?: string[]; owners?: Record<string, string>; open?: string[] }
 
 export type NodeInput = { id: string; title?: string; after?: string[]; until?: 'merged' | 'reported' }
 
@@ -164,10 +165,10 @@ function judge(owner: string, node: DagNode, facts: Facts): Verdict {
   if (!agent) return undefined
   if (failed) return { state: 'blocked', info: `agent ${agent.status}` }
   // A background manager that is done with its turn sits 'idle' (the host does not complete it), so
-  // idle counts as finished, but only once it owns a handover and has no live workers: before that
-  // it is merely waiting for a worker.
+  // idle counts as finished unless it has live workers or work still planned in its own graph.
+  // Without a handover it is an investigation that never opened a PR.
   const owned = latestPerBranch(facts.handovers.filter(x => reportsTo(x, node.id) || ownedBy(x, node.id, facts)))
-  if (agent.status === 'idle' ? owned.length === 0 || (agent.children ?? 0) > 0 : agent.status !== 'completed') return { state: 'running' }
+  if (agent.status === 'idle' ? (agent.children ?? 0) > 0 || (facts.open ?? []).some(o => o === node.id || (o.startsWith(node.id + '-') && /^\d+$/.test(o.slice(node.id.length + 1)))) : agent.status !== 'completed') return { state: 'running' }
   const last = lastLine(agent.answer)
   if (last.startsWith('BLOCKED:')) return { state: 'blocked', info: last }
   if (asksQuestion(agent.answer, facts.phrases) || isAsking(agent, facts) || last.startsWith('HANDOFF:')) return { state: 'running' }
@@ -220,6 +221,8 @@ export function evaluate(owner: string, graph: Graph, facts: Facts): Graph {
 export function settle(plan: Plan, facts: Facts, opts: { slots?: number } = {}): { plan: Plan; notices: Notice[] } {
   const next: Plan = {}
   const notices: Notice[] = []
+  const open = Object.entries(plan).filter(([, g]) => Object.values(g).some(n => n.state === 'waiting' || n.state === 'ready' || n.state === 'running')).map(([o]) => o)
+  facts = { ...facts, open: facts.open ?? open }
   for (const [owner, graph] of Object.entries(plan)) {
     const evaluated = evaluate(owner, graph, facts)
     const ready: DagNode[] = []

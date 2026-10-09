@@ -36,7 +36,7 @@ import {
   screenHash, SESSION, sessionKey, sessionLine, sessionRow, tmuxName,
 } from './sessions'
 import type { Digest, HarnessSpec, Limit } from './sessions'
-import { buildDigest, findWorktree, noteKey, ownerFor } from './state'
+import { branchOwners, buildDigest, findWorktree, noteKey, ownerFor } from './state'
 import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
@@ -580,8 +580,7 @@ async function syncPlans(
   for (const a of agents) if (a.name !== undefined) known[a.name] = a
   for (const [name, a] of Object.entries(known)) if (!present.has(name)) agents.push(a)
   if (JSON.stringify(known) !== JSON.stringify(await read($, seenAgents))) await update($, seenAgents, () => known)
-  const owners: Record<string, string> = {}
-  for (const e of await readLog($)) if ((e.event === 'handover' || e.event === 'continue') && e.branch !== undefined && e.owner !== undefined) owners[e.branch] = e.owner
+  const owners = branchOwners(await readLog($))
   const facts: Facts = {
     agents, owners,
     handovers: Object.values(hs),
