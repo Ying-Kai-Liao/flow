@@ -146,7 +146,7 @@ test('standing answers skip a deploy approval unless a rule names the kind', () 
   const opted = parseRules([{ match: 'Deploy', answer: 'deploy', blocking: true, kinds: ['deploy'] }], 'personal', 'f', [])
   expect(matchRule(opted, q)?.answer).toBe('deploy')
   // A rule limited to deploy items does not answer ordinary questions.
-  const ordinary = { question: 'Deploy now?', options: ['deploy', 'not now'], blocking: true, owner: 'w' }
+  const ordinary = { question: 'Deploy now?', options: ['deploy', 'not now'], default: 'not now', blocking: true, owner: 'w' }
   expect(matchRule(opted, ordinary)).toBeUndefined()
   expect('error' in validateRule({ topic: 't', answer: 'a', kinds: 5 })).toBe(true)
   expect(validateRule({ topic: 't', answer: 'a', kinds: 'deploy' })).toMatchObject({ rule: { kinds: ['deploy'] } })

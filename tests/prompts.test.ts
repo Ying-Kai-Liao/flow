@@ -97,7 +97,7 @@ test('the queue retries infrastructure failures within fixed bounds', () => {
   expect(q).toContain(`${PUSH_RETRY_BACKOFF}) for at most ${PUSH_RETRY_MINUTES} minutes`)
   expect(q).toContain('push to main failed for 20 minutes (infrastructure); PR unchanged, hand it over again')
   expect(q).toContain('push retries: <n>')
-  const h = deploySection({ deployCommand: '', deployTargets: [{ name: 'p', backup: [], deploy: ['d'], healthUrl: 'https://x/h', verify: [] }] })
+  const h = deploySection({ deployCommand: '', deployTargets: [{ name: 'p', mode: 'auto', backup: [], deploy: ['d'], healthUrl: 'https://x/h', verify: [] }] })
   expect(h).toContain(`wait ${HEALTH_FIRST_WAIT_SECONDS}s after the deploy`)
   expect(h).toContain(`at most ${HEALTH_RETRY_MINUTES} minutes`)
 })

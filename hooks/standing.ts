@@ -123,7 +123,7 @@ export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answ
     const { rule } = r
     if (rule.escalate === true || !applies(r, q)) continue
     // A deploy approval is the user's call: only a rule that names the kind may answer it.
-    const kind = q.kind ?? 'ask'
+    const kind = q.kind === undefined || q.kind === 'question' ? 'ask' : q.kind
     if (kind === 'deploy' && rule.kinds?.includes('deploy') !== true) continue
     if (rule.kinds !== undefined && !rule.kinds.includes(kind)) continue
     if (rule.answer === DEFAULT_WORD) {

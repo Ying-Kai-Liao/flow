@@ -192,7 +192,9 @@ export type LogEvent = {
 export type Question = {
   id: string
   // Absent: a question. 'fyi': a decision the agent took itself (question = the decision, context = why); non-blocking, overturnable.
-  kind?: 'question' | 'fyi'
+  // 'deploy' asks the user to approve one deploy target at one sha; standing answers never answer it
+  // (unless a rule names the kind), and no agent waits for the reply.
+  kind?: 'question' | 'fyi' | 'deploy'
   // The asking agent's name, and who answers: a worker's manager, or "main" for a manager.
   owner: string
   addressee: string
@@ -202,9 +204,6 @@ export type Question = {
   blocking: boolean
   context?: string
   topic?: string
-  // What kind of item: absent is an ordinary question. "deploy" asks the user to approve one deploy
-  // target at one sha; standing answers never answer it, and no agent waits for the reply.
-  kind?: 'deploy'
   askedAt: number
   state: 'open' | 'answered'
   answer?: string
