@@ -90,9 +90,9 @@ add login-redirect  after: csv-export
   hint on how to open that agent's chat. Known limit: if you act while viewing agent X, go to main
   without acting, and reopen X, the pane doesn't re-follow X until you act on main or open another agent.
 - **A context meter on each card**: `███│░░░░░░░ 42%   1m 43s · ↓ 84.0k tokens`, with `│` marking the warning
-  threshold (the lower of `context_warn_tokens` and `context_warn_percent`). The meter turns the theme's warning color at or past the threshold and its error
+  threshold (`context_warn_percent`, or `context_warn_percent_1m` on a 1M window, capped by `context_warn_tokens` when that is set). The meter turns the theme's warning color at or past the threshold and its error
   color from 90%. The time runs while the agent runs and freezes when it ends. Where an agent's usage isn't known yet it says `context ?` and shows no tokens, never a guess. A
-  subagent's window is the main session's when it runs the same model, else 200k (1M for a
+  subagent's window is the one it was started with (1M when spawned with a `[1m]` model); otherwise the main session's when it runs the same model, else 200k (1M for a
   `[1m]` model).
   On a short terminal the cards shrink to one-line rows (just `42%`), and `+N more` stands in
   for rows that don't fit.
@@ -103,9 +103,9 @@ add login-redirect  after: csv-export
 ## Continuing work
 
 **Handoff.** When a worker or manager reaches the limit (once per agent; the queue never gets it),
-the plugin tells it to wrap up and shows a toast. The limit is the lower of `context_warn_tokens`
-(default 350000) and `context_warn_percent` (default 40) of the agent's window, so a 1M model hands
-off at 350k tokens and a 200k model at 80k. The wrap-up reaches the agent two ways: a message (read
+the plugin tells it to wrap up and shows a toast. The limit is `context_warn_percent` (default 40) of the agent's window, or
+`context_warn_percent_1m` (default 35) on a 1M window, so a 1M model hands off at 350k tokens and a
+200k model at 80k. `context_warn_tokens` (default 0, off) is an optional absolute cap over both. The wrap-up reaches the agent two ways: a message (read
 when the agent is idle or waiting) and a reminder appended to a tool result (read mid-turn: on the
 first tool call past the limit, every 10th after, and when usage rises another 10 points). Nothing
 is denied or interrupted. After a compaction the reminders stop until the next crossing. The window
@@ -318,7 +318,8 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
-| `context_warn_tokens` | 350000 | `/config`, file | the context limit in tokens; the lower of the two applies, so a 200k model still hands off at 80k. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
+| `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
+| `context_warn_tokens` | 0 | `/config`, file | an optional cap in tokens over both percents; the lower applies. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
 | `handoff` | on | `/config`, file | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
 | `base_branch` | the remote's default branch | `/config`, file | everyone |
 | `main_checkout_guard` | on | `/config`, file | every agent and the main session: writes to the main checkout are refused (see Guards) |

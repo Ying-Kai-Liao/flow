@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.3.20",
+  "version": "0.3.21",
   "description": "The orca-flow pattern in one Claude Code session: a super manager starts managers, managers start workers in their own git worktrees, a merge queue merges and deploys; a Flow pane shows the tree",
   "author": {
     "name": "Ying-Kai Liao"
@@ -63,14 +63,20 @@
     "context_warn_percent": {
       "type": "number",
       "title": "Context warning",
-      "description": "The Flow pane marks this percent of the context window on each agent's meter, and the meter turns yellow at or past it (1 to 100).",
+      "description": "The Flow pane marks this percent of the context window on each agent's meter, and the meter turns yellow at or past it (1 to 100). Applies to windows under 1M.",
       "default": 40
+    },
+    "context_warn_percent_1m": {
+      "type": "number",
+      "title": "Context warning, 1M window",
+      "description": "The same as the context warning, for agents on a 1M window (a [1m] model). The 200k percent never applies to them (1 to 100).",
+      "default": 35
     },
     "context_warn_tokens": {
       "type": "number",
       "title": "Context limit in tokens",
-      "description": "Hand off at this many tokens, or at the percent of the window above when that is lower (0 = percent only). Also places the meter marker.",
-      "default": 350000
+      "description": "An optional cap over both percents: hand off at this many tokens, or at the percent of the window when that is lower (0 = off, percent only). Also places the meter marker.",
+      "default": 0
     },
     "handoff": {
       "type": "boolean",

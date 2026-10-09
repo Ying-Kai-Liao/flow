@@ -366,32 +366,39 @@ function modelKey(model: string): string {
 // A subagent reports no window of its own: borrow the main session's when it runs the same model
 // (compared by modelKey), else 200k, or 1M for a `[1m]` model id. Tokens past the assumed window
 // prove the window is the 1M one, so a guess is never shown past 100%.
-function windowOf(model: string, mainModel: string | undefined, mainWindow: number | undefined, tokens = 0): number {
-  const window = mainWindow !== undefined && mainModel !== undefined && modelKey(model) === modelKey(mainModel) ? mainWindow
+// `spawned` is the window the agent was started with (see the agent.spawn hook); it wins over the guess.
+function windowOf(model: string, mainModel: string | undefined, mainWindow: number | undefined, tokens = 0, spawned?: number): number {
+  const window = spawned !== undefined ? spawned : mainWindow !== undefined && mainModel !== undefined && modelKey(model) === modelKey(mainModel) ? mainWindow
     : model.includes('[1m]') ? LARGE_WINDOW : DEFAULT_WINDOW
   return tokens > window ? Math.max(window, LARGE_WINDOW) : window
 }
 
-// The trigger: the lower of the token setting and the percent of the window, so a 200k model
-// still hands off at the percent when the token limit is far above its window.
-function thresholdOf(s: { contextWarn: number; contextWarnTokens: number }, window: number): number {
-  const byPercent = Math.round(window * s.contextWarn / 100)
+type WarnSettings = { contextWarn: number; contextWarn1m: number; contextWarnTokens: number }
+
+// The percent in force: a 1M window has its own, so the 200k percent never applies to it.
+function windowPercent(s: WarnSettings, window: number): number {
+  return window >= LARGE_WINDOW ? s.contextWarn1m : s.contextWarn
+}
+
+// The trigger: the percent of the window, capped by the token setting when that is set.
+function thresholdOf(s: WarnSettings, window: number): number {
+  const byPercent = Math.round(window * windowPercent(s, window) / 100)
   return s.contextWarnTokens > 0 ? Math.min(s.contextWarnTokens, byPercent) : byPercent
 }
 
 // The same threshold as a percent of the window, for the meter's marker and colour.
-function warnPercent(s: { contextWarn: number; contextWarnTokens: number }, window: number): number {
+function warnPercent(s: WarnSettings, window: number): number {
   return Math.min(100, Math.max(1, Math.round(thresholdOf(s, window) / window * 100)))
 }
 
 // What the threshold is called in a message: "40%" or "100k tokens".
-function limitLabel(s: { contextWarn: number; contextWarnTokens: number }, window: number): string {
-  return s.contextWarnTokens > 0 && s.contextWarnTokens < Math.round(window * s.contextWarn / 100)
-    ? `${tokensLabel(s.contextWarnTokens)} tokens` : `${s.contextWarn}%`
+function limitLabel(s: WarnSettings, window: number): string {
+  return s.contextWarnTokens > 0 && s.contextWarnTokens < Math.round(window * windowPercent(s, window) / 100)
+    ? `${tokensLabel(s.contextWarnTokens)} tokens` : `${windowPercent(s, window)}%`
 }
 
 // The threshold in tokens for the meter, only when the token limit is the one in force.
-function limitTokens(s: { contextWarn: number; contextWarnTokens: number }, window: number): string | undefined {
+function limitTokens(s: WarnSettings, window: number): string | undefined {
   return limitLabel(s, window).endsWith('tokens') ? tokensLabel(s.contextWarnTokens) : undefined
 }
 
@@ -456,7 +463,7 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number } & Guards {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
@@ -465,7 +472,8 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
   const harnesses = harnessesOf(options.harnesses)
   return {
     contextWarn: Math.min(100, Math.max(1, Math.round(num('context_warn_percent', 40)))),
-    contextWarnTokens: Math.max(0, Math.round(num('context_warn_tokens', 350000))),
+    contextWarn1m: Math.min(100, Math.max(1, Math.round(num('context_warn_percent_1m', 35)))),
+    contextWarnTokens: Math.max(0, Math.round(num('context_warn_tokens', 0))),
     handoff: options.handoff !== false,
     mainGuard: options.main_checkout_guard !== false,
     mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
@@ -1372,7 +1380,7 @@ async function wrapUpReminder($: EngineInterface, e: { agentId?: string }, r: an
     if (id === undefined || !settings.handoff || r.deny !== undefined) return r
     const a = (await read($, activity))[id]
     if (a?.handoffNotifiedAt === undefined || a.usage === undefined) return r
-    const window = windowOf(a.usage.model, mainModel, mainWindow, a.usage.tokens)
+    const window = a.usage.window ?? windowOf(a.usage.model, mainModel, mainWindow, a.usage.tokens, a.spawnWindow)
     const percent = Math.min(100, Math.round(a.usage.tokens / window * 100))
     const calls = (a.callsPastLimit ?? 0) + 1
     const due = calls === 1 || calls % 10 === 0 || percent >= (a.remindedPercent ?? a.handoffPercent ?? percent) + 10
@@ -2290,8 +2298,12 @@ export const register: Register = (on, options) => {
     if ('agentId' in started && started.agentId !== undefined) {
       const t = await $.clock.now()
       const id = started.agentId
+      // Recorded only for a `[1m]` model finally used (after the refused-[1m] fallback). A plain
+      // model leaves it unset: its window may be the main session's, which windowOf borrows.
+      const used = ev.model ?? wanted
+      const spawnWindow = typeof used === 'string' && used.includes('[1m]') ? LARGE_WINDOW : undefined
       await update($, activity, acts => ({
-        ...acts, [id]: { startedAt: t, lastAt: t, log: [`started: ${e.description}`] },
+        ...acts, [id]: { startedAt: t, lastAt: t, log: [`started: ${e.description}`], ...(spawnWindow !== undefined && { spawnWindow }) },
       }))
       await refresh($)
       void openPane($)
@@ -2622,14 +2634,15 @@ export const register: Register = (on, options) => {
         // The API's id usually lacks `[1m]`; keep the engine's when it has it, or the window is guessed at 200k.
         const model = e.model.includes('[1m]') ? e.model : r.usage.model || e.model
         const t = await $.clock.now()
+        const spawned = (await read($, activity))[id]?.spawnWindow
+        const window = windowOf(model, mainModel, mainWindow, tokens, spawned)
         await update($, activity, acts => {
           const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
-          return { ...acts, [id]: { ...a, usage: { tokens, model } } }
+          return { ...acts, [id]: { ...a, usage: { tokens, model, ...(spawned !== undefined && { window }) } } }
         })
         // Tell a worker or manager once when it reaches the threshold. Marked before it is sent, so a
         // send that fails (the agent already ended) is not retried every step. Below it again (the
         // agent compacted) the mark clears, so a later crossing tells it again.
-        const window = windowOf(model, mainModel, mainWindow, tokens)
         const percent = Math.min(100, Math.round(tokens / window * 100))
         const past = tokens >= thresholdOf(settings, window)
         const was = (await read($, activity))[id]
