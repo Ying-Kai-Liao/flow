@@ -2,7 +2,9 @@
 
 The orca-flow pattern inside one Claude Code session, with nothing else installed: no Orca, no
 tmux. You talk to the main session; it runs the work through managers, workers and one merge
-queue, and a pane shows the whole tree.
+queue, and a pane shows the whole tree. When Orca or tmux is there, a manager can also run a
+worker in another harness (Codex, Gemini, OpenCode, Claude on its own, or any CLI) in a terminal
+you can watch.
 
 ```
 you ── main session (super manager)
@@ -136,6 +138,71 @@ without a PR (merged or closed ones are skipped) and leftover worktrees with unc
 unpushed work, then has the main session start one `resume-<slug>` manager per task (up to `max_managers`
 at a time). Work owned by a live agent, or already resumed in this session, is not listed again.
 
+## Workers in other harnesses
+
+A manager can run a worker outside this session, in any harness, with `mcp__flow__session`: when
+the task asks for one ("do the UI part with codex"), or for every worker when `worker_harness`
+names a harness. Every harness is driven through its terminal with the same controls, so one that
+flow knows nothing about (harness `command`, or one added in `harnesses`) is as controllable as a
+built-in.
+
+| Action | What it does, for any harness |
+|---|---|
+| `start` (name, brief, harness, host?, command?) | worktree on `flow/<name>` from the base, a terminal in it, the harness started with the worker rules and the brief |
+| `send` (name, text) | types a message and submits it (a bracketed paste in tmux, so multi-line text stays whole) |
+| `keys` (name, keys) | presses keys: `"1"`, `"y enter"`, `"escape"`, `"interrupt"` (Ctrl-C), `"down down enter"`; named keys are enter, escape, interrupt, tab, up, down, left, right, backspace, space, anything else is typed |
+| `read` (name, lines?) | the end of its terminal |
+| `restart` (name) | a fresh shell in the same tmux pane (`respawn-pane -k`) or a new Orca terminal, then the harness's resume line, or its start line with the same prompt when it has none |
+| `list` | every session, its harness, host, state and worktree |
+| `stop` (name, remove_worktree?) | closes the terminal; removes the worktree only when it is clean and pushed |
+
+- **Where.** In an Orca terminal (`orca worktree create`, then `orca terminal create`) or a
+  detached tmux session (`git worktree add` under `.claude/worktrees/`; watch it with
+  `tmux attach -t flow-<name>`). `session_host` `auto` takes Orca when its runtime answers, else
+  tmux; a manager can name one per worker.
+- **What it watches, the same for every harness.**
+  - The report file: the worker writes `<git-common-dir>/flow/sessions/<name>/report.md`
+    (rewritten each time); a new one, settled for 2 s, goes to the manager as a `flow session:`
+    message, the way an agent's report wakes it.
+  - The screen, every 10 s: unchanged for 90 s with no new report, the manager is told once that
+    it is idle, with the screen, since it may be on a question, a permission prompt or a menu.
+    It answers with `send` or `keys`; a change on screen makes it running again.
+  - The terminal, every 30 s: closed, or back at its shell, without a new report, the manager is
+    told once with the last lines, and can `restart` it.
+- **Harnesses.** A harness is a start line plus what flow can't find out by itself:
+
+  | Field | Meaning |
+  |---|---|
+  | `start` | the command line; `{prompt}` is the prompt as one shell word, `{prompt_file}` the path of the file holding it |
+  | `resume` | the command line that continues its last conversation in the worktree, for `restart` |
+  | `program` | what must be on PATH; default the first word of `start` |
+  | `quota` | `codex-logs` (Codex's own rate-limit logs), or a shell command printing the percent left |
+
+  Built in, each set to run unattended so it can push and open its PR:
+
+  | Name | start | resume | quota |
+  |---|---|---|---|
+  | `claude` | `claude --permission-mode bypassPermissions {prompt}` | `claude --continue --permission-mode bypassPermissions` | |
+  | `codex` | `codex --dangerously-bypass-approvals-and-sandbox {prompt}` | `codex resume --last --dangerously-bypass-approvals-and-sandbox` | `codex-logs` |
+  | `gemini` | `gemini --yolo --prompt-interactive {prompt}` | | |
+  | `opencode` | `opencode --prompt {prompt}` | | |
+
+  `harnesses` adds or replaces them, as a start line or a full spec
+  (`{"aider": {"start": "aider --yes-always --message-file {prompt_file}", "resume": "aider --restore-chat-history"}}`;
+  `""` removes one), and harness `command` with a `command` line runs anything once.
+- **Before it starts.** The program must be on PATH (Homebrew's prefixes added), and a harness
+  with `quota` must show at least `min_quota` percent left (`codex-logs`: the newest reading
+  under 6 h old, the lowest window; anything older can't tell and doesn't block). Otherwise the
+  start is refused and the manager starts a `flow:worker` agent instead.
+- **What it reads.** The prompt (`…/sessions/<name>/prompt.md`) is a short preamble, the usual
+  worker rules, then the brief. The preamble says: no flow tools, the report is a file, answers
+  arrive typed into this terminal.
+- **In the pane** it is a worker card under its manager (yellow while idle); the plans, `status`,
+  `/flow resume` and the cleanup treat a live session's branch and worktree as owned.
+- **Limits.** No context meter and no handoff notice: it hands off by itself if it notices.
+  Sessions live in this Claude Code session's memory: after a restart the terminals keep running,
+  but their reports reach nobody; `/flow resume` picks up their branches like any other.
+
 ## Cleanup
 
 Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
@@ -239,6 +306,10 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `base_branch` | the remote's default branch | `/config`, file | everyone |
 | `main_checkout_guard` | on | `/config`, file | every agent and the main session: writes to the main checkout are refused (see Guards) |
 | `cleanup` | `auto` | `/config`, file | `auto`: the plugin removes finished, clean worktrees and branches after each merge and when the queue ends (see Cleanup). `off`: only `/flow clean --yes` |
+| `worker_harness` | `agent` | `/config`, file | managers: `agent` starts `flow:worker` agents; a harness name (`codex`, …) starts every worker in a terminal instead (see Workers in other harnesses) |
+| `session_host` | `auto` | `/config`, file | where session workers run: `auto` (Orca when it runs, else tmux), `orca`, `tmux` |
+| `harnesses` | the four built-ins | `/config` (JSON string), file | harness name to a start line or `{start, resume?, program?, quota?}`, over the built-ins; `""` removes one |
+| `min_quota` | 10 | `/config`, file | a session worker whose harness has a `quota` is refused below this percent left; 0 = never |
 | `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 
 `decision_phrases`: a report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it.

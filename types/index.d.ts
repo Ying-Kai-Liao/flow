@@ -107,6 +107,38 @@ export type HandoffRecord = {
   takenBy?: string
 }
 
+// A worker running outside this session: another harness in an Orca terminal or a tmux session
+// (the session tool). It reports by writing `report`; the plugin sends that to its owner.
+export type Session = {
+  name: string
+  harness: string
+  host: 'orca' | 'tmux'
+  // The tmux session name, or the Orca terminal handle.
+  handle: string
+  worktree: string
+  branch: string
+  // The prompt the harness started with and the file it reports into, outside any worktree.
+  promptFile: string
+  reportFile: string
+  // The harness's command line that continues its last conversation, for "restart"; else the start line again.
+  resume?: string
+  start: string
+  // The manager that started it: its agent id ("main" for the main session) and name.
+  owner: string
+  ownerName: string
+  // idle: its screen stopped changing with no new report, so it may be asking something.
+  status: 'running' | 'reported' | 'idle' | 'exited' | 'stopped'
+  startedAt: number
+  // The report file's mtime when it was last delivered.
+  reportAt?: number
+  // When the terminal was last seen alive.
+  checkedAt?: number
+  // The screen's fingerprint, when it last changed, and when it was last looked at.
+  screen?: string
+  screenAt?: number
+  lookedAt?: number
+}
+
 export type LogEvent = {
   ts: string
   event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'handoff' | 'continue' | 'note' | 'clean'
@@ -139,6 +171,7 @@ declare module 'claude-code' {
       hinted: boolean
       handoffs: Record<string, HandoffRecord>
       leftovers: Leftovers
+      sessions: Record<string, Session>
     }
   }
 }

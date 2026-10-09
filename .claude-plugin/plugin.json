@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.3.18",
+  "version": "0.3.19",
   "description": "The orca-flow pattern in one Claude Code session: a super manager starts managers, managers start workers in their own git worktrees, a merge queue merges and deploys; a Flow pane shows the tree",
   "author": {
     "name": "Ying-Kai Liao"
@@ -129,6 +129,31 @@
       "description": "auto: after each PR the queue merges, and when the queue ends, remove worktrees and local branches of finished work that are clean and on the base or in a merged PR. off: only /flow clean. Uncommitted, unpushed, locked and live work is never removed.",
       "default": "auto",
       "options": ["auto", "off"]
+    },
+    "worker_harness": {
+      "type": "string",
+      "title": "Worker harness",
+      "description": "What managers start workers with: agent (a flow:worker in this session), or a harness run in a terminal: claude, codex, gemini, opencode, or a name from the harnesses setting. Managers can still pick another one per worker.",
+      "default": "agent"
+    },
+    "session_host": {
+      "type": "string",
+      "title": "Session host",
+      "description": "Where workers in other harnesses run: auto (Orca when it is running, else tmux), orca or tmux.",
+      "default": "auto",
+      "options": ["auto", "orca", "tmux"]
+    },
+    "harnesses": {
+      "type": "string",
+      "title": "Harnesses",
+      "description": "JSON object of harness name to a start command line, or to {start, resume?, program?, quota?}, over the built-ins, e.g. {\"aider\": {\"start\": \"aider --yes-always --message-file {prompt_file}\", \"resume\": \"aider --restore-chat-history\"}}. {prompt} is the prompt as one shell word, {prompt_file} its path; quota is a shell command printing a percent left; \"\" removes a built-in.",
+      "default": ""
+    },
+    "min_quota": {
+      "type": "number",
+      "title": "Minimum harness quota",
+      "description": "A session worker whose harness reports its quota (codex built in, or a harness with a quota command) is refused, and the manager starts an agent worker instead, when less than this percent is left. 0: never refused.",
+      "default": 10
     },
     "base_branch": {
       "type": "string",
