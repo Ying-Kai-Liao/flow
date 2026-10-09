@@ -213,6 +213,8 @@ export type Question = {
   askerIsManager?: boolean
   // The standing answer rule that answered it (answeredBy is then "standing answer").
   rule?: string
+  // A guard_tests suggestion (guardtests.ts): answering "Add it" writes this mapping to the personal config.
+  guard?: { glob: string; test: string }
 }
 
 export type Inbox = { next: number; items: Question[] }

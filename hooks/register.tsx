@@ -41,6 +41,8 @@ import {
 } from './sessions'
 import type { Digest, HarnessSpec, Limit } from './sessions'
 import { branchOwners, buildDigest, findWorktree, noteKey, ownerFor } from './state'
+import { ADD_OPTION, addMapping, guardReport, guardTestsFor, parseGuardTests, pathsFromStatus, suggestionQuestion, suggestionsFor } from './guardtests'
+import type { GuardMap } from './guardtests'
 import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
@@ -498,7 +500,7 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number } & Guards {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
@@ -542,6 +544,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     release: str('release', 'off') === 'on',
     releaseFiles: strs('release_files'),
     changelogFile: str('changelog_file', 'CHANGELOG.md'),
+    guardTests: parseGuardTests(options.guard_tests) ?? {},
     workerHarness: str('worker_harness', 'agent'),
     sessionHost: ['orca', 'tmux'].includes(str('session_host', 'auto')) ? str('session_host', 'auto') : 'auto',
     harnesses,
@@ -851,7 +854,7 @@ const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOS
 
 // The one way a question gets answered: marks it, tells the asker when that is needed, notes the decision.
 // choice null takes the question's default. Returns one result line.
-async function answerQuestion($: EngineInterface, id: string, choice: string | null, by: string): Promise<string> {
+async function answerQuestion($: EngineInterface, id: string, choice: string | null, by: string, options: Record<string, unknown>): Promise<string> {
   const at = await $.clock.now()
   const marked = await withInbox($, cur => {
     const m = markAnswered(cur, id, choice, by, at)
@@ -885,7 +888,8 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
     inbox: { ...cur, items: cur.items.map(x => (x.id === id ? { ...x, delivered } : x)) }, out: undefined,
   }))
   if (!(isFyi(q) && isDefault)) await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${q.question}: ${isFyi(q) ? `overturned, ${answer}` : answer}"`)
-  return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.`
+  const guard = q.guard !== undefined && answer === ADD_OPTION ? ` ${await addGuardTest($, options, q.guard.glob, q.guard.test)}` : ''
+  return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.${guard}`
 }
 
 // Standing answers (standing.ts): the rules of both settings files, read fresh so a rule made a moment ago
@@ -980,6 +984,49 @@ function addRule($: EngineInterface, options: Record<string, unknown>, rule: Rul
     const r = await editRuleFile($, path, async list => ({ list: [...list, { id, ...rule }], out: id }))
     return 'error' in r ? { kind: 'error', msg: r.error } : { kind: 'added', id }
   })
+}
+
+// Adds a suggested guard mapping to the personal file (never the committed one), keeping every other key and the
+// mapping already there. The text tells main to copy it to .claude/flow.json to share it.
+function addGuardTest($: EngineInterface, options: Record<string, unknown>, glob: string, test: string): Promise<string> {
+  return inRulesChain(async () => {
+    const path = (await locate($))[1] ?? ''
+    if (path === '') return 'No mapping written: guard mappings need a repo for the personal file.'
+    let obj: Record<string, unknown> = {}
+    const text = await $.fs.read(path).then(String, () => undefined)
+    if (text !== undefined && text.trim() !== '') {
+      try { obj = JSON.parse(text) as Record<string, unknown> } catch { return `No mapping written: ${path} is not valid JSON; fix it first, flow does not rewrite it.` }
+      if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return `No mapping written: ${path} is not a JSON object; flow does not rewrite it.`
+    }
+    const had = obj.guard_tests === undefined ? {} : parseGuardTests(obj.guard_tests)
+    if (had === undefined) return `No mapping written: "guard_tests" in ${path} is not an object of globs to test lists; fix it first.`
+    const next = addMapping(had, glob, test)
+    if ((had[glob] ?? []).includes(test)) return `Already in ${path}: ${JSON.stringify({ [glob]: [test] })}.`
+    await $.process.run(['mkdir', '-p', path.replace(/\/[^/]*$/, '')])
+    if (!await writeJsonAtomic($, path, { ...obj, guard_tests: next })) return `No mapping written: could not write ${path}.`
+    return `Added ${JSON.stringify({ [glob]: [test] })} to ${path} (personal, uncommitted). To share it with the team, copy it into .claude/flow.json under "guard_tests" and commit.`
+  })
+}
+
+// A PR sent back for failing tests: for each failed test no guard mapping already requires for the PR's files, one
+// non-blocking question to main suggests a mapping. Best effort: the send-back itself is already recorded.
+async function suggestGuardTests($: EngineInterface, input: Record<string, unknown>, pr: number, queueName: string, agentId: string | undefined, map: GuardMap): Promise<string> {
+  const failed = Array.isArray(input.failed_tests) ? input.failed_tests.filter((t): t is string => typeof t === 'string' && t.trim() !== '') : []
+  if (failed.length === 0) return ''
+  const diff = await $.process.run(['gh', 'pr', 'diff', String(pr), '--name-only']).catch(() => undefined)
+  if (diff === undefined || diff.exitCode !== 0) return ` No guard suggestion: gh pr diff ${pr} failed${diff === undefined ? '' : `: ${diff.stderr.trim().slice(0, 200)}`}.`
+  const files = diff.stdout.split('\n').map(l => l.trim()).filter(Boolean)
+  const sugg = suggestionsFor(files, failed, map)
+  if (sugg.length === 0) return ''
+  const at = await $.clock.now()
+  const filed = await withInbox($, cur => {
+    const open = (g: { glob: string; test: string }) => cur.items.some(x => x.state === 'open' && x.guard?.glob === g.glob && x.guard.test === g.test)
+    const asked = sugg.filter(x => !open(x)).map(x => suggestionQuestion(pr, x))
+    if (asked.length === 0) return { inbox: cur, out: [] as string[] }
+    const r = addQuestions(cur, { name: queueName, id: agentId, isManager: false }, 'main', asked, at)
+    return { inbox: r.inbox, out: r.added.filter(a => a.fresh).map(a => a.q.id) }
+  })
+  return filed.length === 0 ? '' : ` Asked main whether to add a guard mapping (${filed.join(', ')}).`
 }
 
 // Removes a rule from whichever file holds it. A /config rule cannot be removed from here.
@@ -2715,6 +2762,7 @@ export const register: Register = (on, options) => {
           sha: { type: 'string' },
           report: { type: 'string' },
           reason: { type: 'string' },
+          failed_tests: { type: 'array', items: { type: 'string' }, description: 'back: the test files or commands that failed, so main is asked whether workers should run them (guard_tests)' },
         },
         required: ['action'],
       },
@@ -2795,6 +2843,17 @@ export const register: Register = (on, options) => {
           wait_s: { type: 'number', description: `Seconds to wait for a slot before answering queued (default ${WAIT_DEFAULT_S}, at most ${WAIT_MAX_S})` },
         },
         required: ['action'],
+      },
+      isDeferred: false,
+    })
+
+    await $.tool.register({
+      name: 'guard_tests',
+      description: 'The repo-wide tests the guard_tests setting requires for your diff. Call it before gh pr create with no arguments: it works out your changed files itself ' +
+        '(origin/<base>...HEAD plus uncommitted and untracked changes in your worktree). Run each test it lists under mcp__flow__test_slot and list each under `Ran:` in the PR\'s ## Verification section; handover refuses otherwise.',
+      inputSchema: {
+        type: 'object',
+        properties: { files: { type: 'array', items: { type: 'string' }, description: 'Optional: use these repo-relative paths instead of your diff' } },
       },
       isDeferred: false,
     })
@@ -3084,7 +3143,14 @@ export const register: Register = (on, options) => {
     if (info.isDraft) return { result: `Refused: PR #${pr} is a draft. Mark it ready (gh pr ready ${pr}) first.` }
     const dest = await resolveReportTo($, input.report_to, e.agentId)
     if ('refuse' in dest) return { result: dest.refuse }
-    const checked = checkEvidence(info.body ?? '', [...settings.workerChecks, ...settings.alwaysTests])
+    // Guard tests: from the PR's changed files (`gh pr diff` has no file-count cap). Never fail open, never block for good.
+    let guard: ReturnType<typeof guardTestsFor> = []
+    if (Object.keys(settings.guardTests).length > 0) {
+      const diff = await $.process.run(['gh', 'pr', 'diff', String(pr), '--name-only'])
+      if (diff.exitCode !== 0) return { result: `Refused: gh pr diff ${pr} --name-only failed, so the guard tests cannot be checked: ${diff.stderr.trim().slice(0, 300)}` }
+      guard = guardTestsFor(diff.stdout.split('\n').map(l => l.trim()).filter(Boolean), settings.guardTests)
+    }
+    const checked = checkEvidence(info.body ?? '', [...settings.workerChecks, ...settings.alwaysTests], guard)
     if ('problems' in checked) return { result: evidenceRefusal(pr, checked.problems) }
     const t = await $.clock.now()
     const h: Handover = {
@@ -3223,8 +3289,9 @@ export const register: Register = (on, options) => {
     })
     if (action !== 'take') void $.ui.toast(`PR #${key} ${next.status === 'done' ? `merged ${next.sha ?? ''}` : `returned: ${next.reason ?? ''}`}`)
     if (action === 'done') autoSweep($)
-    await refresh($)
-    return { result: `PR #${key}: ${next.status}.` }
+    const rows = await refresh($)
+    const filed = action === 'back' ? await suggestGuardTests($, input, next.pr, rows.find(a => a.id === e.agentId)?.name ?? 'merge-queue', e.agentId, settings.guardTests) : ''
+    return { result: `PR #${key}: ${next.status}.${filed}` }
   })
 
   on('tool.call', { tool: 'mcp__flow__plan' }, async ($, e) => {
@@ -3356,6 +3423,30 @@ export const register: Register = (on, options) => {
     return {
       result: `No slot after ${wait} s; queued, position ${pos}. Held by ${st.holders.map(h => heldBy(h, t)).join(', ') || 'nobody'}. You keep your place and are granted the slot when it is your turn (it is offered for ${span(CLAIM_MS)}). Don't poll acquire. ${f ? `Wait with Bash (timeout 600000, or run_in_background and continue when notified): until [ -e '${f}' ]; do sleep 3; done . Or do other work; a "your test slot is granted" message arrives.` : 'Do other work; a "your test slot is granted" message arrives.'} Then call acquire once to confirm, run, and release.`,
     }
+  })
+
+  on('tool.call', { tool: 'mcp__flow__guard_tests' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const map = settings.guardTests
+    if (Object.keys(map).length === 0) return { result: guardReport([], false) }
+    let files: string[]
+    if (Array.isArray(input.files)) files = input.files.filter((f): f is string => typeof f === 'string')
+    else {
+      // The caller's own worktree, else the session's directory.
+      let dir: string | undefined
+      if (e.agentId !== undefined) {
+        const me = (await $.agent.list()).find(a => a.id === e.agentId)
+        const wt = await $.process.run(['git', 'worktree', 'list', '--porcelain']).catch(() => undefined)
+        if (me !== undefined && wt?.exitCode === 0) dir = findWorktree(wt.stdout, me.id, `flow/${me.name ?? me.id}`)?.path
+      }
+      dir ??= await $.session.cwd().catch(() => undefined)
+      const git = (...args: string[]) => $.process.run(['git', ...(dir === undefined ? [] : ['-C', dir]), ...args])
+      const diff = await git('diff', '--name-only', '--no-renames', `origin/${settings.base}...HEAD`)
+      if (diff.exitCode !== 0) return { result: `Could not work out your diff (git diff origin/${settings.base}...HEAD failed: ${diff.stderr.trim().slice(0, 300)}). Call again with files: [...].` }
+      const dirty = await git('status', '--porcelain', '--untracked-files=all')
+      files = [...diff.stdout.split('\n').map(l => l.trim()).filter(Boolean), ...(dirty.exitCode === 0 ? pathsFromStatus(dirty.stdout) : [])]
+    }
+    return { result: guardReport(guardTestsFor(files, map), true) }
   })
 
   on('tool.call', { tool: 'mcp__flow__ask' }, async ($, e) => {
@@ -3495,7 +3586,7 @@ export const register: Register = (on, options) => {
     if (todo.size === 0 && lines.length === 0) lines.push('Nothing to answer: pass answers, or defaults: true.')
     for (const [id, choice] of todo) {
       const before = always.has(id) ? (await read($, inbox)).items.find(x => x.id === id) : undefined
-      lines.push(await answerQuestion($, id, choice, by))
+      lines.push(await answerQuestion($, id, choice, by, options))
       if (always.has(id) && choice !== null && before !== undefined && !isFyi(before)) lines.push(await alwaysRule($, options, id, choice, e.agentId === undefined, before))
     }
     return { result: lines.join('\n') }

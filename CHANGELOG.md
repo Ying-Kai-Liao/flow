@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `flow:minor` / `flow:major` labels) and returns the commit command; the queue commits "Release
   x.y.z" and pushes. Worker, manager and queue prompts carry the rules when it is on. This repo turns
   it on, so PRs here no longer bump `plugin.json`.
+- `guard_tests` setting (file only; the personal file merges per glob): path globs mapped to repo-wide tests a
+  worker must run when its diff touches them. The new `mcp__flow__guard_tests` tool computes the list from the
+  worker's diff; `mcp__flow__handover` refuses a PR whose `Ran:` lacks a required guard test, naming the glob.
+  `mcp__flow__queue` `back` takes `failed_tests`: for a failed test no glob requires, main gets an inbox question
+  suggesting a mapping, and answering "Add" writes it to the personal config (never the committed file).
 
 ## [0.3.38] - 2026-10-10
 

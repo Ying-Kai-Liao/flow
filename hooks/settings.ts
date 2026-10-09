@@ -2,13 +2,15 @@
 //   built-in defaults (settingsOf) < /config (the plugin's options)
 //   < <repo>/.claude/flow.json (committed) < <git-common-dir>/flow/config.json (personal, uncommitted).
 // Flat JSON, the same snake_case keys as /config. A key is replaced whole by a higher layer,
-// except the APPEND_KEYS lists: the personal file adds to the repo file's list. standing_answers appends
+// except the APPEND_KEYS lists: the personal file adds to the repo file's list, and guard_tests, whose
+// personal map is merged per glob (tests unioned). standing_answers appends
 // too, but is parsed (standing.ts) into resolved rules: personal first, then repo, then /config.
 
 import { parseRules } from './standing'
 import type { Resolved } from './standing'
+import { mergeGuardTests, parseGuardTests } from './guardtests'
 
-type Kind = 'string' | 'number' | 'boolean' | 'list' | 'objects' | 'object'
+type Kind = 'string' | 'number' | 'boolean' | 'list' | 'objects' | 'object' | 'globmap'
 
 export const KEYS: Record<string, Kind> = {
   test_command: 'string',
@@ -33,6 +35,7 @@ export const KEYS: Record<string, Kind> = {
   worker_checks: 'list',
   always_tests: 'list',
   flaky_tests: 'list',
+  guard_tests: 'globmap',
   deploy_targets: 'objects',
   standing_answers: 'objects',
   state_file: 'object',
@@ -97,6 +100,8 @@ function typeOk(kind: Kind, v: unknown): boolean {
   // (deployTargetsOf / stateFileOf parse it).
   if (kind === 'objects') return typeof v === 'string' || v === null || (Array.isArray(v) && v.every(isRecord))
   if (kind === 'object') return typeof v === 'string' || isRecord(v)
+  // guard_tests: glob -> list of tests, as an object or (from /config) a JSON string of one.
+  if (kind === 'globmap') return parseGuardTests(v) !== undefined
   if (kind === 'number') return typeof v === 'number' && Number.isFinite(v)
   return typeof v === kind
 }
@@ -111,7 +116,7 @@ function checked(source: string, layer: Record<string, unknown>, warnings: strin
       warnings.push(`${source}: unknown key "${k}"${near === undefined ? '' : ` (did you mean "${near}"?)`}`)
       out[k] = v
     } else if (!typeOk(kind, v)) {
-      warnings.push(`${source}: "${k}" should be a ${kind === 'list' ? 'list of strings' : kind === 'objects' ? 'list of objects' : kind}; ignored`)
+      warnings.push(`${source}: "${k}" should be a ${kind === 'list' ? 'list of strings' : kind === 'objects' ? 'list of objects' : kind === 'globmap' ? 'object mapping a glob to a list of test strings' : kind}; ignored`)
     } else if (CHOICES[k] !== undefined && !CHOICES[k]!.includes(String(v))) {
       warnings.push(`${source}: "${k}" is ${JSON.stringify(v)}; use ${CHOICES[k]!.map(c => `"${c}"`).join(' or ')}; ignored`)
     } else if (MODEL_KEYS.includes(k) && isFable(v)) {
@@ -120,7 +125,7 @@ function checked(source: string, layer: Record<string, unknown>, warnings: strin
       if (k === 'decision_phrases' && Array.isArray(v) && v.length > 0) {
         warnings.push(`${source}: "decision_phrases" is deprecated in favour of the mcp__flow__ask tool (agents ask structured questions into the /flow inbox); it still works as a fallback`)
       }
-      out[k] = v
+      out[k] = kind === 'globmap' ? parseGuardTests(v) : v
     }
   }
   return out
@@ -159,6 +164,8 @@ export function mergeLayers(options: Record<string, unknown>, layers: { path: st
       if (k === 'standing_answers') {
         hasRules = true
         rules[i > 0 ? 'personal' : 'repo'] = parseRules(v, i > 0 ? 'personal' : 'repo', path, warnings)
+      } else if (i > 0 && k === 'guard_tests') {
+        raw[k] = mergeGuardTests(raw[k] as Record<string, string[]> | undefined, v as Record<string, string[]>)
       } else if (i > 0 && APPEND_KEYS.includes(k)) raw[k] = [...new Set([...list(raw[k]), ...list(v)])]
       else raw[k] = v
     }

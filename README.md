@@ -390,6 +390,7 @@ Not verified:
   `text` it returns the notes.
 - `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.
 - `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`). See below.
+- `guard_tests`: the guard tests the worker's diff requires (see Guard tests).
 
 ## Workers in other harnesses
 
@@ -512,6 +513,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
 | `flaky_tests` | none | file only | test files known to fail now and then: when they are the only failures of the full check, the queue reruns them once (a list) |
+| `guard_tests` | none | file only | path globs mapped to repo-wide tests a worker must run when its diff touches a matching path, e.g. `{"src/routes/**": ["test/admin.test.ts"]}` (see Guard tests) |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
 | `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
 | `context_warn_tokens` | 0 | `/config`, file | an optional cap in tokens over both percents; the lower applies. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
@@ -539,6 +541,7 @@ A repo can carry its own settings in `.claude/flow.json`, a flat JSON object wit
 {
   "test_command": "pnpm test",
   "worker_checks": ["pnpm lint", "pnpm typecheck"],
+  "guard_tests": { "src/routes/**": ["test/admin.test.ts"], "sql/**": ["test/migrations.test.ts"] },
   "big_files": ["src/schema.ts"],
   "worker_model": "sonnet"
 }
@@ -546,7 +549,7 @@ A repo can carry its own settings in `.claude/flow.json`, a flat JSON object wit
 
 A personal overlay lives in `<git-common-dir>/flow/config.json` (that is `.git/flow/config.json`) and is never committed.
 
-Precedence, lowest first: built-in defaults, `/config`, `.claude/flow.json`, the personal file. For `worker_checks`, `always_tests`, `flaky_tests`, `big_files` and `decision_phrases` the personal file's entries are added to the repo file's, each once; every other key is replaced.
+Precedence, lowest first: built-in defaults, `/config`, `.claude/flow.json`, the personal file. For `worker_checks`, `always_tests`, `flaky_tests`, `big_files` and `decision_phrases` the personal file's entries are added to the repo file's, each once; `guard_tests` is merged per glob (the personal file's tests are added to the repo file's for the same glob, each once); every other key is replaced.
 
 An unknown key, bad JSON or a wrong type is a warning (shown as a toast) and the layer below applies for that key or file.
 
@@ -581,6 +584,26 @@ and a message; it confirms with one `acquire` within 2 minutes, else the grant p
 freed when its agent ends, when released, or after a 45 minute lease (with a toast). The Flow
 status line shows `tests 1/1`. The lock lives in this session's plugin state: it covers every
 worktree of the session's agents, not other Claude sessions, and a plugin reload empties it.
+
+## Guard tests
+
+`always_tests` runs on every PR, which a small machine cannot afford. `guard_tests` is the cheaper
+form: a map from path globs to the repo-wide tests (a route-permission test, a migration test) that a
+worker must run only when its diff touches a matching path.
+
+- Globs match the whole repo-relative path: `**` any number of directories (also none), `*` within
+  one path segment, `?` one character. There is no basename matching: write `**/routes/*.ts`.
+- A worker calls `guard_tests` before `gh pr create`. With no arguments the plugin works out the
+  changed files itself (`git diff origin/<base>...HEAD` plus uncommitted and untracked files in the
+  worker's worktree) and lists each test with the glob and files that require it. The worker runs
+  them under `test_slot` and lists each under `Ran:`.
+- `handover` reads the PR's files with `gh pr diff <n> --name-only` and refuses a PR whose `Ran:`
+  lacks a required test, naming the glob. If `gh` fails, handover refuses with its error.
+- When the queue sends a PR back for a failing test (`queue back` with `failed_tests`) and no glob
+  requires that test for the PR's files, main gets one non-blocking inbox question suggesting a
+  mapping (the deepest common directory of the changed files, as `dir/**`). Answering "Add it to my
+  personal flow config" writes it to `<git-common-dir>/flow/config.json`; copy it into
+  `.claude/flow.json` to share it. Flow never edits the committed file.
 
 ## State on disk
 
