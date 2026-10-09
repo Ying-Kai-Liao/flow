@@ -2,7 +2,11 @@
 //   built-in defaults (settingsOf) < /config (the plugin's options)
 //   < <repo>/.claude/flow.json (committed) < <git-common-dir>/flow/config.json (personal, uncommitted).
 // Flat JSON, the same snake_case keys as /config. A key is replaced whole by a higher layer,
-// except the APPEND_KEYS lists: the personal file adds to the repo file's list.
+// except the APPEND_KEYS lists: the personal file adds to the repo file's list. standing_answers appends
+// too, but is parsed (standing.ts) into resolved rules: personal first, then repo, then /config.
+
+import { parseRules } from './standing'
+import type { Resolved } from './standing'
 
 type Kind = 'string' | 'number' | 'boolean' | 'list' | 'objects' | 'object'
 
@@ -29,6 +33,7 @@ export const KEYS: Record<string, Kind> = {
   worker_checks: 'list',
   always_tests: 'list',
   deploy_targets: 'objects',
+  standing_answers: 'objects',
   state_file: 'object',
   test_slots: 'number',
   context_warn_tokens: 'number',
@@ -125,6 +130,13 @@ export function mergeLayers(options: Record<string, unknown>, layers: { path: st
   const warnings: string[] = []
   const raw = checked('/config', options, warnings)
   const files: string[] = []
+  const rules: { personal: Resolved[]; repo: Resolved[]; config: Resolved[] } = { personal: [], repo: [], config: [] }
+  let hasRules = false
+  if ('standing_answers' in raw) {
+    hasRules = true
+    rules.config = parseRules(raw.standing_answers, 'config', '/config', warnings)
+    delete raw.standing_answers
+  }
   for (const [i, { path, text }] of layers.entries()) {
     if (text === undefined) continue
     let data: unknown
@@ -140,9 +152,13 @@ export function mergeLayers(options: Record<string, unknown>, layers: { path: st
     }
     files.push(path)
     for (const [k, v] of Object.entries(checked(path, data as Record<string, unknown>, warnings))) {
-      if (i > 0 && APPEND_KEYS.includes(k)) raw[k] = [...new Set([...list(raw[k]), ...list(v)])]
+      if (k === 'standing_answers') {
+        hasRules = true
+        rules[i > 0 ? 'personal' : 'repo'] = parseRules(v, i > 0 ? 'personal' : 'repo', path, warnings)
+      } else if (i > 0 && APPEND_KEYS.includes(k)) raw[k] = [...new Set([...list(raw[k]), ...list(v)])]
       else raw[k] = v
     }
   }
+  if (hasRules) raw.standing_answers = [...rules.personal, ...rules.repo, ...rules.config]
   return { raw, files, warnings }
 }

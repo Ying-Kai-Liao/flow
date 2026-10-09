@@ -2,8 +2,8 @@ import { noteKey } from './state'
 
 // The pure half of the decision inbox: agents ask structured questions with mcp__flow__ask, the
 // addressee answers with mcp__flow__answer. The disk and messaging half is answerQuestion() in
-// register.tsx; every answer goes through it, so a later rule check (standing answers) can sit in the
-// ask handler right before a question is stored, and call answerQuestion for what it knows.
+// register.tsx. Standing answers (standing.ts) answer fresh questions in the ask handler through
+// markAnswered's rule parameter.
 
 export type Question = {
   id: string
@@ -27,6 +27,8 @@ export type Question = {
   askerId?: string
   // The asker is a manager: its notes get the progress and decision lines, else its manager's.
   askerIsManager?: boolean
+  // The standing answer rule that answered it (answeredBy is then "standing answer").
+  rule?: string
 }
 
 export type Inbox = { next: number; items: Question[] }
@@ -141,16 +143,21 @@ export type Marked =
   | { kind: 'refused'; q: Question }
 
 // Marks one question answered. choice null takes the question's default.
-export function markAnswered(inbox: Inbox, id: string, choice: string | null, by: string, now: number): Marked {
+// A standing answer rule id as the last argument answers for the rule: no addressee check, and nothing is
+// left to deliver (the ask result tells the asker).
+export function markAnswered(inbox: Inbox, id: string, choice: string | null, by: string, now: number, rule?: string): Marked {
   const q = inbox.items.find(x => x.id === id)
   if (q === undefined) return { kind: 'unknown' }
   if (q.state === 'answered') return { kind: 'answered', q }
-  if (!isAddressee(q, by)) return { kind: 'refused', q }
+  if (rule === undefined && !isAddressee(q, by)) return { kind: 'refused', q }
   const answer = choice === null ? q.default : parseChoice(q.options, choice).text
   if (answer === '') return { kind: 'empty', q }
   // Answering with the default's text counts as the default, however it was typed.
   const isDefault = answer === q.default
-  const done: Question = { ...q, state: 'answered', answer, answeredBy: by, answeredAt: now, delivered: false }
+  const done: Question = {
+    ...q, state: 'answered', answer, answeredBy: by, answeredAt: now, delivered: rule !== undefined,
+    ...(rule !== undefined ? { rule } : {}),
+  }
   return { kind: 'ok', inbox: { ...inbox, items: inbox.items.map(x => (x.id === id ? done : x)) }, q: done, answer, isDefault }
 }
 
@@ -185,10 +192,22 @@ const age = (ms: number) => {
   return m < 60 ? `${m} min` : m < 1440 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`
 }
 
+const DAY = 86_400_000
+
+// The questions a standing answer answered in the last 24 h, newest first, at most 10.
+export const recentAuto = (inbox: Inbox | undefined, now: number): Question[] =>
+  (inbox?.items ?? []).filter(q => q.state === 'answered' && q.rule !== undefined && now - (q.answeredAt ?? 0) <= DAY)
+    .sort((a, b) => (b.answeredAt ?? 0) - (a.answeredAt ?? 0)).slice(0, 10)
+
 // /flow inbox: the open questions grouped by owner, blocking first, ready to answer.
 export function renderInbox(inbox: Inbox | undefined, now: number): string {
   const open = ordered(openAll(inbox ?? EMPTY_INBOX))
-  if (open.length === 0) return 'No open questions.'
+  const auto = recentAuto(inbox, now)
+  const autoLines = auto.length === 0 ? [] : [
+    `Auto-answered (last 24 h, ${auto.length} shown; revoke with mcp__flow__standing remove <id>):`,
+    ...auto.map(q => `  ${q.id} ${q.owner}: ${q.question} -> ${q.answer ?? ''} (rule ${q.rule ?? '?'})`),
+  ]
+  if (open.length === 0) return autoLines.length === 0 ? 'No open questions.' : ['No open questions.', ...autoLines].join('\n')
   const owners = [...new Set(open.map(q => q.owner))]
   const blocking = open.filter(q => q.blocking).length
   const lines = [`Open questions: ${open.length}${blocking ? ` (${blocking} blocking)` : ''}. Answer with mcp__flow__answer: answers [{id, choice}] (option text, letter or number), or defaults true for the recommended ones.`]
@@ -200,17 +219,20 @@ export function renderInbox(inbox: Inbox | undefined, now: number): string {
       if (q.context) lines.push(`      context: ${q.context}`)
     }
   }
-  return lines.join('\n')
+  return [...lines, ...autoLines].join('\n')
 }
 
 // The head of mcp__flow__status: a count and one line per open question, blocking first.
-export function inboxHead(inbox: Inbox | undefined): string[] {
+export function inboxHead(inbox: Inbox | undefined, now = Date.now()): string[] {
   const open = ordered(openAll(inbox ?? EMPTY_INBOX))
-  if (open.length === 0) return []
+  const auto = recentAuto(inbox, now).length
+  const autoLine = auto === 0 ? [] : [`Inbox: ${auto} auto-answered by standing answers in the last 24 h (/flow inbox).`]
+  if (open.length === 0) return autoLine
   const blocking = open.filter(q => q.blocking).length
   return [
     `Inbox: ${open.length} open${blocking ? `, ${blocking} blocking` : ''} (/flow inbox shows them with options):`,
     ...open.map(q => `  ${q.id} ${q.blocking ? 'BLOCKING ' : ''}${q.owner}: ${q.question.slice(0, 140)}`),
+    ...autoLine,
   ]
 }
 
