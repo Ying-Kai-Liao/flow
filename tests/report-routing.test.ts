@@ -252,3 +252,15 @@ test('a reviewer send to main that repeats forwarded lines is dropped; new text 
   expect(await send($, 'q1', 'main', 'needs a person: PR #7: look at the pane')).toContain('already has')
   expect(await send($, 'q1', 'main', 'needs a person: PR #7: look at the pane\nPR #8 waits')).toBe('sent')
 })
+
+test('the same manager and PR from two different reviewer runs is forwarded both times', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  w.agents.push({ id: 'q2', name: 'merge-queue-2', description: 'q', type: 'flow:queue', status: 'running' })
+  await send($, 'q1', 'csv-export', 'PR #7 sent back: tests fail')
+  expect(await send($, 'q2', 'csv-export', 'PR #7 merged')).toContain('Not sent')
+  expect(await send($, 'q2', 'main', 'PR #7 sent back: tests fail')).toBe('sent')
+  await w.flush()
+  expect(w.prompts.length).toBe(2)
+  expect(w.prompts[1]).toContain('PR #7 merged')
+})

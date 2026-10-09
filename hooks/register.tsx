@@ -128,10 +128,11 @@ const prCache = atom({ plugin: 'flow', key: 'prCache' } as const, { prs: [], fet
 // The last dry cleanup sweep, refreshed with the PR list so a render never runs git.
 const sessions = atom({ plugin: 'flow', key: 'sessions' } as const, {} as Record<string, Session>)
 // What the reviewer routing already sent main, so a retried or repeated report reaches it once:
-// `keys` maps "manager|PR numbers" to the needs-a-person / pending-decisions lines forwarded for it,
-// `lines` is every line forwarded (normalized). Persisted: plugins reload mid-session.
-type Forwarded = { keys: Record<string, string[]>; lines: string[] }
-const forwarded = atom({ plugin: 'flow', key: 'forwarded' } as const, { keys: {}, lines: [] } as Forwarded)
+// Scoped to the sending reviewer run (its agent id), so a later run's different outcome is never swallowed.
+// `keys` maps "reviewer|manager|PR numbers" to the needs-a-person / pending-decisions lines forwarded for it,
+// `lines` is, per reviewer id, every line forwarded (normalized). Persisted: plugins reload mid-session.
+type Forwarded = { keys: Record<string, string[]>; lines: Record<string, string[]> }
+const forwarded = atom({ plugin: 'flow', key: 'forwarded' } as const, { keys: {}, lines: {} } as Forwarded)
 const harnessLimits = atom({ plugin: 'flow', key: 'harnessLimits' } as const, [] as Limit[])
 const armed = atom({ plugin: 'flow', key: 'armed' } as const, null as { key: string; at: number } | null)
 const leftovers = atom({ plugin: 'flow', key: 'leftovers' } as const, { worktrees: 0, branches: 0, needsLook: 0 } as Leftovers)
@@ -1672,6 +1673,7 @@ const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void
 const normText = (t: string): string => t.replace(/\s+/g, ' ').trim()
 const RELAY_DELAY_MS = 3000
 const FORWARDED_MAX = 400
+const FORWARDED_RIDS = 10
 
 // The host may already hand a woken manager's answer to main as a task notification. Main's transcript
 // shows whether it did; when it cannot be read, say "not there" so the report is relayed, never lost.
@@ -1727,7 +1729,7 @@ async function managerFinished($: EngineInterface, ids: string[], name: string, 
 // The reviewer's SendMessage to a manager that has ended would resume it just to say "noted", and its
 // final answer would go back to the reviewer. Instead the report is noted for that manager and sent to
 // main. Returns the tool result when it handled the call; undefined passes the call on.
-async function reviewerSendGuard($: EngineInterface, to: string, text: string): Promise<string | undefined> {
+async function reviewerSendGuard($: EngineInterface, rid: string, to: string, text: string): Promise<string | undefined> {
   if (to === '' || to === 'main' || to === '*') return undefined
   const rows = await $.agent.list()
   const hits = rows.filter(a => a.id === to || a.name === to)
@@ -1743,7 +1745,7 @@ async function reviewerSendGuard($: EngineInterface, to: string, text: string): 
   // One outcome reaches main once: key on the manager and the PRs the text names (the text itself when
   // it names none). A repeat forwards only needs-a-person / pending-decisions lines not sent before.
   const prs = [...new Set([...text.matchAll(/#(\d+)/g)].map(m => m[1]))].sort().join(',')
-  const key = `${name}|${prs !== '' ? prs : normText(text)}`
+  const key = `${rid}|${name}|${prs !== '' ? prs : normText(text)}`
   const seen = await read($, forwarded)
   const before = seen.keys[key]
   const needs = needLines(text)
@@ -1759,7 +1761,7 @@ async function reviewerSendGuard($: EngineInterface, to: string, text: string): 
   }
   await update($, forwarded, f => ({
     keys: { ...Object.fromEntries(Object.entries(f.keys).slice(-FORWARDED_MAX)), [key]: [...(f.keys[key] ?? []), ...(fresh ?? needs)] },
-    lines: [...f.lines, ...body.split('\n').map(normText).filter(l => l !== ''), ...(fresh ?? needs)].slice(-FORWARDED_MAX),
+    lines: Object.fromEntries(Object.entries({ ...f.lines, [rid]: [...(f.lines[rid] ?? []), ...body.split('\n').map(normText).filter(l => l !== ''), ...(fresh ?? needs)].slice(-FORWARDED_MAX) }).slice(-FORWARDED_RIDS)),
   }))
   toMain($, `Report for ${hits.length > 0 ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the reviewer:\n${body}`)
   return `Not sent: ${name} ${status}, so messaging it would only wake it. The plugin ${noted ? `noted the report for ${name} and ` : ''}sent ${fresh === undefined ? 'it' : 'the new lines'} to main. Do not message ${name} again, and do not repeat this report to main.`
@@ -3801,12 +3803,12 @@ export const register: Register = (on, options) => {
       const text = String(input.message ?? input.text ?? '')
       if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) {
         let handled: string | undefined
-        await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard($, to, text) })
+        await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard($, id, to, text) })
         if (handled !== undefined) return { result: handled }
         if (to === 'main') {
           // Lines the guard already sent main need no second copy; anything new goes through.
           const lines = text.split('\n').map(normText).filter(l => l !== '')
-          const sent = (await read($, forwarded)).lines
+          const sent = (await read($, forwarded)).lines[id] ?? []
           if (lines.length > 0 && lines.every(l => sent.includes(l) || (needLines(l).length > 0 && needLines(l).every(n => sent.includes(n))))) {
             return { result: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
           }
