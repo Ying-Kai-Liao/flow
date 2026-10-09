@@ -187,7 +187,16 @@ worker to fix X".
 | `max_continues` | 2 | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `max_workers` | 3 | workers per manager at a time |
 | `test_slots` | 1 | how many heavy test runs may run at once across all agents (minimum 1) |
-| `worker_model` | `sonnet` | workers |
+| `worker_model` | `sonnet[1m]` | workers. Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
+| `manager_model` | `opus` | managers |
+| `queue_model` | `opus` | the merge queue |
+| `language` | none | the language agents write reports and PR text in |
+| `big_files` | none | files workers grep and never read whole (a list) |
+| `big_file_lines` | 1500 | the line count from which a file counts as big |
+| `migrations_dir` | none | the directory of migrations |
+| `decision_phrases` | none | extra phrases that mark a report as a question for the user (a list) |
+| `worker_checks` | none | commands every worker must pass before opening a PR (a list) |
+| `always_tests` | none | tests every worker runs on top of the ones for the files it changed (a list) |
 | `context_warn_percent` | 40 | the context limit as a percent of the window (1 to 100) |
 | `context_warn_tokens` | 350000 | the context limit in tokens; the lower of the two applies, so a 200k model still hands off at 80k. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
 | `handoff` | on | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
@@ -195,7 +204,32 @@ worker to fix X".
 | `main_checkout_guard` | on | every agent and the main session: writes to the main checkout are refused (see Guards) |
 | `main_checkout_allow` | `.claude/` | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 
+`language`, `big_files`, `big_file_lines`, `migrations_dir`, `decision_phrases`, `worker_checks` and `always_tests` are read and checked now; a following release wires them into the prompts.
+
 An unset full check or deploy is a step that's skipped and reported, never improvised.
+
+Sub-agents don't run on Fable: a Fable model is refused in settings (a warning, the default applies) and denied at spawn, for flow agents and for anything a flow agent starts.
+
+### Settings per repo
+
+A repo can carry its own settings in `.claude/flow.json`, a flat JSON object with the same snake_case keys as `/config`:
+
+```json
+{
+  "test_command": "pnpm test",
+  "worker_checks": ["pnpm lint", "pnpm typecheck"],
+  "big_files": ["src/schema.ts"],
+  "worker_model": "sonnet"
+}
+```
+
+A personal overlay lives in `<git-common-dir>/flow/config.json` (that is `.git/flow/config.json`) and is never committed.
+
+Precedence, lowest first: built-in defaults, `/config`, `.claude/flow.json`, the personal file. For `worker_checks`, `always_tests`, `big_files` and `decision_phrases` the personal file's entries are added to the repo file's, each once; every other key is replaced.
+
+An unknown key, bad JSON or a wrong type is a warning (shown as a toast) and the layer below applies for that key or file.
+
+The files are checked every few seconds by modification time. New settings apply to agents started afterwards; running agents keep their prompts.
 
 ## Deploying
 
@@ -212,7 +246,7 @@ An unset full check or deploy is a step that's skipped and reported, never impro
 }
 ```
 
-`state_file` (keys are read from the options; a per-repo `.claude/flow.json` loader, when present, is the natural home): after deploying, the queue adds one entry at the top of the file (date, PRs with titles, deployed sha and targets, verified, not verified, pending decisions), moves entries beyond `keep` (default 10) to the end of the archive (default `<stem>-archive.md` next to it, oldest last), and commits and pushes "Status: <PRs> deployed <sha>" without deploying again. Workers are told never to edit it.
+`state_file` (set it per repo, see Settings per repo): after deploying, the queue adds one entry at the top of the file (date, PRs with titles, deployed sha and targets, verified, not verified, pending decisions), moves entries beyond `keep` (default 10) to the end of the archive (default `<stem>-archive.md` next to it, oldest last), and commits and pushes "Status: <PRs> deployed <sha>" without deploying again. Workers are told never to edit it.
 
 After deploying, a PR whose `after_deploy` an agent can check gets a check-only worker (`<queue>-verify-<pr>`); one that needs a person is reported as `needs a person: PR #<n>: ...`. A PR's `pending` decisions go into the reports and the status entry as `pending decisions: PR #<n>: ...`.
 

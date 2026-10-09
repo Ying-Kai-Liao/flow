@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.14] - 2026-10-09
+
+### Added
+
+- Settings per repo: `.claude/flow.json` (flat JSON, the same keys as `/config`) and a personal
+  overlay `<git-common-dir>/flow/config.json`. Precedence: defaults, `/config`, repo file,
+  personal file. The personal file's `worker_checks`, `always_tests`, `big_files` and
+  `decision_phrases` are added to the repo file's. An unknown key, bad JSON or a wrong type warns
+  and the layer below applies. The files are re-read every few seconds by mtime; new settings
+  apply to agents started afterwards.
+- `manager_model` and `queue_model` (default `opus`); `worker_model` now defaults to
+  `sonnet[1m]` and falls back to `sonnet` once, with a warning, if the engine refuses `[1m]`.
+- Keys read but not yet wired into the prompts: `language`, `big_files`, `big_file_lines`,
+  `migrations_dir`, `decision_phrases`, `worker_checks`, `always_tests`.
+
+### Changed
+
+- Sub-agents don't run on Fable: refused in settings, denied at spawn for flow agent types and
+  for agents started by a flow agent.
+
 ## [0.3.13] - 2026-10-09
 
 ### Added

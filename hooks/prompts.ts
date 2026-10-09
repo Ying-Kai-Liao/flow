@@ -15,6 +15,15 @@ export type Settings = {
   maxWorkers: number
   testSlots: number
   workerModel: string
+  managerModel: string
+  queueModel: string
+  language: string
+  bigFiles: string[]
+  bigFileLines: number
+  migrationsDir: string
+  decisionPhrases: string[]
+  workerChecks: string[]
+  alwaysTests: string[]
 }
 
 export type DeployTarget = { name: string; backup: string[]; deploy: string[]; healthUrl?: string; verify: string[] }

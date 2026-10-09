@@ -11,6 +11,7 @@ import {
 } from './prompts'
 import type { Settings } from './prompts'
 import { deployTargetsOf, stateFileOf } from './prompts'
+import { isFable, mergeLayers } from './settings'
 import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
@@ -24,6 +25,8 @@ import { buildDigest, findWorktree, noteKey, ownerFor } from './state'
 
 const PANE = 'flow'
 const POLL_MS = 3000
+// The 1M-window Sonnet: workers read whole diffs and long briefs. Refused for sub-agents, it falls back to plain sonnet.
+const DEFAULT_WORKER_MODEL = 'sonnet[1m]'
 const LOG_MAX = 40
 const MANAGER = 'flow:manager'
 const WORKER = 'flow:worker'
@@ -434,9 +437,13 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 // The pane's context meter marks this percent; the rest of the settings go into the prompts.
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
+// `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
 function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
+  const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
+  // Sub-agents don't run on Fable, whatever the source says.
+  const model = (k: string, d: string) => { const m = str(k, d); return isFable(m) ? d : m }
   return {
     contextWarn: Math.min(100, Math.max(1, Math.round(num('context_warn_percent', 40)))),
     contextWarnTokens: Math.max(0, Math.round(num('context_warn_tokens', 350000))),
@@ -455,7 +462,16 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     maxWorkers: num('max_workers', 3),
     maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
     testSlots: Math.max(1, Math.floor(num('test_slots', 1))),
-    workerModel: str('worker_model', 'sonnet'),
+    workerModel: model('worker_model', DEFAULT_WORKER_MODEL),
+    managerModel: model('manager_model', 'opus'),
+    queueModel: model('queue_model', 'opus'),
+    language: str('language', 'English'),
+    bigFiles: strs('big_files'),
+    bigFileLines: num('big_file_lines', 1500),
+    migrationsDir: str('migrations_dir', ''),
+    decisionPhrases: strs('decision_phrases'),
+    workerChecks: strs('worker_checks'),
+    alwaysTests: strs('always_tests'),
   }
 }
 
@@ -749,7 +765,7 @@ async function best($: EngineInterface, what: string, fn: () => Promise<void>): 
 }
 
 // The name of the agent that owns work started by agent `id`: "main" for the main session.
-async function ownerOf($: EngineInterface, id: string | undefined): Promise<string> {
+async function ownerNameOf($: EngineInterface, id: string | undefined): Promise<string> {
   if (id === undefined) return 'main'
   return (await $.agent.list()).find(a => a.id === id)?.name ?? 'main'
 }
@@ -810,7 +826,7 @@ async function prepareContinue($: EngineInterface, e: AgentSpawnInput): Promise<
   if (branch === undefined) return e
   const name = (e as { name?: string }).name ?? e.description
   try {
-    const owner = await ownerOf($, e.parentAgentId)
+    const owner = await ownerNameOf($, e.parentAgentId)
     let rec = (await read($, handoffs))[branch]
     if (rec === undefined) {
       const ev = (await readLog($)).filter(l => l.event === 'handoff' && l.branch === branch).pop()
@@ -872,6 +888,24 @@ async function prepareContinue($: EngineInterface, e: AgentSpawnInput): Promise<
     return e
   }
 }
+
+const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / queue_model)."
+
+// Fable is refused for a flow agent and for anything a flow agent starts.
+async function fableDenied($: EngineInterface, e: { model?: string; subagentType: string; parentAgentId?: string }): Promise<boolean> {
+  if (!isFable(e.model)) return false
+  if (FLOW_TYPES.has(e.subagentType)) return true
+  if (e.parentAgentId === undefined) return false
+  const parent = (await $.agent.list()).find(a => a.id === e.parentAgentId)
+  return parent !== undefined && FLOW_TYPES.has(parent.type)
+}
+
+// A refusal of a long-context model: a deny, or an error that names the model or its context.
+function refusedLong(r: unknown): boolean {
+  const text = r instanceof Error ? r.message : typeof r === 'object' && r !== null && 'deny' in r ? String((r as { deny: unknown }).deny) : ''
+  return /model|1m|context/i.test(text)
+}
+const withoutLong = (model: string): string => model.replace('[1m]', '')
 
 // Starts a merge queue unless one is live. The queue drains every pending handover, then ends;
 // the next handover, or a queue that ended with work left, starts a fresh one.
@@ -1196,11 +1230,123 @@ function fetchPrs($: EngineInterface): Promise<void> {
   return fetching
 }
 
+// The two settings files this session could read, whether or not they exist yet.
+async function locate($: EngineInterface): Promise<string[]> {
+  const git = async (...args: string[]) => {
+    try {
+      const r = await $.process.run(['git', 'rev-parse', ...args])
+      return r.exitCode === 0 ? r.stdout.trim() : ''
+    } catch {
+      return ''
+    }
+  }
+  const [top, common] = await Promise.all([git('--show-toplevel'), git('--path-format=absolute', '--git-common-dir')])
+  return [top === '' ? '' : `${top}/.claude/flow.json`, common === '' ? '' : `${common}/flow/config.json`]
+}
+
+async function readText($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    if (path === '' || !(await $.fs.exists(path))) return undefined
+    return String(await $.fs.read(path))
+  } catch {
+    return undefined
+  }
+}
+
+// Cheap change check for the roster poll: both files' mtimes, "-" for a missing one.
+async function signature($: EngineInterface, paths: string[]): Promise<string> {
+  const parts = await Promise.all(paths.map(async p => {
+    try {
+      if (p === '') return '-'
+      return String((await $.fs.stat(p)).mtimeMs)
+    } catch {
+      return '-'
+    }
+  }))
+  return parts.join('|')
+}
+
+type Merged = { settings: ReturnType<typeof settingsOf>; seen: string }
+
+// Layer /config under the settings files. The caller assigns the result (register's `apply`),
+// since the hooks compiler only follows `$` into top-level functions.
+async function loadSettings($: EngineInterface, options: Record<string, unknown>, paths: string[], base: string): Promise<Merged> {
+  const seen = await signature($, paths)
+  const layers = await Promise.all(paths.map(async path => ({ path, text: await readText($, path) })))
+  const loaded = mergeLayers(options, layers)
+  if (loaded.warnings.length > 0) void $.ui.toast(`flow settings:\n${loaded.warnings.join('\n')}`)
+  return { settings: settingsOf(loaded.raw, base), seen }
+}
+
+// The agent definitions carry the settings' prompts and models; a re-registered name is
+// replaced from the next turn, so agents already running keep what they started with.
+async function registerAgents($: EngineInterface, settings: ReturnType<typeof settingsOf>) {
+  await $.agent.register({
+    name: 'manager',
+    description: 'A flow manager: owns one task, writes briefs, starts flow:worker agents, reviews their PRs and hands them to the merge queue. ' +
+      'Pass the task in the user\'s words as the prompt and a short task slug as the name; run it in the background.',
+    prompt: fill(MANAGER_PROMPT.replace('{{QUEUE_RULE}}', settings.useQueue ? QUEUE_RULE : NO_QUEUE_RULE), settings),
+    model: settings.managerModel,
+    background: true,
+  })
+  await $.agent.register({
+    name: 'worker',
+    description: 'A flow worker: implements one brief in a git worktree of its own and opens a PR. ' +
+      'Pass the whole brief as the prompt, its first line "Your name: <slug>", and the slug as the name.',
+    prompt: fill(WORKER_PROMPT, settings),
+    model: settings.workerModel,
+    isolation: 'worktree',
+    background: true,
+  })
+  await $.agent.register({
+    name: 'continue',
+    description: 'A flow worker that continues a handed-off branch in the same worktree. The plugin picks it when a flow:worker spawn says "Continue on branch:"; never start it yourself.',
+    prompt: fill(WORKER_PROMPT, settings),
+    model: settings.workerModel,
+    background: true,
+  })
+  await $.agent.register({
+    name: 'queue',
+    description: 'The flow merge queue. Started by the plugin when a PR is handed over; never start it yourself.',
+    prompt: fill(QUEUE_PROMPT, settings),
+    model: settings.queueModel,
+    isolation: 'worktree',
+    background: true,
+  })
+}
+
+// Re-read the settings when a file's mtime changed (the roster poll calls this): undefined when
+// nothing changed or the reload failed, which never stops the roster refresh.
+async function recheck($: EngineInterface, options: Record<string, unknown>, paths: string[], base: string, seen: string): Promise<Merged | undefined> {
+  try {
+    if ((await signature($, paths)) === seen) return undefined
+    const merged = await loadSettings($, options, paths, base)
+    await registerAgents($, merged.settings)
+    return merged
+  } catch {
+    return undefined
+  }
+}
+
 export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
   queueOn = settings.useQueue
   maxManagers = settings.maxManagers
   slotLimit = settings.testSlots
+  // Settings reloads: the files' paths and mtimes, the detected base branch, whether a check runs.
+  let paths: string[] = []
+  let seen = ''
+  let detected = 'main'
+  let checking = false
+  // Everything that mirrors the settings in a module-level variable is refreshed together.
+  const apply = (s: typeof settings) => {
+    settings = s
+    queueOn = s.useQueue
+    maxManagers = s.maxManagers
+    slotLimit = s.testSlots
+  }
+  // Set once a `[1m]` model was refused for a sub-agent: later spawns go straight to the plain one.
+  let noLong = false
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
@@ -1231,14 +1377,17 @@ export const register: Register = (on, options) => {
         const remote = await $.process.run(['git', 'ls-remote', '--symref', 'origin', 'HEAD'], { timeoutMs: 10_000 })
         base = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(remote.stdout)?.[1] ?? ''
       }
-      if (base !== '') {
-        settings = settingsOf(options, base)
-        queueOn = settings.useQueue
-        slotLimit = settings.testSlots
-      }
-      maxManagers = settings.maxManagers
+      if (base !== '') detected = base
     } catch {
       // Not a git repo, or no remote: keep "main".
+    }
+    paths = await locate($)
+    try {
+      const merged = await loadSettings($, options, paths, detected)
+      seen = merged.seen
+      apply(merged.settings)
+    } catch {
+      // Keep the settings from /config alone.
     }
 
     // Grant files of a previous session would read as grants; start from an empty directory.
@@ -1262,34 +1411,7 @@ export const register: Register = (on, options) => {
       description: 'Pick tasks from a task source (.claude/flow/sources/<name>.md) and start a manager for each',
       argumentHint: '[source] [ids or filter]',
     })
-    await $.agent.register({
-      name: 'manager',
-      description: 'A flow manager: owns one task, writes briefs, starts flow:worker agents, reviews their PRs and hands them to the merge queue. ' +
-        'Pass the task in the user\'s words as the prompt and a short task slug as the name; run it in the background.',
-      prompt: fill(MANAGER_PROMPT.replace('{{QUEUE_RULE}}', settings.useQueue ? QUEUE_RULE : NO_QUEUE_RULE), settings),
-      background: true,
-    })
-    await $.agent.register({
-      name: 'worker',
-      description: 'A flow worker: implements one brief in a git worktree of its own and opens a PR. ' +
-        'Pass the whole brief as the prompt, its first line "Your name: <slug>", and the slug as the name.',
-      prompt: fill(WORKER_PROMPT, settings),
-      isolation: 'worktree',
-      background: true,
-    })
-    await $.agent.register({
-      name: 'continue',
-      description: 'A flow worker that continues a handed-off branch in the same worktree. The plugin picks it when a flow:worker spawn says "Continue on branch:"; never start it yourself.',
-      prompt: fill(WORKER_PROMPT, settings),
-      background: true,
-    })
-    await $.agent.register({
-      name: 'queue',
-      description: 'The flow merge queue. Started by the plugin when a PR is handed over; never start it yourself.',
-      prompt: fill(QUEUE_PROMPT, settings),
-      isolation: 'worktree',
-      background: true,
-    })
+    await registerAgents($, settings)
 
     await $.tool.register({
       name: 'handover',
@@ -1397,7 +1519,14 @@ export const register: Register = (on, options) => {
       isDeferred: false,
     })
 
-    $.clock.every(POLL_MS, () => void refresh($))
+    $.clock.every(POLL_MS, () => {
+      void refresh($)
+      if (checking) return
+      checking = true
+      void recheck($, options, paths, detected, seen).then(m => {
+        if (m !== undefined) { seen = m.seen; apply(m.settings) }
+      }).finally(() => { checking = false })
+    })
     // gh is not free: a slow timer, one look shortly after the start, and status when the list is stale.
     $.clock.every(PR_POLL_MS, () => void fetchPrs($))
     void fetchPrs($)
@@ -1479,9 +1608,28 @@ export const register: Register = (on, options) => {
         return { deny: `flow plan: ${node.id} waits on ${deps.join(', ')}. Start it when the plugin says it is ready.` }
       }
     }
+    if (await fableDenied($, e)) return { deny: FABLE_DENY }
+    // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
+    // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
     const spawn = e.subagentType === WORKER ? await prepareContinue($, e) : e
-    const started = await next(spawn)
-    if (started.agentId !== undefined) {
+    const role = ROLE[spawn.subagentType]
+    const wanted = role === undefined ? undefined : (spawn.model ?? (settings as Record<string, unknown>)[`${role}Model`])
+    const long = typeof wanted === 'string' && wanted.includes('[1m]') ? wanted : undefined
+    let ev = long !== undefined && noLong ? { ...spawn, model: withoutLong(long) } : spawn
+    let started: Awaited<ReturnType<typeof next>> | { deny: string }
+    try {
+      started = await next(ev)
+    } catch (err) {
+      if (long === undefined || noLong || !refusedLong(err)) throw err
+      started = { deny: String((err as Error).message) }
+    }
+    if (long !== undefined && !noLong && refusedLong(started)) {
+      noLong = true
+      ev = { ...spawn, model: withoutLong(long) }
+      void $.ui.toast(`flow: ${long} was refused for sub-agents; using ${ev.model}`)
+      started = await next(ev)
+    }
+    if ('agentId' in started && started.agentId !== undefined) {
       const t = await $.clock.now()
       const id = started.agentId
       await update($, activity, acts => ({
@@ -1491,7 +1639,7 @@ export const register: Register = (on, options) => {
       void openPane($)
       if (FLOW_TYPES.has(e.subagentType)) {
         await best($, 'logging a spawn', async () => {
-          await appendLog($, { event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerOf($, e.parentAgentId) })
+          await appendLog($, { event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerNameOf($, e.parentAgentId) })
         })
       }
     }
