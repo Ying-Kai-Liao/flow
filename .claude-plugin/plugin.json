@@ -46,6 +46,16 @@
         "confirm"
       ]
     },
+    "push_mode": {
+      "type": "string",
+      "title": "Push mode",
+      "description": "auto: the reviewer pushes a batch once its full check is green. confirm: it builds and checks the batch, saves it and stops; you start the push with /flow push.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "confirm"
+      ]
+    },
     "reviewer": {
       "type": "boolean",
       "title": "Reviewer",
