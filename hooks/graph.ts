@@ -78,7 +78,7 @@ export function layoutGraph(nodes: GNode[], width: number): Layout {
   const depth = layers(g)
   const count = Math.max(...Object.values(depth)) + 1
   const byLayer: GNode[][] = Array.from({ length: count }, () => [])
-  for (const n of uniq) byLayer[depth[n.id]].push(n)
+  for (const n of uniq) byLayer[depth[n.id] ?? 0]?.push(n)
   const avail = Math.floor((width - GAP * (count - 1)) / count)
   if (width < MIN_WIDTH || avail < MIN_COL) return listLayout(byLayer, deps, uniq)
   return layerLayout(byLayer, deps, depth, avail, width)
@@ -96,7 +96,8 @@ function listLayout(byLayer: GNode[][], deps: Record<string, string[]>, all: GNo
       order.push(n.id)
       const line: Seg[] = [{ text: n.label, node: n.id }]
       if (n.badge) line.push({ text: ` ${n.badge}`, dim: true })
-      if (deps[n.id].length) line.push({ text: `  after: ${deps[n.id].map(x => byId[x].label).join(', ')}`, dim: true })
+      const after = deps[n.id] ?? []
+      if (after.length) line.push({ text: `  after: ${after.map(x => byId[x]?.label ?? x).join(', ')}`, dim: true })
       lines.push(line)
     }
   })
@@ -113,17 +114,25 @@ function layerLayout(byLayer: GNode[][], deps: Record<string, string[]>, depth: 
   const colw = byLayer.map(level => Math.min(avail, Math.max(...level.map(full))))
   const colx: number[] = []
   colw.reduce((x, w, i) => ((colx[i] = x), x + w + GAP), 0)
+  // Every id here comes from `all`, so the fallbacks only satisfy the index checks.
+  const depthOf = (id: string) => depth[id] ?? 0
+  const colwOf = (id: string) => colw[depthOf(id)] ?? 0
+  const colxOf = (layer: number) => colx[layer] ?? 0
 
   // Rows: a node sits on the row of its highest dependency when that is free, so a chain is a
   // straight line; a layer's nodes never share a row.
   const row: Record<string, number> = {}
   byLayer.forEach(level => {
-    const want = level.map((n, i) => ({ n, i, w: deps[n.id].length ? Math.min(...deps[n.id].map(d => row[d] ?? 0)) : 0 }))
+    const want = level.map((n, i) => {
+      const ds = deps[n.id] ?? []
+      return { n, i, w: ds.length ? Math.min(...ds.map(d => row[d] ?? 0)) : 0 }
+    })
     want.sort((a, b) => a.w - b.w || a.i - b.i)
     let last = -1
     for (const { n, w } of want) row[n.id] = last = Math.max(w, last + 1)
   })
-  const rows = Math.max(...all.map(n => row[n.id])) + 1
+  const rowOf = (id: string) => row[id] ?? 0
+  const rows = Math.max(...all.map(n => rowOf(n.id))) + 1
 
   // Edges between neighbouring layers share a trunk in the gap. Two edges may share it only when
   // they meet at one node (a fan-out or fan-in) or their row ranges do not touch; any other edge
@@ -132,24 +141,25 @@ function layerLayout(byLayer: GNode[][], deps: Record<string, string[]>, depth: 
   const rejected: Record<string, string[]> = {}
   const candidates: Array<{ p: string; c: string; gap: number }> = []
   for (const n of all) {
-    for (const d of deps[n.id]) {
-      if (depth[d] === depth[n.id] - 1) candidates.push({ p: d, c: n.id, gap: depth[d] })
+    for (const d of deps[n.id] ?? []) {
+      if (depthOf(d) === depthOf(n.id) - 1) candidates.push({ p: d, c: n.id, gap: depthOf(d) })
       else (rejected[n.id] ??= []).push(d)
     }
   }
-  const span = (e: { p: string; c: string }) => [Math.min(row[e.p], row[e.c]), Math.max(row[e.p], row[e.c])]
+  const span = (e: { p: string; c: string }): [number, number] => [Math.min(rowOf(e.p), rowOf(e.c)), Math.max(rowOf(e.p), rowOf(e.c))]
   // Straight and short edges first: they are the ones that stay legible.
-  candidates.sort((a, b) => Math.abs(row[a.p] - row[a.c]) - Math.abs(row[b.p] - row[b.c]))
+  candidates.sort((a, b) => Math.abs(rowOf(a.p) - rowOf(a.c)) - Math.abs(rowOf(b.p) - rowOf(b.c)))
   for (const e of candidates) {
     const [lo, hi] = span(e)
-    const clash = drawn[e.gap].some(o => o.p !== e.p && o.c !== e.c && o.lo <= hi && lo <= o.hi)
+    const edges = drawn[e.gap] ?? []
+    const clash = edges.some(o => o.p !== e.p && o.c !== e.c && o.lo <= hi && lo <= o.hi)
     if (clash) (rejected[e.c] ??= []).push(e.p)
-    else drawn[e.gap].push({ p: e.p, c: e.c, lo, hi })
+    else edges.push({ p: e.p, c: e.c, lo, hi })
   }
 
   // One line per row, plus a note line under a row when one of its nodes has a rejected edge.
   const noted = new Set<number>()
-  for (const id of Object.keys(rejected)) noted.add(row[id])
+  for (const id of Object.keys(rejected)) noted.add(rowOf(id))
   const rowLine: number[] = []
   let total = 0
   for (let r = 0; r < rows; r++) {
@@ -161,31 +171,38 @@ function layerLayout(byLayer: GNode[][], deps: Record<string, string[]>, depth: 
   const items: Item[][] = Array.from({ length: total }, () => [])
   const masks: Array<Record<number, number>> = Array.from({ length: total }, () => ({}))
   const arrows: Array<Set<number>> = Array.from({ length: total }, () => new Set())
+  const lineOf = (id: string) => rowLine[rowOf(id)] ?? 0
   const add = (line: number, col: number, m: number) => {
-    masks[line][col] = (masks[line][col] ?? 0) | m
+    const mask = masks[line]
+    if (mask) mask[col] = (mask[col] ?? 0) | m
   }
 
   const fitted: Record<string, { label: string; badge?: string }> = {}
   for (const n of all) {
-    const w = colw[depth[n.id]]
+    const w = colwOf(n.id)
     const room = n.badge ? w - 1 - n.badge.length : w
-    fitted[n.id] = n.badge && room >= 2 ? { label: trunc(n.label, room), badge: n.badge } : { label: trunc(n.label, w) }
-    const line = rowLine[row[n.id]]
-    items[line].push({ col: colx[depth[n.id]], text: fitted[n.id].label, node: n.id })
-    if (fitted[n.id].badge) items[line].push({ col: colx[depth[n.id]] + fitted[n.id].label.length + 1, text: fitted[n.id].badge!, dim: true })
+    const fit = n.badge && room >= 2 ? { label: trunc(n.label, room), badge: n.badge } : { label: trunc(n.label, w) }
+    fitted[n.id] = fit
+    const its = items[lineOf(n.id)]
+    its?.push({ col: colxOf(depthOf(n.id)), text: fit.label, node: n.id })
+    if (fit.badge) its?.push({ col: colxOf(depthOf(n.id)) + fit.label.length + 1, text: fit.badge, dim: true })
+  }
+  const usedBy = (id: string) => {
+    const f = fitted[id]
+    return f ? f.label.length + (f.badge ? 1 + f.badge.length : 0) : 0
   }
 
   drawn.forEach((edges, gap) => {
-    const x0 = colx[gap] + colw[gap]
+    const x0 = colxOf(gap) + (colw[gap] ?? 0)
     for (const e of edges) {
-      const lp = rowLine[row[e.p]]
-      const lc = rowLine[row[e.c]]
-      const used = fitted[e.p].label.length + (fitted[e.p].badge ? 1 + fitted[e.p].badge!.length : 0)
+      const lp = lineOf(e.p)
+      const lc = lineOf(e.c)
+      const used = usedBy(e.p)
       // Bridge the blank between a short label and the gap.
-      for (let x = colx[gap] + used + 1; x < x0; x++) add(lp, x, L | R)
+      for (let x = colxOf(gap) + used + 1; x < x0; x++) add(lp, x, L | R)
       add(lp, x0, L | R)
       add(lc, x0 + 2, L | R)
-      arrows[lc].add(x0 + 2)
+      arrows[lc]?.add(x0 + 2)
       if (lp === lc) {
         add(lp, x0 + 1, L | R)
         continue
@@ -198,31 +215,32 @@ function layerLayout(byLayer: GNode[][], deps: Record<string, string[]>, depth: 
   })
 
   for (const id of Object.keys(rejected)) {
-    const line = rowLine[row[id]] + 1
-    const text = `after: ${rejected[id].map(d => byId[d].label).join(', ')}`
-    items[line].push({ col: colx[depth[id]], text, dim: true })
+    const line = lineOf(id) + 1
+    const text = `after: ${(rejected[id] ?? []).map(d => byId[d]?.label ?? d).join(', ')}`
+    items[line]?.push({ col: colxOf(depthOf(id)), text, dim: true })
   }
 
   const lines: Seg[][] = items.map((its, line) => {
+    const mask = masks[line] ?? {}
     // A note may run on into the gaps and the next column until something else is there.
     its.sort((a, b) => a.col - b.col)
     its.forEach((it, i) => {
       if (it.node || !it.text.startsWith('after: ')) return
-      const owner = Object.keys(rejected).find(id => rowLine[row[id]] + 1 === line && colx[depth[id]] === it.col)!
-      const home = colw[depth[owner]]
+      const owner = Object.keys(rejected).find(id => lineOf(id) + 1 === line && colxOf(depthOf(id)) === it.col) ?? ''
+      const home = colwOf(owner)
       const limit = (its[i + 1]?.col ?? Infinity) - 1
       let end = Math.min(it.col + it.text.length, limit, width)
       for (let x = it.col + home; x < end; x++) {
-        if (masks[line][x]) {
+        if (mask[x]) {
           end = x - 1
           break
         }
       }
       it.text = trunc(it.text, Math.max(end - it.col, 1))
     })
-    for (const x of Object.keys(masks[line])) {
+    for (const x of Object.keys(mask)) {
       const col = Number(x)
-      const ch = arrows[line].has(col) ? '→' : BOX[masks[line][col]] ?? '┼'
+      const ch = arrows[line]?.has(col) ? '→' : BOX[mask[col] ?? 0] ?? '┼'
       its.push({ col, text: ch, dim: true })
     }
     its.sort((a, b) => a.col - b.col)
@@ -242,8 +260,8 @@ function layerLayout(byLayer: GNode[][], deps: Record<string, string[]>, depth: 
   const at: Record<string, number> = {}
   const order: string[] = []
   byLayer.forEach(level => {
-    for (const n of [...level].sort((a, b) => row[a.id] - row[b.id])) {
-      at[n.id] = rowLine[row[n.id]]
+    for (const n of [...level].sort((a, b) => rowOf(a.id) - rowOf(b.id))) {
+      at[n.id] = lineOf(n.id)
       order.push(n.id)
     }
   })
