@@ -19,6 +19,7 @@ function world(on: On) {
   ]
   const files = new Map<string, string>()
   const prompts: string[] = []
+  const mainMsgs: { role: string; text: string }[] = []
   on('agent.list', () => ({ value: agents }))
   on('agent.spawn', () => ({ model: 'sonnet', agentId: 'q1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -26,6 +27,7 @@ function world(on: On) {
   on('ui.log', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('prompt.submit', (_, e) => { prompts.push(e.text); return { text: e.text } })
+  on('session.messages', () => ({ value: mainMsgs as never }))
   on('turn.complete', (_, e) => ({ text: e.answer }) as never)
   on('tool.call', () => ({ result: 'sent' }) as never)
   on('fs.write', (_, e) => { files.set(e.path, e.text); return { value: undefined } })
@@ -39,7 +41,7 @@ function world(on: On) {
     if (e.argv[0] === 'gh') return ok(JSON.stringify(PR))
     return ok()
   })
-  return { agents, files, prompts, flush: async () => { await clock.advance(1); await clock.settle() } }
+  return { agents, files, prompts, mainMsgs, flush: async () => { await clock.advance(1); await clock.settle() }, flushLong: async () => { await clock.advance(5000); await clock.settle() } }
 }
 
 const handover = ($: Dollar, agentId: string | undefined, extra: Record<string, unknown> = {}) =>
@@ -104,10 +106,10 @@ test('a manager the queue woke has its turn-end report forwarded to main, once',
   await handover($, 'm1', { pr: 8 })
   await send($, 'q1', 'csv-export', 'PR #7 merged')
   await $.turn.complete({ turnId: 't', agentId: 'm1', answer: 'All done. PR #7 merged.' } as never)
-  await w.flush()
+  await w.flushLong()
   expect(w.prompts.filter(p => p.includes('All done. PR #7 merged.')).length).toBe(1)
   await $.turn.complete({ turnId: 't2', agentId: 'm1', answer: 'Again' } as never)
-  await w.flush()
+  await w.flushLong()
   expect(w.prompts.some(p => p.includes('Again'))).toBe(false)
 })
 
@@ -204,4 +206,61 @@ test('a child active after the manager wakes it', async ($, on) => {
   await w.flush()
   await $.turn.complete({ turnId: 't2', agentId: 'w1', answer: 'PR: x' } as never)
   expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toBe('sent')
+})
+
+test('a woken manager\'s answer already in main\'s transcript is not relayed again', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  await handover($, 'm1', { pr: 8 })
+  await send($, 'q1', 'csv-export', 'PR #7 merged')
+  w.mainMsgs.push({ role: 'user', text: '<task-notification>\nAll done.   PR #7 merged.\n</task-notification>' })
+  await $.turn.complete({ turnId: 't', agentId: 'm1', answer: 'All done. PR #7 merged.' } as never)
+  await w.flushLong()
+  expect(w.prompts.some(p => p.includes('Report from manager'))).toBe(false)
+})
+
+const REPORT = 'full check: 3 passed | after_deploy: none | pending decisions: none'
+
+test('two reviewer sends about the same absent manager and PR reach main once', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  expect(await send($, 'q1', 'csv-export', `PR #7 merged. ${REPORT}`)).toContain('Not sent')
+  const second = await send($, 'q1', 'csv-export', `PR #7 merged abc. ${REPORT}`)
+  expect(second).toContain('already forwarded')
+  await w.flush()
+  expect(w.prompts.length).toBe(1)
+  expect(notes(w.files).match(/reviewer report/g)?.length).toBe(1)
+})
+
+test('a later send for the same key forwards only its new needs-a-person line', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  await send($, 'q1', 'csv-export', 'PR #7 merged')
+  await send($, 'q1', 'csv-export', 'PR #7 merged\nneeds a person: PR #7: look at the pane')
+  await send($, 'q1', 'csv-export', 'PR #7 merged again\nneeds a person: PR #7: look at the pane')
+  await send($, 'q1', 'csv-export', 'PR #9 merged')
+  await w.flush()
+  expect(w.prompts.length).toBe(3)
+  expect(w.prompts[1]).toContain('needs a person: PR #7: look at the pane')
+  expect(w.prompts[1]).not.toContain('merged')
+})
+
+test('a reviewer send to main that repeats forwarded lines is dropped; new text goes through', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  await send($, 'q1', 'csv-export', 'PR #7 merged\nneeds a person: PR #7: look at the pane')
+  expect(await send($, 'q1', 'main', 'needs a person: PR #7: look at the pane')).toContain('already has')
+  expect(await send($, 'q1', 'main', 'needs a person: PR #7: look at the pane\nPR #8 waits')).toBe('sent')
+})
+
+test('the same manager and PR from two different reviewer runs is forwarded both times', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  w.agents.push({ id: 'q2', name: 'merge-queue-2', description: 'q', type: 'flow:queue', status: 'running' })
+  await send($, 'q1', 'csv-export', 'PR #7 sent back: tests fail')
+  expect(await send($, 'q2', 'csv-export', 'PR #7 merged')).toContain('Not sent')
+  expect(await send($, 'q2', 'main', 'PR #7 sent back: tests fail')).toBe('sent')
+  await w.flush()
+  expect(w.prompts.length).toBe(2)
+  expect(w.prompts[1]).toContain('PR #7 merged')
 })

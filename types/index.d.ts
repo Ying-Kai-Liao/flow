@@ -367,6 +367,7 @@ declare module 'claude-code' {
       harnessLimits: Limit[]
       // A control pressed once that needs a second press: "<session>:<action>", and when.
       armed: { key: string; at: number } | null
+      forwarded: { keys: Record<string, string[]>; lines: Record<string, string[]> }
     }
   }
 }
