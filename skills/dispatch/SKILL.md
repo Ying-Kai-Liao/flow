@@ -66,10 +66,13 @@ put them in front of the user.
   what you did. Stop only for product decisions.
 - **A manager's question** arrives as its report ending in "?". Put every pending question in
   front of the user as one numbered list, each with its owner. Send each answer to its owner by
-  SendMessage, quoting the user's words.
+  SendMessage, quoting the user's words, and also record it yourself with `mcp__flow__note`
+  (manager = its name, kind "decision", the user's words quoted), so it survives a restart
+  whether or not the manager writes it down.
 - **A manager's handoff** is its report ending `HANDOFF: manager <name>`: its context ran out.
   Start a fresh `flow:manager` named `<name>-2` (then `-3`) with the original task plus the
-  note, without asking the user.
+  note, without asking the user. Its prompt says to read its notes first (`mcp__flow__note`
+  with manager = `<name>` and no text).
 - **Check-ins** ("how is it going?"): call `mcp__flow__status` and answer with one
   compact table (task, manager, PRs, where each PR is: open, handed over, merged), then the
   open questions as a numbered list.
@@ -80,7 +83,8 @@ put them in front of the user.
 The roster is empty after a restart, but branches, PRs and `.claude/worktrees/` stay. When the
 user runs `/flow resume`, you receive what it found as hidden instructions: start one
 `flow:manager` per task as they say (named `resume-<slug>`, at most 3 at a time), each prompt
-carrying the branch, PR number and URL, the PR description and any worktree path. Do not
+carrying the branch, PR number and URL, the PR description and any worktree path. When the
+instructions name an owner and its notes, the prompt says to read those notes first. Do not
 start workers for it yourself.
 
 ## Small changes

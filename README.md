@@ -105,7 +105,36 @@ An unset full check or deploy is a step that's skipped and reported, never impro
 - `handover`: a manager hands a reviewed PR over; the plugin records its head and starts
   a queue if none is running.
 - `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
-- `status`: the tree and the handovers as text, for check-ins.
+- `status`: the tree and the handovers as text, for check-ins; with `pr` it names the PR's owner.
+- `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
+  `text` it returns the notes.
+
+## State on disk
+
+Flow's state survives a restart. It lives in `<git-common-dir>/flow/` (for example `.git/flow/`),
+shared by all worktrees. Writes are best-effort: a failed write is logged in the UI and never
+stops a tool call.
+
+```
+<git-common-dir>/flow/
+  handovers/<pr>.json      one file per handed-over PR, rewritten on every change
+  log.jsonl                append-only event log
+  managers/<key>/notes.md  a manager's notes
+  config.json              not state: the settings loader's file, never touched by flow
+```
+
+- `handovers/<pr>.json`: `{version: 1, pr, title, head, branch, reportTo, verified, pending,
+  afterDeploy, status, at, sha?, report?, reason?}`; `status` is pending, taken, done or returned.
+  A new session loads these.
+- `log.jsonl`: one JSON object per line, `{ts, event, owner, agent?, pr?, branch?, text?}`;
+  `event` is spawn, report, handover, take, done, back or note. `owner` is the manager the
+  event belongs to (or `main`).
+- `managers/<key>/notes.md`: dated lines, `- 2026-10-09 decision: "…"`. The key is the manager's
+  name without a trailing `-N`, so `csv-export-2` continues `csv-export`'s notes.
+
+`/flow resume` reads this too: it lists unfinished handovers next to the GitHub leftovers
+(a handover whose PR is merged counts as done), groups them by owning manager, and gives each
+restarted manager its notes (the last 3k characters).
 
 ## Limits
 
