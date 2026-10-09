@@ -149,3 +149,122 @@ test('a manager handoff is not a worker handoff', async ($, on) => {
 
   expect(logOf(files).some(l => l.event === 'handoff')).toBe(false)
 })
+
+// Continuations: the spawn hook rewrites a worker that continues a handed-off branch.
+const DONE: AgentInfo[] = AGENTS.map(a => a.id === 'w1' ? { ...a, status: 'completed' as const } : a)
+const BRIEF = 'Your name: csv-worker-2\nContinue on branch: flow/csv\nGo on.'
+const spawnIt = ($: Dollar, over: Record<string, unknown> = {}) =>
+  $.agent.spawn({ subagentType: 'flow:worker', name: 'csv-worker-2', description: 'w', prompt: BRIEF, parentAgentId: 'm1', ...over } as never)
+
+test('a continuation of a clean, pushed worktree runs in place with the digest', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const spawned: Record<string, unknown>[] = []
+  const { files } = world(on, { agents: DONE, spawned })
+  await finish($, 'w1')
+
+  await spawnIt($)
+
+  expect(spawned).toHaveLength(1)
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:continue', cwd: '/r/.claude/worktrees/agent-w1' })
+  const prompt = String(spawned[0]?.prompt)
+  expect(prompt).toContain('You continue in the same worktree /r/.claude/worktrees/agent-w1')
+  expect(prompt).toContain('Transcript digest of the previous worker')
+  expect(prompt).toContain('- git push -u origin HEAD')
+  expect(logOf(files).find(l => l.event === 'continue')).toMatchObject({
+    agent: 'csv-worker-2', owner: 'csv-export', branch: 'flow/csv', text: 'same worktree /r/.claude/worktrees/agent-w1',
+  })
+})
+
+test('only the first of two spawns for a branch gets the worktree', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const spawned: Record<string, unknown>[] = []
+  world(on, { agents: DONE, spawned })
+  await finish($, 'w1')
+
+  await spawnIt($)
+  await spawnIt($, { name: 'csv-worker-3' })
+
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:continue' })
+  expect(spawned[1]).toMatchObject({ subagentType: 'flow:worker' })
+  expect(spawned[1]?.cwd).toBeUndefined()
+  expect(String(spawned[1]?.prompt)).toContain('is kept')
+})
+
+test('a dirty worktree falls back to a new one', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const spawned: Record<string, unknown>[] = []
+  world(on, { agents: DONE, git: { dirty: true }, spawned })
+  await finish($, 'w1')
+  await spawnIt($)
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:worker' })
+  expect(spawned[0]?.cwd).toBeUndefined()
+  expect(String(spawned[0]?.prompt)).toContain('Transcript digest')
+})
+
+test('a worktree behind origin falls back to a new one', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const spawned: Record<string, unknown>[] = []
+  world(on, { agents: DONE, git: { head: 'bbbbbbb2' }, spawned })
+  await finish($, 'w1')
+  await spawnIt($)
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:worker' })
+  expect(spawned[0]?.cwd).toBeUndefined()
+})
+
+test('a worktree whose old agent is still live falls back to a new one', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const spawned: Record<string, unknown>[] = []
+  const removed: string[] = []
+  world(on, { agents: AGENTS, git: { head: 'bbbbbbb2', ancestor: true }, spawned, removed })
+  await finish($, 'w1')
+  await spawnIt($)
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:worker' })
+  expect(spawned[0]?.cwd).toBeUndefined()
+  expect(removed).toEqual([])
+})
+
+test('the old worktree is removed when clean, behind and an ancestor', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const removed: string[] = []
+  const spawned: Record<string, unknown>[] = []
+  world(on, { agents: DONE, git: { head: 'bbbbbbb2', ancestor: true }, removed, spawned })
+  await finish($, 'w1')
+  await spawnIt($)
+  expect(removed).toEqual(['/r/.claude/worktrees/agent-w1'])
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:worker' })
+  expect(String(spawned[0]?.prompt)).not.toContain('is kept')
+})
+
+test('a dirty old worktree is never removed', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const removed: string[] = []
+  world(on, { agents: DONE, git: { dirty: true, ancestor: true }, removed })
+  await finish($, 'w1')
+  await spawnIt($)
+  expect(removed).toEqual([])
+})
+
+test('spawns without Continue on branch, and other agent types, are unchanged', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const spawned: Record<string, unknown>[] = []
+  const { files } = world(on, { agents: DONE, spawned })
+  await finish($, 'w1')
+
+  await spawnIt($, { prompt: 'Your name: new\nDo a thing.' })
+  await spawnIt($, { subagentType: 'flow:manager' })
+
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:worker', prompt: 'Your name: new\nDo a thing.' })
+  expect(spawned[1]).toMatchObject({ subagentType: 'flow:manager', prompt: BRIEF })
+  expect(logOf(files).some(l => l.event === 'continue')).toBe(false)
+})
+
+test('a continuation with no handoff on record is a plain spawn', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const spawned: Record<string, unknown>[] = []
+  const { files } = world(on, { agents: DONE, spawned })
+
+  await spawnIt($)
+
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:worker', prompt: BRIEF })
+  expect(logOf(files).some(l => l.event === 'continue')).toBe(false)
+})
