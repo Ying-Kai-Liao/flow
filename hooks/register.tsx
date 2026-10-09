@@ -1094,6 +1094,16 @@ async function resolveReportTo($: EngineInterface, given: unknown, callerId: str
   return { name: asked }
 }
 
+async function managerFinished($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[]): Promise<boolean> {
+  if (rows.some(a => a.parentId !== undefined && ids.includes(a.parentId) && !ENDED.has(a.status))) return false
+  const open = new Set(['pending', 'awaiting', 'taken', 'returned'])
+  if (Object.values(await read($, handovers)).some(h => open.has(h.status) && isManagerOf(name.replace(/-\d+$/, ''), h.reportTo))) return false
+  const plans = await read($, plan)
+  if (Object.values(plans[planOwner(plans, name)] ?? {}).some(n => n.state === 'waiting' || n.state === 'ready' || n.state === 'running')) return false
+  if ((await read($, inbox)).items.some(q => q.state === 'open' && q.blocking && isManagerOf(name.replace(/-\d+$/, ''), q.owner))) return false
+  return true
+}
+
 // The queue's SendMessage to a manager that has ended would resume it just to say "noted", and its
 // final answer would go back to the queue. Instead the report is noted for that manager and sent to
 // main. Returns the tool result when it handled the call; undefined passes the call on.
@@ -1101,13 +1111,20 @@ async function queueSendGuard($: EngineInterface, to: string, text: string): Pro
   if (to === '' || to === 'main' || to === '*') return undefined
   const rows = await $.agent.list()
   const hits = rows.filter(a => a.id === to || a.name === to)
-  if (hits.length > 0 && (hits.some(a => !ENDED.has(a.status)) || !hits.some(a => a.type === MANAGER))) return undefined
+  if (hits.length > 0 && !hits.some(a => a.type === MANAGER)) return undefined
   const name = hits[0]?.name ?? to
+  const idle = hits.length > 0 && !hits.some(a => a.status !== 'idle' && !ENDED.has(a.status))
+  // A host leaves a manager that finished its work 'idle', not completed. It counts as finished only
+  // when nothing is left for it: no live child, no other open or returned handover, no open plan
+  // node, no open blocking ask. Otherwise the message wakes it as today.
+  if (hits.length > 0 && !hits.every(a => ENDED.has(a.status))) {
+    if (!idle || !(await managerFinished($, hits.map(a => a.id), name, rows))) return undefined
+  }
   let noted = false
   if (hits.length > 0) {
     noted = await appendNote($, name, `- ${await today($)} progress: queue report: ${text.replace(/\s+/g, ' ').trim()}`)
   }
-  toMain($, `Report for ${hits.length > 0 ? `${name} (finished)` : `${name} (no such agent)`}, from the merge queue:\n${text}`)
+  toMain($, `Report for ${hits.length > 0 ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the merge queue:\n${text}`)
   return `Not sent: ${name} ${hits.length > 0 ? 'has finished' : 'matches no agent'}, so messaging it would only wake it. The plugin ${noted ? `noted the report for ${name} and ` : ''}sent it to main. Do not message ${name} again, and do not repeat this report to main.`
 }
 

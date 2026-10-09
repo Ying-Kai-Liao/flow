@@ -101,6 +101,7 @@ test('an unknown name from the queue goes to main only; a live manager is messag
 test('a manager the queue woke has its turn-end report forwarded to main, once', async ($, on) => {
   const w = world(on)
   w.agents[0]!.status = 'idle'
+  await handover($, 'm1', { pr: 8 })
   await send($, 'q1', 'csv-export', 'PR #7 merged')
   await $.turn.complete({ turnId: 't', agentId: 'm1', answer: 'All done. PR #7 merged.' } as never)
   await w.flush()
@@ -113,6 +114,7 @@ test('a manager the queue woke has its turn-end report forwarded to main, once',
 test('a manager main woke is not forwarded, even after a queue message while it was idle', async ($, on) => {
   const w = world(on)
   w.agents[0]!.status = 'idle'
+  await handover($, 'm1', { pr: 8 })
   await send($, 'q1', 'csv-export', 'PR #7 merged')
   await send($, undefined, 'csv-export', 'carry on')
   await $.turn.complete({ turnId: 't', agentId: 'm1', answer: 'Finished.' } as never)
@@ -126,4 +128,58 @@ test('a message to a running manager joins its turn and marks nothing', async ($
   await $.turn.complete({ turnId: 't', agentId: 'm1', answer: 'Done.' } as never)
   await w.flush()
   expect(w.prompts.some(p => p.includes('Done.'))).toBe(false)
+})
+
+const queueDone = ($: Dollar, pr: number) =>
+  $.tool.call({ tool: 'mcp__flow__queue', action: 'done', pr, sha: 'abc', report: 'ok', agentId: 'q1' } as never)
+
+test('an idle manager whose last PR just merged is finished: noted, sent to main, not woken', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  w.agents[1]!.status = 'completed'
+  await handover($, 'm1')
+  await queueDone($, 7)
+  const r = await send($, 'q1', 'csv-export', 'PR #7 merged')
+  expect(r).toContain('Not sent')
+  expect(notes(w.files)).toContain('PR #7 merged')
+  await w.flush()
+  expect(w.prompts.some(p => p.includes('finished; not woken') && p.includes('PR #7 merged'))).toBe(true)
+})
+
+test('an idle manager with another open handover is woken', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  w.agents[1]!.status = 'completed'
+  await handover($, 'm1')
+  await handover($, 'm1', { pr: 8 })
+  await queueDone($, 7)
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toBe('sent')
+})
+
+test('an idle manager with planned nodes is woken', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  w.agents[1]!.status = 'completed'
+  await handover($, 'm1')
+  await queueDone($, 7)
+  await $.tool.call({ tool: 'mcp__flow__plan', action: 'add', nodes: [{ id: 'later', title: 'later' }], agentId: 'm1' } as never)
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toBe('sent')
+})
+
+test('a returned PR wakes an idle manager', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  w.agents[1]!.status = 'completed'
+  await handover($, 'm1')
+  await $.tool.call({ tool: 'mcp__flow__queue', action: 'back', pr: 7, reason: 'head moved', agentId: 'q1' } as never)
+  expect(await send($, 'q1', 'csv-export', 'PR #7 returned: head moved')).toBe('sent')
+})
+
+test('an idle manager with a live child is woken', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  await handover($, 'm1')
+  await queueDone($, 7)
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toBe('sent')
+  expect(w.agents[1]!.parentId).toBe('m1')
 })
