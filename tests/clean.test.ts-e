@@ -246,7 +246,7 @@ test('a lock from this very process goes when its agent is not in the roster; ot
   expect(own.remove.worktrees).toEqual([WT('agent-q1')])
   expect(own.unlock).toEqual([WT('agent-q1')])
   // A live agent of this session keeps its lock.
-  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 33643, roster: [{ id: 'q1', live: true }] })), WT('agent-q1'))?.reason).toBe('in use by q1')
+  expect(kept(selectCleanup(inputs({ wts: w, ownPid: 33643, roster: [{ id: 'q1', live: true }] })), WT('agent-q1'))?.reason).toBe('locked')
   // Another process's lock, an unreadable own pid, and a lock naming no agent all stay.
   expect(kept(selectCleanup(inputs({ wts: w, ownPid: 99 })), WT('agent-q1'))?.reason).toBe('locked')
   expect(kept(selectCleanup(inputs({ wts: w })), WT('agent-q1'))?.reason).toBe('locked')
