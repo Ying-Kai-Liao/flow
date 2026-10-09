@@ -36,6 +36,16 @@
         "rebase"
       ]
     },
+    "merge_mode": {
+      "type": "string",
+      "title": "Merge mode",
+      "description": "auto: the merge queue merges approved PRs. confirm: it waits for you to run /flow approve <pr>. A flow:confirm or flow:auto label on a PR overrides this.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "confirm"
+      ]
+    },
     "merge_queue": {
       "type": "boolean",
       "title": "Merge queue",

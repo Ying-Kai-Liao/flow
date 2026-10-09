@@ -5,7 +5,7 @@ import type { Settings } from '../hooks/prompts'
 
 const base: Settings = {
   base: 'main', testCommand: 'npm test', fullCheck: '', deployCommand: '', deployTargets: [], stateFile: undefined,
-  mergeMethod: 'merge', useQueue: true, maxWorkers: 3, testSlots: 1, workerModel: 'sonnet', managerModel: 'opus', queueModel: 'opus',
+  mergeMethod: 'merge', mergeMode: 'auto', useQueue: true, maxWorkers: 3, testSlots: 1, workerModel: 'sonnet', managerModel: 'opus', queueModel: 'opus',
   language: 'English', bigFiles: [], bigFileLines: 1500, migrationsDir: '', decisionPhrases: [], workerChecks: [], alwaysTests: [],
 }
 const all = (s: Settings) => [WORKER_PROMPT, MANAGER_PROMPT.replace('{{QUEUE_RULE}}', QUEUE_RULE), QUEUE_PROMPT].map((p) => fill(p, s))
