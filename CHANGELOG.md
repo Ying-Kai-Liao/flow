@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-09
+
 ### Added
 
 - `push_mode` setting (`auto` by default, `confirm` in this repo): with `confirm` the reviewer builds the batch, runs the full check and cuts the release, then stops. It saves the batch head under `refs/flow/push/<id>` and records it with `mcp__flow__reviewer` action `ready`; nothing is pushed, deleted, published or deployed until you run `/flow push`.
