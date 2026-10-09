@@ -172,37 +172,39 @@ worker to fix X".
 
 ## Settings
 
-`/config` → flow:
+Most options are under `/config` → flow:. Every option can also be set in a settings file (`.claude/flow.json`, or the personal `.git/flow/config.json`, see Settings per repo); the ones marked "file only" have no `/config` field.
 
-| Option | Default | Used by |
-|---|---|---|
-| `test_command` | tests covering the changed files | workers |
-| `full_check_command` | none (the queue says so) | the queue, once per batch |
-| `deploy_command` | none (no deploy) | the queue, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
-| `deploy_targets` | none | the queue: ordered deploy targets (see Deploying). A JSON array or a JSON string; wins over `deploy_command` |
-| `state_file` | none | the queue: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
-| `merge_queue` | on | off: managers merge themselves with `merge_method` |
-| `merge_method` | `squash` | managers, when there is no queue |
-| `max_managers` | 20 | managers the main session runs at a time |
-| `max_continues` | 2 | how many times a branch may hand off before its manager is told to split the package (a warning only) |
-| `max_workers` | 3 | workers per manager at a time |
-| `test_slots` | 1 | how many heavy test runs may run at once across all agents (minimum 1) |
-| `worker_model` | `sonnet[1m]` | workers. Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
-| `manager_model` | `opus` | managers |
-| `queue_model` | `opus` | the merge queue |
-| `language` | none | the language agents write reports and PR text in |
-| `big_files` | none | files workers grep and never read whole (a list) |
-| `big_file_lines` | 1500 | the line count from which a file counts as big |
-| `migrations_dir` | none | the directory of migrations |
-| `decision_phrases` | none | extra phrases that mark a report as a question for the user (a list). A report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it |
-| `worker_checks` | none | commands every worker must pass before opening a PR (a list) |
-| `always_tests` | none | tests every worker runs on top of the ones for the files it changed (a list) |
-| `context_warn_percent` | 40 | the context limit as a percent of the window (1 to 100) |
-| `context_warn_tokens` | 350000 | the context limit in tokens; the lower of the two applies, so a 200k model still hands off at 80k. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
-| `handoff` | on | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
-| `base_branch` | the remote's default branch | everyone |
-| `main_checkout_guard` | on | every agent and the main session: writes to the main checkout are refused (see Guards) |
-| `main_checkout_allow` | `.claude/` | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
+| Option | Default | Set in | Used by |
+|---|---|---|---|
+| `test_command` | tests covering the changed files | `/config`, file | workers |
+| `full_check_command` | none (the queue says so) | `/config`, file | the queue, once per batch |
+| `deploy_command` | none (no deploy) | `/config`, file | the queue, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
+| `deploy_targets` | none | file only | the queue: ordered deploy targets (see Deploying). A JSON array or a JSON string; wins over `deploy_command` |
+| `state_file` | none | file only | the queue: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
+| `merge_queue` | on | `/config`, file | off: managers merge themselves with `merge_method` |
+| `merge_method` | `squash` | `/config`, file | managers, when there is no queue |
+| `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
+| `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
+| `max_workers` | 3 | `/config`, file | workers per manager at a time |
+| `test_slots` | 1 | `/config`, file | how many heavy test runs may run at once across all agents (minimum 1) |
+| `worker_model` | `sonnet[1m]` | `/config`, file | workers. Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
+| `manager_model` | `opus` | `/config`, file | managers |
+| `queue_model` | `opus` | `/config`, file | the merge queue |
+| `language` | `English` | `/config`, file | the language agents write reports and PR text in |
+| `big_files` | none | file only | files workers grep and never read whole (a list) |
+| `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
+| `migrations_dir` | none | file only | the directory of migrations |
+| `decision_phrases` | none | file only | extra phrases that mark a report as a question for the user (a list; see below) |
+| `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
+| `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
+| `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
+| `context_warn_tokens` | 350000 | `/config`, file | the context limit in tokens; the lower of the two applies, so a 200k model still hands off at 80k. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
+| `handoff` | on | `/config`, file | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
+| `base_branch` | the remote's default branch | `/config`, file | everyone |
+| `main_checkout_guard` | on | `/config`, file | every agent and the main session: writes to the main checkout are refused (see Guards) |
+| `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
+
+`decision_phrases`: a report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it.
 
 An unset full check or deploy is a step that's skipped and reported, never improvised.
 
@@ -210,7 +212,7 @@ Sub-agents don't run on Fable: a Fable model is refused in settings (a warning, 
 
 ### Settings per repo
 
-A repo can carry its own settings in `.claude/flow.json`, a flat JSON object with the same snake_case keys as `/config`:
+A repo can carry its own settings in `.claude/flow.json`, a flat JSON object with the same snake_case keys as `/config` (plus the file-only ones in the table above):
 
 ```json
 {
