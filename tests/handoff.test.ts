@@ -32,11 +32,13 @@ const TRANSCRIPT = [
   { role: 'assistant', text: 'Handoff note\nHANDOFF: flow/csv', toolUses: [] },
 ]
 
-function world(on: On, o: { deny?: boolean } = {}) {
+type Git = { dirty?: boolean; head?: string; pushed?: string; ancestor?: boolean }
+function world(on: On, o: { deny?: boolean; agents?: AgentInfo[]; git?: Git; spawned?: Record<string, unknown>[]; removed?: string[] } = {}) {
   const files = new Map<string, string>()
   const sent: { to: unknown; text: string }[] = []
   const toasts: string[] = []
-  on('agent.list', () => ({ value: AGENTS }))
+  on('agent.list', () => ({ value: o.agents ?? AGENTS }))
+  on('agent.spawn', (_, e) => { o.spawned?.push(e as unknown as Record<string, unknown>); return { model: 'sonnet', agentId: 'n1' } })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -53,6 +55,14 @@ function world(on: On, o: { deny?: boolean } = {}) {
   on('process.run', (_, e) => {
     const a = e.argv
     const out = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    const g = o.git ?? {}
+    const fail = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (a[0] === 'test') return out('')
+    if (a[0] === 'git' && a[1] === '-C' && a[3] === 'status') return out(g.dirty ? ' M a.ts\n' : '')
+    if (a[0] === 'git' && a[1] === '-C' && a[3] === 'rev-parse') return out(`${g.head ?? 'aaaaaaa1'}\n`)
+    if (a[0] === 'git' && a[1] === '-C' && a[3] === 'merge-base') return g.ancestor ? out('') : fail
+    if (a[0] === 'git' && a[1] === 'rev-parse' && a[2]?.startsWith('origin/')) return out(`${g.pushed ?? 'aaaaaaa1'}\n`)
+    if (a[0] === 'git' && a[1] === 'worktree' && a[2] === 'remove') { o.removed?.push(a[3] ?? ''); return out('') }
     if (a[0] === 'git' && a[1] === 'rev-parse') return out('/r/.git\n')
     if (a[0] === 'git' && a[1] === 'worktree') return out(WORKTREES)
     if (a[0] === 'mv') {

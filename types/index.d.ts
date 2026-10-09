@@ -100,6 +100,8 @@ export type HandoffRecord = {
   head?: string
   // Handoffs of this branch so far, this one included.
   count: number
+  // The successor that was given this worktree; a second spawn for the branch does not get it.
+  takenBy?: string
 }
 
 export type LogEvent = {
