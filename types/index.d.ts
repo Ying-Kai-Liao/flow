@@ -43,6 +43,19 @@ export type Handover = {
   reason?: string
 }
 
+// An open PR as `gh pr list` returns it.
+export type OpenPr = {
+  number: number
+  title: string
+  headRefName: string
+  isDraft: boolean
+  url: string
+  updatedAt?: string
+}
+
+// The last gh listing of open flow/* PRs; `error` is the last failure, the list stays.
+export type PrCache = { prs: OpenPr[]; fetchedAt: number; error?: string }
+
 declare module 'claude-code' {
   interface PluginState {
     'flow': {
@@ -52,6 +65,7 @@ declare module 'claude-code' {
       now: number
       handovers: Record<string, Handover>
       queueRuns: number
+      prCache: PrCache
     }
   }
 }
