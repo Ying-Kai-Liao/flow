@@ -8,7 +8,7 @@ import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
 import {
-  addQuestions, answerMessage, EMPTY_INBOX, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk,
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, inboxHead, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk,
 } from './inbox'
 import type { Inbox } from './inbox'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
@@ -550,6 +550,7 @@ async function syncPlans(
     agents: rows.map(a => ({ name: a.name, status: a.status, answer: acts[a.id]?.answer })),
     handovers: Object.values(hs),
     phrases: decisionPhrases,
+    asking: askingNames(await read($, inbox)),
   }
   const slots = Math.max(0, maxManagers - liveManagers(rows).length)
   let notices: Notice[] = []
@@ -595,6 +596,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   rows.push(...Object.values(await read($, sessions)).map(sessionRow))
   const was = new Map(before.map(a => [a.id, a.status]))
   const ended: string[] = []
+  const askers = askingNames(await read($, inbox))
   for (const a of rows) {
     const prev = was.get(a.id)
     if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
@@ -602,7 +604,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     // The queue's worktree (detached at the base) goes once the queue is gone.
     if (ENDED.has(a.status) && a.type === QUEUE) autoSweep($)
     if (ENDED.has(a.status) || a.status === 'idle') {
-      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases)
+      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases) || askers.includes(a.name)
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
       void $.ui.toast(`${role}${labelOf(a)}: ${asks ? 'asks a question' : a.status === 'idle' ? 'finished its turn' : a.status}`)
     }
@@ -2123,8 +2125,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[close|resume|approve <pr>|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow inbox lists the open questions to answer, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox|close|resume|approve <pr>|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -2346,6 +2348,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'flow' }, async ($, e) => {
     // A plugin's $.command.run may leave args out.
     const arg = (e.args ?? '').trim()
+    if (arg === 'inbox') return { text: renderInbox(await read($, inbox), await $.clock.now()) }
     if (arg === 'close') {
       if (!(await $.ui.panes()).some(p => p.id === PANE)) return { text: 'The Flow pane is not open.' }
       try {
@@ -2405,7 +2408,7 @@ export const register: Register = (on, options) => {
       await refresh($)
       return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -2897,6 +2900,7 @@ export const register: Register = (on, options) => {
     const slots = slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
     return {
       result: [
+        ...inboxHead(await read($, inbox)),
         limitsLine(rows, settings.maxWorkers),
         ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
@@ -3033,6 +3037,9 @@ export const register: Register = (on, options) => {
       read($, cursor), read($, folded), currentUnhanded($), read($, leftovers),
     ])
     const leftover = leftoverLine(leftCounts)
+    const openQs = openAll(await read($, inbox)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
+    const askers = askingNames(await read($, inbox))
+    const inboxRows = openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
     const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
@@ -3145,7 +3152,7 @@ export const register: Register = (on, options) => {
       const act = acts[a.id]
       const hand = handoffOf(a, act)
       const dim = ENDED.has(a.status) && hand?.kind !== 'done'
-      const asks = asksQuestion(act?.answer, settings.decisionPhrases) && !['running', 'pending'].includes(a.status)
+      const asks = (asksQuestion(act?.answer, settings.decisionPhrases) || askers.includes(a.name)) && !['running', 'pending'].includes(a.status)
       const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
@@ -3341,8 +3348,8 @@ export const register: Register = (on, options) => {
           <Text bold>Activity</Text>
           {(act?.log ?? []).length === 0 && <Text dimColor>Nothing seen yet.</Text>}
           {(act?.log ?? []).slice(-room).map(line => <Text wrap="truncate-end">{line}</Text>)}
-          {answer !== '' && <Text bold color={asksQuestion(answer, settings.decisionPhrases) ? 'warning' : undefined}>
-            {asksQuestion(answer, settings.decisionPhrases) ? 'Asks' : 'Last report'}
+          {answer !== '' && <Text bold color={asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name) ? 'warning' : undefined}>
+            {asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name) ? 'Asks' : 'Last report'}
           </Text>}
           {answer !== '' && <Text>{answer.length > 1200 ? '…' + answer.slice(-1200) : answer}</Text>}
         </Box>
@@ -3358,7 +3365,7 @@ export const register: Register = (on, options) => {
     // path) in a window that follows the highlight.
     const prRows = prs.length > 0 ? 1 + Math.min(prs.length, 5) : 0
     const usageRows = rows >= 20 ? Math.min(4, limits.length) : 0
-    const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0)
+    const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows
     const wide = treeItems(list, fold, cur ?? first, false, acts)
     const fullTree = (wide.items.length + 1) * CARD_ROWS <= avail
     const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
@@ -3403,6 +3410,11 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PRs handed over` : ''} · press one to see it</Text>
+        {openQs.slice(0, 5).map(q => (
+          <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{q.id} {q.owner}: {q.question}</Text>
+        ))}
+        {openQs.length > 5 && <Text dimColor>and {openQs.length - 5} more</Text>}
+        {openQs.length > 0 && <Text dimColor>/flow inbox to read, answer in the chat</Text>}
         {unhanded.length > 0 && (
           <Text color="warning" wrap="truncate-end">
             ⚠ {unhanded.length} PR{unhanded.length > 1 ? 's' : ''} nobody handed over: {unhanded.map(u => `#${u.pr}`).join(' ')}
