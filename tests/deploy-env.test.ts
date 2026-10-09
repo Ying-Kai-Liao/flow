@@ -72,7 +72,7 @@ test('decideEnv: declined wins, then open items, then apply items; clear lists c
   const yes = item({ 'q-A': { open: false, answer: 'yes' } })
   expect(decideEnv({ ...base, pending: [a], item: yes })).toEqual({ kind: 'clear', apply: [a], record: [] })
   // No env_command: the user applies it; a missing apply item is asked for.
-  expect(decideEnv({ applyItem: none, hasCommand: false, pending: [a], item: yes })).toEqual({ kind: 'envAsk', entries: [a] })
+  expect(decideEnv({ applyItem: none, hasCommand: false, pending: [a], item: yes })).toEqual({ kind: 'envAsk', entries: [a], reopen: [], open: [] })
   const open = { applyItem: () => ({ qid: 'qa', open: true }), hasCommand: false }
   expect(decideEnv({ ...open, pending: [a], item: yes })).toEqual({ kind: 'envAwaits', qids: ['qa'] })
   // A login step the user has not done yet.
@@ -326,4 +326,35 @@ test('a non-secret value stays out of the log, the toasts and the notes', { opti
   expect(notes).not.toContain('Quiet Sender Name')
   // The inbox item and the handover record hold it: the user needs to see what they approve.
   expect(items(w.files)[0]!.question).toContain('Quiet Sender Name')
+})
+
+test('"not yet" is still waiting: a fresh item is opened (one open per change), release drops nothing; only "no" holds and is dropped', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [
+    { target: 'production', name: 'API_KEY', secret: true, why: 'key', login: 'log in' },
+    { target: 'production', name: 'REGION', value: 'eu', why: 'region' },
+  ])
+  await queue($, 'take', 3)
+  // q1 login, q2 secret, q3 REGION.
+  await answer($, { answers: [{ id: 'q1', choice: 'not yet' }, { id: 'q2', choice: 'not yet' }, { id: 'q3', choice: 'yes' }] })
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q4, q5')
+  expect(items(w.files).filter(i => i.state === 'open').map(i => i.id)).toEqual(['q4', 'q5'])
+  // Asking again reuses the open items.
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q4, q5')
+  expect(items(w.files)).toHaveLength(5)
+  expect(read(w.files, 'handovers/3.json').env[0]).toMatchObject({ qid: 'q4', loginQid: 'q5' })
+  // Release finds nothing declined and drops nothing.
+  expect(await $.command.run({ command: 'flow', args: 'release production' } as never).then(r => r.text ?? '')).toContain('no hold')
+  await answer($, { answers: [{ id: 'q4', choice: 'done' }, { id: 'q5', choice: 'done' }] })
+  // REGION has no env_command on production: the user applies it; "not yet" there reopens too.
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q6')
+  await answer($, { answers: [{ id: 'q6', choice: 'not yet' }] })
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q7')
+  // A "no" holds the target and release drops that change only.
+  await handover($, 4, [{ target: 'production', name: 'EXTRA', value: 'x', why: 'w' }])
+  await queue($, 'take', 4)
+  await answer($, { answers: [{ id: 'q8', choice: 'no' }] })
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Held: env change EXTRA declined')
+  expect(await $.command.run({ command: 'flow', args: 'release production' } as never).then(r => r.text ?? '')).toContain('Dropped the declined env changes: EXTRA')
+  expect(read(w.files, 'deploys.json').targets.production.envDone.map((d: any) => [d.name, d.how])).toEqual([['EXTRA', 'dropped']])
 })

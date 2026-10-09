@@ -62,7 +62,7 @@ export type Gate =
   // (the caller opens an `apply` item for each entry).
   | { kind: 'envAwaits'; qids: string[] }
   | { kind: 'envHeld'; why: string }
-  | { kind: 'envAsk'; entries: EnvEntry[] }
+  | { kind: 'envAsk'; entries: EnvEntry[]; reopen: EnvReopen[]; open: string[] }
   // Go, after the queue runs the env command for each entry and calls env-applied.
   | { kind: 'goEnv'; apply: EnvEntry[] }
 
@@ -261,42 +261,54 @@ function split(pending: EnvEntry[]): { effective: EnvEntry[]; superseded: EnvEnt
   return { effective: [...last.values()], superseded: pending.filter(e => last.get(e.change.name) !== e) }
 }
 
-const settled = (v: ItemView | undefined, good: (a: string | undefined) => boolean): 'open' | 'ok' | 'no' =>
-  v === undefined ? 'no' : v.open ? 'open' : good(v.answer) ? 'ok' : 'no'
+// Only "no" on a non-secret change is a decline. "Not yet" (or anything but the good answer) on a secret, a
+// login step or an apply item means still waiting: the gate opens a fresh item for it. A missing item counts as declined.
+type Settle = 'open' | 'ok' | 'no' | 'notyet'
+const settled = (v: ItemView | undefined, good: (a: string | undefined) => boolean, declinable: boolean): Settle =>
+  v === undefined ? 'no' : v.open ? 'open' : good(v.answer) ? 'ok' : declinable ? 'no' : 'notyet'
 
-// The user's answers to a change: its own item and its login step.
-function answers(e: EnvEntry, item: EnvInput['item']): { open: string[]; no?: string } {
+// The user's answers to a change: its own item and its login step. `reopen` names the item fields to replace.
+function answers(e: EnvEntry, item: EnvInput['item']): { open: string[]; reopen: Array<'qid' | 'loginQid'>; no?: string } {
   const open: string[] = []
+  const reopen: Array<'qid' | 'loginQid'> = []
   let no: string | undefined
   const c = e.change
-  const own = settled(item(c.qid), c.secret === true ? isDone : isYes)
+  const own = settled(item(c.qid), c.secret === true ? isDone : isYes, c.secret !== true)
   if (own === 'open') open.push(c.qid)
-  else if (own === 'no') no = c.secret === true ? `env secret ${c.name} not set yet` : `env change ${c.name} declined`
+  else if (own === 'notyet') reopen.push('qid')
+  else if (own === 'no') no = `env change ${c.name} declined`
   if (c.loginQid !== undefined) {
-    const login = settled(item(c.loginQid), isDone)
+    const login = settled(item(c.loginQid), isDone, false)
     if (login === 'open') open.push(c.loginQid)
-    else if (login === 'no' && no === undefined) no = `login step for env ${c.name} not done`
+    else if (login === 'notyet') reopen.push('loginQid')
   }
-  return { open, ...(no !== undefined ? { no } : {}) }
+  return { open, reopen, ...(no !== undefined ? { no } : {}) }
 }
 
+export type EnvReopen = { entry: EnvEntry; field: 'qid' | 'loginQid' }
 export type EnvDecision =
   | { kind: 'clear'; apply: EnvEntry[]; record: Array<{ entry: EnvEntry; how: EnvDone['how'] }> }
   | { kind: 'envAwaits'; qids: string[] }
   | { kind: 'envHeld'; why: string }
-  | { kind: 'envAsk'; entries: EnvEntry[] }
+  // Fresh items to open: apply items for `entries`, new copies of the answered-"not yet" items in `reopen`;
+  // `open` are the ones already waiting.
+  | { kind: 'envAsk'; entries: EnvEntry[]; reopen: EnvReopen[]; open: string[] }
 
-// Declined wins (the target waits for a release), then open items, then the apply items the user still
-// owes; clear when everything is settled. `apply` are the commands to run, `record` what is done at Go.
+// Declined wins (the target waits for a release), then open items, then the items answered "not yet" and the
+// apply items the user still owes; clear when everything is settled. `apply` are the commands to run, `record`
+// what is done at Go. One open item per change: an open one is reused, a new one comes only after "not yet".
 export function decideEnv(env: EnvInput): EnvDecision {
   if (env.pending.length === 0) return { kind: 'clear', apply: [], record: [] }
   const { effective, superseded } = split(env.pending)
   const open: string[] = []
+  const reopen: EnvReopen[] = []
   for (const e of env.pending) {
     const a = answers(e, env.item)
     if (a.no !== undefined) return { kind: 'envHeld', why: a.no }
     open.push(...a.open)
+    reopen.push(...a.reopen.map(field => ({ entry: e, field })))
   }
+  if (reopen.length > 0) return { kind: 'envAsk', entries: [], reopen, open: [...new Set(open)] }
   if (open.length > 0) return { kind: 'envAwaits', qids: [...new Set(open)] }
   const apply: EnvEntry[] = []
   const record: Array<{ entry: EnvEntry; how: EnvDone['how'] }> = superseded.map(entry => ({ entry, how: 'superseded' as const }))
@@ -308,10 +320,10 @@ export function decideEnv(env: EnvInput): EnvDecision {
     if (v === undefined) ask.push(e)
     else if (v.open) open.push(v.qid)
     else if (isDone(v.answer)) record.push({ entry: e, how: 'user' })
-    else return { kind: 'envHeld', why: `env change ${e.change.name} not applied yet` }
+    else ask.push(e)
   }
+  if (ask.length > 0) return { kind: 'envAsk', entries: ask, reopen: [], open }
   if (open.length > 0) return { kind: 'envAwaits', qids: open }
-  if (ask.length > 0) return { kind: 'envAsk', entries: ask }
   return { kind: 'clear', apply, record }
 }
 
@@ -322,14 +334,9 @@ export function withEnvDone(ts: TargetState | undefined, add: EnvDone[]): Target
   return fresh.length === 0 ? cur : { ...cur, envDone: [...(cur.envDone ?? []), ...fresh] }
 }
 
-// The changes a release drops: those the user declined (or left not yet), recorded as dropped.
-export function declinedEntries(env: Pick<EnvInput, 'pending' | 'item' | 'applyItem'>): EnvEntry[] {
-  return env.pending.filter(e => {
-    if (answers(e, env.item).no !== undefined) return true
-    const v = e.change.secret === true ? undefined : env.applyItem(e.pr, e.change.target, e.change.name)
-    return v !== undefined && !v.open && !isDone(v.answer)
-  })
-}
+// The changes a release drops: only those the user declined with "no".
+export const declinedEntries = (env: Pick<EnvInput, 'pending' | 'item'>): EnvEntry[] =>
+  env.pending.filter(e => answers(e, env.item).no !== undefined)
 
 // Single quotes, so a value is one shell word whatever it holds.
 export const shellQuote = (v: string): string => `'${v.replaceAll("'", `'\\''`)}'`
@@ -408,6 +415,10 @@ export const openApplyItem = (inbox: Inbox, e: EnvEntry, now: number): { inbox: 
   env: { role: 'apply', target: e.change.target, name: e.change.name, pr: e.pr },
 }, now)
 
+// A fresh copy of an item the user answered "not yet", so the change keeps one open item.
+export const reopenItem = (inbox: Inbox, old: Question, now: number): { inbox: Inbox; q: Question } =>
+  envItem(inbox, { question: old.question, options: old.options, default: old.default, ...(old.context !== undefined ? { context: old.context } : {}), ...(old.env !== undefined ? { env: old.env } : {}) }, now)
+
 // Items the plugin closes itself (a returned PR, a dropped change): answered by "flow" with a note.
 export function closeEnvItems(inbox: Inbox, qids: string[], note: string, now: number): Inbox {
   return {
@@ -432,7 +443,7 @@ const stateWord = (e: EnvEntry, ts: TargetState | undefined, item: EnvInput['ite
   const d = ts?.envDone?.find(x => x.pr === e.pr && x.name === e.change.name)
   if (d !== undefined) return d.how === 'command' ? 'applied by command' : d.how === 'user' ? 'applied by user' : d.how === 'secret' ? 'secret set by user' : d.how
   const a = answers(e, item)
-  return a.no !== undefined ? 'declined' : a.open.length > 0 ? `awaits the user (${a.open.join(', ')})` : 'approved, not applied yet'
+  return a.no !== undefined ? 'declined' : a.reopen.length > 0 ? 'not done yet' : a.open.length > 0 ? `awaits the user (${a.open.join(', ')})` : 'approved, not applied yet'
 }
 
 // One entry per change of a handover, names only: for the queue's list.

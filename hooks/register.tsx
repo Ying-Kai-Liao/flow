@@ -52,7 +52,7 @@ import type { GuardMap } from './guardtests'
 import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
 import {
   applyAnswer, applyViewOf, approvalContext, behindLines, closeEnvItems, declinedEntries, decideEnv, decideGate, EMPTY_DEPLOYS, ENV_KIND, envCommandFor, envListLine,
-  envSummary, isApprove, normalizeDeploys, openApplyItem, openApprovalItem, openDeployIds, openEnvItems, parseEnvInput, pendingEnv, recordDeployed,
+  envSummary, isApprove, normalizeDeploys, openApplyItem, openApprovalItem, reopenItem, openDeployIds, openEnvItems, parseEnvInput, pendingEnv, recordDeployed,
   release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
 } from './deploy'
 import type { Deploys, DeployMode, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
@@ -1067,7 +1067,11 @@ async function onEnvAnswer($: EngineInterface, q: Question, answer: string): Pro
   if (e.role === 'apply' && yes) {
     await withDeploys($, cur => ({ deploys: setTarget(cur, e.target, withEnvDone(cur.targets[e.target], [{ pr: e.pr, name: e.name, how: 'user', at }])), out: undefined }))
   }
-  if (!yes) return ` ${e.target} waits on this: the gate holds it until main runs release on ${e.target}, which drops the declined changes.`
+  if (!yes) {
+    return e.role === 'change'
+      ? ` ${e.target} is held by this: the gate skips it until main runs release on ${e.target}, which drops the declined change.`
+      : ` Not yet: ${e.target} keeps waiting; the next gate opens a fresh item for it.`
+  }
   const ib = await read($, inbox)
   const stillOpen = ib.items.some(x => x.state === 'open' && x.kind === ENV_KIND && x.env?.target === e.target)
   if (!waiting || stillOpen || info === undefined || info.mode !== 'auto') return ''
@@ -1100,7 +1104,7 @@ async function releaseTarget($: EngineInterface, name: string): Promise<string> 
   const r = await withDeploys($, cur => {
     const released = release(cur.targets[name], info.mode)
     const pending = pendingEnv(hs, name, released.state)
-    const dropped = declinedEntries({ pending, item: itemViewOf(ib), applyItem: applyViewOf(ib) })
+    const dropped = declinedEntries({ pending, item: itemViewOf(ib) })
     if (!released.had && dropped.length === 0) return { deploys: cur, out: { had: false, dropped } }
     const state = withEnvDone(released.state, dropped.map(d => ({ pr: d.pr, name: d.change.name, how: 'dropped' as const, at })))
     return { deploys: setTarget(cur, name, dropped.length > 0 && info.mode === 'auto' ? { ...state, due: true } : state), out: { had: released.had, dropped } }
@@ -1181,7 +1185,8 @@ async function runGate($: EngineInterface, options: Record<string, unknown>, inf
   if (gate.kind === 'envHeld') return `Held: ${gate.why}. It stays held until main runs release on ${target} (that drops the declined changes). ${skipText(target)}`
   if (gate.kind === 'envAwaits') return `Awaits env: ${gate.qids.join(', ')}. ${skipText(target)}`
   if (gate.kind === 'envAsk') {
-    const qids: string[] = []
+    const qids: string[] = [...gate.open]
+    const moved: Array<{ pr: number; name: string; field: 'qid' | 'loginQid'; qid: string }> = []
     await withInbox($, cur => {
       let next = cur
       for (const e of gate.entries) {
@@ -1189,8 +1194,27 @@ async function runGate($: EngineInterface, options: Record<string, unknown>, inf
         next = r.inbox
         qids.push(r.q.id)
       }
+      // An item answered "not yet" is replaced by a fresh copy, so the change keeps one open item.
+      for (const re of gate.reopen) {
+        const old = next.items.find(x => x.id === re.entry.change[re.field])
+        if (old === undefined) continue
+        const r = reopenItem(next, old, at)
+        next = r.inbox
+        qids.push(r.q.id)
+        moved.push({ pr: re.entry.pr, name: re.entry.change.name, field: re.field, qid: r.q.id })
+      }
       return { inbox: next, out: undefined }
     })
+    for (const pr of new Set(moved.map(m => m.pr))) {
+      const h = (await read($, handovers))[String(pr)]
+      if (h?.env === undefined) continue
+      const next: Handover = { ...h, env: h.env.map(c => {
+        const mine = moved.filter(x => x.pr === pr && x.name === c.name && c.target === target)
+        return mine.length === 0 ? c : { ...c, ...Object.fromEntries(mine.map(m => [m.field, m.qid])) }
+      }) }
+      await update($, handovers, hs => ({ ...hs, [String(pr)]: next }))
+      await best($, 'saving a handover', () => saveHandover($, next))
+    }
     void $.ui.toast(`Env on ${target} awaits you: /flow inbox (${qids.join(', ')})`)
     return `Awaits env: ${qids.join(', ')}. ${skipText(target)}`
   }
