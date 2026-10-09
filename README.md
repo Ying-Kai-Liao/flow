@@ -59,6 +59,7 @@ add login-redirect  after: csv-export
   there is no activity yet), and the meter below with elapsed time and tokens. Only top-level
   cards have a border. Colors follow your light or dark theme (the theme's suggestion, warning,
   success and error colors), and the pane redraws when you switch `/theme`.
+  A worker told to hand off shows a `handoff` badge while it wraps up, and "handed off" once it ends with a `HANDOFF:` line.
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
@@ -200,7 +201,9 @@ After deploying, a PR whose `after_deploy` an agent can check gets a check-only 
   a queue if none is running.
 - `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
 - `plan`: dependencies between tasks or packages (see Dependencies).
-- `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins.
+- `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
+- `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
+  `text` it returns the notes.
 - `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`). See below.
 
 ## The test lock
@@ -216,6 +219,33 @@ and a message; it confirms with one `acquire` within 2 minutes, else the grant p
 freed when its agent ends, when released, or after a 45 minute lease (with a toast). The Flow
 status line shows `tests 1/1`. The lock lives in this session's plugin state: it covers every
 worktree of the session's agents, not other Claude sessions, and a plugin reload empties it.
+
+## State on disk
+
+Flow's state survives a restart. It lives in `<git-common-dir>/flow/` (for example `.git/flow/`),
+shared by all worktrees. Writes are best-effort: a failed write is logged in the UI and never
+stops a tool call.
+
+```
+<git-common-dir>/flow/
+  handovers/<pr>.json      one file per handed-over PR, rewritten on every change
+  log.jsonl                append-only event log
+  managers/<key>/notes.md  a manager's notes
+  config.json              not state: the settings loader's file, never touched by flow
+```
+
+- `handovers/<pr>.json`: `{version: 1, pr, title, head, branch, reportTo, verified, pending,
+  afterDeploy, status, at, sha?, report?, reason?}`; `status` is pending, taken, done or returned.
+  A new session loads these.
+- `log.jsonl`: one JSON object per line, `{ts, event, owner, agent?, pr?, branch?, text?}`;
+  `event` is spawn, report, handover, take, done, back or note. `owner` is the manager the
+  event belongs to (or `main`).
+- `managers/<key>/notes.md`: dated lines, `- 2026-10-09 decision: "…"`. The key is the manager's
+  name without a trailing `-N`, so `csv-export-2` continues `csv-export`'s notes.
+
+`/flow resume` reads this too: it lists unfinished handovers next to the GitHub leftovers
+(a handover whose PR is merged counts as done), groups them by owning manager, and gives each
+restarted manager its notes (the last 3k characters).
 
 ## Limits
 

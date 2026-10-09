@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.11] - 2026-10-09
+
+### Added
+
+- Handoff on the Flow pane's cards. A live agent that was told to hand off shows a `handoff`
+  badge and "wrapping up (told at N%) · M reminders"; once it ends with a `HANDOFF:` line the
+  card shows "handed off → ..." and is not dimmed. The detail view has a "Handoff:" line and
+  `mcp__flow__status` carries the same suffixes.
+
+## [0.3.10] - 2026-10-09
+
+### Fixed
+
+- A `sonnet[1m]` worker is measured against 1M (hands off at 350k, not 80k): the agent keeps the engine's `[1m]` id when the API's usage id lacks it. The pane meter shows the token limit (`350k│`) when it is the one in force.
+
+## [0.3.9] - 2026-10-09
+
+### Fixed
+
+- Fix: hooks module failed to load (local variable shadowed startQueue)
+
+## [0.3.8] - 2026-10-09
+
+### Added
+
+- Flow's state survives a restart. It is written to `<git-common-dir>/flow/`:
+  `handovers/<pr>.json` (one file per handed-over PR), `log.jsonl` (one JSON event per line)
+  and `managers/<key>/notes.md` (a manager's notes). `config.json` in that directory is
+  reserved for the settings loader.
+- Persisted handovers are loaded when a session starts, so the queue and `status` see PRs
+  handed over before the restart.
+- `log.jsonl` records events such as a manager or worker spawning and reporting back.
+- `mcp__flow__note` tool: managers and the main session record notes of kind `decision`
+  or `progress`; they are appended to the manager's `notes.md`.
+- `mcp__flow__status` shows which manager owns each PR, by PR number.
+- `/flow resume` reads the state dir: handovers by owner, each manager's notes, and PRs that
+  merged since are shown as done. The main session starts one manager per task from that.
+- Notes rules: managers read their notes first and note each decision the user makes and
+  each step they finish; the main session notes the user's instructions to managers. A
+  resumed manager writes notes under its owner's name.
+- README section "State on disk".
+
 ## [0.3.7] - 2026-10-09
 
 ### Added
