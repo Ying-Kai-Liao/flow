@@ -522,7 +522,12 @@ The files are checked every few seconds by modification time. New settings apply
 ## Tools the agents use
 
 - `handover`: a manager hands a reviewed PR over; the plugin records its head and starts
-  a queue if none is running.
+  a queue if none is running. `report_to` is optional and defaults to the caller's own name
+  (`main` for the main session). A name that matches no agent of the session is refused, naming
+  the caller's own name; the caller's own worker's name is corrected to the caller's, with a note.
+  When the queue messages a `report_to` manager that has already finished, the plugin does not wake
+  it: it adds the report to that manager's notes and sends it to main. A manager that someone other
+  than main woke (queue, worker) has its turn-end report forwarded to main as well.
   It refuses a PR whose description has no valid `## Verification` section (checked after the
   closed and draft checks), records nothing and starts no queue, and lists every problem with the
   expected format. Fix with `gh pr edit <n> --body-file <file>` and call again. The format:

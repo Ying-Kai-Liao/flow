@@ -56,7 +56,7 @@ const call = ($: Dollar, input: Record<string, unknown>) => $.tool.call(input as
 test('a handover is saved as a versioned file and logged; queue take, done and back follow', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const files = new Map<string, string>()
-  disk(on, files)
+  disk(on, files, { agents: [{ id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' }] })
 
   await call($, { tool: 'mcp__flow__handover', pr: 7, verified: 'npm test', report_to: 'csv-export' })
   const saved = JSON.parse(files.get(`${DIR}/handovers/7.json`) ?? '{}') as Record<string, unknown>
@@ -122,7 +122,7 @@ test('notes append dated lines under one manager key and read back; -N is stripp
 test('status with pr names the owner from the log, else who the handover reports to', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const files = new Map<string, string>()
-  disk(on, files)
+  disk(on, files, { agents: [{ id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' }] })
 
   await call($, { tool: 'mcp__flow__handover', pr: 7, verified: 'x', report_to: 'csv-export' })
   const r = String((await call($, { tool: 'mcp__flow__status', pr: 7 })).result)
@@ -140,7 +140,7 @@ test('outside a git repo state is a no-op and tools still work', async ($, on) =
   const files = new Map<string, string>()
   disk(on, files, { abs: false })
 
-  const h = await call($, { tool: 'mcp__flow__handover', pr: 7, verified: 'x', report_to: 'm' })
+  const h = await call($, { tool: 'mcp__flow__handover', pr: 7, verified: 'x' })
   expect(String(h.result)).toContain('Handed over PR #7')
   const n = await call($, { tool: 'mcp__flow__note', manager: 'm', text: 'x' })
   expect(String(n.result)).toContain('Not saved')
