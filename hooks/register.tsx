@@ -100,11 +100,12 @@ function rank(status: string): number {
 }
 
 // The pane's context meter marks this percent; the rest of the settings go into the prompts.
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number } {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; handoff: boolean } {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   return {
     contextWarn: Math.min(100, Math.max(1, Math.round(num('context_warn_percent', 40)))),
+    handoff: options.handoff !== false,
     base: str('base_branch', base),
     testCommand: str('test_command', ''),
     fullCheck: str('full_check_command', ''),
@@ -184,11 +185,123 @@ function handoverLine(h: Handover): string {
   return `#${h.pr} ${h.status} (${h.branch} @ ${h.head.slice(0, 8)}, from ${h.reportTo})${tail} — ${h.title}`
 }
 
+const OWNED = new Set([...LIVE, 'idle'])
+
+// Unfinished flow work left behind by an earlier session, as `/flow resume` lists it.
+type Leftover = { key: string; branch?: string; kind: 'pr' | 'branch' | 'worktree'; line: string; detail: string }
+
+type Gathered = { items: Leftover[]; skipped: Leftover[]; error?: string }
+
+// Finds what a restart leaves behind: flow/* PRs and pushed branches, and worktrees with
+// uncommitted or unpushed work. Any git or gh failure becomes one line, never a throw.
+async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<string>): Promise<Gathered> {
+  const run = async (argv: string[]) => {
+    try {
+      return await $.process.run(argv, { timeoutMs: 60_000 })
+    } catch (err) {
+      return { exitCode: 1, stdout: '', stderr: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  const fail = (what: string, r: { stderr: string }): Gathered =>
+    ({ items: [], skipped: [], error: `Cannot look for unfinished work: ${what} failed: ${r.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no output'}` })
+
+  const fetched = await run(['git', 'fetch', 'origin', '--prune'])
+  if (fetched.exitCode !== 0) return fail('git fetch origin', fetched)
+  const open = await run(['gh', 'pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,isDraft,url,body', '--limit', '100'])
+  if (open.exitCode !== 0) return fail('gh pr list', open)
+  const all = await run(['gh', 'pr', 'list', '--state', 'all', '--json', 'headRefName,headRefOid,state', '--limit', '200'])
+  if (all.exitCode !== 0) return fail('gh pr list', all)
+  const refs = await run(['git', 'for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin/flow/'])
+  if (refs.exitCode !== 0) return fail('git for-each-ref', refs)
+
+  type Pr = { number: number; title: string; headRefName: string; isDraft: boolean; url: string; body: string }
+  const prs = (JSON.parse(open.stdout || '[]') as Pr[]).filter(p => p.headRefName.startsWith('flow/'))
+  const ended = (JSON.parse(all.stdout || '[]') as { headRefName: string; headRefOid?: string; state: string }[])
+    .filter(p => p.state !== 'OPEN')
+  const closed = new Set(ended.map(p => p.headRefName))
+  // A squash-merged branch is deleted on the remote, so its worktree looks unpushed: match by head too.
+  const endedHeads = new Set(ended.map(p => p.headRefOid).filter(Boolean))
+  const withPr = new Set(prs.map(p => p.headRefName))
+  const branches = refs.stdout.split('\n').map(l => l.trim().replace(/^origin\//, ''))
+    .filter(b => b.startsWith('flow/') && !withPr.has(b) && !closed.has(b))
+
+  // A live agent named like the branch owns it.
+  const liveAgents = (await $.agent.list()).filter(a => OWNED.has(a.status))
+  const owners = new Set(liveAgents.filter(a => a.name !== undefined).map(a => `flow/${a.name}`))
+  // A worktree path ends in agent-<agentId>: that covers a worker that has not renamed its branch, and the queue.
+  const liveIds = new Set(liveAgents.map(a => `agent-${a.id}`))
+
+  const items: Leftover[] = []
+  for (const p of prs) {
+    items.push({
+      key: p.headRefName, kind: 'pr',
+      line: `#${p.number} ${p.headRefName}${p.isDraft ? ' (draft)' : ''}: ${p.title} ${p.url}`,
+      detail: `Branch ${p.headRefName}, PR #${p.number} ${p.url}${p.isDraft ? ' (draft)' : ''}, title "${p.title}".\nPR description:\n${p.body.trim() || '(empty)'}`,
+    })
+  }
+  for (const b of branches) {
+    items.push({ key: b, kind: 'branch', line: `${b} (pushed, no PR)`, detail: `Branch ${b}, pushed, no PR yet.` })
+  }
+
+  const wt = await run(['git', 'worktree', 'list', '--porcelain'])
+  if (wt.exitCode === 0) {
+    for (const block of wt.stdout.split('\n\n')) {
+      const path = /^worktree (.+)$/m.exec(block)?.[1]
+      if (path === undefined || !path.includes('/.claude/worktrees/')) continue
+      const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1]
+      if (liveIds.has(path.split('/').pop() ?? '') || (branch !== undefined && closed.has(branch))) continue
+      const dirty = (await run(['git', '-C', path, 'status', '--porcelain'])).stdout.trim() !== ''
+      if (branch === undefined && !dirty) continue
+      let unpushed = ''
+      if (!dirty) {
+        const up = await run(['git', '-C', path, 'rev-parse', '--abbrev-ref', '@{u}'])
+        unpushed = (await run(up.exitCode === 0
+          ? ['git', '-C', path, 'log', '--oneline', '@{u}..']
+          : ['git', '-C', path, 'log', '--oneline', `origin/${base}..HEAD`])).stdout.trim()
+      }
+      if (!dirty && unpushed === '') continue
+      const head = (await run(['git', '-C', path, 'rev-parse', 'HEAD'])).stdout.trim()
+      if (endedHeads.has(head)) continue
+      if (!dirty && (await run(['git', '-C', path, 'branch', '-r', '--contains', 'HEAD'])).stdout.trim() !== '') continue
+      const what = dirty ? 'uncommitted changes' : `${unpushed.split('\n').length} unpushed commit(s)`
+      const mate = branch === undefined ? undefined : items.find(i => i.key === branch)
+      if (mate !== undefined) {
+        mate.line += ` | worktree ${path} (${what})`
+        mate.detail += `\nIts worktree: ${path} (${what}).`
+        continue
+      }
+      items.push({
+        key: path, branch, kind: 'worktree', line: `${path} on ${branch ?? 'detached HEAD'}: ${what}`,
+        detail: `Worktree ${path}, branch ${branch ?? 'detached HEAD'}: ${what}.`,
+      })
+    }
+  }
+
+  const live = (i: Leftover) => owners.has(i.branch ?? i.key)
+  return {
+    items: items.filter(i => !live(i) && !resumed.has(i.key)),
+    skipped: items.filter(i => !live(i) && resumed.has(i.key)),
+  }
+}
+
+function resumeInstructions(items: Leftover[]): string {
+  return [
+    'The user ran /flow resume. Unfinished flow work was found (below). Start flow managers for it with the Agent tool, without asking:',
+    '- One flow:manager per task, named resume-<slug>, run_in_background true, at most 3 at a time; start the rest as each finishes. Items whose branch names share a manager prefix (flow/csv-export-endpoint and flow/csv-export-button) are one task.',
+    '- Each manager\'s prompt carries, for every item of its task: the branch, the PR number and URL, the PR description (including any ## Handoff section), and for a worktree its path. It carries the work on from there and must not redo work already merged into the base branch.',
+    '',
+    'Found:',
+    ...items.map(i => `- ${i.detail.replaceAll('\n', '\n  ')}`),
+  ].join('\n')
+}
+
 export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
+  // What /flow resume already handed to managers in this session.
+  const resumed = new Set<string>()
 
   on('session.start', async ($, e, next) => {
     // The base branch: the option, else the remote's default branch, else main.
@@ -207,8 +320,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it',
-      argumentHint: '[close]',
+      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it, /flow resume picks up unfinished flow work',
+      argumentHint: '[close|resume]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -297,7 +410,28 @@ export const register: Register = (on, options) => {
       }
       return { text: 'Flow pane closed.' }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it.` }
+    if (arg === 'resume') {
+      const found = await gatherLeftovers($, settings.base, resumed)
+      if (found.error !== undefined) return { text: found.error }
+      const lines = (kind: Leftover['kind'], title: string) => {
+        const rows = found.items.filter(i => i.kind === kind)
+        return rows.length ? [`${title}:`, ...rows.map(i => `  ${i.line}`)] : []
+      }
+      const again = found.skipped.length ? ['Already resumed in this session:', ...found.skipped.map(i => `  ${i.line}`)] : []
+      if (found.items.length === 0) return { text: ['Nothing unfinished.', ...again].join('\n') }
+      const text = [
+        ...lines('pr', 'Open PRs'), ...lines('branch', 'Branches without a PR'), ...lines('worktree', 'Worktrees with leftover work'), ...again,
+      ].join('\n')
+      for (const i of found.items) resumed.add(i.key)
+      // The instructions ride as hidden `context`. A command's context alone starts no turn and the
+      // host refuses `prompt.submit` from inside a command.run hook, so a short prompt is submitted
+      // once the command has returned, to make the main session act on it.
+      $.clock.after(0, () => {
+        void $.prompt.submit({ text: 'Carry out the /flow resume instructions: start the managers.' }).catch(() => undefined)
+      })
+      return { text, context: [resumeInstructions(found.items)] }
+    }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work.` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -436,6 +570,22 @@ export const register: Register = (on, options) => {
           const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
           return { ...acts, [id]: { ...a, usage: { tokens, model } } }
         })
+        // Tell a worker or manager once when it reaches the warning percent. Marked before it is
+        // sent, so a send that fails (the agent already ended) is not retried every step.
+        const percent = Math.round(tokens / windowOf(model, mainModel, mainWindow) * 100)
+        if (settings.handoff && percent >= settings.contextWarn && (await read($, activity))[id]?.handoffNotifiedAt === undefined) {
+          const me = (await $.agent.list()).find(a => a.id === id)
+          if (me?.type === WORKER || me?.type === MANAGER) {
+            await update($, activity, acts => {
+              const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
+              return { ...acts, [id]: { ...a, handoffNotifiedAt: t } }
+            })
+            const role = ROLE[me.type]
+            void $.ui.toast(`${role} ${labelOf(me)}: past ${settings.contextWarn}% context, handing off`)
+            const text = `flow: your context is at ${percent}%, past the ${settings.contextWarn}% limit. Hand off now: follow the Handoff section of your instructions.`
+            await $.session.send({ to: { agentId: id }, text }).catch(() => undefined)
+          }
+        }
       }
     } catch {
       // The meter is cosmetic: never fail the agent's step over it.

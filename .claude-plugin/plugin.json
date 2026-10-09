@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "The orca-flow pattern in one Claude Code session: a super manager starts managers, managers start workers in their own git worktrees, a merge queue merges and deploys; a Flow pane shows the tree",
   "author": {
     "name": "Ying-Kai Liao"
@@ -53,6 +53,12 @@
       "title": "Context warning",
       "description": "The Flow pane marks this percent of the context window on each agent's meter, and the meter turns yellow at or past it (1 to 100).",
       "default": 40
+    },
+    "handoff": {
+      "type": "boolean",
+      "title": "Handoff",
+      "description": "On: a worker or manager that reaches the context warning percent is told to commit, push and write a handoff note, and its parent continues on a fresh agent. Off: the meter only shows.",
+      "default": true
     },
     "worker_model": {
       "type": "string",

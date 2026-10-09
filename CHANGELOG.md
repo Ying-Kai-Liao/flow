@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2026-10-09
+
+### Added
+
+- Handoff: a worker or manager that reaches `context_warn_percent` gets one notice (and a
+  toast). A worker commits, pushes, keeps a draft PR with a `## Handoff` note and ends with
+  `HANDOFF: <branch>`; its manager starts `<name>-2` on the same branch with the note and
+  removes the old worktree only when it is clean and pushed. A manager waits for its workers,
+  then ends with `HANDOFF: manager <name>`; the main session starts `<name>-2`. New option
+  `handoff` (default on) turns it off.
+- `/flow resume` lists unfinished flow work after a restart (open `flow/*` PRs, pushed branches
+  without a PR, worktrees with leftover work) and has the main session start `resume-<slug>`
+  managers for it.
+- Workers continue earlier work with `Continue on branch: flow/<x>` in the brief.
+
+### Changed
+
+- The `/flow` usage line and argument hint now read `[close|resume]`.
+
 ## [0.2.7] - 2026-10-09
 
 ### Added

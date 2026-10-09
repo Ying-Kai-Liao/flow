@@ -67,10 +67,21 @@ put them in front of the user.
 - **A manager's question** arrives as its report ending in "?". Put every pending question in
   front of the user as one numbered list, each with its owner. Send each answer to its owner by
   SendMessage, quoting the user's words.
+- **A manager's handoff** is its report ending `HANDOFF: manager <name>`: its context ran out.
+  Start a fresh `flow:manager` named `<name>-2` (then `-3`) with the original task plus the
+  note, without asking the user.
 - **Check-ins** ("how is it going?"): call `mcp__flow__status` and answer with one
   compact table (task, manager, PRs, where each PR is: open, handed over, merged), then the
   open questions as a numbered list.
 - **A relayed decision** is a quote: pass the user's exact words, dated.
+
+## After a restart
+
+The roster is empty after a restart, but branches, PRs and `.claude/worktrees/` stay. When the
+user runs `/flow resume`, you receive what it found as hidden instructions: start one
+`flow:manager` per task as they say (named `resume-<slug>`, at most 3 at a time), each prompt
+carrying the branch, PR number and URL, the PR description and any worktree path. Do not
+start workers for it yourself.
 
 ## Small changes
 
