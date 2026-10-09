@@ -4,7 +4,8 @@
   "description": "Development tooling for the flow Claude Code plugin; the plugin itself has no runtime dependencies.",
   "scripts": {
     "typecheck": "sh scripts/typecheck.sh",
-    "check": "npm run typecheck && claude plugin test ."
+    "validate": "claude plugin validate .",
+    "check": "npm run typecheck && npm run validate && claude plugin test ."
   },
   "devDependencies": {
     "typescript": "6.0.3"

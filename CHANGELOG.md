@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Type gate: pinned TypeScript 6.0.3 (`package.json`, lockfile), `npm run typecheck` (installs and links
   the engine's types in a fresh worktree) and `npm run check`; `.claude/flow.json` makes them the worker
-  check and the full check.
+  check and the full check. `claude plugin validate .` now passes: the types contract
+  (`types/index.d.ts`) is self-contained, holding the inbox and pre-flight state types the hooks import.
 
 ### Fixed
 

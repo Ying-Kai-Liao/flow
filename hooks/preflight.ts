@@ -1,47 +1,15 @@
 import { noteKey } from './state'
 import { EMPTY_INBOX, parseAsk, renderInbox } from './inbox'
 import type { AskedQuestion, Inbox, Question } from './inbox'
+import type { Entry, Filing, Preflight, Round } from '../types'
+
+export type { Entry, Filing, Preflight, Round }
 
 // The pure half of pre-flight: a manager looks over its task before any worker starts and files
 // acceptance criteria, what already shipped, its dependencies and its questions with
 // mcp__flow__preflight. The plugin refuses its worker spawns until it has filed (and until its
 // blocking questions are answered), and gives main one combined round of everything filed. The disk
 // and messaging half is in register.tsx.
-
-export type Filing = {
-  summary: string
-  workers?: number
-  criteria: string[]
-  shipped: Array<{ what: string; ref: string }>
-  depends: Array<{ on: string; why: string }>
-}
-
-export type Entry = {
-  // The manager's latest agent name (a successor is `<name>-2`); the entry is keyed by noteKey.
-  name: string
-  phase: 'recon' | 'filed' | 'skipped'
-  // The round it was spawned into (0: none, e.g. it filed without having been recorded at spawn).
-  round: number
-  spawnedAt: number
-  filedAt?: number
-  filing?: Filing
-  // Ids of the blocking questions of the filing: it is released when none of them is open.
-  blocking: string[]
-  // Ids of all the questions of the filing.
-  asked: string[]
-}
-
-export type Round = {
-  id: number
-  openedAt: number
-  members: string[]
-  delivered: boolean
-  deliveredAt?: number
-  // The members the delivered message covered; a later filing is sent on its own.
-  reported: string[]
-}
-
-export type Preflight = { next: number; entries: Record<string, Entry>; rounds: Round[] }
 
 export const EMPTY_PREFLIGHT: Preflight = { next: 1, entries: {}, rounds: [] }
 
