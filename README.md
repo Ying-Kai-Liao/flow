@@ -16,7 +16,7 @@ you ── main session (super manager)
          │     └── worker: csv-button
          ├── manager: login-redirect
          │     └── worker: redirect-fix
-         └── reviewer                  merges handed-over PRs, runs the full check, deploys
+         └── reviewer              merges handed-over PRs, runs the full check, deploys
 ```
 
 ## Quick start
