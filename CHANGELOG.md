@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-10-09
+
+### Added
+
+- Task sources: a markdown doc per source at `.claude/flow/sources/<name>.md` with List, Render
+  and Write-backs sections (`skills/dispatch/references/sources.md`), and a ready GitHub Issues
+  source to copy (`skills/dispatch/examples/github-issues.md`).
+- `/flow-tasks [source] [ids or filter]`: the super manager picks tasks from a source and starts
+  a manager for each.
+- Managers started from a source draft every write-back (comments, status moves) for the user's
+  OK before writing it.
+
 ## [0.2.6] - 2026-10-09
 
 ### Added

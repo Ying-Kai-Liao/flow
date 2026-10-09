@@ -33,6 +33,32 @@ managers, the workers under each, the queue, and the PRs handed over.
 4. **Tell the user** in one line per task: the manager's name and what it's doing. Then end your
    turn: each manager's report arrives as a notification.
 
+## Tasks from a source
+
+A **task source** is a markdown doc in the project at `.claude/flow/sources/<name>.md` that
+says how to list tasks, render one, and which writes back need the user's OK. The format is in
+`references/sources.md`; `examples/github-issues.md` is a ready one for GitHub Issues that the
+user can copy to `.claude/flow/sources/issues.md`. `/flow-tasks [source] [ids or filter]`
+starts this.
+
+1. Read the source's doc first (`ls .claude/flow/sources/`; with one source and none named,
+   use it; with none, say so and offer to copy the GitHub Issues example).
+2. **List** candidates the way the doc's List section says, with its default filter. If the user
+   named ids, take only those.
+3. Drop tasks with a live manager (`mcp__flow__status`) and tasks already shipped (step 2 of
+   "Starting work").
+4. Show the list once, one line per task: id, title, start or skip, and why. Then start right
+   away; wait for an OK only when the user asked to review it first.
+5. **Render** each task as the doc's Render section says into the manager's prompt: the task's
+   text verbatim, your notes in a separate section, attachments as local paths. Start the
+   prompt with `Source: <name> (<doc path>), source_id: <id>` so the manager can follow the
+   doc's write-backs.
+6. Start the managers as in "Starting work" (at most 3; the rest as each finishes). Name each
+   by a slug of the task, not its id.
+
+You never write to the source yourself unless the user asks; managers draft write-backs and
+put them in front of the user.
+
 ## While they run
 
 - **Push to finish.** The user handed you the list so they don't have to drive it. Never end a
