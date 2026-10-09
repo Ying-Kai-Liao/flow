@@ -4,6 +4,8 @@ import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'clau
 import type { Activity, AgentRow, Handover, HandoffRecord, LogEvent, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
+import { graphNodes, layoutGraph, moveFocus } from './graph'
+import type { GNode, Seg } from './graph'
 import {
   fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT,
 } from './prompts'
@@ -41,6 +43,9 @@ const COLOR: Record<string, string> = {
 }
 const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [CONTINUE]: 'worker', [QUEUE]: 'queue' }
 const ROOT_GLYPH = '◆'
+// Plan states, drawn like the agent statuses they turn into; a waiting node has no agent yet.
+const PLAN_GLYPH: Record<string, string> = { waiting: '○', ready: '◌', running: '●', done: '✓', blocked: '✗' }
+const PLAN_COLOR: Record<string, string | undefined> = { waiting: undefined, ready: 'warning', running: 'suggestion', done: 'success', blocked: 'error' }
 const HANDOVER_GLYPH: Record<Handover['status'], string> = {
   pending: '…', taken: '●', done: '✓', returned: '↩',
 }
@@ -109,6 +114,9 @@ async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
   return unhandedPrs(cache.prs, hs, rows, acts, t)
 }
 const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
+// The pane draws the agents as a tree of cards or as the dependency graph; the graph's highlight is a node id.
+const viewMode = atom({ plugin: 'flow', key: 'viewMode' } as const, 'tree' as 'tree' | 'graph')
+const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
 const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders: [], waiters: [] } as TestSlots)
 
 // A hook has a 10 s budget, a $.clock wait included, so acquire blocks only briefly. A free slot
@@ -252,6 +260,11 @@ export function viewOf<T>(items: T[], at: number, size: number): { top: number; 
   const top = Math.min(Math.max(0, at - Math.floor(size / 2)), items.length - size)
   return { top, rows: items.slice(top, top + size) }
 }
+
+// A plan node with an agent is drawn by the agent's status; one without has only its plan state.
+const planState = (n: GNode): boolean => n.agentId === undefined && n.state in PLAN_GLYPH
+const nodeGlyph = (n: GNode): string => (planState(n) ? PLAN_GLYPH[n.state] ?? '?' : GLYPH[n.state] ?? PLAN_GLYPH[n.state] ?? '?')
+const nodeColor = (n: GNode): string | undefined => (planState(n) ? PLAN_COLOR[n.state] : COLOR[n.state] ?? PLAN_COLOR[n.state])
 
 // One line for a tool call: the tool and its most telling argument.
 function describeCall(e: Record<string, unknown>): string {
@@ -1884,6 +1897,7 @@ export const register: Register = (on, options) => {
     ])
     const shown = await read($, hinted)
     const override = await read($, overrideView)
+    const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
 
     // The pane follows the transcript in view, derived here without writing: the viewed agent wins
     // until the person acts in the pane under that view. An id not in the roster is ignored.
@@ -1990,6 +2004,90 @@ export const register: Register = (on, options) => {
     }
     const agent = list.find(a => a.id === pick)
 
+    const toggle = <Button key="toggle-view" plain dimColor hotkey="g" onPress={async () => {
+      await acted()
+      await update($, viewMode, m => (m === 'graph' ? 'tree' : 'graph'))
+    }}>g {mode === 'graph' ? 'tree' : 'graph'}</Button>
+
+    // The graph of one level: the plan's nodes (waiting ones have no agent yet) and the agents the
+    // plan does not know. `spare` is the rows the rest of the pane takes.
+    const graphView = (owner: string, level: AgentRow[], spare: number) => {
+      const children = Object.fromEntries(level.map(a => [a.id, list.filter(c => c.parentId === a.id).length]))
+      const raw = graphNodes(plans[owner], level, { children })
+      // The glyph is part of the label so the layout counts its columns.
+      const nodes: GNode[] = raw.map(n => ({ ...n, label: `${nodeGlyph(n)} ${n.label}` }))
+      const layout = layoutGraph(nodes, Math.max(10, (e.viewport?.columns ?? 80) - 2))
+      const hot = gfocus !== null && layout.order.includes(gfocus) ? gfocus : layout.order[0]
+      const byId = Object.fromEntries(nodes.map(n => [n.id, n]))
+      const press = (key: 'h' | 'j' | 'k' | 'l') => async () => {
+        await acted()
+        const c = await read($, graphFocus)
+        const next = moveFocus(layout, nodes, c !== null && layout.order.includes(c) ? c : hot, key)
+        if (next !== undefined) await update($, graphFocus, () => next)
+      }
+      const openNode = async (id: string | undefined) => {
+        const n = id === undefined ? undefined : byId[id]
+        if (n === undefined) return
+        await acted()
+        if (n.agentId !== undefined) return open(n.agentId)
+        const waiting = n.after.filter(d => byId[d] !== undefined && byId[d]!.state !== 'done').map(d => raw.find(r => r.id === d)?.label ?? d)
+        void $.ui.toast(`${raw.find(r => r.id === id)?.label ?? id} is ${n.state}${waiting.length ? `, waiting on ${waiting.join(', ')}` : ''}`)
+      }
+      const hint = (
+        <Box flexDirection="row" gap={1}>
+          <Button key="g-h" plain dimColor hotkey="h" onPress={press('h')}>h</Button>
+          <Button key="g-j" plain dimColor hotkey="j" onPress={press('j')}>j</Button>
+          <Button key="g-k" plain dimColor hotkey="k" onPress={press('k')}>k</Button>
+          <Button key="g-l" plain dimColor hotkey="l" onPress={press('l')}>l</Button>
+          <Text dimColor>move ·</Text>
+          <Button key="g-open" plain dimColor hotkey="o" onPress={() => openNode(hot)}>o open</Button>
+          <Text dimColor>·</Text>
+          {toggle}
+        </Box>
+      )
+      if (nodes.length === 0) {
+        return <Box flexDirection="column"><Text dimColor>No plan yet. Managers declare one with mcp__flow__plan.</Text>{hint}</Box>
+      }
+      const seg = (s: Seg, i: number) => {
+        if (s.node === undefined) return <Text key={`s${i}`} dimColor={s.dim}>{s.text}</Text>
+        const n = byId[s.node]!
+        const dim = n.state === 'done' || n.state === 'completed' || (n.agentId === undefined && n.state === 'waiting')
+        return (
+          <Button key={`n-${s.node}`} plain dimColor={dim} onPress={() => openNode(s.node)}>
+            <Text color={nodeColor(n)} inverse={s.node === hot} bold={s.node === hot}>{s.text}</Text>
+          </Button>
+        )
+      }
+      const line = (l: number) => <Box key={`l${l}`} flexDirection="row">{layout.lines[l]!.map(seg)}</Box>
+      const hotLine = hot === undefined ? 0 : layout.at[hot] ?? 0
+      const size = Math.max(0, rows - spare)
+      if (size < 4) return <Box flexDirection="column">{line(hotLine)}{hint}</Box>
+      const clipped = layout.lines.length > size
+      const win = clipped ? viewOf(layout.lines.map((_, i) => i), hotLine, size - 2) : { top: 0, rows: layout.lines.map((_, i) => i) }
+      const below = layout.lines.length - win.top - win.rows.length
+      return (
+        <Box flexDirection="column">
+          {win.top > 0 && <Text dimColor>↑ {win.top} more</Text>}
+          {win.rows.map(line)}
+          {below > 0 && <Text dimColor>↓ {below} more</Text>}
+          {hint}
+        </Box>
+      )
+    }
+
+    if (agent !== undefined && agent.type === MANAGER && mode === 'graph') {
+      const parent = list.find(a => a.id === agent.parentId)
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row" gap={1}>
+            <Button key="back" hotkey="b" onPress={async () => { await acted(); await update($, selected, () => parent?.id ?? null) }}>Back</Button>
+          </Box>
+          <Text bold color={COLOR[agent.status]}>{GLYPH[agent.status] ?? '?'} {labelOf(agent)} <Text dimColor>{ROLE[agent.type]} · {agent.status}</Text></Text>
+          {graphView(planOwner(plans, agent.name), list.filter(a => a.parentId === agent.id), 5)}
+        </Box>
+      )
+    }
+
     if (agent !== undefined) {
       const act = acts[agent.id]
       const answer = (act?.answer ?? '').trim()
@@ -2002,6 +2100,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column">
           <Box flexDirection="row" gap={1}>
             <Button key="back" hotkey="b" onPress={async () => { await acted(); await update($, selected, () => parent?.id ?? null) }}>Back</Button>
+            {agent.type === MANAGER && toggle}
             <Button key="msg" hotkey="m" onPress={() => $.prompt.fill({
               text: `Send a message to ${ROLE[agent.type] ?? 'agent'} "${labelOf(agent)}": `, mode: 'replace',
             })}>Message</Button>
@@ -2065,6 +2164,15 @@ export const register: Register = (on, options) => {
       const c = (await read($, cursor)) ?? hotId
       return items.find(x => x.a.id === c) ?? items[hotIdx]
     }
+    if (mode === 'graph') {
+      const ids = new Set(list.map(a => a.id))
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>{list.length} agents · {live} live · graph</Text>
+          {graphView('main', list.filter(a => a.parentId === undefined || !ids.has(a.parentId)), 3)}
+        </Box>
+      )
+    }
     const mainTime = usage?.startedAt === undefined ? '' : elapsed(t - usage.startedAt)
     const mainU = main?.tokens === undefined ? undefined
       : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
@@ -2103,6 +2211,7 @@ export const register: Register = (on, options) => {
               const i = await hotItem()
               if (i && i.kids > 0) await update($, folded, f => ({ ...f, [i.a.id]: !i.collapsed }))
             }}>c fold</Button>
+            {toggle}
           </Box>
         )}
         {prs.length > 0 && <Text bold>  Merge queue</Text>}

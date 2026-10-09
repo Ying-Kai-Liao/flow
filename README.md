@@ -68,7 +68,17 @@ add login-redirect  after: csv-export
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
   `c` folds or unfolds its children. In an agent's detail, `b` goes back and `m` starts a message.
   Arrow keys, Tab and Enter go through the pane's focus ring, and the highlight follows it. Esc
-  can't be caught inside a pane, and `g` is reserved for the graph view.
+  can't be caught inside a pane. `g` switches between the tree and the graph view (below).
+- **The graph view** (`g`): the plan's dependency graph instead of the cards. At the top level it
+  shows every agent without a parent plus the planned nodes of the main plan, so a node that
+  is planned but not started (no agent yet, drawn `○` and dimmed) is visible with what it
+  waits on. A manager that has workers carries a `+N workers` badge. Open a manager and press `g`
+  to see its workers' graph the same way. Nodes are colored by state like the cards (running,
+  done, blocked; ready in the warning color). `h` moves to what the highlight waits on, `l` to
+  what waits on it, `j` / `k` to the next or previous node, `o` opens the highlighted node's
+  agent (a waiting node only says what it waits on), and `b` goes back from a manager. A pane
+  too narrow for columns falls back to a list with `after:` lines; a graph taller than the pane
+  scrolls with `↑ N more` / `↓ N more`.
 - **Many agents**: with 10 to 20 managers the tree auto-collapses to the highlight's path, shows
   `↑ N above` and `+N more` for rows out of the window, and scrolls to keep the highlight in view.
   `c` overrides the automatic folding for one agent.
