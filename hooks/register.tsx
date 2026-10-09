@@ -3110,7 +3110,7 @@ export const register: Register = (on, options) => {
     const me = rows.find(a => a.id === e.agentId)
     const name = me?.name ?? (String(input.from ?? '').trim() || 'unknown')
     const parent = me?.parentId === undefined ? undefined : rows.find(a => a.id === me.parentId)
-    const addressee = parent !== undefined && parent.type === MANAGER ? parent.name : 'main'
+    const addressee = parent !== undefined && parent.type === MANAGER && parent.name !== undefined ? parent.name : 'main'
     const at = await $.clock.now()
     // Standing answers hook: rules are read fresh. A fresh question that one matches is stored, then marked
     // answered in the same write (so it has an id and history); the result line tells the asker.

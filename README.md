@@ -581,10 +581,19 @@ restarted manager its notes (the last 3k characters).
 
 ```bash
 claude --plugin-dir .            # a session with your working copy loaded
-claude plugin validate .
-claude plugin test .
-tsc -p .
+npm ci                           # the pinned TypeScript (devDependency, no runtime deps)
+npm run typecheck                # tsc -p ., must report 0 errors
+npm run validate                 # claude plugin validate . (must pass)
+npm run check                    # typecheck + validate + claude plugin test .
 ```
+
+`npm run typecheck` works in a fresh worktree: it runs `npm ci` when `node_modules` is missing and,
+when `.claude-plugin/types` is missing, symlinks it to the main checkout's copy. Claude Code writes
+those type definitions itself (gitignored, per Claude Code version) when it loads the plugin from a
+folder you own, so open a session in the main checkout with `claude --plugin-dir .` once. Flow
+ignores and removes such links when it cleans a worktree. The repo's `.claude/flow.json` makes
+`npm run typecheck` and `npm run validate` worker checks and `npm run check` the merge queue's full check, so no PR merges
+with type errors.
 
 Bump `version` in `.claude-plugin/plugin.json` before pushing a change, so
 `claude plugin update flow@flow` picks it up.

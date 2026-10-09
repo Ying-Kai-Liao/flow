@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.32] - 2026-10-10
+
+### Added
+
+- Type gate: pinned TypeScript 6.0.3 (`package.json`, lockfile), `npm run typecheck` (installs and links
+  the engine's types in a fresh worktree) and `npm run check`; `.claude/flow.json` makes them the worker
+  check and the full check. `claude plugin validate .` now passes: the types contract
+  (`types/index.d.ts`) is self-contained, holding the inbox and pre-flight state types the hooks import.
+
+### Fixed
+
+- The type errors on main: an unnamed manager as an ask addressee, and the test helpers' parameter types.
+
 ## [0.3.31] - 2026-10-10
 
 ### Changed

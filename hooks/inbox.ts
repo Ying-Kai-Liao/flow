@@ -1,37 +1,12 @@
 import { noteKey } from './state'
+import type { Inbox, Question } from '../types'
+
+export type { Inbox, Question }
 
 // The pure half of the decision inbox: agents ask structured questions with mcp__flow__ask, the
 // addressee answers with mcp__flow__answer. The disk and messaging half is answerQuestion() in
 // register.tsx. Standing answers (standing.ts) answer fresh questions in the ask handler through
 // markAnswered's rule parameter.
-
-export type Question = {
-  id: string
-  // The asking agent's name, and who answers: a worker's manager, or "main" for a manager.
-  owner: string
-  addressee: string
-  question: string
-  options: string[]
-  default: string
-  blocking: boolean
-  context?: string
-  topic?: string
-  askedAt: number
-  state: 'open' | 'answered'
-  answer?: string
-  answeredBy?: string
-  answeredAt?: number
-  // The answer reached the asker (or needed no message).
-  delivered: boolean
-  // The asker's agent id, to message it.
-  askerId?: string
-  // The asker is a manager: its notes get the progress and decision lines, else its manager's.
-  askerIsManager?: boolean
-  // The standing answer rule that answered it (answeredBy is then "standing answer").
-  rule?: string
-}
-
-export type Inbox = { next: number; items: Question[] }
 
 export const EMPTY_INBOX: Inbox = { next: 1, items: [] }
 

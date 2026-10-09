@@ -1,0 +1,4 @@
+{
+  "worker_checks": ["npm run typecheck", "npm run validate"],
+  "full_check_command": "npm run check"
+}

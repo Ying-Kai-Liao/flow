@@ -185,6 +185,69 @@ export type LogEvent = {
   text?: string
 }
 
+export type Question = {
+  id: string
+  // The asking agent's name, and who answers: a worker's manager, or "main" for a manager.
+  owner: string
+  addressee: string
+  question: string
+  options: string[]
+  default: string
+  blocking: boolean
+  context?: string
+  topic?: string
+  askedAt: number
+  state: 'open' | 'answered'
+  answer?: string
+  answeredBy?: string
+  answeredAt?: number
+  // The answer reached the asker (or needed no message).
+  delivered: boolean
+  // The asker's agent id, to message it.
+  askerId?: string
+  // The asker is a manager: its notes get the progress and decision lines, else its manager's.
+  askerIsManager?: boolean
+  // The standing answer rule that answered it (answeredBy is then "standing answer").
+  rule?: string
+}
+
+export type Inbox = { next: number; items: Question[] }
+
+export type Filing = {
+  summary: string
+  workers?: number
+  criteria: string[]
+  shipped: Array<{ what: string; ref: string }>
+  depends: Array<{ on: string; why: string }>
+}
+
+export type Entry = {
+  // The manager's latest agent name (a successor is `<name>-2`); the entry is keyed by noteKey.
+  name: string
+  phase: 'recon' | 'filed' | 'skipped'
+  // The round it was spawned into (0: none, e.g. it filed without having been recorded at spawn).
+  round: number
+  spawnedAt: number
+  filedAt?: number
+  filing?: Filing
+  // Ids of the blocking questions of the filing: it is released when none of them is open.
+  blocking: string[]
+  // Ids of all the questions of the filing.
+  asked: string[]
+}
+
+export type Round = {
+  id: number
+  openedAt: number
+  members: string[]
+  delivered: boolean
+  deliveredAt?: number
+  // The members the delivered message covered; a later filing is sent on its own.
+  reported: string[]
+}
+
+export type Preflight = { next: number; entries: Record<string, Entry>; rounds: Round[] }
+
 declare module 'claude-code' {
   interface PluginState {
     'flow': {
@@ -196,7 +259,7 @@ declare module 'claude-code' {
       now: number
       handovers: Record<string, Handover>
       // The decision inbox, mirrored from <state dir>/inbox.json.
-      inbox: import('../hooks/inbox').Inbox
+      inbox: Inbox
       queueRuns: number
       prCache: PrCache
       // Per owner ("main" or a manager's name), the plan's nodes by id.
@@ -207,8 +270,7 @@ declare module 'claude-code' {
       overrideView: string | null | undefined
       hinted: boolean
       handoffs: Record<string, HandoffRecord>
-      inbox: import('../hooks/inbox').Inbox
-      preflight: import('../hooks/preflight').Preflight
+      preflight: Preflight
       leftovers: Leftovers
       sessions: Record<string, Session>
       // Quota windows of the harnesses flow can read (Codex's own logs), for the pane.
