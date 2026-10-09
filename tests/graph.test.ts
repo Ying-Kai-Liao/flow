@@ -9,7 +9,7 @@ const text = (l: Layout) => l.lines.map(line => line.map(s => s.text).join(''))
 // Column where a node's own segment starts on its line.
 const colOf = (l: Layout, id: string) => {
   let col = 0
-  for (const s of l.lines[l.at[id]]) {
+  for (const s of l.lines[l.at[id] ?? -1] ?? []) {
     if (s.node === id) return col
     col += s.text.length
   }
@@ -37,7 +37,7 @@ test('a skip edge is told in words, the neighbouring edges stay drawn', async ()
   expect(l.mode).toBe('layers')
   const t = text(l)
   expect(t.some(x => x.trimStart().startsWith('after: a'))).toBe(true)
-  expect(t[l.at.b]).toMatch(/b.*→.*c/)
+  expect(t[l.at.b ?? -1]).toMatch(/b.*→.*c/)
 })
 
 test('20 managers in layers fit width 100; width 30 falls back to a list', async () => {
@@ -55,7 +55,7 @@ test('20 managers in layers fit width 100; width 30 falls back to a list', async
   const t = text(narrow)
   expect(t.some(x => x.includes('after: manager-0'))).toBe(true)
   expect(t.some(x => x.startsWith('── 1'))).toBe(true)
-  expect(narrow.lines[narrow.at['next-0']][0].node).toBe('next-0')
+  expect(narrow.lines[narrow.at['next-0'] ?? -1]?.[0]?.node).toBe('next-0')
 })
 
 test('labels are cut with an ellipsis to the column', async () => {
@@ -88,13 +88,13 @@ test('graphNodes: plan nodes, their agents, and agents outside the plan', async 
   ]
   const nodes = graphNodes(graph, agents, { children: { u2: 5, u3: 2 } })
   const by = Object.fromEntries(nodes.map(n => [n.id, n]))
-  expect(by.b.agentId).toBeUndefined()
-  expect(by.b.after).toEqual(['a'])
-  expect(by.a.agentId).toBe('u2')
-  expect(by.a.badge).toBe('+5 workers')
+  expect(by.b?.agentId).toBeUndefined()
+  expect(by.b?.after).toEqual(['a'])
+  expect(by.a?.agentId).toBe('u2')
+  expect(by.a?.badge).toBe('+5 workers')
   expect(by.u3).toMatchObject({ label: 'extra', state: 'running', after: [], agentId: 'u3', badge: '+2 workers' })
   expect(by.u1).toBeUndefined()
-  expect(graphNodes(undefined, [agents[2]]).length).toBe(1)
+  expect(graphNodes(undefined, agents.slice(2)).length).toBe(1)
 })
 
 test('a badge is shown next to the label', async () => {
