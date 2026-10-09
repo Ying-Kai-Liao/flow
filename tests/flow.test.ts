@@ -48,6 +48,59 @@ test('a handed-over PR starts one merge queue, which works through it', async ($
   expect(String(status.result)).toContain('returned: head moved')
 })
 
+// A mocked gh that serves `body` and a world with a manager; returns what was spawned.
+function handoverWorld(on: Parameters<Parameters<typeof test>[1]>[1], body: string) {
+  mock.clock(on, { now: 1_000_000 })
+  const agents: AgentInfo[] = [{ id: 'm1', name: 'csv-export', description: 'csv export', type: 'flow:manager', status: 'running' }]
+  const spawned: string[] = []
+  on('agent.list', () => ({ value: agents }))
+  on('agent.spawn', ($, e) => {
+    const input = e as unknown as { subagent_type?: string; subagentType?: string; name?: string; description: string }
+    const type = input.subagent_type ?? input.subagentType ?? ''
+    spawned.push(type)
+    agents.push({ id: 'q1', name: input.name, description: input.description, type, status: 'running' })
+    return { model: 'sonnet', agentId: 'q1' }
+  })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify({ ...PR, body }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  return spawned
+}
+
+const handover = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
+  $.tool.call({ tool: 'mcp__flow__handover', pr: 7, report_to: 'csv-export', agentId: 'm1' } as never)
+const queueList = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
+  $.tool.call({ tool: 'mcp__flow__queue', action: 'list', agentId: 'q1' } as never)
+
+test('a PR without a Verification section is refused: nothing recorded, no queue started', async ($, on) => {
+  const spawned = handoverWorld(on, 'Just a summary, no proof.')
+  const r = await handover($)
+  expect(String(r.result)).toMatch(/^Refused:/)
+  expect(String(r.result)).toContain('no `## Verification` section')
+  expect(spawned).toEqual([])
+  expect(String((await queueList($)).result)).toBe('No pending handovers.')
+})
+
+test('a Ran list missing a required worker check is refused by name', { options: { worker_checks: ['tsc -p .'] } }, async ($, on) => {
+  const spawned = handoverWorld(on, PR.body)
+  const r = await handover($)
+  expect(String(r.result)).toMatch(/^Refused:/)
+  expect(String(r.result)).toContain('required command `tsc -p .` does not appear under `Ran:`')
+  expect(spawned).toEqual([])
+})
+
+test('an accepted handover carries its evidence to the queue list', async ($, on) => {
+  const spawned = handoverWorld(on, PR.body)
+  const r = await handover($)
+  expect(String(r.result)).toContain('Started merge queue')
+  expect(spawned).toEqual(['flow:queue'])
+  const list = String((await queueList($)).result)
+  expect(list).toContain('evidence: ran: `bun test`: pass')
+  expect(list).toContain('exercised: ran it')
+  expect(list).toContain('not verified: full check')
+})
+
 test('a draft PR is refused', async ($, on) => {
   on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify({ ...PR, isDraft: true }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   const r = await $.tool.call({ tool: 'mcp__flow__handover', pr: 9, verified: 'x', report_to: 'm' } as never)
