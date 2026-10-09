@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-10
+
 ### Added
 
 - Docs for person checks: README "Person checks" section, `check` tool, `verify_command` and `verify_paths`; the dispatch playbook tells main to list checks by version and close them only on the user's word; manager and queue prompts mention `verify_command` and the recorded check.
