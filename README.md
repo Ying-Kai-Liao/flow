@@ -65,7 +65,7 @@ add login-redirect  after: csv-export
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
-  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
+  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
   `c` collapses or expands the highlighted card, `q` the Merge queue section. In an agent's detail, `b` goes back and `m` starts a message.
@@ -272,6 +272,30 @@ id to revoke.
   (`topic` or `match`, `answer`, optional `blocking`, `from`) writes the personal file; `remove`
   (`id`) removes a rule from whichever file holds it (a repo-file rule is a committed file).
 
+## Pre-flight
+
+Before any worker starts, each manager looks over its task and files what it found, so most
+interruptions come before you leave.
+
+- A manager reads the code at the base, `git log` and open PRs (Explore and general-purpose
+  subagents are allowed, no workers) and calls `mcp__flow__preflight`: `from`, `summary`,
+  `criteria`, `shipped` (work that already exists), `depends` (other tasks it needs), optional
+  `workers` estimate and `questions` in the `ask` shape. Filing again replaces the filing.
+- **The gate**: until a manager has filed, and while a blocking question of its filing is open,
+  the plugin refuses its `flow:worker` starts and `mcp__flow__session` starts. Answering with
+  `mcp__flow__answer` (choices or `defaults: true`) releases it. A manager with only
+  non-blocking questions starts at once on the defaults.
+- **The round**: managers started together form one round. When all have filed, skipped or
+  ended, or after `preflight_wait` minutes, the main session gets one message, "Pre-flight: 15
+  tasks, 2 already shipped, 3 depend on others, 6 questions", with each task's criteria and
+  findings and the numbered questions. You answer once. Managers still in recon at the timeout
+  follow as "Pre-flight (late): ...".
+- `/flow preflight` shows the open or latest round; `mcp__flow__status` shows the phase.
+- **Skip**: a line `Pre-flight: skip` in a manager's prompt exempts it (the main session uses it
+  for a single small change). With `preflight` off, nothing is gated.
+- Settings: `preflight` (`on`/`off`, default on) and `preflight_wait` (minutes, default 10).
+  State is in `<git-common-dir>/flow/preflight.json`.
+
 ## Cleanup
 
 Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
@@ -378,6 +402,8 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `merge_queue` | on | `/config`, file | off: managers merge themselves with `merge_method` |
 | `merge_method` | `squash` | `/config`, file | managers, when there is no queue |
 | `merge_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` holds every handed-over PR until you run `/flow approve <n>` (see Merge mode) |
+| `preflight` | `on` | `/config`, file | `off`: managers are not gated and no round is sent (see Pre-flight) |
+| `preflight_wait` | 10 | `/config`, file | minutes the main session waits for managers to file before sending the round |
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
 | `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `max_workers` | 3 | `/config`, file | workers per manager at a time |
@@ -476,6 +502,7 @@ Not verified:
 - `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
 - `plan`: dependencies between tasks or packages (see Dependencies).
 - `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
+- `preflight`: a manager files its pre-flight before starting workers (see Pre-flight).
 - `ask`: questions with options, a recommended default and `blocking` (see Questions and the inbox).
 - `answer`: answers inbox questions by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
 - `standing`: main only: list, add and remove standing answers.
@@ -510,6 +537,7 @@ stops a tool call.
   log.jsonl                append-only event log
   handoffs/<branch-slug>/<n>.md  transcript digest of a worker's n-th handoff
   managers/<key>/notes.md  a manager's notes
+  preflight.json           pre-flight filings and rounds (see Pre-flight)
   config.json              not state: the settings loader's file, never touched by flow
 ```
 

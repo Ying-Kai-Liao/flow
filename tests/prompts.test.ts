@@ -51,6 +51,14 @@ test('worker and manager prompts ask for a stable topic and mention standing ans
   }
 })
 
+test('the manager does recon, then files a pre-flight before starting workers', () => {
+  const manager = fill(MANAGER_PROMPT.replace('{{QUEUE_RULE}}', QUEUE_RULE), base)
+  expect(manager).toContain('mcp__flow__preflight')
+  expect(manager).toContain('Recon first, with no workers yet')
+  expect(manager).toContain('Pre-flight: skip')
+  expect(fill(WORKER_PROMPT, base)).not.toContain('mcp__flow__preflight')
+})
+
 test('the language line is in all three prompts for 繁體中文 and for no English spelling', () => {
   for (const p of all({ ...base, language: '繁體中文' })) expect(p).toContain('in 繁體中文. Code, identifiers and commit messages follow the codebase.')
   for (const p of all({ ...base, language: 'english' })) expect(p).not.toContain('Write PR titles')

@@ -30,7 +30,8 @@ managers, the workers under each, the queue, and the PRs handed over.
      their paths. The manager can't see this conversation. If the user wants workers in
      another harness or a terminal they can watch ("use codex for this", "run it in tmux"),
      say so in the prompt: the manager starts those with `mcp__flow__session`.
-   Start independent managers in one message. Keep at most `max_managers` running (a
+   Start all managers for the request in one message, so they form one pre-flight round (see
+   "Pre-flight"). Keep at most `max_managers` running (a
    setting, default 20; `mcp__flow__status` shows it as `Limits`); start the rest as each
    finishes, without asking again.
    When one task needs another's merged code, declare the tasks first with `mcp__flow__plan`
@@ -40,8 +41,25 @@ managers, the workers under each, the queue, and the PRs handed over.
    merged code in the prompt (`git fetch origin` first). Ready nodes over the limit wait for a
    slot; the message says how many are free and arrives again when one frees. A blocked node
    is yours to fix, or to mark with `block` or `done`. Independent tasks need no plan.
-4. **Tell the user** in one line per task: the manager's name and what it's doing. Then end your
-   turn: each manager's report arrives as a notification.
+4. **Tell the user** in one line that the managers are in pre-flight (their names and tasks), then
+   end your turn: the round and each manager's report arrive as notifications.
+
+## Pre-flight
+
+Every manager looks over its task before it may start workers and files `mcp__flow__preflight`
+(summary, acceptance criteria, already shipped, depends, questions); the plugin refuses its
+worker starts until it has. When all managers started together have filed (or `preflight_wait`
+minutes pass), one message "Pre-flight: N tasks, ..." reaches you.
+
+1. Show the user its summary line, then per task the criteria in brief and any already-shipped
+   or depends findings, then the numbered questions, blocking first, as in "While they run".
+2. Turn the reply into one `mcp__flow__answer` ("defaults" -> `defaults: true`). Managers with
+   only non-blocking questions already started on their defaults; your answers still reach them.
+3. Shipped findings: tell the user; a manager whose whole task shipped ends itself. Depends
+   findings: when one task needs another's merged code, declare them with `mcp__flow__plan`.
+4. "Timed out waiting for: ..." means those managers are still in recon: tell the user their
+   pre-flight follows later and don't wait. Late filings ("Pre-flight (late): ...") are handled
+   the same way. `/flow preflight` shows the round.
 
 ## Tasks from a source
 
@@ -124,10 +142,12 @@ decide; never delete it.
 
 For a change the user wants right now with no fan-out, you may start a single
 `flow:worker` yourself (name, brief as prompt, `run_in_background: true`), review its PR,
-and hand it over with `mcp__flow__handover`. Never edit the main checkout for it.
+and hand it over with `mcp__flow__handover`. Never edit the main checkout for it. A single
+small change may instead go to one manager whose prompt has the line `Pre-flight: skip`.
+Neither path is gated by pre-flight.
 
 ## Settings
 
 The test command, the full check, the deploy command, the merge method, whether there is a
-queue, the manager limit (`max_managers`) and the worker limit are this plugin's options (`/config`, flow). An unset full
+queue, the manager limit (`max_managers`) and the worker limit, `preflight` (on or off) and `preflight_wait` (minutes the main session waits for a round, default 10) are this plugin's options (`/config`, flow). An unset full
 check or deploy is a step the queue skips and reports; it never improvises one.
