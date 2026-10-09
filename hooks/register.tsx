@@ -1046,13 +1046,13 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     // Handovers a restart would lose: merge what is on disk under this session's own records.
-    let startQueue = false
+    let queueDue = false
     await best($, 'loading handovers', async () => {
       resetStateDir()
       const disk = await loadHandovers($)
       if (Object.keys(disk).length === 0) return
       await update($, handovers, hs => ({ ...disk, ...hs }))
-      startQueue = Object.values(disk).some(h => h.status === 'pending')
+      queueDue = Object.values(disk).some(h => h.status === 'pending')
     })
     // The base branch: the option, else the remote's default branch, else main.
     // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
@@ -1230,7 +1230,7 @@ export const register: Register = (on, options) => {
     // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
     $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
     // The queue agent type exists only now, and a spawn needs the session bound: start it after the hook.
-    if (startQueue) $.clock.after(0, () => void best($, 'starting the queue', async () => void (await ensureQueue($))))
+    if (queueDue) $.clock.after(0, () => void best($, 'starting the queue', async () => void (await ensureQueue($))))
     return next(e)
   })
 
