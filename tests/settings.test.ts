@@ -1,7 +1,7 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { isFable, mergeLayers } from '../hooks/settings'
+import { isFable, KEYS, mergeLayers } from '../hooks/settings'
 
 type On = Parameters<Parameters<typeof test>[2] & ((...a: never[]) => unknown)>[1]
 
@@ -142,7 +142,7 @@ test('a Fable model is refused in every layer, a real one kept', () => {
 test('a Fable model setting is refused at load', async ($, on) => {
   const w = world(on, { [REPO]: JSON.stringify({ manager_model: 'Claude-Fable-1', worker_model: 'fable' }) })
   await start($)
-  expect(w.last('worker')!.model).toBe('sonnet')
+  expect(w.last('worker')!.model).toBe('sonnet[1m]')
   expect(w.last('manager')!.model).toBe('opus')
   expect(w.toasts.join('\n')).toContain('Fable')
 })
@@ -152,7 +152,7 @@ test('agents carry the configured models, opus for manager and queue by default'
   await start($)
   expect(w.last('manager')!.model).toBe('opus')
   expect(w.last('queue')!.model).toBe('opus')
-  expect(w.last('worker')!.model).toBe('sonnet')
+  expect(w.last('worker')!.model).toBe('sonnet[1m]')
 })
 
 test('a Fable spawn of a flow agent, or by one, is denied; others pass', async ($, on) => {
@@ -225,4 +225,17 @@ test('a refused [1m] model falls back once to the plain model, tells once, and l
   await spawn()
   expect(tried.at(-1)).toBe('sonnet')
   expect(w.toasts.filter(t => t.includes('was refused')).length).toBe(1)
+})
+
+// The test loader cannot import JSON, so the userConfig keys of .claude-plugin/plugin.json are listed by hand: keep in step.
+// A key the loader does not know would be set in the plugin UI and silently ignored.
+const USER_CONFIG_KEYS = [
+  'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_queue', 'max_managers', 'max_workers',
+  'test_slots', 'context_warn_percent', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow',
+  'worker_model', 'manager_model', 'queue_model', 'language', 'base_branch',
+]
+
+test('every userConfig key in plugin.json is a settings key', () => {
+  const missing = USER_CONFIG_KEYS.filter(k => !(k in KEYS))
+  expect(missing).toEqual([])
 })

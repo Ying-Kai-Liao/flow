@@ -100,13 +100,28 @@
       "type": "string",
       "title": "Worker model",
       "description": "Model alias for workers.",
-      "default": "sonnet",
-      "options": [
-        "sonnet",
-        "opus",
-        "haiku",
-        "fable"
-      ]
+      "default": "sonnet[1m]",
+      "options": ["sonnet[1m]", "sonnet", "opus[1m]", "opus", "haiku"]
+    },
+    "manager_model": {
+      "type": "string",
+      "title": "Manager model",
+      "description": "Model for managers/the merge queue. Set explicitly so it does not follow the main session's model.",
+      "default": "opus",
+      "options": ["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"]
+    },
+    "queue_model": {
+      "type": "string",
+      "title": "Merge queue model",
+      "description": "Model for managers/the merge queue. Set explicitly so it does not follow the main session's model.",
+      "default": "opus",
+      "options": ["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"]
+    },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "The language agents write PRs, briefs and reports in.",
+      "default": "English"
     },
     "base_branch": {
       "type": "string",
