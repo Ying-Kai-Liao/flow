@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.26] - 2026-10-10
 
+### Added
+
 - `mcp__flow__ask`: an agent asks one or a batch of questions, each with options, a recommended
   default and whether it is blocking. A worker's goes to its manager, a manager's to the user.
   Non-blocking: the asker goes on with the default and says in its PR what it assumed; blocking:

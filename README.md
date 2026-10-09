@@ -229,7 +229,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
 
 - An agent asks with `mcp__flow__ask` (`from` = its name, `questions`: each with `question`,
   `options` (at least two), a recommended `default`, `blocking`, optional `context` and `topic`).
-  One call can carry a batch. A worker's questions go to its manager, a manager's to you. Each
+  One call can carry a batch. A worker's questions reach its manager as one message, a manager's go to you; main cannot ask. Each
   gets an id (`q7`); asking the same open question twice returns the existing id. They are kept in
   `<git-common-dir>/flow/inbox.json`, so they survive restarts.
 - **Non-blocking**: the agent goes ahead on the default and says in its report or PR that it
