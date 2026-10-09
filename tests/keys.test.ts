@@ -121,11 +121,11 @@ test('scrolling keeps the highlight in view', async ($, on) => {
   await ui.unmount()
 })
 
-test('no g hotkey anywhere in the tree', async ($, on) => {
+test('g is the graph toggle, not a navigation key', async ($, on) => {
   await setup($, on, fleet(2, 2))
   const ui = await mount($, 40)
   const keys = (await ui.findAll({ type: 'Button' })).map(b => (b.props as { hotkey?: string }).hotkey)
-  expect(keys).not.toContain('g')
+  expect(keys.filter(k => k === 'g').length).toBe(1)
   expect(keys).toContain('j')
   await ui.unmount()
 })
