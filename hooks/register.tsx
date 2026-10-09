@@ -5,6 +5,8 @@ import type { Activity, AgentRow, Handover, HandoffRecord, Leftovers, LogEvent, 
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
+import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
+import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
 import {
@@ -2564,6 +2566,20 @@ export const register: Register = (on, options) => {
       inputSchema: { type: 'object', properties: { apply: { type: 'boolean', description: 'Remove the safe candidates (default false: dry run)' } } },
       isDeferred: false,
     })
+    await $.tool.register({
+      name: 'migrations',
+      description: 'Read-only. Reports migration-number clashes and the next free number, for the migrations_dir setting. ' +
+        'Shows the highest number on the base and at ref, and for each PR the migrations it adds: ok, clash (same number as another migration on the base, at ref or in an earlier PR of the list) or at-or-below (not above the base\'s highest). ' +
+        'For each non-ok one: the next free number (highest + 1, no gap filling), the git mv to run, and where the PR\'s own files mention the old number. Fetches only; changes nothing.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          prs: { type: 'array', items: { type: 'number' }, description: 'PR numbers in merge order (optional)' },
+          ref: { type: 'string', description: 'The batch being built in your cwd (default HEAD)' },
+        },
+      },
+      isDeferred: false,
+    })
 
     await $.tool.register({
       name: 'plan',
@@ -3276,6 +3292,53 @@ export const register: Register = (on, options) => {
       return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await sweep($, settings.base, false)}` }
     }
     return { result: await sweep($, settings.base, apply) }
+  })
+
+  on('tool.call', { tool: 'mcp__flow__migrations' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const dir = cleanDir(settings.migrationsDir)
+    if (dir === '') return { result: UNSET_TEXT }
+    const ref = typeof input.ref === 'string' && input.ref.trim() !== '' ? input.ref.trim() : 'HEAD'
+    const prs = Array.isArray(input.prs) ? input.prs.filter((n): n is number => Number.isInteger(n)) : []
+    const base = settings.base
+    const git = (...argv: string[]) => runCmd($, ['git', ...argv])
+    const lines = async (...argv: string[]) => {
+      const r = await git(...argv)
+      return r.exitCode === 0 ? r.stdout.split('\n').filter(l => l !== '') : []
+    }
+    const fetched = await git('fetch', 'origin', base)
+    if (fetched.exitCode !== 0) return { result: `Cannot read the base: git fetch origin ${base} failed: ${fetched.stderr.trim().split('\n')[0]?.slice(0, 200) ?? ''}` }
+    const baseRef = `origin/${base}`
+    // A dir missing on the base or at ref (a new repo) lists nothing: numbering starts from the PR's own.
+    const baseFiles = await lines('ls-tree', '-r', '--name-only', baseRef, '--', dir)
+    const refFiles = await lines('ls-tree', '-r', '--name-only', ref, '--', dir)
+
+    const heads = new Map<number, string>()
+    const inputs: PrInput[] = []
+    for (const pr of prs) {
+      const fail = (error: string) => inputs.push({ pr, added: [], error })
+      const view = await runCmd($, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid'])
+      const head = view.exitCode === 0 ? (JSON.parse(view.stdout || '{}') as { headRefOid?: string }).headRefOid : undefined
+      if (head === undefined || head === '') { fail(`gh pr view failed: ${view.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no head'}`); continue }
+      const pull = await git('fetch', 'origin', `pull/${pr}/head`)
+      if (pull.exitCode !== 0) { fail(`head ${head.slice(0, 9)} not fetchable: ${pull.stderr.trim().split('\n')[0]?.slice(0, 200) ?? ''}`); continue }
+      heads.set(pr, head)
+      inputs.push({ pr, added: await lines('diff', '--name-only', '--diff-filter=A', `${baseRef}...${head}`, '--', dir) })
+    }
+
+    const report = analyze({ dir, baseFiles, refFiles, prs: inputs })
+    // Only a flagged migration needs the PR's own files read for mentions of its old number.
+    for (const p of report.prs) {
+      const head = heads.get(p.pr)
+      if (head === undefined || p.migrations.every(m => m.status === 'ok')) continue
+      const files: Array<{ path: string; text: string }> = []
+      for (const path of (await lines('diff', '--name-only', '--diff-filter=AM', `${baseRef}...${head}`)).slice(0, 300)) {
+        const shown = await git('show', `${head}:${path}`)
+        if (shown.exitCode === 0) files.push({ path, text: shown.stdout })
+      }
+      for (const m of p.migrations) if (m.status !== 'ok') m.refs = findRefs(m, files)
+    }
+    return { result: render(report) }
   })
 
   on('tool.call', { tool: 'mcp__flow__session' }, async ($, e) => {
