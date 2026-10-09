@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
 import type { Activity, AgentRow, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
+import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestryQueries, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
@@ -767,6 +768,9 @@ async function readNotes($: EngineInterface, name: string, max = NOTES_MAX): Pro
 
 const STATUSES = new Set(['pending', 'taken', 'done', 'returned'])
 
+const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => typeof x === 'string')
+const validEvidence = (e: unknown): boolean => typeof e === 'object' && e !== null && isStrs((e as Evidence).ran) && typeof (e as Evidence).exercised === 'string' && isStrs((e as Evidence).notVerified)
+
 // One file per PR, rewritten whole on every change. `version` is for readers of the file.
 async function saveHandover($: EngineInterface, h: Handover): Promise<void> {
   const dir = await stateDir($)
@@ -788,6 +792,7 @@ async function loadHandovers($: EngineInterface): Promise<Record<string, Handove
   for (const name of names) {
     const h = await readJson($, `${dir}/handovers/${name}`) as Handover | undefined
     if (typeof h !== 'object' || h === null || !Number.isInteger(h.pr) || !STATUSES.has(h.status)) continue
+    if (h.evidence !== undefined && !validEvidence(h.evidence)) delete h.evidence
     out[String(h.pr)] = h
   }
   return out
@@ -1011,7 +1016,7 @@ async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>,
 function handoverLine(h: Handover): string {
   const tail = h.status === 'done' ? ` ${h.sha ?? ''} ${h.report ?? ''}`
     : h.status === 'returned' ? ` returned: ${h.reason ?? ''}` : ''
-  return `#${h.pr} ${h.status} (${h.branch} @ ${h.head.slice(0, 8)}, from ${h.reportTo})${tail} — ${h.title}`
+  return `#${h.pr} ${h.status} (${h.branch} @ ${h.head.slice(0, 8)}, from ${h.reportTo})${tail} — ${h.title} [${evidenceSummary(h.evidence)}]`
 }
 
 const OWNED = new Set([...LIVE, 'idle'])
@@ -2041,17 +2046,18 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'handover',
       description: 'Hand an approved PR to the flow merge queue. Records the PR at its current head and starts a queue if none is running. ' +
-        'Managers call this after reviewing a worker\'s PR; leave the branch alone afterwards.',
+        'Managers call this after reviewing a worker\'s PR; leave the branch alone afterwards. ' +
+        'Refused unless the PR description has a ## Verification section (Ran, Exercised, Not verified); the refusal shows the format.',
       inputSchema: {
         type: 'object',
         properties: {
           pr: { type: 'number', description: 'The PR number' },
-          verified: { type: 'string', description: 'What the worker ran, and that the full check was not run' },
+          verified: { type: 'string', description: 'Optional: your own one-line summary of the review. The proof itself is read from the PR\'s ## Verification section.' },
           pending: { type: 'string', description: '"none", or decisions the user still has to make; the queue puts them in its report and the status file' },
           after_deploy: { type: 'string', description: '"none", or what to check after deploy; the queue starts a check-only worker for what an agent can check and reports the rest as "needs a person"' },
           report_to: { type: 'string', description: 'Your agent name, so the queue reports back to you' },
         },
-        required: ['pr', 'verified', 'report_to'],
+        required: ['pr', 'report_to'],
       },
       isDeferred: false,
     })
@@ -2355,17 +2361,19 @@ export const register: Register = (on, options) => {
     if (!settings.useQueue) {
       return { result: `Refused: this repo has no merge queue (the plugin's merge_queue option is off). Merge it yourself: full check, then gh pr merge ${pr} --${settings.mergeMethod} --delete-branch.` }
     }
-    const view = await $.process.run(['gh', 'pr', 'view', String(pr), '--json', 'state,isDraft,headRefOid,headRefName,title'])
+    const view = await $.process.run(['gh', 'pr', 'view', String(pr), '--json', 'state,isDraft,headRefOid,headRefName,title,body'])
     if (view.exitCode !== 0) return { result: `Refused: gh pr view ${pr} failed: ${view.stderr.trim().slice(0, 300)}` }
-    const info = JSON.parse(view.stdout) as { state: string; isDraft: boolean; headRefOid: string; headRefName: string; title: string }
+    const info = JSON.parse(view.stdout) as { state: string; isDraft: boolean; headRefOid: string; headRefName: string; title: string; body?: string }
     if (info.state !== 'OPEN') return { result: `Refused: PR #${pr} is ${info.state}.` }
     if (info.isDraft) return { result: `Refused: PR #${pr} is a draft. Mark it ready (gh pr ready ${pr}) first.` }
+    const checked = checkEvidence(info.body ?? '', [...settings.workerChecks, ...settings.alwaysTests])
+    if ('problems' in checked) return { result: evidenceRefusal(pr, checked.problems) }
     const t = await $.clock.now()
     const h: Handover = {
       pr, title: info.title, head: info.headRefOid, branch: info.headRefName,
       reportTo: String(input.report_to ?? 'main'), verified: String(input.verified ?? ''),
       pending: String(input.pending ?? 'none'), afterDeploy: String(input.after_deploy ?? 'none'),
-      status: 'pending', at: t,
+      evidence: checked.evidence, status: 'pending', at: t,
     }
     await update($, handovers, hs => ({ ...hs, [String(pr)]: h }))
     await best($, 'saving a handover', async () => {
@@ -2386,7 +2394,7 @@ export const register: Register = (on, options) => {
       if (open.length === 0) return { result: 'No pending handovers.' }
       return {
         result: open.map(h =>
-          `#${h.pr} ${h.status}: "${h.title}" branch ${h.branch} head ${h.head} | report_to: ${h.reportTo} | verified: ${h.verified} | pending decisions: ${h.pending} | after deploy: ${h.afterDeploy}`,
+          `#${h.pr} ${h.status}: "${h.title}" branch ${h.branch} head ${h.head} | report_to: ${h.reportTo} | verified: ${h.verified} | evidence: ${evidenceText(h.evidence)} | pending decisions: ${h.pending} | after deploy: ${h.afterDeploy}`,
         ).join('\n'),
       }
     }

@@ -5,7 +5,7 @@ import type { TestBody } from 'claude-code/testing'
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
 
-const PR = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: 'flow/csv', title: 'Export orders as CSV' }
+const PR = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: 'flow/csv', title: 'Export orders as CSV', body: '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- full check' }
 const DIR = '/r/.git/flow'
 
 // A repo whose state dir lives in an in-memory file map; `abs` false makes git print a relative path.

@@ -421,7 +421,7 @@ test('the pane draws a Merge queue row for every handover status', async ($, on)
   on('agent.spawn', () => ({ model: 'sonnet', agentId: 'q1' }))
   on('process.run', (_, e) => {
     const pr = e.argv[3] ?? ''
-    const view = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: `flow/p${pr}`, title: titles[pr] }
+    const view = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: `flow/p${pr}`, title: titles[pr], body: '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- full check' }
     return { value: { exitCode: 0, stdout: JSON.stringify(view), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('ui.open', () => ({ value: { isPlaced: true } }))
