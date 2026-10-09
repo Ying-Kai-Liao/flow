@@ -135,7 +135,41 @@ test('20 managers with 60 workers render fast, with the highlight in view', asyn
   for (let i = 0; i < 20; i++) {
     await $.tool.call({ tool: 'Edit', file_path: `src/f${i}.ts`, agentId: `m${i}-w0` } as never)
   }
-  const ui = await mount($, 30)
+  const ui = await mount($, 14)
+  const t0 = performance.now()
+  expect(await ui.find({ type: 'Text', text: /80 agents/ })).toBeDefined()
+  for (let i = 0; i < 25; i++) await ui.press({ key: 'nav-next' })
+  const ms = performance.now() - t0
+  ;(globalThis as { console?: { log(s: string): void } }).console?.log(`render+25 presses: ${ms.toFixed(0)}ms`)
+  expect(ms).toBeLessThan(500)
+  expect(await ui.find({ type: 'Text', text: /super manager/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'nav-next' })).toBeDefined()
+  // Each manager opens as the highlight enters it, so 25 presses land on m6's worker; the
+  // others stay folded, and the window has scrolled past the top.
+  expect(await hot(ui, 'm6-w0')).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'm19-w0' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /↑ \d+ above/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\+\d+ more/ })).toBeDefined()
+  for (let i = 0; i < 20; i++) await ui.press({ key: 'nav-next' })
+  expect(await hot(ui, 'm0-w11')).toBeDefined()
+  await ui.unmount()
+})
+
+test('no g hotkey anywhere in the tree', async ($, on) => {
+  await setup($, on, fleet(2, 2))
+  const ui = await mount($, 40)
+  const keys = (await ui.findAll({ type: 'Button' })).map(b => (b.props as { hotkey?: string }).hotkey)
+  expect(keys).not.toContain('g')
+  expect(keys).toContain('j')
+  await ui.unmount()
+})
+
+test('20 managers with 60 workers render fast, with the highlight in view', async ($, on) => {
+  await setup($, on, fleet(20, 3))
+  for (let i = 0; i < 20; i++) {
+    await $.tool.call({ tool: 'Edit', file_path: `src/f${i}.ts`, agentId: `m${i}-w0` } as never)
+  }
+  const ui = await mount($, 14)
   const t0 = performance.now()
   expect(await ui.find({ type: 'Text', text: /80 agents/ })).toBeDefined()
   for (let i = 0; i < 25; i++) await ui.press({ key: 'nav-next' })
@@ -145,6 +179,8 @@ test('20 managers with 60 workers render fast, with the highlight in view', asyn
   expect(await ui.find({ type: 'Text', text: /super manager/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'nav-next' })).toBeDefined()
   // Twenty presses end on the last manager, folded to one line; the window scrolled to it.
+  const hotText = (await ui.findAll({ type: 'Text', text: /^m\d+/ } as never)).filter(t => (t.props as { inverse?: boolean }).inverse)
+  console.log('ON', JSON.stringify(hotText))
   expect(await hot(ui, 'm19')).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'm19-w0' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /↑ \d+ above/ })).toBeDefined()
