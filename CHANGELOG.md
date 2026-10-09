@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Docs for person checks: README "Person checks" section, `check` tool, `verify_command` and `verify_paths`; the dispatch playbook tells main to list checks by version and close them only on the user's word; manager and queue prompts mention `verify_command` and the recorded check.
+- Env and secret changes on a handover: `mcp__flow__handover` takes an optional `env` list (target,
+  name, a value or `secret: true`, why, optional `login`). Each entry becomes blocking inbox items of
+  the new kind `env` for the user (never answered by a standing answer unless a rule names the kind),
+  and the deploy gate waits for them (`Awaits env`, `Held: env change NAME declined` until main
+  releases the target). A non-secret change is applied by the queue through the target's new
+  `env_command` template (`{name}`, `{value}`, shell-quoted), reported back with the new
+  `mcp__flow__deploy` action `env-applied`; without one the user applies it and answers done. A
+  secret has no value in flow and is set by the user. The queue list, the deploy list and the status
+  file entry show each change by name.
+
 - Release at merge: new settings `release` (`on`/`off`, default off), `release_files` and
   `changelog_file`. With it on, workers add changelog lines under `## [Unreleased]` and never touch
   the version; the merge queue calls the new `mcp__flow__release` tool once per batch, which cuts the
