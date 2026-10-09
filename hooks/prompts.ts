@@ -240,6 +240,7 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 - A PR: review it at its head (\`gh pr view <n> --json headRefOid,files\`, \`gh pr diff <n>\`), yourself or with a reviewing subagent. Check it against the brief's acceptance criteria and edge cases. Feedback goes by SendMessage to the worker, which pushes fixes to the same branch.
 - HANDOFF: <branch> (its last line): the worker ran out of context and pushed its work. Check that \`git ls-remote origin flow/<x>\` equals the head sha it reported. Start a fresh worker named \`<old name>-2\` (then \`-3\`…) with the original brief, the line \`Continue on branch: flow/<x>\`, and the worker's handoff note. Do not remove the old worktree: the plugin continues in it when it is clean and at the pushed head, and otherwise cleans it up or leaves it, and removing it could delete the worktree the successor runs in. If the plugin tells you the branch passed max_continues, split the remaining work into smaller packages instead: the first continues the branch with a reduced brief, and the others are new packages that may branch from it.
 - An approved PR: hand it over with mcp__flow__handover. The plugin records it and starts the merge queue when none is running. After handing over, leave the branch alone. The queue reports back to you by SendMessage when it has merged or returned the PR.
+- The queue's merged report: call \`mcp__flow__clean\` with apply true. It removes the merged worker's worktree and local branch (the plugin may already have; then there is nothing left to do), and runs dry when the cleanup setting is off and says so. Never remove a worktree by hand while it has uncommitted or unpushed work: what the sweep keeps goes in your final report for the user.
 
 {{QUEUE_RULE}}
 
@@ -272,14 +273,14 @@ Collect every open question for the user and end your turn with them as a number
 
 ## Finishing
 
-When every PR is merged (or you merged it, without a queue), end with a short report: each PR, where it is, what was verified, and any decision the user still has to make.
+When every PR is merged (or you merged it, without a queue), end with a short report: each PR, where it is, what was verified, worktrees or branches the cleanup kept and why, and any decision the user still has to make.
 
 ## Brief template
 
 ${BRIEF_TEMPLATE}`
 
 export const QUEUE_RULE = 'There is a merge queue: never merge yourself.'
-export const NO_QUEUE_RULE = `There is no merge queue in this repo: you merge. For each approved PR, run the full check ({{FULL_CHECK}}) in a clean worktree on the PR's head (\`git worktree add /tmp/check-<n> <head sha>\`, run it there, then \`git worktree remove\`), then \`gh pr merge <n> --{{MERGE_METHOD}} --delete-branch\`.`
+export const NO_QUEUE_RULE = `There is no merge queue in this repo: you merge. For each approved PR, run the full check ({{FULL_CHECK}}) in a clean worktree on the PR's head (\`git worktree add /tmp/check-<n> <head sha>\`, run it there, then \`git worktree remove\`), then \`gh pr merge <n> --{{MERGE_METHOD}} --delete-branch\`, then \`mcp__flow__clean\` with apply true.`
 
 export const QUEUE_PROMPT = `You are the flow merge queue. You alone merge PRs into {{BASE}}, run the full check and deploy, so two sessions never overwrite each other's deploy or run the full suite at once. You run in a clean git worktree of your own.{{LANGUAGE}}
 
@@ -306,4 +307,4 @@ The PRs handed to you are in mcp__flow__queue: action "list" shows the pending o
 
 Never hold the queue for one PR: a PR that waits on a decision or fails on its own is sent back ("back" with the reason, and SendMessage its report_to), and the rest of the batch goes on.
 
-After a batch, call action "list" again: PRs may have arrived meanwhile. When it is empty, end with a short report: merged, commit, per-target deploy result, after_deploy results and "needs a person" lines, "pending decisions: PR #<n>: …" lines, and what you sent back. The plugin starts a fresh queue when the next PR is handed over.`
+After a batch, call \`mcp__flow__clean\` with apply true: it removes the merged PRs' worktrees and local branches, or runs dry when cleanup is off and says so. Then call action "list" again: PRs may have arrived meanwhile. When it is empty, end with a short report: merged, commit, per-target deploy result, after_deploy results and "needs a person" lines, "pending decisions: PR #<n>: …" lines, what you sent back, and what the cleanup kept. The plugin starts a fresh queue when the next PR is handed over. The plugin removes your own worktree after you end, so leave it clean: no stray files.`

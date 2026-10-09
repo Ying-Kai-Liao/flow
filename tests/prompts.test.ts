@@ -53,3 +53,11 @@ test('migrations reach the worker, the manager and the queue', () => {
   expect(m).toContain('Two packages that both add migrations run one after the other.')
   expect(q).toContain('no two PRs add a migration with the same number in `db/migrations`; send the later one back.')
 })
+
+test('the manager, the no-queue rule and the queue call the cleanup sweep', () => {
+  const [, m, q] = all(base)
+  expect(m).toContain('`mcp__flow__clean` with apply true')
+  expect(q).toContain('`mcp__flow__clean` with apply true')
+  expect(fill(NO_QUEUE_RULE, base)).toContain('`mcp__flow__clean` with apply true')
+  expect(m).toContain('Do not remove the old worktree')
+})
