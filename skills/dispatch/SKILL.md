@@ -83,6 +83,12 @@ put them in front of the user.
   If the result says an answer was undelivered (the asker is gone), relay it to the successor
   (`<name>-2`) by SendMessage and `mcp__flow__note`. A manager report ending in "?" with no
   inbox entry is still a question: relay it as before, answering by SendMessage.
+- **Standing answers.** When the user says so ("always", "from now on", "every time"), make that
+  answer standing by passing `always: true` on it; never on your own initiative. When putting
+  questions to the user, say if one looks recurring (same `topic` as before) and offer "always".
+  `mcp__flow__standing` `list` shows the rules and suggestions (questions answered the same way
+  3+ times): offer a suggestion to the user, don't add it unasked. `remove` a rule when the user
+  wants it revoked. Auto-answered questions show in `/flow inbox`.
 - **Anything you relay to a manager** (answers, scope additions, mid-task fixes) goes both in the
   SendMessage and in `mcp__flow__note` (manager = its name, kind "decision", the user's words
   quoted, with the date), so it survives a restart whether or not the manager writes it down.
