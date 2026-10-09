@@ -472,8 +472,43 @@ test('q toggles the Reviewer section, collapsed to a status-count line', async (
   await ui.unmount()
 })
 
+test('the key-hint row is the last thing in the tree, below the Reviewer section, with or without PRs', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('agent.list', () => ({ value: [
+    { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
+    { id: 'q1', name: 'queue', description: 'q', type: 'flow:queue', status: 'running' },
+  ] as AgentInfo[] }))
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'q1' }))
+  on('process.run', () => {
+    const view = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: 'flow/p7', title: 'Export CSV', body: '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- full check' }
+    return { value: { exitCode: 0, stdout: JSON.stringify(view), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  const lastButton = async (ui: Awaited<ReturnType<typeof mountCollapsed>>) =>
+    (await ui.findAll({ type: 'Button' })).at(-1)?.key
+  await $.tool.call({ tool: 'mcp__flow__handover', pr: 7, verified: 'x', report_to: 'csv-export', agentId: 'm1' } as never)
+  const ui = await mountCollapsed($, 40)
+  expect(await ui.find({ text: /1 pending/ })).toBeDefined()
+  expect(await lastButton(ui)).toBe('toggle-view')
+  await ui.press({ key: 'nav-queue' })
+  expect(await ui.find({ text: /#7 pending/ })).toBeDefined()
+  expect(await lastButton(ui)).toBe('toggle-view')
+  await ui.unmount()
+})
+
 // The Reviewer rows are JSX inside a map over the handovers; a parameter there named `h`
 // once shadowed the JSX factory and blanked the whole pane, but only while a handover existed.
+test('the key-hint row is the last thing in the tree when no PR is handed over', async ($, on) => {
+  await setup($, on, 84_000)
+  const ui = await mountCollapsed($, 40)
+  expect(await ui.find({ text: /Reviewer/ })).toBeUndefined()
+  const buttons = await ui.findAll({ type: 'Button' })
+  expect(buttons.at(-1)?.key).toBe('toggle-view')
+  await ui.unmount()
+})
+
 test('the pane draws a Reviewer row for every handover status', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const titles: Record<string, string> = { '7': 'Export CSV', '8': 'Fix login', '9': 'Update docs', '10': 'Bump deps' }
