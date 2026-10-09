@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-10-09
+
+### Added
+
+- Open `flow/*` PRs that nobody handed over (and whose worker has ended, or whose handover was returned)
+  show under "Needs attention:" in `mcp__flow__status` and as one warning line on the pane. The PR list
+  comes from `gh pr list` every 5 minutes, and on a status call at most once a minute. A gh failure shows
+  one line in status and keeps the last list.
+
 ## [0.2.9] - 2026-10-09
 
 ### Changed

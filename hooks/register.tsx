@@ -397,32 +397,33 @@ function resumeInstructions(items: Leftover[]): string {
   ].join('\n')
 }
 
+// One gh call at a time: the timer and a status call may meet.
+let fetching: Promise<void> | undefined
+function fetchPrs($: EngineInterface): Promise<void> {
+  fetching ??= (async () => {
+    let error: string | undefined
+    let prs: OpenPr[] | undefined
+    try {
+      const r = await $.process.run(
+        ['gh', 'pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,isDraft,url,updatedAt', '--limit', '100'],
+        { timeoutMs: 20_000 })
+      if (r.exitCode !== 0) throw new Error(r.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no output')
+      const parsed = JSON.parse(r.stdout || '[]') as unknown
+      if (!Array.isArray(parsed)) throw new Error('unexpected gh output')
+      prs = (parsed as OpenPr[]).filter(p => typeof p.headRefName === 'string' && p.headRefName.startsWith('flow/'))
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+    }
+    const t = await $.clock.now()
+    // A failure keeps the last list, and counts as a fetch so a status call does not retry at once.
+    await update($, prCache, c => ({ prs: prs ?? c.prs, fetchedAt: t, error }))
+  })().catch(() => undefined).finally(() => { fetching = undefined })
+  return fetching
+}
+
 export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
   queueOn = settings.useQueue
-  // One gh call at a time: the timer and a status call may meet.
-  let fetching: Promise<void> | undefined
-  const fetchPrs = ($: EngineInterface): Promise<void> => {
-    fetching ??= (async () => {
-      let error: string | undefined
-      let prs: OpenPr[] | undefined
-      try {
-        const r = await $.process.run(
-          ['gh', 'pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,isDraft,url,updatedAt', '--limit', '100'],
-          { timeoutMs: 20_000 })
-        if (r.exitCode !== 0) throw new Error(r.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no output')
-        const parsed = JSON.parse(r.stdout || '[]') as unknown
-        if (!Array.isArray(parsed)) throw new Error('unexpected gh output')
-        prs = (parsed as OpenPr[]).filter(p => typeof p.headRefName === 'string' && p.headRefName.startsWith('flow/'))
-      } catch (err) {
-        error = err instanceof Error ? err.message : String(err)
-      }
-      const t = await $.clock.now()
-      // A failure keeps the last list, and counts as a fetch so a status call does not retry at once.
-      await update($, prCache, c => ({ prs: prs ?? c.prs, fetchedAt: t, error }))
-    })().catch(() => undefined).finally(() => { fetching = undefined })
-    return fetching
-  }
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
