@@ -100,7 +100,12 @@ function checked(source: string, layer: Record<string, unknown>, warnings: strin
       warnings.push(`${source}: "${k}" should be a ${kind === 'list' ? 'list of strings' : kind === 'objects' ? 'list of objects' : kind}; ignored`)
     } else if (MODEL_KEYS.includes(k) && isFable(v)) {
       warnings.push(`${source}: "${k}" is ${JSON.stringify(v)}; sub-agents don't run on Fable, using the default`)
-    } else out[k] = v
+    } else {
+      if (k === 'decision_phrases' && Array.isArray(v) && v.length > 0) {
+        warnings.push(`${source}: "decision_phrases" is deprecated in favour of the mcp__flow__ask tool (agents ask structured questions into the /flow inbox); it still works as a fallback`)
+      }
+      out[k] = v
+    }
   }
   return out
 }
