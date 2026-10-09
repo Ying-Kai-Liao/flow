@@ -4,7 +4,7 @@ import type { Settings } from '../hooks/prompts'
 
 const BASE: Settings = {
   base: 'main', testCommand: '', fullCheck: '', deployCommand: '', deployTargets: [], stateFile: undefined,
-  mergeMethod: 'squash', useQueue: true, maxWorkers: 3, workerModel: 'sonnet', testSlots: 1,
+  mergeMethod: 'squash', mergeMode: 'auto', useQueue: true, maxWorkers: 3, workerModel: 'sonnet', testSlots: 1,
   managerModel: 'opus', queueModel: 'opus', language: 'English', bigFiles: [], bigFileLines: 1500,
   migrationsDir: '', decisionPhrases: [], workerChecks: [], alwaysTests: [],
 }

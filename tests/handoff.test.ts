@@ -32,13 +32,27 @@ const TRANSCRIPT = [
   { role: 'assistant', text: 'Handoff note\nHANDOFF: flow/csv', toolUses: [] },
 ]
 
+// The test body's $, which can raise agent.offer; the mocked host calls it as the engine would.
+let host: Dollar | undefined
+
 type Git = { dirty?: boolean; head?: string; pushed?: string; ancestor?: boolean }
-function world(on: On, o: { deny?: boolean; agents?: AgentInfo[]; git?: Git; spawned?: Record<string, unknown>[]; removed?: string[] } = {}) {
+function world(on: On, o: { deny?: boolean; agents?: AgentInfo[]; git?: Git; spawned?: Record<string, unknown>[]; removed?: string[]; refuseContinue?: boolean } = {}) {
   const files = new Map<string, string>()
   const sent: { to: unknown; text: string }[] = []
   const toasts: string[] = []
+  host = undefined
+  on('agent.offer', () => ({ isOffered: true }))
   on('agent.list', () => ({ value: o.agents ?? AGENTS }))
-  on('agent.spawn', (_, e) => { o.spawned?.push(e as unknown as Record<string, unknown>); return { model: 'sonnet', agentId: 'n1' } })
+  // The host: a spawn of a type needs it to be offered (as for a rewrite), so flow:continue only dispatches
+  // while the plugin offers it.
+  on('agent.spawn', async (_, e) => {
+    const offered = host === undefined ? { isOffered: true } : await host.agent.offer({ agent: e.subagentType, description: '', source: 'plugin', provider: { plugin: 'flow', tier: 'user' } } as never)
+    if (!offered.isOffered || (o.refuseContinue && e.subagentType === 'flow:continue')) {
+      throw new Error(`a hook's subagentType '${e.subagentType}' names no agent this call can dispatch`)
+    }
+    o.spawned?.push(e as unknown as Record<string, unknown>)
+    return { model: 'sonnet', agentId: 'n1' }
+  })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -154,7 +168,7 @@ test('a manager handoff is not a worker handoff', async ($, on) => {
 const DONE: AgentInfo[] = AGENTS.map(a => a.id === 'w1' ? { ...a, status: 'completed' as const } : a)
 const BRIEF = 'Your name: csv-worker-2\nContinue on branch: flow/csv\nGo on.'
 const spawnIt = ($: Dollar, over: Record<string, unknown> = {}) =>
-  $.agent.spawn({ subagentType: 'flow:worker', name: 'csv-worker-2', description: 'w', prompt: BRIEF, parentAgentId: 'm1', ...over } as never)
+  ((host = $), $).agent.spawn({ subagentType: 'flow:worker', name: 'csv-worker-2', description: 'w', prompt: BRIEF, parentAgentId: 'm1', ...over } as never)
 
 test('a continuation of a clean, pushed worktree runs in place with the digest', async ($, on) => {
   mock.clock(on, { now: 1 })
@@ -173,6 +187,34 @@ test('a continuation of a clean, pushed worktree runs in place with the digest',
   expect(logOf(files).find(l => l.event === 'continue')).toMatchObject({
     agent: 'csv-worker-2', owner: 'csv-export', branch: 'flow/csv', text: 'same worktree /r/.claude/worktrees/agent-w1',
   })
+})
+
+test('a refused flow:continue falls back to a plain worker in a new worktree and frees the claim', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const spawned: Record<string, unknown>[] = []
+  const opts = { agents: DONE, spawned, refuseContinue: true }
+  world(on, opts)
+  await finish($, 'w1')
+
+  await spawnIt($)
+
+  expect(spawned).toHaveLength(1)
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:worker' })
+  expect(spawned[0]?.cwd).toBeUndefined()
+  const prompt = String(spawned[0]?.prompt)
+  expect(prompt).toContain('is kept')
+  expect(prompt).not.toContain('You continue in the same worktree')
+  expect(prompt).toContain('Transcript digest of the previous worker')
+  // The claim was given back: once the host accepts flow:continue, the next spawn gets the worktree.
+  opts.refuseContinue = false
+  await spawnIt($, { name: 'csv-worker-3' })
+  expect(spawned[1]).toMatchObject({ subagentType: 'flow:continue', cwd: '/r/.claude/worktrees/agent-w1' })
+})
+
+test('flow:continue is not offered outside a spawn', async ($, on) => {
+  world(on)
+  const r = await $.agent.offer({ agent: 'flow:continue', description: '', source: 'plugin', provider: { plugin: 'flow', tier: 'user' } } as never)
+  expect(r.isOffered).toBe(false)
 })
 
 test('only the first of two spawns for a branch gets the worktree', async ($, on) => {

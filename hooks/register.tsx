@@ -26,6 +26,7 @@ import {
 } from './sessions'
 import type { Digest, HarnessSpec, Limit } from './sessions'
 import { buildDigest, findWorktree, noteKey, ownerFor } from './state'
+import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
@@ -59,7 +60,7 @@ const ROOT_GLYPH = '◆'
 const PLAN_GLYPH: Record<string, string> = { waiting: '○', ready: '◌', running: '●', done: '✓', blocked: '✗' }
 const PLAN_COLOR: Record<string, string | undefined> = { waiting: undefined, ready: 'warning', running: 'suggestion', done: 'success', blocked: 'error' }
 const HANDOVER_GLYPH: Record<Handover['status'], string> = {
-  pending: '…', taken: '●', done: '✓', returned: '↩',
+  pending: '…', awaiting: '⏸', taken: '●', done: '✓', returned: '↩',
 }
 
 const roster = atom({ plugin: 'flow', key: 'roster' } as const, [] as AgentRow[])
@@ -494,6 +495,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     deployTargets: deployTargetsOf(options.deploy_targets),
     stateFile: stateFileOf(options.state_file),
     mergeMethod: str('merge_method', 'squash'),
+    mergeMode: str('merge_mode', 'auto'),
     useQueue: options.merge_queue !== false,
     maxWorkers: num('max_workers', 3),
     maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
@@ -622,10 +624,12 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   const live = rows.filter(a => !ENDED.has(a.status))
   const count = (type: string) => live.filter(a => a.type === type || (type === WORKER && WORKERS.has(a.type))).length
   const queued = hs.filter(h => h.status === 'pending' || h.status === 'taken').length
+  const awaiting = hs.filter(h => h.status === 'awaiting').length
   const parts = [
     count(MANAGER) && `${count(MANAGER)} managers`,
     count(WORKER) && `${count(WORKER)} workers`,
     queued && `queue: ${queued} PR${queued > 1 ? 's' : ''}`,
+    awaiting && `${awaiting} awaiting approval`,
   ].filter(Boolean)
   const unhanded = (await currentUnhanded($)).length
   if (unhanded) parts.push(`${unhanded} unhanded`)
@@ -773,7 +777,7 @@ async function readNotes($: EngineInterface, name: string, max = NOTES_MAX): Pro
   }
 }
 
-const STATUSES = new Set(['pending', 'taken', 'done', 'returned'])
+const STATUSES = new Set(['pending', 'awaiting', 'taken', 'done', 'returned'])
 
 const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => typeof x === 'string')
 const validEvidence = (e: unknown): boolean => typeof e === 'object' && e !== null && isStrs((e as Evidence).ran) && typeof (e as Evidence).exercised === 'string' && isStrs((e as Evidence).notVerified)
@@ -940,6 +944,21 @@ async function prepareContinue($: EngineInterface, e: AgentSpawnInput): Promise<
   }
 }
 
+// How many rewritten flow:continue spawns are in the host's hands: the agent.offer hook offers the type then.
+let continuing = 0
+// Dispatches a spawn; a flow:continue one counts while it runs and a refusal comes back as a deny.
+async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev: AgentSpawnInput): Promise<R | { deny: string }> {
+  if (ev.subagentType !== CONTINUE) return next(ev)
+  continuing++
+  try {
+    return await next(ev)
+  } catch (err) {
+    return { deny: String((err as Error).message) }
+  } finally {
+    continuing--
+  }
+}
+
 const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / queue_model)."
 
 // Fable is refused for a flow agent and for anything a flow agent starts.
@@ -1022,7 +1041,8 @@ async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>,
 
 function handoverLine(h: Handover): string {
   const tail = h.status === 'done' ? ` ${h.sha ?? ''} ${h.report ?? ''}`
-    : h.status === 'returned' ? ` returned: ${h.reason ?? ''}` : ''
+    : h.status === 'returned' ? ` returned: ${h.reason ?? ''}`
+    : h.status === 'awaiting' ? ` awaiting the user's approval: /flow approve ${h.pr}` : ''
   return `#${h.pr} ${h.status} (${h.branch} @ ${h.head.slice(0, 8)}, from ${h.reportTo})${tail} — ${h.title} [${evidenceSummary(h.evidence)}]`
 }
 
@@ -1059,7 +1079,8 @@ async function diskItems($: EngineInterface, items: Leftover[], merged: { prs: S
   })
   for (const h of hs) {
     if (finished(h)) continue
-    const note = `Handover #${h.pr} is ${h.status}${h.status === 'returned' ? ` (${h.reason ?? 'no reason'})` : ''}, reported to ${h.reportTo}. Verified: ${h.verified} Pending: ${h.pending}`
+    const note = `Handover #${h.pr} is ${h.status}${h.status === 'returned' ? ` (${h.reason ?? 'no reason'})` : ''}, reported to ${h.reportTo}. Verified: ${h.verified} Pending: ${h.pending}` +
+      (h.status === 'awaiting' ? ` It awaits the user's /flow approve ${h.pr}; do not restart work on it.` : '')
     const mate = items.find(i => i.key === h.branch)
     if (mate !== undefined) {
       mate.line += ` | handover ${h.status}`
@@ -2040,8 +2061,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it, /flow resume picks up unfinished flow work, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[close|resume|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[close|resume|approve <pr>|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -2063,6 +2084,7 @@ export const register: Register = (on, options) => {
           pending: { type: 'string', description: '"none", or decisions the user still has to make; the queue puts them in its report and the status file' },
           after_deploy: { type: 'string', description: '"none", or what to check after deploy; the queue starts a check-only worker for what an agent can check and reports the rest as "needs a person"' },
           report_to: { type: 'string', description: 'Your agent name, so the queue reports back to you' },
+          mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: it waits for the user\'s /flow approve before the queue merges it. "auto" only marks it safe to merge directly and is refused when the merge_mode setting is confirm. Omit to use the setting.' },
         },
         required: ['pr', 'report_to'],
       },
@@ -2257,7 +2279,25 @@ export const register: Register = (on, options) => {
       // A person's command: --yes removes whatever the cleanup setting says.
       return { text: await sweep($, settings.base, words.length > 1, 'Run /flow clean --yes to remove them.') }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (words[0] === 'approve') {
+      // Only a person's command approves; no tool does.
+      const n = Number(words[1])
+      if (words.length !== 2 || !Number.isInteger(n) || n <= 0) return { text: 'Usage: /flow approve <pr>' }
+      const h = (await read($, handovers))[String(n)]
+      if (h === undefined) return { text: `No handover for PR #${n}.` }
+      if (h.status !== 'awaiting') return { text: `PR #${n} is ${h.status}, not awaiting approval.` }
+      const next: Handover = { ...h, status: 'pending', approvedHead: h.head }
+      await update($, handovers, hs => ({ ...hs, [String(n)]: next }))
+      await best($, 'saving a handover', async () => {
+        await saveHandover($, next)
+        await appendLog($, { event: 'approve', owner: next.reportTo, pr: n, branch: next.branch, text: next.title })
+      })
+      void $.ui.toast(`PR #${n} approved at ${h.head.slice(0, 8)}`)
+      const queue = await ensureQueue($)
+      await refresh($)
+      return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
+    }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -2272,8 +2312,9 @@ export const register: Register = (on, options) => {
     return { text: `Picking tasks${args ? ` from ${args}` : ''}.` }
   })
 
-  // The plugin starts flow:continue itself; the model is never offered it.
-  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: false }))
+  // The plugin starts flow:continue itself; the model is never offered it. It is offered only while
+  // the spawn hook below dispatches its own rewrite, since the host checks the offer for a rewrite too.
+  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: continuing > 0 }))
 
   on('agent.spawn', async ($, e, next) => {
     // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
@@ -2294,19 +2335,42 @@ export const register: Register = (on, options) => {
     const role = ROLE[spawn.subagentType]
     const wanted = role === undefined ? undefined : (spawn.model ?? (settings as Record<string, unknown>)[`${role}Model`])
     const long = typeof wanted === 'string' && wanted.includes('[1m]') ? wanted : undefined
-    let ev = long !== undefined && noLong ? { ...spawn, model: withoutLong(long) } : spawn
-    let started: Awaited<ReturnType<typeof next>> | { deny: string }
-    try {
-      started = await next(ev)
-    } catch (err) {
-      if (long === undefined || noLong || !refusedLong(err)) throw err
-      started = { deny: String((err as Error).message) }
+    // One try, with the [1m] retry; a fallback try below goes through it too.
+    const go = async (t: AgentSpawnInput) => {
+      let ev = long !== undefined && noLong ? { ...t, model: withoutLong(long) } : t
+      let started: Awaited<ReturnType<typeof next>> | { deny: string }
+      try {
+        started = await dispatch(next, ev)
+      } catch (err) {
+        if (long === undefined || noLong || !refusedLong(err)) throw err
+        started = { deny: String((err as Error).message) }
+      }
+      if (long !== undefined && !noLong && refusedLong(started)) {
+        noLong = true
+        ev = { ...t, model: withoutLong(long) }
+        void $.ui.toast(`flow: ${long} was refused for sub-agents; using ${ev.model}`)
+        started = await dispatch(next, ev)
+      }
+      return { ev, started }
     }
-    if (long !== undefined && !noLong && refusedLong(started)) {
-      noLong = true
-      ev = { ...spawn, model: withoutLong(long) }
-      void $.ui.toast(`flow: ${long} was refused for sub-agents; using ${ev.model}`)
-      started = await next(ev)
+    let { ev, started } = await go(spawn)
+    // The host refused our flow:continue rewrite: never fail the spawn for it. Start a plain worker in a
+    // new worktree and give the claimed worktree back.
+    if (spawn.subagentType === CONTINUE && !('agentId' in started && started.agentId !== undefined)) {
+      const name = (e as { name?: string }).name ?? e.description
+      const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
+      const path = spawn.cwd
+      await best($, 'releasing a continuation claim', async () => { await update($, handoffs, hs => {
+        const r = branch === undefined ? undefined : hs[branch]
+        if (branch === undefined || r === undefined || r.takenBy !== name) return hs
+        const { takenBy: _t, ...rest } = r
+        return { ...hs, [branch]: rest }
+      }) })
+      const { cwd: _c, ...plain } = ev
+      const note = `The previous worker's worktree ${path} is kept, and ${branch} may be checked out there: if \`git checkout -B\` fails, work on a local branch and push \`HEAD:${branch}\`.`
+      ev = { ...plain, subagentType: WORKER, prompt: ev.prompt.replace(/\n\nYou continue in the same worktree [^\n]*/, `\n\n${note}`) }
+      await best($, 'logging a continuation fallback', async () => appendLog($, { event: 'continue', agent: name, owner: await ownerNameOf($, e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
+      ;({ ev, started } = await go(ev))
     }
     if ('agentId' in started && started.agentId !== undefined) {
       const t = await $.clock.now()
@@ -2368,9 +2432,14 @@ export const register: Register = (on, options) => {
     if (!settings.useQueue) {
       return { result: `Refused: this repo has no merge queue (the plugin's merge_queue option is off). Merge it yourself: full check, then gh pr merge ${pr} --${settings.mergeMethod} --delete-branch.` }
     }
-    const view = await $.process.run(['gh', 'pr', 'view', String(pr), '--json', 'state,isDraft,headRefOid,headRefName,title,body'])
+    const setMode = parseMode(settings.mergeMode)
+    const asked = input.mode === 'confirm' || input.mode === 'auto' ? input.mode : undefined
+    if (autoRefused(asked, setMode)) {
+      return { result: 'Refused: the merge_mode setting is confirm, so a manager cannot mark a PR auto. Only the user lowers it, by adding the flow:auto label to the PR by hand.' }
+    }
+    const view = await $.process.run(['gh', 'pr', 'view', String(pr), '--json', 'state,isDraft,headRefOid,headRefName,title,body,labels'])
     if (view.exitCode !== 0) return { result: `Refused: gh pr view ${pr} failed: ${view.stderr.trim().slice(0, 300)}` }
-    const info = JSON.parse(view.stdout) as { state: string; isDraft: boolean; headRefOid: string; headRefName: string; title: string; body?: string }
+    const info = JSON.parse(view.stdout) as { state: string; isDraft: boolean; headRefOid: string; headRefName: string; title: string; body?: string; labels?: { name: string }[] }
     if (info.state !== 'OPEN') return { result: `Refused: PR #${pr} is ${info.state}.` }
     if (info.isDraft) return { result: `Refused: PR #${pr} is a draft. Mark it ready (gh pr ready ${pr}) first.` }
     const checked = checkEvidence(info.body ?? '', [...settings.workerChecks, ...settings.alwaysTests])
@@ -2380,16 +2449,33 @@ export const register: Register = (on, options) => {
       pr, title: info.title, head: info.headRefOid, branch: info.headRefName,
       reportTo: String(input.report_to ?? 'main'), verified: String(input.verified ?? ''),
       pending: String(input.pending ?? 'none'), afterDeploy: String(input.after_deploy ?? 'none'),
-      evidence: checked.evidence, status: 'pending', at: t,
+      evidence: checked.evidence, status: 'pending', at: t, ...(asked !== undefined ? { mode: asked } : {}),
     }
+    // A labelling failure is reported, not fatal: the stored mode still gates the queue.
+    let labelNote = ''
+    const labels = (info.labels ?? []).map(l => l.name)
+    if (asked !== undefined) {
+      const spec = labelSpec(asked)
+      const made = await $.process.run(['gh', 'label', 'create', spec.name, '--force', '--color', spec.color, '--description', spec.description])
+      const added = made.exitCode === 0 ? await $.process.run(['gh', 'pr', 'edit', String(pr), '--add-label', spec.name]) : made
+      if (added.exitCode === 0) labels.push(spec.name)
+      else labelNote = ` Could not add the ${spec.name} label (${added.stderr.trim().slice(0, 200)}); the mode is stored anyway.`
+    }
+    const hold = effectiveMode(labels, h.mode, setMode) === 'confirm'
+    if (hold) h.status = 'awaiting'
     await update($, handovers, hs => ({ ...hs, [String(pr)]: h }))
     await best($, 'saving a handover', async () => {
       await saveHandover($, h)
       await appendLog($, { event: 'handover', owner: h.reportTo, pr, branch: h.branch, text: h.title })
     })
+    if (hold) {
+      void $.ui.toast(`PR #${pr} awaits your approval: /flow approve ${pr}`)
+      await refresh($)
+      return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}, but it awaits the user's approval: the queue will not merge it until the user runs /flow approve ${pr}. Tell the user so in your report.${labelNote}` }
+    }
     const queue = await ensureQueue($)
     await refresh($)
-    return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.` }
+    return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.${labelNote}` }
   })
 
   on('tool.call', { tool: 'mcp__flow__queue' }, async ($, e) => {
@@ -2408,6 +2494,26 @@ export const register: Register = (on, options) => {
     const key = String(Number(input.pr))
     const h = all[key]
     if (h === undefined) return { result: `No handover for PR #${key}.` }
+    if (action === 'take') {
+      // Re-check the labels: flow:confirm may have been added after the handover. If gh fails,
+      // the stored mode and the setting still decide; never fail open.
+      const view = await $.process.run(['gh', 'pr', 'view', key, '--json', 'labels,headRefOid'])
+      let labels: string[] = []
+      if (view.exitCode === 0) {
+        try { labels = ((JSON.parse(view.stdout) as { labels?: { name: string }[] }).labels ?? []).map(l => l.name) } catch { labels = [] }
+      }
+      if (takeDecision({ labels, stored: h.mode, setting: parseMode(settings.mergeMode), head: h.head, approvedHead: h.approvedHead }) === 'hold') {
+        const held: Handover = { ...h, status: 'awaiting' }
+        await update($, handovers, hs => ({ ...hs, [key]: held }))
+        await best($, 'saving a handover', async () => {
+          await saveHandover($, held)
+          await appendLog($, { event: 'hold', owner: held.reportTo, pr: held.pr, branch: held.branch, text: 'awaits /flow approve' })
+        })
+        void $.ui.toast(`PR #${key} awaits your approval: /flow approve ${key}`)
+        await refresh($)
+        return { result: `Held: PR #${key} awaits the user's approval (/flow approve ${key}). Do not merge it and do not send it back; go on to the next PR.` }
+      }
+    }
     const next: Handover = action === 'take' ? { ...h, status: 'taken' }
       : action === 'done' ? { ...h, status: 'done', sha: String(input.sha ?? ''), report: String(input.report ?? '') }
       : action === 'back' ? { ...h, status: 'returned', reason: String(input.reason ?? '') }
@@ -2625,6 +2731,9 @@ export const register: Register = (on, options) => {
         ...(unhanded.length ? [
           'Needs attention:', ...unhanded.map(u => `  ${unhandedLine(u)}`),
           'A manager reviews it and hands it over, or closes it.',
+        ] : []),
+        ...(list.some(h => h.status === 'awaiting') ? [
+          'Needs the user:', ...list.filter(h => h.status === 'awaiting').map(h => `  #${h.pr} awaits approval: /flow approve ${h.pr} — ${h.title}`),
         ] : []),
         ...(queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
         ...(leftover ? [leftover] : []),
@@ -3109,6 +3218,7 @@ export const register: Register = (on, options) => {
     const hotId = items[hotIdx]?.a.id
     const countOf = (s: Handover['status']) => prs.filter(p => p.status === s).length
     const returned = countOf('returned')
+    const awaiting = countOf('awaiting')
     const queueSummary = (['pending', 'taken', 'done'] as const).map(s => `${countOf(s)} ${s}`).join(' · ')
     const toggleQueue = async () => {
       await acted()
@@ -3189,12 +3299,13 @@ export const register: Register = (on, options) => {
             <Button key={`fold-${MERGE_QUEUE_KEY}`} plain dimColor onPress={toggleQueue}>{queueOpen ? '  ▾ ' : '  ▸ '}</Button>
             <Text bold>Merge queue</Text>
             {!queueOpen && <Text dimColor>  {queueSummary}</Text>}
+            {!queueOpen && awaiting > 0 && <Text color="warning"> · {awaiting} awaiting approval</Text>}
             {!queueOpen && returned > 0 && <Text color="warning"> · {returned} returned</Text>}
           </Box>
         )}
         {queueOpen && prs.slice(0, 5).map(ho => (
-          <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} wrap="truncate-end">
-            {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
+          <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} color={ho.status === 'awaiting' ? 'warning' : undefined} wrap="truncate-end">
+            {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}` : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
           </Text>
         ))}
       </Box>

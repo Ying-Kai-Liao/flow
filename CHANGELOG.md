@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.25] - 2026-10-10
+
+### Added
+
+- Collapsible cards in the Flow pane: `c` collapses or expands the highlighted card, and the
+  chevron (clicking elsewhere on the card still opens it) does the same. Managers and the merge
+  queue start collapsed to one line, with asks, handoff and awaiting-approval warnings summed for
+  hidden workers; workers start expanded. `q` toggles the Merge queue section. Choices stick
+  while the pane is open.
+
+## [0.3.24] - 2026-10-10
+
+### Added
+
+- `merge_mode` (`auto` default, or `confirm`): `confirm` holds handed-over PRs until you run
+  `/flow approve <n>`. PR labels `flow:confirm` / `flow:auto` override it (both: confirm), and
+  `mcp__flow__handover` takes an optional `mode` (managers can only raise to `confirm`).
+- Awaiting PRs show in the pane, `status` and `/flow resume`. The queue re-checks labels and the
+  approved head when it takes a PR and skips one that answers "Held:".
+- Managers mark risky PRs (migrations, deploy/infra config, auth, deletions, irreversible
+  operations) `confirm`.
+
+## [0.3.23] - 2026-10-10
+
+### Fixed
+
+- Continuing a handed-off worker failed with "names no agent this call can dispatch": hiding `flow:continue`
+  from the model also refused the plugin's own rewrite. It is now offered only while that rewrite dispatches,
+  and if the host still refuses it the spawn falls back to a plain `flow:worker` in a new worktree and the
+  worktree claim is given back.
+
 ## [0.3.22] - 2026-10-10
 
 ### Added
