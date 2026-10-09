@@ -933,6 +933,21 @@ async function prepareContinue($: EngineInterface, e: AgentSpawnInput): Promise<
   }
 }
 
+// How many rewritten flow:continue spawns are in the host's hands: the agent.offer hook offers the type then.
+let continuing = 0
+// Dispatches a spawn; a flow:continue one counts while it runs and a refusal comes back as a deny.
+async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev: AgentSpawnInput): Promise<R | { deny: string }> {
+  if (ev.subagentType !== CONTINUE) return next(ev)
+  continuing++
+  try {
+    return await next(ev)
+  } catch (err) {
+    return { deny: String((err as Error).message) }
+  } finally {
+    continuing--
+  }
+}
+
 const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / queue_model)."
 
 // Fable is refused for a flow agent and for anything a flow agent starts.
@@ -2265,8 +2280,9 @@ export const register: Register = (on, options) => {
     return { text: `Picking tasks${args ? ` from ${args}` : ''}.` }
   })
 
-  // The plugin starts flow:continue itself; the model is never offered it.
-  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: false }))
+  // The plugin starts flow:continue itself; the model is never offered it. It is offered only while
+  // the spawn hook below dispatches its own rewrite, since the host checks the offer for a rewrite too.
+  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: continuing > 0 }))
 
   on('agent.spawn', async ($, e, next) => {
     // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
@@ -2290,7 +2306,7 @@ export const register: Register = (on, options) => {
     let ev = long !== undefined && noLong ? { ...spawn, model: withoutLong(long) } : spawn
     let started: Awaited<ReturnType<typeof next>> | { deny: string }
     try {
-      started = await next(ev)
+      started = await dispatch(next, ev)
     } catch (err) {
       if (long === undefined || noLong || !refusedLong(err)) throw err
       started = { deny: String((err as Error).message) }
@@ -2299,6 +2315,24 @@ export const register: Register = (on, options) => {
       noLong = true
       ev = { ...spawn, model: withoutLong(long) }
       void $.ui.toast(`flow: ${long} was refused for sub-agents; using ${ev.model}`)
+      started = await dispatch(next, ev)
+    }
+    // The host refused our flow:continue rewrite: never fail the spawn for it. Start a plain worker in a
+    // new worktree and give the claimed worktree back.
+    if (spawn.subagentType === CONTINUE && !('agentId' in started && started.agentId !== undefined)) {
+      const name = (e as { name?: string }).name ?? e.description
+      const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
+      const path = spawn.cwd
+      await best($, 'releasing a continuation claim', async () => { await update($, handoffs, hs => {
+        const r = branch === undefined ? undefined : hs[branch]
+        if (branch === undefined || r === undefined || r.takenBy !== name) return hs
+        const { takenBy: _t, ...rest } = r
+        return { ...hs, [branch]: rest }
+      }) })
+      const { cwd: _c, ...plain } = ev
+      const note = `The previous worker's worktree ${path} is kept, and ${branch} may be checked out there: if \`git checkout -B\` fails, work on a local branch and push \`HEAD:${branch}\`.`
+      ev = { ...plain, subagentType: WORKER, prompt: ev.prompt.replace(/\n\nYou continue in the same worktree [^\n]*/, `\n\n${note}`) }
+      await best($, 'logging a continuation fallback', async () => appendLog($, { event: 'continue', agent: name, owner: await ownerNameOf($, e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
       started = await next(ev)
     }
     if ('agentId' in started && started.agentId !== undefined) {
