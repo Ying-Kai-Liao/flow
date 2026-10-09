@@ -202,6 +202,13 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 
 {{QUEUE_RULE}}
 
+## Notes
+
+Your notes are kept on disk, so they survive a restart.
+- On start, and on any restart, read them first: \`mcp__flow__note\` with manager = your name and no text.
+- Record every user decision relayed to you as kind "decision", quoted as received.
+- Record progress at milestones (kind "progress"): brief written, worker started, worker handed off, PR reviewed, handed over, merged or returned.
+
 ## Resuming
 
 A task that names an existing branch or PR is carried on, not restarted: the worker gets \`Continue on branch: flow/<x>\` in its brief. A leftover worktree's changes are saved first by you, with git only and never by editing files: \`git -C <path> add -A && git -C <path> commit -m "WIP recovered from <path>" && git -C <path> push -u origin HEAD:flow/<branch or recovered-<short id>>\`. After that it is a branch like any other. A PR that is already approved can go straight to handover after your review.

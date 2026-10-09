@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, Handover, LogEvent, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
 import {
@@ -13,6 +13,7 @@ import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
+import { noteKey, ownerFor } from './state'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
@@ -528,6 +529,182 @@ async function openPane($: EngineInterface): Promise<void> {
   if (!r.isPlaced) void $.ui.toast('flow is running agents: type /flow to watch them')
 }
 
+// flow's state on disk: <git-common-dir>/flow/. Shared by every worktree of the repo, never part
+// of a working tree. Every helper is best-effort: outside a repo, or when a write fails, it
+// does nothing (a failure goes to $.ui.log) and never throws, so a tool call or turn never fails
+// over state. `config.json` in this dir belongs to the settings package: never touched here.
+
+const TEXT_MAX = 300
+const NOTES_MAX = 3000
+
+let cached: string | undefined
+
+// Forget the resolved dir; a new session resolves it again.
+function resetStateDir(): void {
+  cached = undefined
+}
+
+async function warn($: EngineInterface, what: string, err: unknown): Promise<void> {
+  try {
+    await $.ui.log(`flow state: ${what}: ${err instanceof Error ? err.message : String(err)}`)
+  } catch {
+    // No log to write to.
+  }
+}
+
+// The state dir, or undefined when this is not a repo (or the answer is no absolute path).
+async function stateDir($: EngineInterface): Promise<string | undefined> {
+  if (cached !== undefined) return cached
+  try {
+    const r = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+    const out = r.stdout.trim()
+    if (r.exitCode !== 0 || !out.startsWith('/') || out.includes('\n')) return undefined
+    cached = `${out.replace(/\/+$/, '')}/flow`
+    return cached
+  } catch {
+    return undefined
+  }
+}
+
+// Write a temp file next to the target, then rename it over: a reader sees the old file or the new one.
+async function writeJsonAtomic($: EngineInterface, path: string, obj: unknown): Promise<boolean> {
+  try {
+    const tmp = `${path}.${Date.now()}.tmp`
+    await $.fs.write(tmp, `${JSON.stringify(obj, null, 2)}\n`)
+    const r = await $.process.run(['mv', tmp, path])
+    if (r.exitCode !== 0) throw new Error(r.stderr.trim() || 'mv failed')
+    return true
+  } catch (err) {
+    await warn($, `writing ${path}`, err)
+    return false
+  }
+}
+
+// The parsed file, or undefined when it is missing, unreadable or not JSON.
+async function readJson($: EngineInterface, path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await $.fs.read(path))
+  } catch {
+    return undefined
+  }
+}
+
+const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+// One line appended to log.jsonl. A single short append does not interleave with another session's.
+async function appendLog($: EngineInterface, event: Omit<LogEvent, 'ts'>): Promise<void> {
+  try {
+    const dir = await stateDir($)
+    if (dir === undefined) return
+    const ts = new Date(await $.clock.now()).toISOString()
+    const entry: LogEvent = { ts, ...event }
+    if (entry.text !== undefined) entry.text = cap(entry.text.replaceAll('\n', ' '), TEXT_MAX)
+    await $.process.run(['mkdir', '-p', dir])
+    const r = await $.process.run(['sh', '-c', 'printf "%s\\n" "$1" >> "$2"', 'sh', JSON.stringify(entry), `${dir}/log.jsonl`])
+    if (r.exitCode !== 0) throw new Error(r.stderr.trim() || 'append failed')
+  } catch (err) {
+    await warn($, 'appending to log.jsonl', err)
+  }
+}
+
+// Every parsable line, oldest first; a corrupt line is skipped.
+async function readLog($: EngineInterface): Promise<LogEvent[]> {
+  const dir = await stateDir($)
+  if (dir === undefined) return []
+  let raw: string
+  try {
+    raw = await $.fs.read(`${dir}/log.jsonl`)
+  } catch {
+    return []
+  }
+  const events: LogEvent[] = []
+  for (const line of raw.split('\n')) {
+    try {
+      const e = JSON.parse(line) as LogEvent
+      if (typeof e === 'object' && e !== null && typeof e.event === 'string') events.push(e)
+    } catch {
+      // Skip a torn or corrupt line.
+    }
+  }
+  return events
+}
+
+async function notesPath($: EngineInterface, managerName: string): Promise<string | undefined> {
+  const dir = await stateDir($)
+  return dir === undefined ? undefined : `${dir}/managers/${noteKey(managerName)}/notes.md`
+}
+
+async function appendNote($: EngineInterface, name: string, line: string): Promise<boolean> {
+  try {
+    const path = await notesPath($, name)
+    if (path === undefined) return false
+    const old = await $.fs.read(path).catch(() => `# ${name.replace(/-\d+$/, '')}\n`)
+    // fs has no append: the file is rewritten whole. Notes are small and a manager is their only writer.
+    await $.fs.write(path, `${old.endsWith('\n') ? old : `${old}\n`}${line}\n`)
+    return true
+  } catch (err) {
+    await warn($, 'appending a note', err)
+    return false
+  }
+}
+
+// The notes, capped to their tail: the newest lines matter most.
+async function readNotes($: EngineInterface, name: string, max = NOTES_MAX): Promise<string> {
+  try {
+    const path = await notesPath($, name)
+    if (path === undefined) return ''
+    const text = await $.fs.read(path)
+    return text.length > max ? `…${text.slice(text.length - max)}` : text
+  } catch {
+    return ''
+  }
+}
+
+const STATUSES = new Set(['pending', 'taken', 'done', 'returned'])
+
+// One file per PR, rewritten whole on every change. `version` is for readers of the file.
+async function saveHandover($: EngineInterface, h: Handover): Promise<void> {
+  const dir = await stateDir($)
+  if (dir === undefined) return
+  await writeJsonAtomic($, `${dir}/handovers/${h.pr}.json`, { version: 1, ...h })
+}
+
+// Handovers earlier sessions left, keyed by PR. Unknown fields are kept; an unparsable file is absent.
+async function loadHandovers($: EngineInterface): Promise<Record<string, Handover>> {
+  const out: Record<string, Handover> = {}
+  const dir = await stateDir($)
+  if (dir === undefined) return out
+  let names: string[]
+  try {
+    names = (await $.fs.list(`${dir}/handovers`)).filter(f => f.name.endsWith('.json')).map(f => f.name)
+  } catch {
+    return out
+  }
+  for (const name of names) {
+    const h = await readJson($, `${dir}/handovers/${name}`) as Handover | undefined
+    if (typeof h !== 'object' || h === null || !Number.isInteger(h.pr) || !STATUSES.has(h.status)) continue
+    out[String(h.pr)] = h
+  }
+  return out
+}
+
+// State on disk is best-effort: a failure goes to the UI log and never reaches a tool call or turn.
+async function best($: EngineInterface, what: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn()
+  } catch (err) {
+    try { await $.ui.log(`flow state: ${what}: ${err instanceof Error ? err.message : String(err)}`) } catch { /* no log */ }
+  }
+}
+
+// The name of the agent that owns work started by agent `id`: "main" for the main session.
+async function ownerOf($: EngineInterface, id: string | undefined): Promise<string> {
+  if (id === undefined) return 'main'
+  return (await $.agent.list()).find(a => a.id === id)?.name ?? 'main'
+}
+
+const FLOW_TYPES = new Set(['flow:manager', 'flow:worker', 'flow:queue'])
+
 // Starts a merge queue unless one is live. The queue drains every pending handover, then ends;
 // the next handover, or a queue that ended with work left, starts a fresh one.
 // Calls run one after another: handovers arriving back to back must not each see "no queue yet".
@@ -598,10 +775,52 @@ function handoverLine(h: Handover): string {
 
 const OWNED = new Set([...LIVE, 'idle'])
 
-// Unfinished flow work left behind by an earlier session, as `/flow resume` lists it.
-type Leftover = { key: string; branch?: string; kind: 'pr' | 'branch' | 'worktree'; line: string; detail: string }
+const resumeHead = (limit: number): string => [
+  'The user ran /flow resume. Unfinished flow work was found (below). Start flow managers for it with the Agent tool, without asking:',
+  '- One flow:manager per task, named resume-<slug>, run_in_background true, at most ' + limit + ' at a time; start the rest as each finishes. Items whose branch names share a manager prefix (flow/csv-export-endpoint and flow/csv-export-button) are one task.',
+  '- Each manager\'s prompt carries, for every item of its task: the branch, the PR number and URL, the PR description (including any ## Handoff section), and for a worktree its path. It carries the work on from there and must not redo work already merged into the base branch.',
+].join('\n')
 
+// Unfinished flow work left behind by an earlier session, as `/flow resume` lists it.
+type Leftover = { key: string; branch?: string; kind: 'pr' | 'branch' | 'worktree'; line: string; detail: string; owner?: string }
+
+// `error` with items means GitHub was unavailable and the items come from the state dir alone.
 type Gathered = { items: Leftover[]; skipped: Leftover[]; error?: string }
+
+// Handovers on disk that are not finished, as resume items. A handover whose PR GitHub shows as
+// merged counts as done: it is marked so in the atom and not restarted.
+async function diskItems($: EngineInterface, items: Leftover[], merged: { prs: Set<number>; branches: Set<string> } | undefined): Promise<void> {
+  const all = await loadHandovers($)
+  const events = await readLog($)
+  const hs = Object.values(all)
+  if (hs.length === 0) return
+  const finished = (h: Handover) => h.status === 'done' || (merged !== undefined && (merged.prs.has(h.pr) || merged.branches.has(h.branch)))
+  await best($, 'restoring handovers', async () => {
+    for (const h of hs) {
+      if (h.status !== 'done' && finished(h)) {
+        all[String(h.pr)] = { ...h, status: 'done' }
+        await saveHandover($, all[String(h.pr)] as Handover)
+      }
+    }
+    await update($, handovers, cur => ({ ...all, ...cur }))
+  })
+  for (const h of hs) {
+    if (finished(h)) continue
+    const note = `Handover #${h.pr} is ${h.status}${h.status === 'returned' ? ` (${h.reason ?? 'no reason'})` : ''}, reported to ${h.reportTo}. Verified: ${h.verified} Pending: ${h.pending}`
+    const mate = items.find(i => i.key === h.branch)
+    if (mate !== undefined) {
+      mate.line += ` | handover ${h.status}`
+      mate.detail += `\n${note}`
+    } else {
+      items.push({ key: h.branch, branch: h.branch, kind: 'pr', line: `#${h.pr} ${h.branch}: handover ${h.status} — ${h.title}`, detail: `Branch ${h.branch}, PR #${h.pr}, title "${h.title}".\n${note}` })
+    }
+    const at = items.find(i => i.key === h.branch)
+    if (at !== undefined) at.owner = ownerFor(events, { pr: h.pr, branch: h.branch }) ?? h.reportTo
+  }
+  for (const i of items) {
+    if (i.owner === undefined && i.branch !== undefined) i.owner = ownerFor(events, { branch: i.branch })
+  }
+}
 
 // Finds what a restart leaves behind: flow/* PRs and pushed branches, and worktrees with
 // uncommitted or unpushed work. Any git or gh failure becomes one line, never a throw.
@@ -613,21 +832,27 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
       return { exitCode: 1, stdout: '', stderr: err instanceof Error ? err.message : String(err) }
     }
   }
-  const fail = (what: string, r: { stderr: string }): Gathered =>
-    ({ items: [], skipped: [], error: `Cannot look for unfinished work: ${what} failed: ${r.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no output'}` })
+  const fail = async (what: string, r: { stderr: string }): Promise<Gathered> => {
+    const items: Leftover[] = []
+    await diskItems($, items, undefined)
+    return {
+      items: items.filter(i => !resumed.has(i.key)), skipped: items.filter(i => resumed.has(i.key)),
+      error: `Cannot look for unfinished work: ${what} failed: ${r.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no output'}${items.length ? '. GitHub was unavailable: these come from the state dir only.' : ''}`,
+    }
+  }
 
   const fetched = await run(['git', 'fetch', 'origin', '--prune'])
-  if (fetched.exitCode !== 0) return fail('git fetch origin', fetched)
+  if (fetched.exitCode !== 0) return await fail('git fetch origin', fetched)
   const open = await run(['gh', 'pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,isDraft,url,body', '--limit', '100'])
-  if (open.exitCode !== 0) return fail('gh pr list', open)
-  const all = await run(['gh', 'pr', 'list', '--state', 'all', '--json', 'headRefName,headRefOid,state', '--limit', '200'])
-  if (all.exitCode !== 0) return fail('gh pr list', all)
+  if (open.exitCode !== 0) return await fail('gh pr list', open)
+  const all = await run(['gh', 'pr', 'list', '--state', 'all', '--json', 'number,headRefName,headRefOid,state', '--limit', '200'])
+  if (all.exitCode !== 0) return await fail('gh pr list', all)
   const refs = await run(['git', 'for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin/flow/'])
-  if (refs.exitCode !== 0) return fail('git for-each-ref', refs)
+  if (refs.exitCode !== 0) return await fail('git for-each-ref', refs)
 
   type Pr = { number: number; title: string; headRefName: string; isDraft: boolean; url: string; body: string }
   const prs = (JSON.parse(open.stdout || '[]') as Pr[]).filter(p => p.headRefName.startsWith('flow/'))
-  const ended = (JSON.parse(all.stdout || '[]') as { headRefName: string; headRefOid?: string; state: string }[])
+  const ended = (JSON.parse(all.stdout || '[]') as { number?: number; headRefName: string; headRefOid?: string; state: string }[])
     .filter(p => p.state !== 'OPEN')
   const closed = new Set(ended.map(p => p.headRefName))
   // A squash-merged branch is deleted on the remote, so its worktree looks unpushed: match by head too.
@@ -688,6 +913,11 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
     }
   }
 
+  await diskItems($, items, {
+    prs: new Set(ended.filter(p => p.state === 'MERGED' && p.number !== undefined).map(p => p.number as number)),
+    branches: new Set(ended.filter(p => p.state === 'MERGED').map(p => p.headRefName)),
+  })
+
   const live = (i: Leftover) => owners.has(i.branch ?? i.key)
   return {
     items: items.filter(i => !live(i) && !resumed.has(i.key)),
@@ -695,11 +925,28 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
   }
 }
 
-function resumeInstructions(items: Leftover[], limit: number): string {
+type OwnerNotes = { path: string; text: string }
+
+function resumeInstructions(items: Leftover[], limit: number, notes: Map<string, OwnerNotes> = new Map()): string {
+  const owners = [...new Set(items.map(i => i.owner).filter((o): o is string => o !== undefined))]
+  // Recorded owners: the state on disk says who ran each item and what the user told them.
+  const grouped = owners.length === 0 ? [] : [
+    '',
+    'Flow state on disk names the manager that owned each item. Items of one owner go to ONE manager. Its prompt tells it to read its notes first (mcp__flow__note with manager = the owner name below and no text), and carries the notes quoted here. A manager with notes but no item below is not restarted.',
+    ...owners.flatMap(o => {
+      const n = notes.get(o)
+      return [
+        '',
+        `Owner ${o}:`,
+        ...items.filter(i => i.owner === o).map(i => `- ${i.detail.replaceAll('\n', '\n  ')}`),
+        n?.text ? `Notes (${n.path}):\n${n.text}` : 'Notes: none.',
+      ]
+    }),
+    ...(items.some(i => i.owner === undefined) ? ['', 'No recorded owner:', ...items.filter(i => i.owner === undefined).map(i => `- ${i.detail.replaceAll('\n', '\n  ')}`)] : []),
+  ]
+  if (grouped.length) return [resumeHead(limit), ...grouped].join('\n')
   return [
-    'The user ran /flow resume. Unfinished flow work was found (below). Start flow managers for it with the Agent tool, without asking:',
-    '- One flow:manager per task, named resume-<slug>, run_in_background true, at most ' + limit + ' at a time; start the rest as each finishes. Items whose branch names share a manager prefix (flow/csv-export-endpoint and flow/csv-export-button) are one task.',
-    '- Each manager\'s prompt carries, for every item of its task: the branch, the PR number and URL, the PR description (including any ## Handoff section), and for a worktree its path. It carries the work on from there and must not redo work already merged into the base branch.',
+    resumeHead(limit),
     '',
     'Found:',
     ...items.map(i => `- ${i.detail.replaceAll('\n', '\n  ')}`),
@@ -798,6 +1045,15 @@ export const register: Register = (on, options) => {
   const resumed = new Set<string>()
 
   on('session.start', async ($, e, next) => {
+    // Handovers a restart would lose: merge what is on disk under this session's own records.
+    let startQueue = false
+    await best($, 'loading handovers', async () => {
+      resetStateDir()
+      const disk = await loadHandovers($)
+      if (Object.keys(disk).length === 0) return
+      await update($, handovers, hs => ({ ...disk, ...hs }))
+      startQueue = Object.values(disk).some(h => h.status === 'pending')
+    })
     // The base branch: the option, else the remote's default branch, else main.
     // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
     try {
@@ -879,6 +1135,21 @@ export const register: Register = (on, options) => {
       isDeferred: false,
     })
     await $.tool.register({
+      name: 'note',
+      description: 'A manager\'s notes on disk, kept across restarts. With text, appends a dated line (kind "decision" for what the user decided, else "progress"). ' +
+        'Without text, returns the notes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          manager: { type: 'string', description: 'Your agent name' },
+          text: { type: 'string', description: 'The line to add; leave out to read the notes' },
+          kind: { type: 'string', enum: ['decision', 'progress'] },
+        },
+        required: ['manager'],
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
       name: 'queue',
       description: 'The merge queue\'s worklist. action "list": pending and taken handovers in arrival order. ' +
         '"take" (pr), "done" (pr, sha, report) or "back" (pr, reason) record what the queue did. Only the merge queue calls this.',
@@ -897,8 +1168,9 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'status',
-      description: 'The flow at a glance: every manager, worker and queue of this session with its status and last report, and every handed-over PR.',
-      inputSchema: { type: 'object', properties: {} },
+      description: 'The flow at a glance: every manager, worker and queue of this session with its status and last report, and every handed-over PR. ' +
+        'With pr, who owns that PR and its log lines.',
+      inputSchema: { type: 'object', properties: { pr: { type: 'number', description: 'A PR number, to see who owns it' } } },
       isDeferred: false,
     })
 
@@ -957,6 +1229,8 @@ export const register: Register = (on, options) => {
     void fetchPrs($)
     // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
     $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
+    // The queue agent type exists only now, and a spawn needs the session bound: start it after the hook.
+    if (startQueue) $.clock.after(0, () => void best($, 'starting the queue', async () => void (await ensureQueue($))))
     return next(e)
   })
 
@@ -976,7 +1250,7 @@ export const register: Register = (on, options) => {
     }
     if (arg === 'resume') {
       const found = await gatherLeftovers($, settings.base, resumed)
-      if (found.error !== undefined) return { text: found.error }
+      if (found.error !== undefined && found.items.length === 0) return { text: found.error }
       const lines = (kind: Leftover['kind'], title: string) => {
         const rows = found.items.filter(i => i.kind === kind)
         return rows.length ? [`${title}:`, ...rows.map(i => `  ${i.line}`)] : []
@@ -984,6 +1258,7 @@ export const register: Register = (on, options) => {
       const again = found.skipped.length ? ['Already resumed in this session:', ...found.skipped.map(i => `  ${i.line}`)] : []
       if (found.items.length === 0) return { text: ['Nothing unfinished.', ...again].join('\n') }
       const text = [
+        ...(found.error !== undefined ? [found.error] : []),
         ...lines('pr', 'Open PRs'), ...lines('branch', 'Branches without a PR'), ...lines('worktree', 'Worktrees with leftover work'), ...again,
       ].join('\n')
       for (const i of found.items) resumed.add(i.key)
@@ -993,7 +1268,12 @@ export const register: Register = (on, options) => {
       $.clock.after(0, () => {
         void $.prompt.submit({ text: 'Carry out the /flow resume instructions: start the managers.' }).catch(() => undefined)
       })
-      return { text, context: [resumeInstructions(found.items, settings.maxManagers)] }
+      const notes = new Map<string, OwnerNotes>()
+      for (const o of new Set(found.items.map(i => i.owner))) {
+        const path = o === undefined ? undefined : await notesPath($, o)
+        if (o !== undefined && path !== undefined) notes.set(o, { path, text: await readNotes($, o) })
+      }
+      return { text, context: [resumeInstructions(found.items, settings.maxManagers, notes)] }
     }
     if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work.` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
@@ -1031,6 +1311,11 @@ export const register: Register = (on, options) => {
       }))
       await refresh($)
       void openPane($)
+      if (FLOW_TYPES.has(e.subagentType)) {
+        await best($, 'logging a spawn', async () => {
+          await appendLog($, { event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerOf($, e.parentAgentId) })
+        })
+      }
     }
     return started
   }).catch(($, e, next) => next(e))
@@ -1087,6 +1372,10 @@ export const register: Register = (on, options) => {
       status: 'pending', at: t,
     }
     await update($, handovers, hs => ({ ...hs, [String(pr)]: h }))
+    await best($, 'saving a handover', async () => {
+      await saveHandover($, h)
+      await appendLog($, { event: 'handover', owner: h.reportTo, pr, branch: h.branch, text: h.title })
+    })
     const queue = await ensureQueue($)
     await refresh($)
     return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.` }
@@ -1114,6 +1403,11 @@ export const register: Register = (on, options) => {
       : h
     if (next === h) return { result: `Unknown action "${action}".` }
     await update($, handovers, hs => ({ ...hs, [key]: next }))
+    await best($, 'saving a handover', async () => {
+      await saveHandover($, next)
+      const text = action === 'done' ? next.report : action === 'back' ? next.reason : undefined
+      await appendLog($, { event: action as 'take' | 'done' | 'back', owner: next.reportTo, pr: next.pr, branch: next.branch, text })
+    })
     if (action !== 'take') void $.ui.toast(`PR #${key} ${next.status === 'done' ? `merged ${next.sha ?? ''}` : `returned: ${next.reason ?? ''}`}`)
     await refresh($)
     return { result: `PR #${key}: ${next.status}.` }
@@ -1250,7 +1544,33 @@ export const register: Register = (on, options) => {
     }
   })
 
-  on('tool.call', { tool: 'mcp__flow__status' }, async $ => {
+  on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const manager = String(input.manager ?? '').trim()
+    if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
+    const text = typeof input.text === 'string' ? input.text.trim() : ''
+    if (text === '') {
+      const notes = await readNotes($, manager)
+      return { result: notes === '' ? 'No notes yet.' : notes }
+    }
+    const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
+    const line = input.kind === 'decision' ? `- ${date} decision: "${text}"` : `- ${date} progress: ${text}`
+    if (!await appendNote($, manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
+    await best($, 'logging a note', () => appendLog($, { event: 'note', owner: noteKey(manager), text }))
+    return { result: `Noted in ${await notesPath($, manager)}.` }
+  })
+
+  on('tool.call', { tool: 'mcp__flow__status' }, async ($, e) => {
+    const asked = Number((e as unknown as Record<string, unknown>).pr)
+    if (Number.isInteger(asked) && asked > 0) {
+      const h = (await read($, handovers))[String(asked)]
+      const events = await readLog($)
+      const owner = ownerFor(events, { pr: asked, branch: h?.branch }) ?? h?.reportTo ?? 'unknown'
+      const mine = events.filter(l => l.pr === asked || (h !== undefined && l.branch === h.branch))
+      return {
+        result: [`Owner of PR #${asked}: ${owner}`, ...mine.map(l => `${l.ts} ${l.event}${l.agent ? ` ${l.agent}` : ''}${l.text ? `: ${l.text}` : ''}`)].join('\n'),
+      }
+    }
     if (queueOn && (await $.clock.now()) - (await read($, prCache)).fetchedAt > PR_MIN_GAP_MS) await fetchPrs($)
     const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
     const [unhanded, cache] = [await currentUnhanded($), await read($, prCache)]
@@ -1279,6 +1599,7 @@ export const register: Register = (on, options) => {
         ] : []),
         ...(queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
         ...(plans.length ? ['Plans:', ...plans.flatMap(([who, g]) => [`${who}:`, ...describe(g).map(l => `  ${l}`)])] : []),
+        `State: ${await stateDir($) ?? 'none (not a git repo)'}`,
       ].join('\n'),
     }
   })
@@ -1345,7 +1666,14 @@ export const register: Register = (on, options) => {
         return { ...acts, [id]: { ...a, lastAt: t, answer: e.answer } }
       })
       // A queue that ended while PRs were still pending: start a fresh one for them.
-      const me = (await refresh($)).find(a => a.id === id)
+      const rows = await refresh($)
+      const me = rows.find(a => a.id === id)
+      if (me !== undefined && FLOW_TYPES.has(me.type)) {
+        await best($, 'logging a report', async () => {
+          const last = e.answer.trim().split('\n').pop() ?? ''
+          await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: last })
+        })
+      }
       if (me?.type === QUEUE) await ensureQueue($)
     }
     return next(e)
