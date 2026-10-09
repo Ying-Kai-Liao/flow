@@ -463,7 +463,7 @@ const isManagerOf = (owner: string, name: string | undefined) =>
   name !== undefined && (name === owner || (name.startsWith(owner + '-') && /^\d+$/.test(name.slice(owner.length + 1))))
 
 // Whose graph an agent works on: its own name, or the manager it continues (`<name>-N`); main has none.
-function ownerOf(plans: Plan, name: string | undefined): string {
+function planOwner(plans: Plan, name: string | undefined): string {
   if (name === undefined) return 'main'
   if (plans[name]) return name
   const m = /^(.+)-\d+$/.exec(name)
@@ -1341,7 +1341,7 @@ export const register: Register = (on, options) => {
     const plans = await read($, plan)
     if (Object.keys(plans).length > 0 && e.name !== undefined) {
       const parent = e.parentAgentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.parentAgentId)
-      const graph = plans[ownerOf(plans, parent?.name)] ?? {}
+      const graph = plans[planOwner(plans, parent?.name)] ?? {}
       const node = Object.values(graph).find(n => n.state === 'waiting' && isManagerOf(n.id, e.name))
       if (node) {
         const deps = node.after.filter(d => graph[d]?.state !== 'done').map(d => `${d} (${graph[d]?.state ?? '?'})`)
@@ -1464,7 +1464,7 @@ export const register: Register = (on, options) => {
     const rows = await refresh($)
     const me = e.agentId === undefined ? undefined : rows.find(a => a.id === e.agentId)
     const plans = await read($, plan)
-    const owner = e.agentId === undefined ? 'main' : ownerOf(plans, me?.name)
+    const owner = e.agentId === undefined ? 'main' : planOwner(plans, me?.name)
     const view = (p: Plan, who: string) => {
       const graph = p[who] ?? {}
       const lines = Object.keys(graph).length ? describe(graph) : ['No plan.']
