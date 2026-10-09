@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "The orca-flow pattern in one Claude Code session: a super manager starts managers, managers start workers in their own git worktrees, a merge queue merges and deploys; a Flow pane shows the tree",
   "author": {
     "name": "Ying-Kai Liao"
@@ -41,6 +41,12 @@
       "title": "Merge queue",
       "description": "On: managers hand PRs to one merge queue. Off: managers merge themselves.",
       "default": true
+    },
+    "max_managers": {
+      "type": "number",
+      "title": "Managers at once",
+      "description": "How many managers the main session runs at a time.",
+      "default": 20
     },
     "max_workers": {
       "type": "number",

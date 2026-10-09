@@ -27,6 +27,29 @@ Reports and questions travel up the tree on their own: a worker's report wakes i
 manager's wakes the main session. Answers go down by message. Only the main session asks you
 anything.
 
+## Dependencies
+
+When one task or package needs another's merged code, the owner declares it with `mcp__flow__plan`
+(`add`, with `nodes: [{ id, title, after?, until? }]`; also `list`, `done`, `block`, `remove`).
+The owner is a manager for its workers, or the main session for managers. A node's id is the agent
+name it will run as; `-2`, `-3` continuations count as the same node. Cycles, duplicate ids and
+unknown dependencies are refused.
+
+- **Done** means the PR is merged (a manager node: it finished and everything it handed over is
+  merged). `until: "reported"` means the agent's report arrived instead. **Blocked**: the agent
+  failed, its PR came back, it reported `BLOCKED:`, or the owner said so.
+- **Automatic:** states, cycle refusal, refusing to start an agent whose node is still waiting, and
+  one `flow plan: ...` message to the owner per pass (done, ready, blocked). The main session is
+  woken again when a manager slot frees and nodes are still ready.
+- **Left to the owner:** writing briefs and starting ready nodes (the plugin never starts agents)
+  on the merged code, marking done or blocked by hand, and deciding what a blocked node needs.
+
+```
+add csv-export
+add login-redirect  after: csv-export
+-> login-redirect starts when csv-export's PR is merged
+```
+
 ## What you see
 
 - **The Flow pane** (`/flow`): the tree rooted at your main session (the super manager), with
@@ -77,7 +100,7 @@ on the branch.
 **`/flow resume`.** After a restart the roster is empty but branches, PRs and
 `.claude/worktrees/` stay. `/flow resume` lists open `flow/*` PRs, pushed `flow/*` branches
 without a PR (merged or closed ones are skipped) and leftover worktrees with uncommitted or
-unpushed work, then has the main session start one `resume-<slug>` manager per task (at most 3
+unpushed work, then has the main session start one `resume-<slug>` manager per task (up to `max_managers`
 at a time). Work owned by a live agent, or already resumed in this session, is not listed again.
 
 ## Guards
@@ -127,6 +150,7 @@ worker to fix X".
 | `state_file` | none | the queue: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
 | `merge_queue` | on | off: managers merge themselves with `merge_method` |
 | `merge_method` | `squash` | managers, when there is no queue |
+| `max_managers` | 20 | managers the main session runs at a time |
 | `max_workers` | 3 | workers per manager at a time |
 | `worker_model` | `sonnet` | workers |
 | `context_warn_percent` | 40 | the context limit as a percent of the window (1 to 100) |
@@ -162,7 +186,8 @@ After deploying, a PR whose `after_deploy` an agent can check gets a check-only 
 - `handover`: a manager hands a reviewed PR over; the plugin records its head and starts
   a queue if none is running.
 - `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
-- `status`: the tree and the handovers as text, for check-ins.
+- `plan`: dependencies between tasks or packages (see Dependencies).
+- `status`: the tree, the handovers, the limits and the plans as text, for check-ins.
 
 ## Limits
 
