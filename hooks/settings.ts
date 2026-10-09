@@ -32,6 +32,7 @@ export const KEYS: Record<string, Kind> = {
   decision_phrases: 'list',
   worker_checks: 'list',
   always_tests: 'list',
+  flaky_tests: 'list',
   deploy_targets: 'objects',
   standing_answers: 'objects',
   state_file: 'object',
@@ -53,7 +54,7 @@ export const KEYS: Record<string, Kind> = {
 // String settings with a closed set of values: another value is dropped with a warning.
 export const CHOICES: Record<string, string[]> = { preflight: ['on', 'off'] }
 
-export const APPEND_KEYS = ['worker_checks', 'always_tests', 'big_files', 'decision_phrases']
+export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
 // Sub-agents don't run on Fable: a model setting naming it is refused.
 export const MODEL_KEYS = ['worker_model', 'manager_model', 'queue_model']
