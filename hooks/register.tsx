@@ -765,7 +765,7 @@ async function best($: EngineInterface, what: string, fn: () => Promise<void>): 
 }
 
 // The name of the agent that owns work started by agent `id`: "main" for the main session.
-async function ownerOf($: EngineInterface, id: string | undefined): Promise<string> {
+async function ownerNameOf($: EngineInterface, id: string | undefined): Promise<string> {
   if (id === undefined) return 'main'
   return (await $.agent.list()).find(a => a.id === id)?.name ?? 'main'
 }
@@ -1595,7 +1595,7 @@ export const register: Register = (on, options) => {
       void openPane($)
       if (FLOW_TYPES.has(e.subagentType)) {
         await best($, 'logging a spawn', async () => {
-          await appendLog($, { event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerOf($, e.parentAgentId) })
+          await appendLog($, { event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerNameOf($, e.parentAgentId) })
         })
       }
     }
