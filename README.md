@@ -247,6 +247,31 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
 - A report whose last line ends in `?` still counts as a question, for agents that don't use the
   tool. `decision_phrases` is deprecated.
 
+### Standing answers
+
+Answer a recurring question once. Give an inbox answer `always: true` (`answers: [{id, choice, always: true}]`;
+only main may) and flow adds a rule to your personal file, `<git-common-dir>/flow/config.json`: by the
+question's `topic` when it has one (agents are told to give recurring questions a stable kebab-case
+topic such as `version-bump`), else by the exact question text. From then on a fresh question that the
+rule matches is stored, marked answered at once (`answeredBy: "standing answer"`, the rule id on it)
+and the asker's `ask` result says so; nobody is messaged or toasted, and the decision goes to the notes
+and `log.jsonl` (`auto-answer`). `/flow inbox` lists the last 24 h under "Auto-answered" with the rule
+id to revoke.
+
+- A rule is `{id?, topic?, match?, answer, blocking?, from?, note?}` in the `standing_answers` list of a
+  settings file. `topic` equals the question's topic (any case); `match` is a case-insensitive regular
+  expression on the question text; with both, both must match. No fuzzy matching. `answer` must be one
+  of the new question's options (text, letter or number), else the rule does not apply and the question
+  goes to the inbox. `from` limits it to one asker (`foo-2` counts as `foo`). A blocking question is
+  answered only by a rule with `blocking: true`. A bad rule is dropped with a settings warning.
+- The personal file's rules come before the repo file's and both apply; the first match wins.
+  A rule without `id` is named by file and position: `personal:1`, `repo:2`. `always` makes `s1`,
+  `s2`, ...
+- `mcp__flow__standing` (main only): `list` shows each rule with its file, match, answer and use
+  count, and suggests rules for questions you answered the same way 3 or more times; `add`
+  (`topic` or `match`, `answer`, optional `blocking`, `from`) writes the personal file; `remove`
+  (`id`) removes a rule from whichever file holds it (a repo-file rule is a committed file).
+
 ## Cleanup
 
 Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
@@ -365,6 +390,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
 | `migrations_dir` | none | file only | the directory of migrations |
 | `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |
+| `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
 | `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
@@ -451,7 +477,8 @@ Not verified:
 - `plan`: dependencies between tasks or packages (see Dependencies).
 - `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
 - `ask`: questions with options, a recommended default and `blocking` (see Questions and the inbox).
-- `answer`: answers inbox questions by id, or accepts the defaults.
+- `answer`: answers inbox questions by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
+- `standing`: main only: list, add and remove standing answers.
 - `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
   `text` it returns the notes.
 - `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.

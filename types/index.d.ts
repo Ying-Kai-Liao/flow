@@ -195,6 +195,8 @@ declare module 'claude-code' {
       folded: Record<string, boolean>
       now: number
       handovers: Record<string, Handover>
+      // The decision inbox, mirrored from <state dir>/inbox.json.
+      inbox: import('../hooks/inbox').Inbox
       queueRuns: number
       prCache: PrCache
       // Per owner ("main" or a manager's name), the plan's nodes by id.

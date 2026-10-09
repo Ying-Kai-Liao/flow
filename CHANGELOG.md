@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.28] - 2026-10-10
+
+### Added
+
+- Standing answers: answer a recurring inbox question once. `mcp__flow__answer` takes `always: true` per
+  answer (main only) and adds a rule to the personal `config.json`; the new `standing_answers` setting
+  (`topic` or `match`, `answer`, `blocking`, `from`) answers matching fresh questions at once, with
+  `answeredBy: "standing answer"`, no message to the addressee, a decision note and an `auto-answer` log
+  event. A blocking question is answered only by a rule with `blocking: true`.
+- `mcp__flow__standing` (main only): `list` (with suggestions for questions answered the same way 3 or
+  more times), `add`, `remove`.
+- `/flow inbox` shows an "Auto-answered" section (last 24 h) with the rule ids to revoke; `status` has a
+  count line. The `ask` tool tells agents to give recurring questions a stable kebab-case `topic`.
+
 ## [0.3.27] - 2026-10-10
 
 ### Fixed

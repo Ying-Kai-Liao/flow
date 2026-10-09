@@ -8,9 +8,11 @@ import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { Facts, Graph, Notice, Plan } from './dag'
 import {
-  addQuestions, answerMessage, askingNames, EMPTY_INBOX, inboxHead, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk,
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, inboxHead, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
 } from './inbox'
-import type { Inbox } from './inbox'
+import type { Inbox, Question } from './inbox'
+import { AUTO, matchRule, nextRuleId, removeRule, renderRules, ruleFromQuestion, sameRule, suggest, validateRule } from './standing'
+import type { Resolved, Rule } from './standing'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
 import {
@@ -769,6 +771,105 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
   }))
   await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${q.question}: ${answer}"`)
   return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.`
+}
+
+// Standing answers (standing.ts): the rules of both settings files, read fresh so a rule made a moment ago
+// applies to the next ask. A bad rule is dropped by mergeLayers; the others stand.
+async function loadRules($: EngineInterface, options: Record<string, unknown>): Promise<{ rules: Resolved[]; paths: string[] }> {
+  const paths = await locate($)
+  const layers = await Promise.all(paths.map(async path => ({ path, text: path === '' ? undefined : await $.fs.read(path).then(String, () => undefined) })))
+  const raw = mergeLayers(options, layers).raw.standing_answers
+  return { rules: Array.isArray(raw) ? raw as Resolved[] : [], paths }
+}
+
+// Rule file changes run one after another: two `always` answers at once must not lose a rule.
+let rulesChain: Promise<unknown> = Promise.resolve()
+function inRulesChain<T>(fn: () => Promise<T>): Promise<T> {
+  const result = rulesChain.then(fn, fn)
+  rulesChain = result.catch(() => undefined)
+  return result
+}
+
+// Read-modify-write one settings file's standing_answers, keeping every other key. fn gets the raw list and
+// returns the new one (undefined: no change). A file that is not a JSON object is never rewritten.
+async function editRuleFile<T>($: EngineInterface, path: string, fn: (list: unknown[]) => Promise<{ list?: unknown[]; out: T }>): Promise<{ out: T } | { error: string }> {
+  let obj: Record<string, unknown> = {}
+  const text = await $.fs.read(path).then(String, () => undefined)
+  if (text !== undefined && text.trim() !== '') {
+    let data: unknown
+    try {
+      data = JSON.parse(text)
+    } catch {
+      return { error: `${path} is not valid JSON; fix it first, flow does not rewrite it.` }
+    }
+    if (typeof data !== 'object' || data === null || Array.isArray(data)) return { error: `${path} is not a JSON object; flow does not rewrite it.` }
+    obj = data as Record<string, unknown>
+  }
+  let list: unknown = obj.standing_answers
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list) } catch { return { error: `${path}: "standing_answers" is not valid JSON; fix it first.` } }
+  }
+  if (list === undefined || list === null) list = []
+  if (!Array.isArray(list)) return { error: `${path}: "standing_answers" is not a list; fix it first.` }
+  const r = await fn(list)
+  if (r.list !== undefined) {
+    await $.process.run(['mkdir', '-p', path.replace(/\/[^/]*$/, '')])
+    if (!await writeJsonAtomic($, path, { ...obj, standing_answers: r.list })) return { error: `could not write ${path}.` }
+  }
+  return { out: r.out }
+}
+
+type RuleAdd = { kind: 'added' | 'exists'; id: string } | { kind: 'error'; msg: string }
+
+// Adds a rule to the personal file with a new short id (s1, s2, ..., unique across both files and the inbox).
+function addRule($: EngineInterface, options: Record<string, unknown>, rule: Rule): Promise<RuleAdd> {
+  return inRulesChain(async (): Promise<RuleAdd> => {
+    const { rules, paths } = await loadRules($, options)
+    const path = paths[1] ?? ''
+    if (path === '') return { kind: 'error', msg: 'rules need a repo for the personal file.' }
+    const dup = rules.find(r => sameRule(r.rule, rule))
+    if (dup !== undefined) return { kind: 'exists', id: dup.rid }
+    const used = [...rules.map(r => r.rid), ...(await read($, inbox)).items.flatMap(q => (q.rule === undefined ? [] : [q.rule]))]
+    const id = nextRuleId(used)
+    const r = await editRuleFile($, path, async list => ({ list: [...list, { id, ...rule }], out: id }))
+    return 'error' in r ? { kind: 'error', msg: r.error } : { kind: 'added', id }
+  })
+}
+
+// Removes a rule from whichever file holds it. A /config rule cannot be removed from here.
+function dropRule($: EngineInterface, options: Record<string, unknown>, rid: string): Promise<string> {
+  return inRulesChain(async () => {
+    const { rules, paths } = await loadRules($, options)
+    const hit = rules.find(r => r.rid === rid)
+    if (hit === undefined) return `${rid}: no such rule. mcp__flow__standing {"action":"list"} shows them.`
+    if (hit.source === 'config') return `${rid}: set in /config, remove it there.`
+    const path = (hit.source === 'repo' ? paths[0] : paths[1]) ?? ''
+    const r = await editRuleFile($, path, async list => {
+      const res = removeRule(list, hit.source, rid)
+      return res.removed ? { list: res.list, out: true } : { out: false }
+    })
+    if ('error' in r) return `${rid}: not removed, ${r.error}`
+    if (!r.out) return `${rid}: not found in ${path}.`
+    return `${rid}: removed from ${path}${hit.source === 'repo' ? ' (a committed file: the change shows in git status)' : ''}.`
+  })
+}
+
+// An `always` answer: after answering, the answer becomes a rule in the personal file. Only main makes rules.
+async function alwaysRule(
+  $: EngineInterface, options: Record<string, unknown>, id: string, choice: string, isMain: boolean, before: Question | undefined,
+): Promise<string> {
+  if (!isMain) return `${id}: no rule made, only main makes standing answers (the answer itself stands).`
+  if (before === undefined) return `${id}: no rule made, no such question.`
+  if (before.state !== 'open') return `${id}: no rule made, it was already answered.`
+  const q = (await read($, inbox)).items.find(x => x.id === id)
+  if (q === undefined || q.state !== 'answered' || q.answeredBy !== 'main') return `${id}: no rule made, the answer was not recorded.`
+  if (parseChoice(q.options, choice).free) return `${id}: no rule made, a free-text answer cannot be a rule; pick one of the options.`
+  const rule = ruleFromQuestion(q, q.answer ?? '', await today($))
+  const r = await addRule($, options, rule)
+  if (r.kind === 'error') return `${id}: answered, but no rule made: ${r.msg}`
+  const what = rule.topic !== undefined ? `topic ${rule.topic}` : 'this exact question'
+  if (r.kind === 'exists') return `${id}: rule ${r.id} already says "${rule.answer}" for ${what}; no duplicate added.`
+  return `${id}: rule ${r.id} added: ${what} -> "${rule.answer}"${rule.blocking ? ' (also blocking)' : ''}. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.`
 }
 
 const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
@@ -2210,7 +2311,8 @@ export const register: Register = (on, options) => {
       name: 'ask',
       description: 'Ask a structured question (a batch) instead of asking in prose. A worker\'s questions go to its manager, a manager\'s to main. ' +
         'Give options and the default you recommend. Non-blocking: go ahead on the default now and say in your report that you assumed it; you get a message if the answer differs. ' +
-        'Blocking: end your turn; the answer arrives by message. Main cannot ask.',
+        'Blocking: end your turn; the answer arrives by message. Main cannot ask. ' +
+        'Give a recurring kind of question a short stable kebab-case topic (e.g. version-bump, test-approach): the user can answer a topic once, and a standing answer then answers it for you at once (the result line says so).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2225,7 +2327,7 @@ export const register: Register = (on, options) => {
                 default: { type: 'string', description: 'The option you recommend (its text or its 1-based number)' },
                 blocking: { type: 'boolean', description: 'true when you cannot go on without the answer' },
                 context: { type: 'string', description: 'What the answerer needs to know' },
-                topic: { type: 'string' },
+                topic: { type: 'string', description: 'For a question of a recurring kind: a short, stable kebab-case label (e.g. version-bump, test-approach), the same every time you ask it. The user can answer such a topic once as a standing answer.' },
               },
               required: ['question', 'options', 'default', 'blocking'],
             },
@@ -2244,11 +2346,38 @@ export const register: Register = (on, options) => {
         properties: {
           answers: {
             type: 'array',
-            items: { type: 'object', properties: { id: { type: 'string' }, choice: { type: 'string' } }, required: ['id', 'choice'] },
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' }, choice: { type: 'string' },
+                always: { type: 'boolean', description: 'Main only: also make this answer a standing rule, so the same kind of question is answered at once from now on' },
+              },
+              required: ['id', 'choice'],
+            },
           },
           defaults: { type: 'boolean', description: 'Answer with the defaults' },
           ids: { type: 'array', items: { type: 'string' }, description: 'With defaults: only these question ids' },
         },
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
+      name: 'standing',
+      description: 'Main only. Standing answers: rules that answer a recurring decision-inbox question at once. action "list": the rules (id, file, match, answer, how often used) and suggestions ' +
+        '(questions you answered the same way 3 or more times). "add": topic or match (a case-insensitive regex on the question text), answer, optional blocking (default false: blocking questions are left to you) and from (asker name). ' +
+        '"remove": id. Rules without an id are named by file and position: personal:1, repo:2.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'add', 'remove'] },
+          topic: { type: 'string' },
+          match: { type: 'string' },
+          answer: { type: 'string', description: 'An option of the question: its text, letter or number' },
+          blocking: { type: 'boolean' },
+          from: { type: 'string' },
+          id: { type: 'string' },
+        },
+        required: ['action'],
       },
       isDeferred: false,
     })
@@ -2836,19 +2965,38 @@ export const register: Register = (on, options) => {
     const parent = me?.parentId === undefined ? undefined : rows.find(a => a.id === me.parentId)
     const addressee = parent !== undefined && parent.type === MANAGER ? parent.name : 'main'
     const at = await $.clock.now()
-    // Standing answers hook: check rules here, before storing, and answer through answerQuestion.
-    const added = await withInbox($, cur => {
+    // Standing answers hook: rules are read fresh. A fresh question that one matches is stored, then marked
+    // answered in the same write (so it has an id and history); the result line tells the asker.
+    const { rules } = await loadRules($, options)
+    const { added, auto } = await withInbox($, cur => {
       const r = addQuestions(cur, { name, id: e.agentId, isManager: me?.type === MANAGER }, addressee, parsed.questions, at)
-      return { inbox: r.added.some(a => a.fresh) ? r.inbox : cur, out: r.added }
+      let next = r.added.some(a => a.fresh) ? r.inbox : cur
+      const hits = new Map<string, { answer: string; rid: string }>()
+      for (const { q, fresh } of r.added) {
+        const m = fresh ? matchRule(rules, q) : undefined
+        if (m === undefined) continue
+        const marked = markAnswered(next, q.id, m.answer, AUTO, at, m.rule.rid)
+        if (marked.kind !== 'ok') continue
+        next = marked.inbox
+        hits.set(q.id, { answer: marked.answer, rid: m.rule.rid })
+      }
+      const done = r.added.map(a => ({ ...a, q: next.items.find(x => x.id === a.q.id) ?? a.q }))
+      return { inbox: next, out: { added: done, auto: hits } }
     })
     const date = await today($)
     for (const { q, fresh } of added) {
+      const hit = auto.get(q.id)
+      if (hit !== undefined) {
+        await appendNote($, notesOwner(q), `- ${date} decision: "${q.id} ${q.question}: ${hit.answer}" (standing answer ${hit.rid})`)
+        await best($, 'logging an auto-answer', () => appendLog($, { event: 'auto-answer', owner: noteKey(notesOwner(q)), agent: name, text: `${q.id} rule ${hit.rid}: ${hit.answer}` }))
+        continue
+      }
       const owner = notesOwner(q)
       if (fresh && !q.blocking && owner !== 'main') {
         await appendNote($, owner, `- ${date} progress: assumed ${q.default} for ${q.id}: ${q.question}`)
       }
     }
-    const fresh = added.filter(a => a.fresh).map(a => a.q)
+    const fresh = added.filter(a => a.fresh && !auto.has(a.q.id)).map(a => a.q)
     if (addressee !== 'main' && fresh.length > 0 && parent !== undefined) {
       const lines = fresh.map(q =>
         `${name} asks ${q.id} (${q.blocking ? 'blocking' : 'non-blocking'}): ${q.question} - options ` +
@@ -2860,6 +3008,8 @@ export const register: Register = (on, options) => {
     return {
       result: added.map(({ q, fresh: isNew }) => {
         if (!isNew) return `${q.id}: already asked as ${q.id}.`
+        const hit = auto.get(q.id)
+        if (hit !== undefined) return `${q.id}: answered by standing answer ${hit.rid}: ${hit.answer}. Carry on from it.`
         return q.blocking
           ? `${q.id}: end your turn now; the answer arrives by message.`
           : `${q.id}: proceed on the default (${q.default}), say in your report/PR that you assumed it; you'll get a message if the answer differs.`
@@ -2872,12 +3022,16 @@ export const register: Register = (on, options) => {
     const by = e.agentId === undefined ? 'main' : await ownerNameOf($, e.agentId)
     const todo = new Map<string, string | null>()
     const lines: string[] = []
-    const answers = Array.isArray(input.answers) ? input.answers as Array<{ id?: unknown; choice?: unknown }> : []
+    const always = new Set<string>()
+    const answers = Array.isArray(input.answers) ? input.answers as Array<{ id?: unknown; choice?: unknown; always?: unknown }> : []
     for (const a of answers) {
       const id = String(a?.id ?? '').trim()
       if (id === '' || typeof a?.choice !== 'string') {
         lines.push(`${id || '(no id)'}: refused, each answer needs an id and a choice.`)
-      } else if (!todo.has(id)) todo.set(id, a.choice)
+      } else if (!todo.has(id)) {
+        todo.set(id, a.choice)
+        if (a.always === true) always.add(id)
+      }
     }
     if (input.defaults === true) {
       const ids = Array.isArray(input.ids) ? input.ids.map(String) : undefined
@@ -2886,8 +3040,40 @@ export const register: Register = (on, options) => {
       if (ids === undefined && open.length === 0 && todo.size === 0) lines.push('No open questions for you.')
     }
     if (todo.size === 0 && lines.length === 0) lines.push('Nothing to answer: pass answers, or defaults: true.')
-    for (const [id, choice] of todo) lines.push(await answerQuestion($, id, choice, by))
+    for (const [id, choice] of todo) {
+      const before = always.has(id) ? (await read($, inbox)).items.find(x => x.id === id) : undefined
+      lines.push(await answerQuestion($, id, choice, by))
+      if (always.has(id) && choice !== null) lines.push(await alwaysRule($, options, id, choice, e.agentId === undefined, before))
+    }
     return { result: lines.join('\n') }
+  })
+
+  on('tool.call', { tool: 'mcp__flow__standing' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    if (e.agentId !== undefined) return { result: 'Refused: only main makes or removes standing answers. Ask main in the chat, or answer with the question\'s default.' }
+    const action = String(input.action ?? 'list')
+    if (action === 'list') {
+      const { rules } = await loadRules($, options)
+      const box = await read($, inbox)
+      return { result: renderRules(rules, box, suggest(box, rules)) }
+    }
+    if (action === 'add') {
+      const v = validateRule({
+        topic: input.topic, match: input.match, answer: input.answer, blocking: input.blocking, from: input.from,
+        note: `added ${await today($)} by hand`,
+      })
+      if ('error' in v) return { result: `Refused: ${v.error}.` }
+      const r = await addRule($, options, v.rule)
+      if (r.kind === 'error') return { result: `Not added: ${r.msg}` }
+      if (r.kind === 'exists') return { result: `Rule ${r.id} already says that; nothing added.` }
+      return { result: `Rule ${r.id} added to the personal file. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.` }
+    }
+    if (action === 'remove') {
+      const id = String(input.id ?? '').trim()
+      if (id === '') return { result: 'Refused: remove needs the rule id (see action "list").' }
+      return { result: await dropRule($, options, id) }
+    }
+    return { result: 'Unknown action: use list, add or remove.' }
   })
 
   on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {
@@ -2952,7 +3138,7 @@ export const register: Register = (on, options) => {
     const slots = slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
     return {
       result: [
-        ...inboxHead(await read($, inbox)),
+        ...inboxHead(await read($, inbox), await $.clock.now()),
         limitsLine(rows, settings.maxWorkers),
         ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,

@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.3.27",
+  "version": "0.3.28",
   "description": "The orca-flow pattern in one Claude Code session: a super manager starts managers, managers start workers in their own git worktrees, a merge queue merges and deploys; a Flow pane shows the tree",
   "author": {
     "name": "Ying-Kai Liao"
