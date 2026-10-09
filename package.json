@@ -1,0 +1,12 @@
+{
+  "name": "flow",
+  "private": true,
+  "description": "Development tooling for the flow Claude Code plugin; the plugin itself has no runtime dependencies.",
+  "scripts": {
+    "typecheck": "sh scripts/typecheck.sh",
+    "check": "npm run typecheck && claude plugin test ."
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}

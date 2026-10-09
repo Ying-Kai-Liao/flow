@@ -1,5 +1,6 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const
 
@@ -49,7 +50,7 @@ test('a handed-over PR starts one merge queue, which works through it', async ($
 })
 
 // A mocked gh that serves `body` and a world with a manager; returns what was spawned.
-function handoverWorld(on: Parameters<Parameters<typeof test>[1]>[1], body: string) {
+function handoverWorld(on: Parameters<TestBody>[1], body: string) {
   mock.clock(on, { now: 1_000_000 })
   const agents: AgentInfo[] = [{ id: 'm1', name: 'csv-export', description: 'csv export', type: 'flow:manager', status: 'running' }]
   const spawned: string[] = []
@@ -68,9 +69,9 @@ function handoverWorld(on: Parameters<Parameters<typeof test>[1]>[1], body: stri
   return spawned
 }
 
-const handover = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
+const handover = ($: Parameters<TestBody>[0]) =>
   $.tool.call({ tool: 'mcp__flow__handover', pr: 7, report_to: 'csv-export', agentId: 'm1' } as never)
-const queueList = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
+const queueList = ($: Parameters<TestBody>[0]) =>
   $.tool.call({ tool: 'mcp__flow__queue', action: 'list', agentId: 'q1' } as never)
 
 test('a PR without a Verification section is refused: nothing recorded, no queue started', async ($, on) => {
