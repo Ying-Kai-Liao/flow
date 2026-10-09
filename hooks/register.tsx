@@ -409,10 +409,10 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
   }
 }
 
-function resumeInstructions(items: Leftover[]): string {
+function resumeInstructions(items: Leftover[], limit: number): string {
   return [
     'The user ran /flow resume. Unfinished flow work was found (below). Start flow managers for it with the Agent tool, without asking:',
-    '- One flow:manager per task, named resume-<slug>, run_in_background true, at most 3 at a time; start the rest as each finishes. Items whose branch names share a manager prefix (flow/csv-export-endpoint and flow/csv-export-button) are one task.',
+    '- One flow:manager per task, named resume-<slug>, run_in_background true, at most ' + limit + ' at a time; start the rest as each finishes. Items whose branch names share a manager prefix (flow/csv-export-endpoint and flow/csv-export-button) are one task.',
     '- Each manager\'s prompt carries, for every item of its task: the branch, the PR number and URL, the PR description (including any ## Handoff section), and for a worktree its path. It carries the work on from there and must not redo work already merged into the base branch.',
     '',
     'Found:',
@@ -590,7 +590,7 @@ export const register: Register = (on, options) => {
       $.clock.after(0, () => {
         void $.prompt.submit({ text: 'Carry out the /flow resume instructions: start the managers.' }).catch(() => undefined)
       })
-      return { text, context: [resumeInstructions(found.items)] }
+      return { text, context: [resumeInstructions(found.items, settings.maxManagers)] }
     }
     if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work.` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
