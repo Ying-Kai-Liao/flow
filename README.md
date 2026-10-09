@@ -65,7 +65,7 @@ add login-redirect  after: csv-export
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
-  `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
+  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
   `c` collapses or expands the highlighted card, `q` the Merge queue section. In an agent's detail, `b` goes back and `m` starts a message.
@@ -223,6 +223,30 @@ built-in.
   Sessions live in this Claude Code session's memory: after a restart the terminals keep running,
   but their reports reach nobody; `/flow resume` picks up their branches like any other.
 
+## Questions and the inbox
+
+Questions reach you as one batched, numbered inbox instead of free-text reports.
+
+- An agent asks with `mcp__flow__ask` (`from` = its name, `questions`: each with `question`,
+  `options` (at least two), a recommended `default`, `blocking`, optional `context` and `topic`).
+  One call can carry a batch. A worker's questions go to its manager, a manager's to you. Each
+  gets an id (`q7`); asking the same open question twice returns the existing id. They are kept in
+  `<git-common-dir>/flow/inbox.json`, so they survive restarts.
+- **Non-blocking**: the agent goes ahead on the default and says in its report or PR that it
+  assumed it; a message comes only if the answer differs. **Blocking**: it ends its turn and the
+  answer arrives by message.
+- `/flow inbox` lists what is open, numbered, grouped by owner, blocking first, with the options
+  (default marked), context and age. `status` and the Flow pane show the open inbox first. An agent
+  with an open blocking question shows as asking in the pane, the toasts and the task graph.
+- Answer with `mcp__flow__answer`: `answers: [{id, choice}]` where choice is the option text, its
+  letter or number, or free text; or `defaults: true` (optionally `ids`) to accept the defaults.
+  Only the addressee answers: your main session for managers' questions (tell it "defaults", "1 b,
+  3 defaults" or free text), a manager for its workers'. The answer is messaged to the asker and
+  recorded as a decision note. If the asker is gone, the result says undelivered and the main
+  session relays it to the successor (`<name>-2`).
+- A report whose last line ends in `?` still counts as a question, for agents that don't use the
+  tool. `decision_phrases` is deprecated.
+
 ## Cleanup
 
 Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
@@ -340,7 +364,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `big_files` | none | file only | files workers grep and never read whole (a list) |
 | `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
 | `migrations_dir` | none | file only | the directory of migrations |
-| `decision_phrases` | none | file only | extra phrases that mark a report as a question for the user (a list; see below) |
+| `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |
 | `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
@@ -356,7 +380,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `min_quota` | 10 | `/config`, file | a session worker whose harness has a `quota` is refused below this percent left; 0 = never |
 | `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 
-`decision_phrases`: a report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it.
+`decision_phrases` (deprecated in favour of `mcp__flow__ask`, still honoured; the settings loader warns): a report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it.
 
 An unset full check or deploy is a step that's skipped and reported, never improvised.
 
@@ -426,6 +450,8 @@ Not verified:
 - `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
 - `plan`: dependencies between tasks or packages (see Dependencies).
 - `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
+- `ask`: questions with options, a recommended default and `blocking` (see Questions and the inbox).
+- `answer`: answers inbox questions by id, or accepts the defaults.
 - `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
   `text` it returns the notes.
 - `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.

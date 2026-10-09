@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.26] - 2026-10-10
+
+- `mcp__flow__ask`: an agent asks one or a batch of questions, each with options, a recommended
+  default and whether it is blocking. A worker's goes to its manager, a manager's to the user.
+  Non-blocking: the asker goes on with the default and says in its PR what it assumed; blocking:
+  it ends its turn and the answer arrives by message.
+- `mcp__flow__answer`: answers by id (option text, letter, number or free text) or accepts the
+  defaults. The answer is messaged to the asker and recorded as a decision note; one for an
+  asker that is gone is reported undelivered so main relays it to the successor.
+- The inbox, kept in `<git-common-dir>/flow/inbox.json`, survives restarts. `/flow inbox` lists
+  it numbered, grouped by owner, blocking first; `status` and the Flow pane show it first.
+- An agent with an open blocking ask counts as asking in the pane, the toasts and the task graph.
+
+### Changed
+
+- Worker and manager prompts and the dispatch skill ask and answer through the tools. A report
+  whose last line ends in "?" still counts as a question.
+
+### Deprecated
+
+- `decision_phrases`: still honoured; use `mcp__flow__ask`.
+
 ## [0.3.25] - 2026-10-10
 
 ### Added

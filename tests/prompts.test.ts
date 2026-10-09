@@ -35,6 +35,13 @@ test('always tests go through {files} when the test command has it', () => {
   expect(p).toContain('Files go through the test command in place of {files}')
 })
 
+test('questions go through mcp__flow__ask and mcp__flow__answer', () => {
+  expect(fill(WORKER_PROMPT, base)).toContain('mcp__flow__ask')
+  const manager = fill(MANAGER_PROMPT.replace('{{QUEUE_RULE}}', QUEUE_RULE), base)
+  expect(manager).toContain('mcp__flow__ask')
+  expect(manager).toContain('mcp__flow__answer')
+})
+
 test('the language line is in all three prompts for 繁體中文 and for no English spelling', () => {
   for (const p of all({ ...base, language: '繁體中文' })) expect(p).toContain('in 繁體中文. Code, identifiers and commit messages follow the codebase.')
   for (const p of all({ ...base, language: 'english' })) expect(p).not.toContain('Write PR titles')
