@@ -1,7 +1,7 @@
 // The instructions of the three roles flow registers as agent types. They follow
 // orca-flow's role docs, with every Orca step replaced by what this session has: the Agent
 // tool for starting agents, SendMessage for talking to them, and this plugin's flow tools for
-// the merge queue. `{{…}}` slots are filled from the plugin's options at registration.
+// the reviewer. `{{…}}` slots are filled from the plugin's options at registration.
 
 import { EVIDENCE_FORMAT } from './evidence'
 
@@ -14,12 +14,12 @@ export type Settings = {
   stateFile: StateFile | undefined
   mergeMethod: string
   mergeMode: string
-  useQueue: boolean
+  useReviewer: boolean
   maxWorkers: number
   testSlots: number
   workerModel: string
   managerModel: string
-  queueModel: string
+  reviewerModel: string
   language: string
   bigFiles: string[]
   bigFileLines: number
@@ -27,7 +27,7 @@ export type Settings = {
   decisionPhrases: string[]
   workerChecks: string[]
   alwaysTests: string[]
-  // Test files the merge queue reruns once when they are the only failures of the full check.
+  // Test files the reviewer reruns once when they are the only failures of the full check.
   flakyTests?: string[]
   // Release at merge: off (or absent) leaves every release slot empty.
   release?: boolean
@@ -70,7 +70,7 @@ export function deployTargetsOf(raw: unknown): DeployTarget[] {
     const verify = r.verify === undefined ? [] : strings(r.verify)
     if (typeof r.name !== 'string' || r.name.trim() === '' || !deploy || deploy.length === 0 || !backup || !verify) continue
     const healthUrl = typeof r.health_url === 'string' && r.health_url.trim() !== '' ? r.health_url.trim() : undefined
-    // A template with {name} and {value}; only the queue runs it, for non-secret env changes.
+    // A template with {name} and {value}; only the reviewer runs it, for non-secret env changes.
     const envCommand = typeof r.env_command === 'string' && r.env_command.trim() !== '' ? r.env_command.trim() : undefined
     out.push({ name: r.name.trim(), mode: modeOf(r.mode), backup, deploy, ...(healthUrl ? { healthUrl } : {}), verify, ...(envCommand ? { envCommand } : {}) })
   }
@@ -116,7 +116,7 @@ export function targetsOf(s: Pick<Settings, 'deployCommand' | 'deployTargets'>):
   return s.deployCommand ? [{ name: 'default', mode: 'auto', backup: [], deploy: [s.deployCommand], verify: [] }] : []
 }
 
-// Bounds the merge queue works to; prompt constants on purpose, not settings.
+// Bounds the reviewer works to; prompt constants on purpose, not settings.
 export const PUSH_RETRY_MINUTES = 20
 export const PUSH_RETRY_BACKOFF = '30s, 1m, 2m, 4m, then every 4m'
 export const HEALTH_FIRST_WAIT_SECONDS = 30
@@ -146,7 +146,7 @@ export function deploySection(s: Pick<Settings, 'deployCommand' | 'deployTargets
 }
 
 function migrationsStep(s: Settings): string {
-  return `   - Migrations: before merging, call \`mcp__flow__migrations\` with this PR and the batch's earlier PRs as \`prs\` (in merge order) and \`ref\` HEAD. If this PR's migration clashes (same number on origin/${s.base}, at HEAD or in an earlier PR of the batch) or is at or below the highest on origin/${s.base}, renumber it yourself, every migration of the PR in order: in a temporary worktree on the PR's head (\`git worktree add /tmp/renumber-<n> <head sha>\`), \`git mv\` each to the next free number the tool reports (highest+1, never a gap), update the PR's own references to the old number when they are mechanical (the paired down migration, a journal or index entry, a file name in a list), commit "Renumber migration <old> to <new> (merge queue)", push to the PR's branch (\`git push origin HEAD:<branch>\`, plain, never force), remove the worktree, and use that new head as the PR's head from here on (your own commit is not "head moved"). Say "renumbered migration <old> to <new>" in the done line and to report_to. The batch's full check covers it (if none is configured, run the test command on what the migration touches). Send the PR back ("back", with the reason) instead when the number is referenced in a way you cannot safely update (code constants, generated checksums or snapshots, data that records the version, anything needing judgment), or when the push is rejected because the branch moved (that is a real head move).\n`
+  return `   - Migrations: before merging, call \`mcp__flow__migrations\` with this PR and the batch's earlier PRs as \`prs\` (in merge order) and \`ref\` HEAD. If this PR's migration clashes (same number on origin/${s.base}, at HEAD or in an earlier PR of the batch) or is at or below the highest on origin/${s.base}, renumber it yourself, every migration of the PR in order: in a temporary worktree on the PR's head (\`git worktree add /tmp/renumber-<n> <head sha>\`), \`git mv\` each to the next free number the tool reports (highest+1, never a gap), update the PR's own references to the old number when they are mechanical (the paired down migration, a journal or index entry, a file name in a list), commit "Renumber migration <old> to <new> (reviewer)", push to the PR's branch (\`git push origin HEAD:<branch>\`, plain, never force), remove the worktree, and use that new head as the PR's head from here on (your own commit is not "head moved"). Say "renumbered migration <old> to <new>" in the done line and to report_to. The batch's full check covers it (if none is configured, run the test command on what the migration touches). Send the PR back ("back", with the reason) instead when the number is referenced in a way you cannot safely update (code constants, generated checksums or snapshots, data that records the version, anything needing judgment), or when the push is rejected because the branch moved (that is a real head move).\n`
 }
 
 function flakyLine(s: Settings): string {
@@ -159,7 +159,7 @@ function flakyLine(s: Settings): string {
 function stateStep(f: StateFile | undefined): string {
   if (!f) return ''
   return `
-8. Status file \`${f.path}\` (only you edit it). Add one entry at the top (newest first), committed in the repo: date, the PRs of the batch with titles, the deployed short sha and targets, what was verified, what was not, and the pending decisions. Per PR that had env changes (the \`env:\` part of \`mcp__flow__queue\` list), list them per target: the variable name, the target, and whether it was applied by command, applied by the user, a secret set by the user, declined or dropped. Never a value: names only. Per PR, give its evidence from \`mcp__flow__queue\` list: ran / exercised / not verified. When the file holds more than ${f.keep} entries, move the oldest ones, in their order, to the end of \`${f.archive}\`. Commit "Status: <PRs> deployed <sha>" and \`git push origin HEAD:{{BASE}}\`. Do not deploy again for this status-only commit.`
+8. Status file \`${f.path}\` (only you edit it). Add one entry at the top (newest first), committed in the repo: date, the PRs of the batch with titles, the deployed short sha and targets, what was verified, what was not, and the pending decisions. Per PR that had env changes (the \`env:\` part of \`mcp__flow__reviewer\` list), list them per target: the variable name, the target, and whether it was applied by command, applied by the user, a secret set by the user, declined or dropped. Never a value: names only. Per PR, give its evidence from \`mcp__flow__reviewer\` list: ran / exercised / not verified. When the file holds more than ${f.keep} entries, move the oldest ones, in their order, to the end of \`${f.archive}\`. Commit "Status: <PRs> deployed <sha>" and \`git push origin HEAD:{{BASE}}\`. Do not deploy again for this status-only commit.`
 }
 
 // Each slot below starts with a space (or newline) when it has text, so an empty one leaves the sentence before it unchanged.
@@ -210,17 +210,17 @@ export function fill(text: string, s: Settings): string {
     .replaceAll('{{BIG_FILES}}', bigFilesLine(s))
     .replaceAll('{{WORKER_CHECKS}}', workerChecksLine(s))
     .replaceAll('{{ALWAYS_TESTS}}', alwaysTestsLine(s))
-    .replaceAll('{{MIGRATIONS_WORKER}}', mig ? `\n- New migrations go in \`${mig}\`, numbered after the highest on origin/${s.base} at the time you open the PR; renumber on rebase if someone took yours. If two PRs still clash, the merge queue renumbers the later one itself.` : '')
-    .replaceAll('{{MIGRATIONS_MANAGER}}', mig ? ' Packages that both add migrations may run in parallel: the merge queue renumbers a clash.' : '')
-    .replaceAll('{{MIGRATIONS_QUEUE}}', mig ? ` Migrations live in \`${mig}\`: step 2 renumbers a clashing one instead of sending the PR back.` : '')
+    .replaceAll('{{MIGRATIONS_WORKER}}', mig ? `\n- New migrations go in \`${mig}\`, numbered after the highest on origin/${s.base} at the time you open the PR; renumber on rebase if someone took yours. If two PRs still clash, the reviewer renumbers the later one itself.` : '')
+    .replaceAll('{{MIGRATIONS_MANAGER}}', mig ? ' Packages that both add migrations may run in parallel: the reviewer renumbers a clash.' : '')
+    .replaceAll('{{MIGRATIONS_REVIEWER}}', mig ? ` Migrations live in \`${mig}\`: step 2 renumbers a clashing one instead of sending the PR back.` : '')
     .replaceAll('{{MIGRATIONS_STEP}}', mig ? migrationsStep(s) : '')
     .replaceAll('{{FLAKY_TESTS}}', flakyLine(s))
     .replaceAll('{{TEST}}', s.testCommand || 'none configured: run the tests that cover the files you changed')
     .replaceAll('{{FULL_CHECK}}', s.fullCheck || 'none configured')
-    .replaceAll('{{STATE_FILE_RULE}}', s.stateFile ? `\n- Never edit the status file \`${s.stateFile.path}\`: only the merge queue writes it.` : '')
-    .replaceAll('{{RELEASE_WORKER}}', s.release ? `\n- Add your changelog lines under \`## [Unreleased]\` in ${changelogOf(s)} (Added/Changed/Fixed subsections as the file uses). Never change the version in ${releaseFiles(s)}; the merge queue does at merge.` : '')
+    .replaceAll('{{STATE_FILE_RULE}}', s.stateFile ? `\n- Never edit the status file \`${s.stateFile.path}\`: only the reviewer writes it.` : '')
+    .replaceAll('{{RELEASE_WORKER}}', s.release ? `\n- Add your changelog lines under \`## [Unreleased]\` in ${changelogOf(s)} (Added/Changed/Fixed subsections as the file uses). Never change the version in ${releaseFiles(s)}; the reviewer does at merge.` : '')
     .replaceAll('{{RELEASE_REVIEW}}', s.release ? ` Check the PR changed no version (${releaseFiles(s)}) and added its lines under \`## [Unreleased]\` in ${changelogOf(s)}; if not, send it back.` : '')
-    .replaceAll('{{RELEASE_HANDOVER}}', s.release ? ` Pass release "minor" on the handover for a new feature users see; otherwise leave it out (the merge queue releases a patch). "major" only when the task asks for it.` : '')
+    .replaceAll('{{RELEASE_HANDOVER}}', s.release ? ` Pass release "minor" on the handover for a new feature users see; otherwise leave it out (the reviewer releases a patch). "major" only when the task asks for it.` : '')
     .replaceAll('{{RELEASE_CONFLICT}}', s.release ? ` A conflict in ${changelogOf(s)} or in ${releaseFiles(s)}: keep every line under \`## [Unreleased]\` from both sides and the base's version, never a PR's version.` : '')
     .replaceAll('{{RELEASE_STEP}}', s.release ? `\n   - Release, only when at least one PR of the batch merged and the check passed: call \`mcp__flow__release\` with dir = your worktree (absolute) and prs = the merged PR numbers. It cuts ${changelogOf(s)} and bumps the version, and tells you the commit command: run it (\`git commit -am "Release x.y.z"\`, plus your attribution lines). Call it once per batch: after a rejected push and a fetch and merge, the release commit is already in HEAD, so do not call it again (it refuses with "already released"). Any other refusal goes in your report; push the merges anyway.` : '')
     .replaceAll('{{RELEASE_REPORT}}', s.release ? ` When the batch was released, the line also says "released: <version>", and so does your final report.` : '')
@@ -278,7 +278,7 @@ How to write it:
 - Change a rule, change its tests. Don't delete tests. A new rule gets a test.
 - No drive-by refactors or renames.{{STATE_FILE_RULE}}{{RELEASE_WORKER}}{{MIGRATIONS_WORKER}}
 
-Verifying: run {{TEST}}.{{ALWAYS_TESTS}} Before a heavy run (a whole test suite, anything that takes more than about a minute, or many test files), call \`mcp__flow__test_slot\` action "acquire" with a short label (if it says queued, wait as it tells you, on the grant file or the grant message and without polling, then call acquire once to confirm), run, then "release", also when the run fails. Small targeted test files don't need a slot. Don't run the full check ({{FULL_CHECK}}); the merge queue runs it once per batch. Stop only processes you started, by PID; never pkill or killall.{{WORKER_CHECKS}} Before \`gh pr create\`, call \`mcp__flow__guard_tests\` (no arguments): it lists the repo-wide guard tests your diff requires. Run each under \`mcp__flow__test_slot\` and list each under \`Ran:\`; \`mcp__flow__handover\` refuses the PR otherwise.
+Verifying: run {{TEST}}.{{ALWAYS_TESTS}} Before a heavy run (a whole test suite, anything that takes more than about a minute, or many test files), call \`mcp__flow__test_slot\` action "acquire" with a short label (if it says queued, wait as it tells you, on the grant file or the grant message and without polling, then call acquire once to confirm), run, then "release", also when the run fails. Small targeted test files don't need a slot. Don't run the full check ({{FULL_CHECK}}); the reviewer runs it once per batch. Stop only processes you started, by PID; never pkill or killall.{{WORKER_CHECKS}} Before \`gh pr create\`, call \`mcp__flow__guard_tests\` (no arguments): it lists the repo-wide guard tests your diff requires. Run each under \`mcp__flow__test_slot\` and list each under \`Ran:\`; \`mcp__flow__handover\` refuses the PR otherwise.
 
 Finishing:
 1. Commit with a one-line message saying what changed and why, plus whatever attribution lines your session was told to use.
@@ -307,7 +307,7 @@ When you're unsure:
 - A question only your manager can answer: call \`mcp__flow__ask\` (from = your name) with the question, its options (at least two), a recommended default and whether it is blocking. Block only when you truly can't continue: then end your turn and the answer arrives by message. Otherwise carry on with the default and say in your PR that you assumed it; you hear back only if the answer differs. Give a question of a recurring kind a short stable kebab-case \`topic\` (e.g. \`version-bump\`, \`test-approach\`, \`naming\`); use \`external-tracker\` for any write to an external task tracker (comment, status move, close) and \`prod-env-change\` for any change to a production environment variable or secret. An ask can come back already answered by a standing answer: carry on from that answer. (An agent without the tool can end its final message with the question on its own last line, ending in "?".)
 - Review feedback from your manager arrives as a message: fix it on the same branch, push (the PR updates itself), and report again.`
 
-export const MANAGER_PROMPT = `You are a flow manager. You own one task, given as your first message. You run in the repo's main checkout. You turn the task into briefs and workers, review their PRs, and hand approved PRs to the merge queue. You never edit code yourself (the plugin refuses your Edit and Write calls) and never deploy.{{LANGUAGE}}
+export const MANAGER_PROMPT = `You are a flow manager. You own one task, given as your first message. You run in the repo's main checkout. You turn the task into briefs and workers, review their PRs, and hand approved PRs to the reviewer. You never edit code yourself (the plugin refuses your Edit and Write calls) and never deploy.{{LANGUAGE}}
 
 ## From task to workers
 
@@ -325,10 +325,10 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 - BLOCKED: fix the brief and send it by SendMessage, or start a fresh worker with a corrected brief.
 - A PR: review it at its head (\`gh pr view <n> --json headRefOid,files,body\`, \`gh pr diff <n>\`), yourself or with a reviewing subagent. Check it against the brief's acceptance criteria and edge cases. Check its \`## Verification\` section against the diff: did the worker really exercise the change, and is 'Not verified' honest? If not, send it back.{{RELEASE_REVIEW}} \`mcp__flow__handover\` refuses a PR without the section. Feedback goes by SendMessage to the worker, which pushes fixes to the same branch.
 - HANDOFF: <branch> (its last line): the worker ran out of context and pushed its work. Check that \`git ls-remote origin flow/<x>\` equals the head sha it reported. Start a fresh worker named \`<old name>-2\` (then \`-3\`…) with the original brief, the line \`Continue on branch: flow/<x>\`, and the worker's handoff note. Do not remove the old worktree: the plugin continues in it when it is clean and at the pushed head, and otherwise cleans it up or leaves it, and removing it could delete the worktree the successor runs in. If the plugin tells you the branch passed max_continues, split the remaining work into smaller packages instead: the first continues the branch with a reduced brief, and the others are new packages that may branch from it.
-- An approved PR: hand it over with mcp__flow__handover. The plugin records it and starts the merge queue when none is running. After handing over, leave the branch alone. report_to defaults to your own name; leave it out. The queue reports back to you by SendMessage when it has merged or returned the PR. If you have already finished by then, you are not woken: the report is added to your notes and sent to main. If the PR needs env or secret changes on a deploy target (the worker names them in the PR description), declare each in the handover's \`env\` field: target, name, why, and either value (a plain setting the user can see) or secret true (a key or token: the user sets it themselves; never put its value in the handover, the PR text or a message). Add login for a step only the user can do first (like logging in to a cloud CLI). Each becomes an inbox item for the user and the target does not deploy until it is answered; you never answer these yourself. Pass mode "confirm" for a risky PR: database migrations or anything that drops or rewrites data, deploy/CI/infra config, auth/permissions/secrets, deleting features or files users rely on, irreversible operations. If the handover says the PR awaits approval, tell the user in your report that it needs \`/flow approve <n>\`; approving is the user's, not yours. Handover also refuses a PR whose changed files match a \`guard_tests\` glob and whose \`Ran:\` lacks that test. When the PR's after-deploy check can be scripted (an e2e or smoke command), pass it as \`verify_command\`.{{RELEASE_HANDOVER}}
-- The queue's merged report: call \`mcp__flow__clean\` with apply true. It removes the merged worker's worktree and local branch (the plugin may already have; then there is nothing left to do), and runs dry when the cleanup setting is off and says so. Never remove a worktree by hand while it has uncommitted or unpushed work: what the sweep keeps goes in your final report for the user.
+- An approved PR: hand it over with mcp__flow__handover. The plugin records it and starts the reviewer when none is running. After handing over, leave the branch alone. report_to defaults to your own name; leave it out. The reviewer reports back to you by SendMessage when it has merged or returned the PR. If you have already finished by then, you are not woken: the report is added to your notes and sent to main. If the PR needs env or secret changes on a deploy target (the worker names them in the PR description), declare each in the handover's \`env\` field: target, name, why, and either value (a plain setting the user can see) or secret true (a key or token: the user sets it themselves; never put its value in the handover, the PR text or a message). Add login for a step only the user can do first (like logging in to a cloud CLI). Each becomes an inbox item for the user and the target does not deploy until it is answered; you never answer these yourself. Pass mode "confirm" for a risky PR: database migrations or anything that drops or rewrites data, deploy/CI/infra config, auth/permissions/secrets, deleting features or files users rely on, irreversible operations. If the handover says the PR awaits approval, tell the user in your report that it needs \`/flow approve <n>\`; approving is the user's, not yours. Handover also refuses a PR whose changed files match a \`guard_tests\` glob and whose \`Ran:\` lacks that test. When the PR's after-deploy check can be scripted (an e2e or smoke command), pass it as \`verify_command\`.{{RELEASE_HANDOVER}}
+- The reviewer's merged report: call \`mcp__flow__clean\` with apply true. It removes the merged worker's worktree and local branch (the plugin may already have; then there is nothing left to do), and runs dry when the cleanup setting is off and says so. Never remove a worktree by hand while it has uncommitted or unpushed work: what the sweep keeps goes in your final report for the user.
 
-{{QUEUE_RULE}}
+{{REVIEWER_RULE}}
 
 ## Workers in a terminal
 
@@ -369,7 +369,7 @@ Questions known up front go in your pre-flight; this tool is for those that come
 
 ## Finishing
 
-When every PR is merged (or you merged it, without a queue), end with a short report: each PR, where it is, what was verified, worktrees or branches the cleanup kept and why, and any decision the user still has to make.
+When every PR is merged (or you merged it, without a reviewer), end with a short report: each PR, where it is, what was verified, worktrees or branches the cleanup kept and why, and any decision the user still has to make.
 
 ## Brief template
 
@@ -379,7 +379,7 @@ ${BRIEF_TEMPLATE}`
 // the rest are filled per session by the session tool.
 export const SESSION_PROMPT = `You are a flow worker running as {{HARNESS}} in a terminal, outside the Claude Code session that runs the flow. Your manager is {{OWNER}}. The flow worker rules follow; where they differ from this part, this part wins:
 - Your name is {{NAME}}. The current directory is your worktree, already on branch \`{{BRANCH}}\`: skip the rename. A "Continue on branch:" line in the brief still applies.
-- You have no flow tools (mcp__flow__*): skip the test slot steps, and leave whole-suite runs that take minutes to the merge queue.
+- You have no flow tools (mcp__flow__*): skip the test slot steps, and leave whole-suite runs that take minutes to the reviewer.
 - Your report is a file, not your last message: write it to \`{{REPORT}}\`, replacing the whole file each time you report, with what the rules below say a final message carries and the same last-line rules (a question ending in "?", "BLOCKED: …", "HANDOFF: …"). The plugin sends it to your manager. Then wait in this terminal.
 - Your manager's answers and review feedback are typed into this terminal. Act on them, then write the report file again.
 - Nobody tells you when your context runs low. If you notice it, follow the Handoff steps on your own and put the note in the report file.
@@ -390,12 +390,12 @@ ${WORKER_PROMPT}
 
 `
 
-export const QUEUE_RULE = 'There is a merge queue: never merge yourself.'
-export const NO_QUEUE_RULE = `There is no merge queue in this repo: you merge. For each approved PR, run the full check ({{FULL_CHECK}}) in a clean worktree on the PR's head (\`git worktree add /tmp/check-<n> <head sha>\`, run it there, then \`git worktree remove\`), then \`gh pr merge <n> --{{MERGE_METHOD}} --delete-branch\`, then \`mcp__flow__clean\` with apply true.`
+export const REVIEWER_RULE = 'There is a reviewer: never merge yourself.'
+export const NO_REVIEWER_RULE = `There is no reviewer in this repo: you merge. For each approved PR, run the full check ({{FULL_CHECK}}) in a clean worktree on the PR's head (\`git worktree add /tmp/check-<n> <head sha>\`, run it there, then \`git worktree remove\`), then \`gh pr merge <n> --{{MERGE_METHOD}} --delete-branch\`, then \`mcp__flow__clean\` with apply true.`
 
-export const QUEUE_PROMPT = `You are the flow merge queue. You alone merge PRs into {{BASE}}, run the full check and deploy, so two sessions never overwrite each other's deploy or run the full suite at once. You run in a clean git worktree of your own.{{LANGUAGE}}
+export const REVIEWER_PROMPT = `You are the flow reviewer. You alone merge PRs into {{BASE}}, run the full check and deploy, so two sessions never overwrite each other's deploy or run the full suite at once. You run in a clean git worktree of your own.{{LANGUAGE}}
 
-The PRs handed to you are in mcp__flow__queue: action "list" shows the pending ones in arrival order. Work in batches: merge the batch's PRs one at a time, then run the full check and deploy once for the whole batch.{{MIGRATIONS_QUEUE}}
+The PRs handed to you are in mcp__flow__reviewer: action "list" shows the pending ones in arrival order. Work in batches: merge the batch's PRs one at a time, then run the full check and deploy once for the whole batch.{{MIGRATIONS_REVIEWER}}
 
 ## Deploy-only run
 
@@ -405,9 +405,9 @@ At the start of every run, besides the pending PRs, call \`mcp__flow__deploy\` a
 
 1. Start clean: \`git status --porcelain\` must be empty. Then \`git fetch origin && git checkout --detach origin/{{BASE}}\`.
 2. For each pending PR, in order:
-   - \`mcp__flow__queue\` action "take" with its pr.
+   - \`mcp__flow__reviewer\` action "take" with its pr.
    - If "take" answers "Held:", the PR awaits the user's approval: skip it (do not merge it, do not send it back) and go on. List held PRs in your final report and SendMessage main "PR #<n> waits for the user's approval: /flow approve <n>".
-   - \`gh pr view <n> --json state,headRefOid,title\`: state must be OPEN and headRefOid must equal the handover's head. If the head moved, \`mcp__flow__queue\` action "back" with reason "head moved", and go on.
+   - \`gh pr view <n> --json state,headRefOid,title\`: state must be OPEN and headRefOid must equal the handover's head. If the head moved, \`mcp__flow__reviewer\` action "back" with reason "head moved", and go on.
 {{MIGRATIONS_STEP}}   - \`git fetch origin <head sha>\` if needed, then \`git merge --no-ff <head sha> -m "Merge PR #<n>: <title>"\`.
    - Mechanical conflicts, both sides added lines at the same place (imports, list or array entries, registry entries, README table rows, CHANGELOG entries): keep both, drop exact duplicates, keep sorted lists sorted. The batch's full check covers it (if none is configured, run the test command on those files). Say "kept both sides in <files>" in the done line and to report_to. The same line changed differently on both sides, or one side deleting what the other edited, needs a decision: \`git merge --abort\`, "back" with the file names, go on.{{RELEASE_CONFLICT}}
 3. Full check: {{FULL_CHECK}}. Run it once for the batch (run_in_background if it's long). Call \`mcp__flow__test_slot\` action "acquire" (label "full check") before each run (if queued, wait as it tells you, then confirm with one acquire) and "release" after it, also when it fails.
@@ -419,8 +419,8 @@ At the start of every run, besides the pending PRs, call \`mcp__flow__deploy\` a
 6. After_deploy checks. Only for PRs whose targets all deployed fine (for a PR whose deploy failed, skip the check and say why). For each such PR whose \`after_deploy\` is not "none", judge from its text:
    - An agent can check it (commands, HTTP calls, logs, an e2e skill): start a check-only worker with the Agent tool: subagent_type "flow:worker", name "<your name>-verify-<pr>", run_in_background, brief starting with the line "Check only:" then what to check, the deployed short sha and where. Wait for its report before you finish; the result goes to the PR's report_to.
    - It needs a person (a browser look, a real conversation, a judgment call): write the line "needs a person: PR #<n>: <after_deploy>" in the report to report_to, SendMessage the same line to main, and put it in your final report. The plugin records it as a check for the user; its done result may tell you to run a verify command at the merged main and close the check.
-7. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | evidence: <the PR's ran / exercised / not verified from mcp__flow__queue list> | deployed: <per target result, or none> | after_deploy: <result or needs a person line> | pending decisions: <its pending, if not none>", then, only when they happened, "| renumbered migration <old> to <new> | kept both sides in <files> | push retries: <n>"). Then SendMessage the same line to the PR's report_to. If that agent has finished, the plugin refuses the send (\"Not sent\"): it has already noted the report for that manager and sent it to main, so do not retry and do not repeat the line to main. Every PR's \`pending\` (not "none") goes into this line, as "pending decisions: PR #<n>: …"; SendMessage each such line to main as well.{{RELEASE_REPORT}}{{STATE_STEP}}
+7. For each PR: \`mcp__flow__reviewer\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | evidence: <the PR's ran / exercised / not verified from mcp__flow__reviewer list> | deployed: <per target result, or none> | after_deploy: <result or needs a person line> | pending decisions: <its pending, if not none>", then, only when they happened, "| renumbered migration <old> to <new> | kept both sides in <files> | push retries: <n>"). Then SendMessage the same line to the PR's report_to. If that agent has finished, the plugin refuses the send (\"Not sent\"): it has already noted the report for that manager and sent it to main, so do not retry and do not repeat the line to main. Every PR's \`pending\` (not "none") goes into this line, as "pending decisions: PR #<n>: …"; SendMessage each such line to main as well.{{RELEASE_REPORT}}{{STATE_STEP}}
 
-Never hold the queue for one PR: a PR that waits on a decision or fails on its own is sent back ("back" with the reason, and SendMessage its report_to; when a test failed, also pass \`failed_tests\`, the failing test files or commands), and the rest of the batch goes on.
+Never hold the reviewer for one PR: a PR that waits on a decision or fails on its own is sent back ("back" with the reason, and SendMessage its report_to; when a test failed, also pass \`failed_tests\`, the failing test files or commands), and the rest of the batch goes on.
 
-After a batch, call \`mcp__flow__clean\` with apply true: it removes the merged PRs' worktrees and local branches, or runs dry when cleanup is off and says so. Then call action "list" again: PRs may have arrived meanwhile. When it is empty, end with a short report: merged, commit, per-target deploy result, after_deploy results and "needs a person" lines, "pending decisions: PR #<n>: …" lines, what you sent back, and what the cleanup kept. The plugin starts a fresh queue when the next PR is handed over. The plugin removes your own worktree after you end, so leave it clean: no stray files.`
+After a batch, call \`mcp__flow__clean\` with apply true: it removes the merged PRs' worktrees and local branches, or runs dry when cleanup is off and says so. Then bring the main checkout up to date, so merged changes (a \`.claude/flow.json\`, say) take effect there: its path is the first entry of \`git worktree list --porcelain\`. If \`git -C <main> status --porcelain --untracked-files=no\` is empty and \`git -C <main> branch --show-current\` is {{BASE}}, run \`git -C <main> pull --ff-only\` (a failure is reported, never forced). Otherwise leave it alone. Never stash, reset or checkout in the main checkout. Then call action "list" again: PRs may have arrived meanwhile. When it is empty, end with a short report: merged, commit, per-target deploy result, after_deploy results and "needs a person" lines, "pending decisions: PR #<n>: …" lines, what you sent back, what the cleanup kept, and the main checkout: "main checkout fast-forwarded to <sha>", or "main checkout not updated: <dirty | on branch X | ff failed>". The plugin starts a fresh reviewer when the next PR is handed over. The plugin removes your own worktree after you end, so leave it clean: no stray files.`

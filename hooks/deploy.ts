@@ -1,10 +1,10 @@
-// Per-target deploy gates: whether the queue may deploy a target in this batch. Pure rules; the disk
+// Per-target deploy gates: whether the reviewer may deploy a target in this batch. Pure rules; the disk
 // half (deploys.json next to inbox.json), the inbox item and the tool are in register.tsx.
 //
-// A target is `auto` (the queue deploys it every batch) or `confirm` (it waits for the user's approval
+// A target is `auto` (the reviewer deploys it every batch) or `confirm` (it waits for the user's approval
 // through the inbox). Either can be held by a person. Env changes a handed-over PR needs on the target
 // are checked by the same gate (order: hold, env answers, deploy approval, then the env commands), so
-// the queue keeps calling one gate. No secret value exists anywhere in here: a secret is set by the user.
+// the reviewer keeps calling one gate. No secret value exists anywhere in here: a secret is set by the user.
 
 import type { Approval, Deploys, DeployMode, EnvChange, EnvDone, Handover, Hold, Inbox, Question, TargetState } from '../types'
 
@@ -63,7 +63,7 @@ export type Gate =
   | { kind: 'envAwaits'; qids: string[] }
   | { kind: 'envHeld'; why: string }
   | { kind: 'envAsk'; entries: EnvEntry[]; reopen: EnvReopen[]; open: string[] }
-  // Go, after the queue runs the env command for each entry and calls env-applied.
+  // Go, after the reviewer runs the env command for each entry and calls env-applied.
   | { kind: 'goEnv'; apply: EnvEntry[] }
 
 const holdText = (h: Hold): string =>
@@ -220,7 +220,7 @@ export function approvalContext(target: string, sha: string, lastSha: string | u
 //
 // A handover can list env/secret changes per target. Each becomes inbox items for the user (kind `env`,
 // never answered by a standing rule unless it names the kind). A secret never has a value in flow: the
-// user sets it and answers done. A non-secret value is applied by the queue only through the target's
+// user sets it and answers done. A non-secret value is applied by the reviewer only through the target's
 // `env_command`; without one the user applies it and answers done.
 
 export const ENV_KIND = 'env'
@@ -446,7 +446,7 @@ const stateWord = (e: EnvEntry, ts: TargetState | undefined, item: EnvInput['ite
   return a.no !== undefined ? 'declined' : a.reopen.length > 0 ? 'not done yet' : a.open.length > 0 ? `awaits the user (${a.open.join(', ')})` : 'approved, not applied yet'
 }
 
-// One entry per change of a handover, names only: for the queue's list.
+// One entry per change of a handover, names only: for the reviewer's list.
 export function envSummary(h: Handover, ts: (target: string) => TargetState | undefined, item: EnvInput['item']): string {
   return (h.env ?? []).map(c => `${c.name} on ${c.target} (${c.secret === true ? 'secret' : 'value'}): ${stateWord({ pr: h.pr, change: c }, ts(c.target), item)}`).join('; ')
 }

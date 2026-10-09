@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "description": "Standalone orchestration for software development in Claude Code: managers, workers in git worktrees and one merge queue run your tasks in parallel; only decisions reach you",
+  "description": "Standalone orchestration for software development in Claude Code: managers, workers in git worktrees and one reviewer run your tasks in parallel; only decisions reach you",
   "owner": {
     "name": "Ying-Kai Liao"
   },

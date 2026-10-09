@@ -1,7 +1,7 @@
 {
   "name": "flow",
   "version": "0.4.0",
-  "description": "Standalone orchestration for software development in Claude Code: managers, workers in their own git worktrees and one merge queue run your tasks in parallel, and only decisions reach you",
+  "description": "Standalone orchestration for software development in Claude Code: managers, workers in their own git worktrees and one reviewer run your tasks in parallel, and only decisions reach you",
   "author": {
     "name": "Ying-Kai Liao"
   },
@@ -16,19 +16,19 @@
     "full_check_command": {
       "type": "string",
       "title": "Full check",
-      "description": "What the merge queue runs once per batch before pushing, e.g. npm run check. Empty: no full check (the queue says so).",
+      "description": "What the reviewer runs once per batch before pushing, e.g. npm run check. Empty: no full check (the reviewer says so).",
       "default": ""
     },
     "deploy_command": {
       "type": "string",
       "title": "Deploy command",
-      "description": "What the merge queue runs after pushing. Empty: no deploy.",
+      "description": "What the reviewer runs after pushing. Empty: no deploy.",
       "default": ""
     },
     "merge_method": {
       "type": "string",
-      "title": "Merge method without a queue",
-      "description": "gh pr merge method managers use when the merge queue is off.",
+      "title": "Merge method without a reviewer",
+      "description": "gh pr merge method managers use when the reviewer is off.",
       "default": "squash",
       "options": [
         "squash",
@@ -39,17 +39,17 @@
     "merge_mode": {
       "type": "string",
       "title": "Merge mode",
-      "description": "auto: the merge queue merges approved PRs. confirm: it waits for you to run /flow approve <pr>. A flow:confirm or flow:auto label on a PR overrides this.",
+      "description": "auto: the reviewer merges approved PRs. confirm: it waits for you to run /flow approve <pr>. A flow:confirm or flow:auto label on a PR overrides this.",
       "default": "auto",
       "options": [
         "auto",
         "confirm"
       ]
     },
-    "merge_queue": {
+    "reviewer": {
       "type": "boolean",
-      "title": "Merge queue",
-      "description": "On: managers hand PRs to one merge queue. Off: managers merge themselves.",
+      "title": "Reviewer",
+      "description": "On: managers hand PRs to one reviewer, which merges, runs the full check and deploys. Off: managers merge themselves.",
       "default": true
     },
     "max_managers": {
@@ -126,10 +126,10 @@
       "default": "opus",
       "options": ["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"]
     },
-    "queue_model": {
+    "reviewer_model": {
       "type": "string",
-      "title": "Merge queue model",
-      "description": "Model alias for the merge queue. Set explicitly so it does not follow the main session's model.",
+      "title": "Reviewer model",
+      "description": "Model alias for the reviewer. Set explicitly so it does not follow the main session's model.",
       "default": "opus",
       "options": ["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"]
     },
@@ -155,7 +155,7 @@
     "release": {
       "type": "string",
       "title": "Release at merge",
-      "description": "on: workers add changelog lines under `## [Unreleased]` and never change the version; the merge queue, once per batch after merging, moves them into a new version section, bumps the version files (patch by default; minor or major when a PR asks with the handover `release` field or a flow:minor / flow:major label) and commits \"Release x.y.z\". off: nothing changes.",
+      "description": "on: workers add changelog lines under `## [Unreleased]` and never change the version; the reviewer, once per batch after merging, moves them into a new version section, bumps the version files (patch by default; minor or major when a PR asks with the handover `release` field or a flow:minor / flow:major label) and commits \"Release x.y.z\". off: nothing changes.",
       "default": "off",
       "options": ["on", "off"]
     },
@@ -168,7 +168,7 @@
     "cleanup": {
       "type": "string",
       "title": "Cleanup",
-      "description": "auto: after each PR the queue merges, and when the queue ends, remove worktrees and local branches of finished work that are clean and on the base or in a merged PR. off: only /flow clean. Uncommitted, unpushed, locked and live work is never removed.",
+      "description": "auto: after each PR the reviewer merges, and when the reviewer ends, remove worktrees and local branches of finished work that are clean and on the base or in a merged PR. off: only /flow clean. Uncommitted, unpushed, locked and live work is never removed.",
       "default": "auto",
       "options": ["auto", "off"]
     },
@@ -200,7 +200,7 @@
     "base_branch": {
       "type": "string",
       "title": "Base branch",
-      "description": "Branch PRs target and the queue pushes to. Empty: the remote's default branch.",
+      "description": "Branch PRs target and the reviewer pushes to. Empty: the remote's default branch.",
       "default": ""
     }
   }

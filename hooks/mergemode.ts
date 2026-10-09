@@ -1,5 +1,5 @@
-// Merge mode: whether the queue merges an approved PR directly (auto) or waits for the user's
-// /flow approve (confirm). Pure rules, so the handover and queue handlers stay thin.
+// Merge mode: whether the reviewer merges an approved PR directly (auto) or waits for the user's
+// /flow approve (confirm). Pure rules, so the handover and reviewer handlers stay thin.
 
 export type MergeMode = 'auto' | 'confirm'
 
@@ -30,5 +30,5 @@ export const takeDecision = (a: { labels: string[]; stored?: MergeMode; setting:
 
 export const labelSpec = (mode: MergeMode): { name: string; color: string; description: string } =>
   mode === 'confirm'
-    ? { name: CONFIRM_LABEL, color: 'D93F0B', description: 'flow: the merge queue waits for the user to approve this PR (/flow approve)' }
-    : { name: AUTO_LABEL, color: '0E8A16', description: 'flow: the merge queue may merge this PR without asking' }
+    ? { name: CONFIRM_LABEL, color: 'D93F0B', description: 'flow: the reviewer waits for the user to approve this PR (/flow approve)' }
+    : { name: AUTO_LABEL, color: '0E8A16', description: 'flow: the reviewer may merge this PR without asking' }

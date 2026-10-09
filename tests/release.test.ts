@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { fill, MANAGER_PROMPT, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT } from '../hooks/prompts'
+import { fill, MANAGER_PROMPT, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
 import { bumpVersion, cutChangelog, highestBump, labelBump, readVersion, setVersion } from '../hooks/release'
 import { KEYS, mergeLayers } from '../hooks/settings'
@@ -121,10 +121,10 @@ test('settings: release is on or off, release_files a list, changelog_file a str
 
 const base: Settings = {
   base: 'main', testCommand: 'npm test', fullCheck: '', deployCommand: '', deployTargets: [], stateFile: undefined,
-  mergeMethod: 'merge', mergeMode: 'auto', useQueue: true, maxWorkers: 3, testSlots: 1, workerModel: 'sonnet', managerModel: 'opus', queueModel: 'opus',
+  mergeMethod: 'merge', mergeMode: 'auto', useReviewer: true, maxWorkers: 3, testSlots: 1, workerModel: 'sonnet', managerModel: 'opus', reviewerModel: 'opus',
   language: 'English', bigFiles: [], bigFileLines: 1500, migrationsDir: '', decisionPhrases: [], workerChecks: [], alwaysTests: [],
 }
-const prompts = (s: Settings) => [WORKER_PROMPT, MANAGER_PROMPT.replace('{{QUEUE_RULE}}', QUEUE_RULE), QUEUE_PROMPT].map(p => fill(p, s))
+const prompts = (s: Settings) => [WORKER_PROMPT, MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', REVIEWER_RULE), REVIEWER_PROMPT].map(p => fill(p, s))
 
 test('prompts: release slots are empty when off, present when on', () => {
   for (const p of prompts(base)) {

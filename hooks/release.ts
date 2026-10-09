@@ -1,5 +1,5 @@
 // Release at merge: the pure parts. Workers add changelog lines under "## [Unreleased]" and never touch the
-// version; the merge queue calls mcp__flow__release once per batch, which uses these to cut the changelog and
+// version; the reviewer calls mcp__flow__release once per batch, which uses these to cut the changelog and
 // bump the version files. No IO here: register.tsx reads and writes the files.
 
 export type Bump = 'patch' | 'minor' | 'major'

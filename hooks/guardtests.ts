@@ -1,5 +1,5 @@
 // guard_tests: path globs that force a worker to run specific repo-wide tests when its diff touches them.
-// Pure (no plugin runtime): the tool, the handover check and the queue suggestion in register.tsx use it.
+// Pure (no plugin runtime): the tool, the handover check and the reviewer suggestion in register.tsx use it.
 //
 // Glob rule, deliberately small: paths are repo-relative with `/`. `**` matches any number of directories
 // (including none), `*` any characters within one path segment, `?` one character that is not `/`. A pattern

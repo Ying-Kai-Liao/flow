@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- After a batch the reviewer fast-forwards the main checkout (`git pull --ff-only`) when it is clean and on the base branch, so merged changes such as `.claude/flow.json` take effect there. Otherwise it leaves it alone and reports "main checkout not updated: <dirty | on branch X | ff failed>".
+
+### Changed
+
+- The merge queue is now the reviewer: agent type `flow:reviewer`, agents `reviewer-N`, tool `mcp__flow__reviewer`, options `reviewer` and `reviewer_model`, and the "Reviewer" section and status line. The old names still work: `flow:queue`, `mcp__flow__queue`, and the `merge_queue` / `queue_model` keys in /config, `.claude/flow.json` and the personal config (each warns once per session that it is deprecated; the new key wins when both are set in a layer). A reviewer already running under `flow:queue` is recognised, not doubled.
+
 ## [0.4.0] - 2026-10-10
 
 ### Added

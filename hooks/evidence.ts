@@ -1,6 +1,6 @@
 // The `## Verification` section of a PR description: what the worker ran, how the change was exercised for
 // real, and what was not verified. `handover` refuses a PR without it; the parsed record travels with the
-// handover into the queue report and the status file. Pure, so it is tested without the plugin runtime.
+// handover into the reviewer report and the status file. Pure, so it is tested without the plugin runtime.
 
 import type { GuardHit } from './guardtests'
 
@@ -104,7 +104,7 @@ export function evidenceRefusal(pr: number, problems: string[]): string {
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-// Full text, for the queue's list.
+// Full text, for the reviewer's list.
 export function evidenceText(e: Evidence | undefined): string {
   if (!e) return 'no evidence recorded'
   return `ran: ${e.ran.join('; ')} | exercised: ${e.exercised} | not verified: ${e.notVerified.join('; ')}`

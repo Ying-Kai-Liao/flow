@@ -18,6 +18,7 @@ export const KEYS: Record<string, Kind> = {
   deploy_command: 'string',
   merge_method: 'string',
   merge_mode: 'string',
+  reviewer: 'boolean',
   merge_queue: 'boolean',
   max_workers: 'number',
   context_warn_percent: 'number',
@@ -25,6 +26,7 @@ export const KEYS: Record<string, Kind> = {
   handoff: 'boolean',
   worker_model: 'string',
   manager_model: 'string',
+  reviewer_model: 'string',
   queue_model: 'string',
   base_branch: 'string',
   language: 'string',
@@ -64,7 +66,7 @@ export const CHOICES: Record<string, string[]> = { preflight: ['on', 'off'], rel
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
 // Sub-agents don't run on Fable: a model setting naming it is refused.
-export const MODEL_KEYS = ['worker_model', 'manager_model', 'queue_model']
+export const MODEL_KEYS = ['worker_model', 'manager_model', 'reviewer_model', 'queue_model']
 export const isFable = (model: unknown): boolean => typeof model === 'string' && /fable/i.test(model)
 
 export type Loaded = { raw: Record<string, unknown>; files: string[]; warnings: string[] }
@@ -107,6 +109,23 @@ function typeOk(kind: Kind, v: unknown): boolean {
   return typeof v === kind
 }
 
+// The role was called the merge queue: its old keys are still read and mapped onto the new ones.
+export const RENAMED: Record<string, string> = { merge_queue: 'reviewer', queue_model: 'reviewer_model' }
+const RENAMED_DEFAULTS: Record<string, unknown> = { reviewer: true, reviewer_model: 'opus' }
+// The first settings, built from the raw options before any file is read: old keys mapped, no warning (loading warns).
+export function renameOptions(options: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...options }
+  for (const [old, now] of Object.entries(RENAMED)) {
+    if (!(old in out)) continue
+    if (!(now in out) || out[now] === RENAMED_DEFAULTS[now]) out[now] = out[old]
+    delete out[old]
+  }
+  return out
+}
+// Deprecation warnings already shown, so a settings re-check (mtime change) doesn't toast them again.
+const warnedRenamed = new Set<string>()
+export const resetRenamedWarnings = (): void => warnedRenamed.clear()
+
 // One layer, checked: a bad value is dropped (with a warning) so the layer below it stands.
 function checked(source: string, layer: Record<string, unknown>, warnings: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {}
@@ -127,6 +146,17 @@ function checked(source: string, layer: Record<string, unknown>, warnings: strin
         warnings.push(`${source}: "decision_phrases" is deprecated in favour of the mcp__flow__ask tool (agents ask structured questions into the /flow inbox); it still works as a fallback`)
       }
       out[k] = kind === 'globmap' ? parseGuardTests(v) : v
+    }
+  }
+  for (const [old, now] of Object.entries(RENAMED)) {
+    if (!(old in out)) continue
+    // The new key wins when the same layer sets both. /config always carries the new key at its
+    // default, so there an old key set to something else is the user's earlier choice and wins.
+    if (!(now in out) || (source === '/config' && out[now] === RENAMED_DEFAULTS[now])) out[now] = out[old]
+    delete out[old]
+    if (!warnedRenamed.has(`${source}|${old}`)) {
+      warnedRenamed.add(`${source}|${old}`)
+      warnings.push(`${source}: "${old}" is deprecated; use "${now}"`)
     }
   }
   return out

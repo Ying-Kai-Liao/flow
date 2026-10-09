@@ -7,7 +7,7 @@ const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 
 
 const PR = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: 'flow/csv', title: 'Export orders as CSV', body: '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- full check' }
 
-test('a handed-over PR starts one merge queue, which works through it', async ($, on) => {
+test('a handed-over PR starts one reviewer, which works through it', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const agents: AgentInfo[] = [
     { id: 'm1', name: 'csv-export', description: 'csv export', type: 'flow:manager', status: 'running' },
@@ -28,12 +28,12 @@ test('a handed-over PR starts one merge queue, which works through it', async ($
   on('ui.toast', () => ({ value: undefined }))
 
   const first = await $.tool.call({ tool: 'mcp__flow__handover', pr: 7, verified: 'npm test', report_to: 'csv-export', agentId: 'm1' } as never)
-  expect(String(first.result)).toContain('Started merge queue')
-  expect(spawned).toEqual(['flow:queue'])
+  expect(String(first.result)).toContain('Started reviewer')
+  expect(spawned).toEqual(['flow:reviewer'])
 
   // A second handover while the queue runs doesn't start another.
   const second = await $.tool.call({ tool: 'mcp__flow__handover', pr: 8, verified: 'npm test', report_to: 'csv-export', agentId: 'm1' } as never)
-  expect(String(second.result)).toContain('running merge queue')
+  expect(String(second.result)).toContain('running reviewer')
   expect(spawned.length).toBe(1)
 
   const list = await $.tool.call({ tool: 'mcp__flow__queue', action: 'list', agentId: 'q1' } as never)
@@ -95,8 +95,8 @@ test('a Ran list missing a required worker check is refused by name', { options:
 test('an accepted handover carries its evidence to the queue list', async ($, on) => {
   const spawned = handoverWorld(on, PR.body)
   const r = await handover($)
-  expect(String(r.result)).toContain('Started merge queue')
-  expect(spawned).toEqual(['flow:queue'])
+  expect(String(r.result)).toContain('Started reviewer')
+  expect(spawned).toEqual(['flow:reviewer'])
   const list = String((await queueList($)).result)
   expect(list).toContain('evidence: ran: `bun test`: pass')
   expect(list).toContain('exercised: ran it')
@@ -162,4 +162,30 @@ test('/flow-tasks hands the source and selection to the super manager', async ($
   expect(sent.length).toBe(1)
   expect(sent[0]).toContain('flow:dispatch')
   expect(sent[0]).toContain('"issues 12 14"')
+})
+
+test('a live reviewer started under the old flow:queue type is not doubled, and both tool names work', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const agents: AgentInfo[] = [
+    { id: 'm1', name: 'csv-export', description: 'csv export', type: 'flow:manager', status: 'running' },
+    { id: 'q1', name: 'merge-queue-1', description: 'merge queue', type: 'flow:queue', status: 'running' },
+  ]
+  const spawned: string[] = []
+  on('agent.list', () => ({ value: agents }))
+  on('agent.spawn', ($, e) => {
+    spawned.push((e as unknown as { subagentType?: string }).subagentType ?? '')
+    return { model: 'sonnet', agentId: 'q2' }
+  })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(PR), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+
+  const r = await $.tool.call({ tool: 'mcp__flow__handover', pr: 7, verified: 'npm test', report_to: 'csv-export', agentId: 'm1' } as never)
+  expect(String(r.result)).toContain('running reviewer')
+  expect(spawned).toEqual([])
+  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue']) {
+    const list = await $.tool.call({ tool, action: 'list', agentId: 'q1' } as never)
+    expect(String(list.result)).toContain('#7 pending')
+  }
 })
