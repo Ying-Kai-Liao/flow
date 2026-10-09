@@ -4,7 +4,7 @@ import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'clau
 import type { Activity, AgentRow, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
-import { ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
+import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
@@ -674,10 +674,11 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   const askers = askingNames(await read($, inbox))
   for (const a of rows) {
     const prev = was.get(a.id)
+    // The reviewer's worktree (detached at the base) goes once the reviewer is gone, also when
+    // its ending was not seen as a transition (a reload left the roster record empty).
+    if (ENDED.has(a.status) && isReviewer(a.type) && (prev === undefined || (prev !== a.status && !ENDED.has(prev)))) autoSweep($)
     if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
     if (ENDED.has(a.status) && acts[a.id] !== undefined) ended.push(a.id)
-    // The reviewer's worktree (detached at the base) goes once the reviewer is gone.
-    if (ENDED.has(a.status) && isReviewer(a.type)) autoSweep($)
     if (ENDED.has(a.status) || a.status === 'idle') {
       const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases) || askers.includes(a.name ?? '')
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
@@ -2217,23 +2218,28 @@ async function gatherClean($: EngineInterface, base: string): Promise<CleanGathe
     if (log.exitCode === 0) contained[sha] = log.stdout.split('\n').filter(Boolean)
   }
   partial.contained = contained
-  // Only trusted with a roster that lists agents at all; an unreadable pid means no lock is broken.
-  if (roster.some(a => a.id !== 'main')) {
-    const ppid = Number((await run(['sh', '-c', 'echo $PPID'])).stdout.trim())
-    if (Number.isInteger(ppid) && ppid > 1) {
-      partial.ownPid = ppid
-      // A fresh agent's worktree is locked before the roster lists it; only an old lock is judged.
-      // Unknown age (no admin dir, no lock file) counts as young.
-      const oldLocks = new Set<string>()
-      for (const w of worktrees.slice(1)) {
-        if (w.locked === undefined || !/\bpid (\d+)\b/.test(w.locked) || !w.locked.includes(`pid ${ppid}`)) continue
-        const dir = await run(['git', '-C', w.path, 'rev-parse', '--absolute-git-dir'])
-        if (dir.exitCode !== 0) continue
-        const old = await run(['find', `${dir.stdout.trim()}/locked`, '-mmin', '+10'])
-        if (old.exitCode === 0 && old.stdout.trim() !== '') oldLocks.add(w.path)
-      }
-      partial.oldLocks = oldLocks
+  // The lock names the Claude process; the plugin's runner may sit below it, so the whole chain of
+  // ancestors counts as this session. Works with an empty roster (after a reload): an agent absent
+  // from it is judged by its lock's age. An unreadable chain means no lock is broken.
+  const own = await ancestorPids(Number((await run(['sh', '-c', 'echo $PPID'])).stdout.trim()), async pid => {
+    const r = await run(['ps', '-o', 'ppid=', '-p', String(pid)])
+    const n = Number(r.stdout.trim())
+    return r.exitCode === 0 && Number.isInteger(n) ? n : undefined
+  })
+  if (own.size > 0) {
+    partial.ownPids = own
+    // A fresh agent's worktree is locked before the roster lists it; only an old lock is judged.
+    // Unknown age (no admin dir, no lock file) counts as young.
+    const oldLocks = new Set<string>()
+    for (const w of worktrees.slice(1)) {
+      const lp = Number(/\bpid (\d+)\b/.exec(w.locked ?? '')?.[1] ?? NaN)
+      if (!own.has(lp)) continue
+      const dir = await run(['git', '-C', w.path, 'rev-parse', '--absolute-git-dir'])
+      if (dir.exitCode !== 0) continue
+      const old = await run(['find', `${dir.stdout.trim()}/locked`, '-mmin', '+10'])
+      if (old.exitCode === 0 && old.stdout.trim() !== '') oldLocks.add(w.path)
     }
+    partial.oldLocks = oldLocks
   }
   const ancestry = new Set<string>()
   for (const q of ancestryQueries(partial)) {
@@ -3014,6 +3020,8 @@ export const register: Register = (on, options) => {
       await update($, handovers, hs => ({ ...disk, ...hs }))
       queueDue = Object.values(disk).some(h => h.status === 'pending')
     })
+    // Reviewer worktrees left over from before a restart or reload.
+    autoSweep($)
     await best($, 'loading the inbox', async () => {
       const dir = await stateDir($)
       if (dir === undefined) return

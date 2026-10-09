@@ -1,7 +1,7 @@
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
-import { ancestryQueries, containedCandidates, dirtyFiles, leftoverLine, parsePorcelain, selectCleanup, sweepText, typeLinks, waitingPaths } from '../hooks/clean'
+import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, leftoverLine, parsePorcelain, selectCleanup, sweepText, typeLinks, waitingPaths } from '../hooks/clean'
 import type { CleanInputs, PrRow } from '../hooks/clean'
 
 const MAIN = '/repo'
@@ -21,6 +21,7 @@ function inputs(o: {
   wts?: Wt[]; status?: Record<string, string>; branches?: Record<string, string>; onBase?: string[]
   remote?: Record<string, string>; prs?: PrRow[] | undefined; roster?: CleanInputs['roster']; ancestry?: string[]
   deadPids?: number[]; waiting?: string[]; contained?: Record<string, string[]>; ownPid?: number; oldLocks?: Set<string>
+  ownPids?: Set<number>
 }): CleanInputs {
   const wts = [{ path: MAIN, head: BASE, branch: 'main' }, ...(o.wts ?? [])]
   const status: Record<string, string> = {}
@@ -31,6 +32,7 @@ function inputs(o: {
     remote: { main: BASE, ...o.remote }, prs: 'prs' in o ? o.prs : [], roster: o.roster ?? [],
     ancestry: new Set(o.ancestry ?? []), deadPids: new Set(o.deadPids ?? []), waiting: new Set(o.waiting ?? []),
     ...(o.contained && { contained: o.contained }), ...(o.oldLocks && { oldLocks: o.oldLocks }), ...(o.ownPid !== undefined && { ownPid: o.ownPid }),
+    ...(o.ownPids && { ownPids: o.ownPids }),
   }
 }
 
@@ -280,7 +282,7 @@ function repo(on: On) {
     if (a.endsWith('refs/remotes/origin')) return out(`origin ${BASE}\norigin/main ${BASE}\n`)
     if (a.startsWith('gh ')) return out('[]')
     if (a.startsWith('git rev-parse')) return out('/repo/.git\n')
-    if (e.argv[0] === 'sh') { log.push(String(e.argv[4])); return out('') }
+    if (e.argv[0] === 'sh' && e.argv[2] !== 'echo $PPID') { log.push(String(e.argv[4])); return out('') }
     if (/^git (worktree (remove|unlock|prune)|branch -D)/.test(a)) ran.push(a)
     return out('')
   })
@@ -367,4 +369,32 @@ test('a remove that fails after the links went is reported as kept, and its bran
   expect(text).toContain('Removed nothing.')
   expect(text).toContain('contains modified or untracked files')
   expect(ran.some(r => r.startsWith('git branch -D'))).toBe(false)
+})
+
+test('a lock naming an ancestor of the plugin process counts as this session; an empty roster is fine', () => {
+  const lock = 'claude agent agent-q1 (pid 33643 start Fri Oct  9 12:54:11 2026)'
+  const w = [{ path: WT('agent-q1'), head: BASE, locked: lock }]
+  const old = new Set([WT('agent-q1')])
+  const ours = new Set([700, 33643, 1200])
+  const s = selectCleanup(inputs({ wts: w, ownPids: ours, oldLocks: old, roster: [] }))
+  expect(s.remove.worktrees).toEqual([WT('agent-q1')])
+  expect(s.unlock).toEqual([WT('agent-q1')])
+  // Known and ended: no age guard.
+  expect(selectCleanup(inputs({ wts: w, ownPids: ours, roster: [{ id: 'q1', live: false }] })).remove.worktrees).toEqual([WT('agent-q1')])
+  // A roster id carrying the agent- prefix is the same agent.
+  expect(selectCleanup(inputs({ wts: w, ownPids: ours, roster: [{ id: 'agent-q1', live: false }] })).remove.worktrees).toEqual([WT('agent-q1')])
+  // Young lock, a pid outside the chain, a lock without an agent, an unlanded tree: kept.
+  expect(kept(selectCleanup(inputs({ wts: w, ownPids: ours, oldLocks: new Set() })), WT('agent-q1'))?.reason).toBe('locked')
+  expect(kept(selectCleanup(inputs({ wts: w, ownPids: new Set([5]), oldLocks: old })), WT('agent-q1'))?.reason).toBe('locked')
+  expect(kept(selectCleanup(inputs({ wts: [{ path: WT('x'), head: BASE, locked: 'pid 33643' }], ownPids: ours, oldLocks: new Set([WT('x')]) })), WT('x'))?.reason).toBe('locked')
+  const off = [{ path: WT('agent-q1'), head: 'c'.repeat(40), locked: lock }]
+  expect(selectCleanup(inputs({ wts: off, ownPids: ours, oldLocks: old })).remove.worktrees).toEqual([])
+})
+
+test('ancestorPids walks up to pid 1, stops on a repeat and on a failed lookup', async () => {
+  const parents: Record<number, number> = { 900: 800, 800: 33643, 33643: 1 }
+  expect([...(await ancestorPids(900, async p => parents[p]))]).toEqual([900, 800, 33643])
+  expect([...(await ancestorPids(5, async () => 5))]).toEqual([5])
+  expect([...(await ancestorPids(5, async () => undefined))]).toEqual([5])
+  expect([...(await ancestorPids(NaN, async () => 1))]).toEqual([])
 })

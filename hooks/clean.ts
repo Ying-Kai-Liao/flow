@@ -89,6 +89,9 @@ export type CleanInputs = {
   // The pid of the Claude process running this plugin; absent when it could not be told. A lock
   // that names it was made in this session, so $.agent.list() knows its agent.
   ownPid?: number
+  // The pid of the plugin's process and its ancestors, up to the Claude process: the plugin's
+  // process runner need not be a direct child of Claude, so a lock may name any of them.
+  ownPids?: Set<number>
   // Worktrees whose lock file is older than 10 minutes; a younger or unaged lock may belong to an
   // agent that is still starting and not yet in the roster.
   oldLocks?: Set<string>
@@ -198,11 +201,11 @@ const LOCK_PID = /\bpid (\d+)\b/
 function staleLock(i: CleanInputs, reason: string, path: string): boolean {
   const id = LOCK_AGENT.exec(reason)?.[1]
   const pid = Number(LOCK_PID.exec(reason)?.[1] ?? NaN)
-  const agent = id === undefined ? undefined : i.roster.find(a => a.id === id)
+  const agent = id === undefined ? undefined : i.roster.find(a => a.id === id || a.id === `agent-${id}`)
   if (agent !== undefined) return !agent.live
   // Same process, same session: the roster lists every agent it started, nested ones included
   // (AgentInfo.parentId), so an agent missing from it is gone. Another pid proves nothing.
-  if (id !== undefined && Number.isInteger(pid) && pid === i.ownPid) return i.oldLocks?.has(path) === true
+  if (id !== undefined && Number.isInteger(pid) && (pid === i.ownPid || i.ownPids?.has(pid) === true)) return i.oldLocks?.has(path) === true
   return id !== undefined && Number.isInteger(pid) && i.deadPids?.has(pid) === true
 }
 
@@ -326,4 +329,16 @@ export function leftoverLine(c: { worktrees: number; branches: number; needsLook
     ...(c.needsLook ? [`${c.needsLook} need${c.needsLook === 1 ? 's' : ''} a look`] : []),
   ]
   return `${parts.join(' · ')} · /flow clean`
+}
+
+// The ancestors of `start`, itself included, walked up with `parentOf` (undefined when ps fails)
+// until pid 1, a repeat or `max` steps.
+export async function ancestorPids(start: number, parentOf: (pid: number) => Promise<number | undefined>, max = 12): Promise<Set<number>> {
+  const out = new Set<number>()
+  let pid: number | undefined = start
+  for (let n = 0; n < max && pid !== undefined && Number.isInteger(pid) && pid > 1 && !out.has(pid); n++) {
+    out.add(pid)
+    pid = await parentOf(pid)
+  }
+  return out
 }
