@@ -54,6 +54,9 @@ declare module 'claude-code' {
       now: number
       handovers: Record<string, Handover>
       queueRuns: number
+      viewSeen: string | null
+      beforeFollow: { sel: string | null; cur: string | null; id: string } | null
+      hinted: boolean
     }
   }
 }
