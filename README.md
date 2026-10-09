@@ -29,9 +29,11 @@ anything.
 
 ## What you see
 
-- **The Flow pane** (`/flow`): the tree, what needs you first, and the PRs handed to the queue.
-  Click any agent to see its activity, its last report or question, and how many agents run
-  under it. **Message** starts a message to it in your prompt; **Back** returns.
+- **The Flow pane** (`/flow`): the tree rooted at your main session (the super manager), with
+  the managers, what needs you first, and the PRs handed to the queue under it.
+  Click any agent to see its activity and its last report or question. The agents under it are
+  listed as buttons: click one to open it. **Message** starts a message to it in your prompt;
+  **Back** returns to the agent above it, or to the tree from a top-level agent.
 - **The status line**: `flow: 2 managers · 3 workers · queue: 1 PR · /flow`.
 - **Toasts** when an agent finishes, asks a question, or a PR merges or comes back.
 

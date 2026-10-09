@@ -38,3 +38,32 @@ test('the pane lists workers, shows what one did, and goes back', async ($, on) 
     await ui.unmount()
   }
 })
+
+test('the pane roots the tree at the main session and walks children and back', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('agent.list', () => ({ value: [
+    { id: 'm1', name: 'task', description: 'A task', type: 'flow:manager', status: 'running' },
+    { id: 'w1', name: 'fix-login', description: 'Fix it', type: 'flow:worker', status: 'completed', parentId: 'm1' },
+  ] as AgentInfo[] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'm1' }))
+
+  await $.agent.spawn({ prompt: 'brief', description: 'A task', subagentType: 'flow:manager' } as never)
+  const ui = await $.ui.mount({ plugin: 'flow', surface: 'terminal', ...PANE })
+  expect(await ui.find({ type: 'Text', text: /main.*super manager/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'm1' })).toBeDefined()
+
+  await ui.press({ key: 'm1' })
+  expect(await ui.find({ type: 'Text', text: /Under it/ })).toBeDefined()
+  await ui.press({ key: 'w1' })
+  expect(await ui.find({ type: 'Text', text: /Fix it/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Under it/ })).toBeUndefined()
+
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ type: 'Text', text: /Under it/ })).toBeDefined()
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ type: 'Text', text: /super manager/ })).toBeDefined()
+  await ui.unmount()
+})
