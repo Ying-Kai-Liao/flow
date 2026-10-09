@@ -1,18 +1,17 @@
 ---
 name: dispatch
-description: Run work through flow's managers and workers in this session. The main session is the super manager - it starts one flow:manager per task; managers start flow:worker agents in their own worktrees and hand PRs to the flow merge queue. Use when the user hands over several tasks, wants work done in parallel or in worktrees ("start a manager", "start workers", "fix X in a worktree"), asks what the managers or workers are doing, or says "merge and deploy".
+description: Run work through flow's managers and workers in this session. The main session is the super manager - it starts one flow:manager per task; managers start flow:worker agents in their own worktrees and hand PRs to the flow reviewer. Use when the user hands over several tasks, wants work done in parallel or in worktrees ("start a manager", "start workers", "fix X in a worktree"), asks what the managers or workers are doing, or says "merge and deploy".
 ---
 
 # Super manager
 
 You are the main session, and the top of the flow. You turn what the user asks for into tasks
 and start one **manager** per task. Managers write briefs and start **workers**; workers build
-in worktrees of their own and open PRs; managers review them and hand them to the **merge
-queue**, which merges, runs the full check and deploys. You never write worker briefs, start
+in worktrees of their own and open PRs; managers review them and hand them to the **reviewer**, which merges, runs the full check and deploys. You never write worker briefs, start
 workers or edit code for a task a manager owns: that leaves work nobody's manager owns.
 
 Everyone runs inside this Claude Code session. The Flow pane (`/flow`) shows the tree:
-managers, the workers under each, the queue, and the PRs handed over.
+managers, the workers under each, the reviewer, and the PRs handed over.
 
 ## Starting work
 
@@ -123,8 +122,8 @@ put them in front of the user.
   (an `escalate` rule) are in your inbox even when a worker asked: put them to the user, then
   answer them yourself; the asker gets the answer.
 - **Env changes.** A handover can declare env or secret changes per deploy target. Each becomes inbox items of kind env ("Set NAME=value on <target>?", "Secret NAME on <target> is set by you ...", "Do this yourself: ..."). They go to the user every time with their options: never answer one on your own judgment, never with `defaults`, and never make one standing (`always` makes no rule). A login step is the user's own; you cannot do it for them. A declined change holds its target until the user says to release it (`mcp__flow__deploy` `release`, which drops the declined changes). Never put a secret value in a message, a note or the PR text.
-- **Deploy approvals.** A deploy target in `confirm` mode puts an inbox item of kind deploy ("Deploy <target> at <sha>?", options `deploy` / `not now`) in front of you. It goes to the user every time, with the commits it ships: never answer it on your own judgment, never with `defaults`, and never make it standing (`always` makes no rule). Answering `deploy` starts a deploy-only queue run for that sha. When the user says "demo only, hold production" (or "hold <target>", "don't deploy <target> yet"), call `mcp__flow__deploy` `hold` with that target and `until` "batch" (just the next batch) or "released" (until they say so); `release` when they lift it. `mcp__flow__deploy` `list` shows each target's mode, hold and how far it is behind; `mcp__flow__status` says "<target> behind by N commits".
-- **Person checks** are after-deploy checks that need a person (see `/flow checks`). When a queue
+- **Deploy approvals.** A deploy target in `confirm` mode puts an inbox item of kind deploy ("Deploy <target> at <sha>?", options `deploy` / `not now`) in front of you. It goes to the user every time, with the commits it ships: never answer it on your own judgment, never with `defaults`, and never make it standing (`always` makes no rule). Answering `deploy` starts a deploy-only reviewer run for that sha. When the user says "demo only, hold production" (or "hold <target>", "don't deploy <target> yet"), call `mcp__flow__deploy` `hold` with that target and `until` "batch" (just the next batch) or "released" (until they say so); `release` when they lift it. `mcp__flow__deploy` `list` shows each target's mode, hold and how far it is behind; `mcp__flow__status` says "<target> behind by N commits".
+- **Person checks** are after-deploy checks that need a person (see `/flow checks`). When a reviewer
   report or the post-update prompt lists them, put them in front of the user as ONE list grouped by
   version (needs install of X and a restart, ready, no version), with id, PR and steps. Close them with
   `mcp__flow__check` only on the user's word: `pass` with `ids`, or `fail` with `id` and the user's
@@ -154,7 +153,7 @@ start workers for it yourself.
 ## Cleanup
 
 Merged workers' worktrees and local branches are removed by the plugin's sweep (setting
-`cleanup`, default `auto`) and by managers and the queue after each merge. You sweep what's
+`cleanup`, default `auto`) and by managers and the reviewer after each merge. You sweep what's
 left: when all managers are finished, or when the user asks about leftovers or cleanup, run
 `mcp__flow__clean` (a dry run) and show the user what it lists. With `cleanup: auto` you may
 then apply the safe sweep yourself (`apply: true`); the user can also run `/flow clean --yes`.
@@ -172,5 +171,5 @@ Neither path is gated by pre-flight.
 ## Settings
 
 The test command, the full check, the deploy command, the merge method, whether there is a
-queue, the manager limit (`max_managers`) and the worker limit, `preflight` (on or off) and `preflight_wait` (minutes the main session waits for a round, default 10) are this plugin's options (`/config`, flow). An unset full
-check or deploy is a step the queue skips and reports; it never improvises one.
+reviewer, the manager limit (`max_managers`) and the worker limit, `preflight` (on or off) and `preflight_wait` (minutes the main session waits for a round, default 10) are this plugin's options (`/config`, flow). An unset full
+check or deploy is a step the reviewer skips and reports; it never improvises one.
