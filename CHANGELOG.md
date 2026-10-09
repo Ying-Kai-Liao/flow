@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.30] - 2026-10-10
+
+### Changed
+
+- Docs for pre-flight: the manager prompt now starts with a recon step and the
+  `mcp__flow__preflight` filing (and says questions known up front go there, later ones to
+  `mcp__flow__ask`); the dispatch skill starts managers in one message and walks the user through
+  the round; the README has a Pre-flight section, the `/flow preflight` command, the tool, the
+  settings and `preflight.json`.
+
 ## [0.3.29] - 2026-10-10
 
 ### Changed
