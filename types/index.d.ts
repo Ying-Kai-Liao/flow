@@ -62,6 +62,8 @@ export type Handover = {
   verified: string
   pending: string
   afterDeploy: string
+  // A command the merge queue runs to close a needs-a-person check itself.
+  verifyCommand?: string
   // Parsed from the PR's ## Verification section at handover; absent in handovers saved before it existed.
   evidence?: { ran: string[]; exercised: string; notVerified: string[] }
   status: 'pending' | 'awaiting' | 'taken' | 'done' | 'returned'
@@ -213,6 +215,37 @@ export type Question = {
 
 export type Inbox = { next: number; items: Question[] }
 
+// A person check: see hooks/checks.ts.
+export type FollowUp = { state: 'open' | 'started'; manager?: string }
+
+export type Check = {
+  id: string
+  kind: 'check'
+  pr: number
+  title: string
+  steps: string
+  // The plugin version that must be installed to do the check.
+  version?: string
+  sha?: string
+  // A command the merge queue runs instead of the user (from the handover's verify_command).
+  verifyCommand?: string
+  createdAt: number
+  state: 'open' | 'passed' | 'failed'
+  closedAt?: number
+  closedBy?: string
+  // Required for a failed check; on an open check, why scripted verification was skipped.
+  note?: string
+  // Only a failed check has one: work for main to start a manager on.
+  followUp?: FollowUp
+}
+
+export type Checks = {
+  next: number
+  items: Check[]
+  // The installed version main was last prompted for after an update.
+  promptedVersion?: string
+}
+
 export type Filing = {
   summary: string
   workers?: number
@@ -260,6 +293,8 @@ declare module 'claude-code' {
       handovers: Record<string, Handover>
       // The decision inbox, mirrored from <state dir>/inbox.json.
       inbox: Inbox
+      // Person checks, mirrored from <state dir>/checks.json.
+      checks: Checks
       queueRuns: number
       prCache: PrCache
       // Per owner ("main" or a manager's name), the plan's nodes by id.

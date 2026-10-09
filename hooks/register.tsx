@@ -17,6 +17,11 @@ import {
   recordFiling, recordSpawn, renderFollowUp, renderRound, renderStatus,
 } from './preflight'
 import type { Preflight } from './preflight'
+import {
+  addChecks, anyMatch, closeChecks, dueForPrompt, EMPTY_CHECKS, inboxChecksSection, markStarted, normalizeChecks, paneChecksLine, parseNeeds, renderChecks,
+  resumeChecksLines, SKIP_NOTE, versionInSteps,
+} from './checks'
+import type { Check, Checks } from './checks'
 import type { Inbox, Question } from './inbox'
 import { AUTO, matchRule, nextRuleId, removeRule, renderRules, ruleFromQuestion, sameRule, suggest, validateRule } from './standing'
 import type { Resolved, Rule } from './standing'
@@ -97,6 +102,7 @@ const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Reco
 const inbox = atom({ plugin: 'flow', key: 'inbox' } as const, EMPTY_INBOX as Inbox)
 // Pre-flight records, mirrored from <state dir>/preflight.json.
 const preflight = atom({ plugin: 'flow', key: 'preflight' } as const, EMPTY_PREFLIGHT as Preflight)
+const checks = atom({ plugin: 'flow', key: 'checks' } as const, EMPTY_CHECKS as Checks)
 const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
@@ -492,7 +498,7 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number } & Guards {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
@@ -509,6 +515,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
     preflight: str('preflight', 'on') !== 'off',
     preflightWait: Math.max(1, num('preflight_wait', 10)),
+    verifyPaths: strs('verify_paths'),
     cleanup: str('cleanup', 'auto') === 'off' ? 'off' : 'auto',
     base: str('base_branch', base),
     testCommand: str('test_command', ''),
@@ -775,6 +782,75 @@ function withPreflight<T>($: EngineInterface, fn: (cur: Preflight) => { state: P
   const result = preflightChain.then(run, run)
   preflightChain = result.catch(() => undefined)
   return result
+}
+
+// Check changes run one after another, like the inbox's.
+let checksChain: Promise<unknown> = Promise.resolve()
+
+function withChecks<T>($: EngineInterface, fn: (cur: Checks) => { checks: Checks; out: T }): Promise<T> {
+  const run = async (): Promise<T> => {
+    const dir = await stateDir($)
+    const cur = dir === undefined ? await read($, checks) : normalizeChecks(await readJson($, `${dir}/checks.json`))
+    const { checks: next, out } = fn(cur)
+    if (next !== cur) {
+      if (dir !== undefined) {
+        await $.process.run(['mkdir', '-p', dir])
+        await writeJsonAtomic($, `${dir}/checks.json`, next)
+      }
+      await update($, checks, () => next)
+    }
+    return out
+  }
+  const result = checksChain.then(run, run)
+  checksChain = result.catch(() => undefined)
+  return result
+}
+
+// The version the running plugin was installed as: its plugin.json next to the module. Undefined when unreadable.
+async function installedVersion($: EngineInterface): Promise<string | undefined> {
+  try {
+    const v = (JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: unknown }).version
+    return typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v) ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// The version a PR's merge needs installed: plugin.json at the merged sha, else one named in the steps.
+async function versionAt($: EngineInterface, sha: string | undefined, steps: string): Promise<string | undefined> {
+  if (sha) {
+    try {
+      const r = await $.process.run(['git', 'show', `${sha}:.claude-plugin/plugin.json`])
+      const v = r.exitCode === 0 ? (JSON.parse(r.stdout) as { version?: unknown }).version : undefined
+      if (typeof v === 'string' && v !== '') return v
+    } catch { /* not a plugin repo, or the sha is unknown */ }
+  }
+  return versionInSteps(steps)
+}
+
+// Adds a check for each needs-a-person line in a done PR's report (the same PR and steps never twice). Live: the
+// handover's verify_command rides along, unless verify_paths says no changed file warrants it. Returns the new ones.
+async function captureChecks($: EngineInterface, h: Handover, verifyPaths: string[], live: boolean): Promise<Check[]> {
+  const needs = parseNeeds(h.report)
+  if (needs.length === 0) return []
+  let command = live && h.verifyCommand ? h.verifyCommand : undefined
+  let note: string | undefined
+  if (command !== undefined && verifyPaths.length > 0) {
+    // gh failing runs the command anyway: fail toward verifying.
+    const r = await $.process.run(['gh', 'pr', 'view', String(h.pr), '--json', 'files'])
+    let files: string[] | undefined
+    try { files = r.exitCode === 0 ? (JSON.parse(r.stdout) as { files: { path: string }[] }).files.map(f => f.path) : undefined } catch { files = undefined }
+    if (files !== undefined && !anyMatch(verifyPaths, files)) { command = undefined; note = SKIP_NOTE }
+  }
+  const t = live ? await $.clock.now() : h.at
+  const items = await Promise.all(needs.map(async n => ({
+    steps: n.steps, version: await versionAt($, h.sha, n.steps),
+    ...(n.pr === h.pr && command !== undefined ? { verifyCommand: command } : {}), ...(n.pr === h.pr && note !== undefined ? { note } : {}),
+  })))
+  return withChecks($, cur => {
+    const r = addChecks(cur, h.pr, h.title, h.sha, items, t)
+    return { checks: r.checks, out: r.added }
+  })
 }
 
 // Managers that ended with no live manager of the same notes key (a successor is the same manager).
@@ -2314,6 +2390,8 @@ export const register: Register = (on, options) => {
   let paneFollow: { pick: string; cur: string } | null = null
   // What /flow resume already handed to managers in this session.
   const resumed = new Set<string>()
+  // The version this plugin was installed as, read at session.start.
+  let installed: string | undefined
 
   on('session.start', async ($, e, next) => {
     // Handovers a restart would lose: merge what is on disk under this session's own records.
@@ -2330,6 +2408,24 @@ export const register: Register = (on, options) => {
       if (dir === undefined) return
       const disk = normalizeInbox(await readJson($, `${dir}/inbox.json`))
       await update($, inbox, () => disk)
+    })
+    await best($, 'loading checks', async () => {
+      installed = await installedVersion($)
+      const dir = await stateDir($)
+      if (dir === undefined) return
+      const disk = normalizeChecks(await readJson($, `${dir}/checks.json`))
+      await update($, checks, () => disk)
+      // Done handovers from before checks existed (or a session that died first) get theirs once.
+      for (const h of Object.values(await read($, handovers))) {
+        if (h.status === 'done') await captureChecks($, h, settings.verifyPaths, false)
+      }
+      // Once per installed version: the checks it now covers go to main as a prompt.
+      const due = dueForPrompt(await read($, checks), installed)
+      if (due.length === 0) return
+      await withChecks($, cur => ({ checks: { ...cur, promptedVersion: installed }, out: undefined }))
+      const text = `Flow ${installed} is installed. These after-deploy checks need a person and can be done now; tell the user, do not start managers for them:\n` +
+        due.map(c => `${c.id} PR #${c.pr} ${c.title}: ${c.steps}`).join('\n') + '\nThe user closes them with /flow checks pass <id...> or /flow checks fail <id> <note>; or you do with mcp__flow__check.'
+      $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
     })
     await best($, 'loading pre-flight', async () => {
       const dir = await stateDir($)
@@ -2376,8 +2472,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow inbox lists the open questions to answer, /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox|preflight|close|resume|approve <pr>|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow inbox lists the open questions to answer, /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox|checks|preflight|close|resume|approve <pr>|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -2398,6 +2494,7 @@ export const register: Register = (on, options) => {
           verified: { type: 'string', description: 'Optional: your own one-line summary of the review. The proof itself is read from the PR\'s ## Verification section.' },
           pending: { type: 'string', description: '"none", or decisions the user still has to make; the queue puts them in its report and the status file' },
           after_deploy: { type: 'string', description: '"none", or what to check after deploy; the queue starts a check-only worker for what an agent can check and reports the rest as "needs a person"' },
+          verify_command: { type: 'string', description: 'Optional: a shell command that verifies the change after deploy. When the after_deploy check needs a person, the merge queue runs this command at the merged main and closes the check itself (pass on exit 0, fail otherwise).' },
           report_to: { type: 'string', description: 'Your agent name, so the queue reports back to you' },
           mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: it waits for the user\'s /flow approve before the queue merges it. "auto" only marks it safe to merge directly and is refused when the merge_mode setting is confirm. Omit to use the setting.' },
         },
@@ -2514,6 +2611,24 @@ export const register: Register = (on, options) => {
           blocking: { type: 'boolean' },
           from: { type: 'string' },
           id: { type: 'string' },
+        },
+        required: ['action'],
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
+      name: 'check',
+      description: 'Main only (the merge queue may close checks that carry a verify command). Person checks: the after-deploy checks that need a person, kept across restarts. ' +
+        'action "list": the open checks grouped by the plugin version they need, and the open follow-ups. "pass": id or ids. "fail": id and a note (required); it creates a follow-up for you to start a manager on. ' +
+        '"started": id of a failed check and manager (the follow-up has a manager now).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'pass', 'fail', 'started'] },
+          id: { type: 'string' },
+          ids: { type: 'array', items: { type: 'string' } },
+          note: { type: 'string', description: 'fail: what went wrong (required). pass: optional one-line output tail.' },
+          manager: { type: 'string', description: 'started: the manager that took the follow-up' },
         },
         required: ['action'],
       },
@@ -2681,7 +2796,28 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'flow' }, async ($, e) => {
     // A plugin's $.command.run may leave args out.
     const arg = (e.args ?? '').trim()
-    if (arg === 'inbox') return { text: renderInbox(await read($, inbox), await $.clock.now()) }
+    if (arg === 'inbox') {
+      const sec = inboxChecksSection(await read($, checks), installed)
+      return { text: [renderInbox(await read($, inbox), await $.clock.now()), ...sec].join('\n') }
+    }
+    if (arg === 'checks' || arg.startsWith('checks ')) {
+      const w = arg.split(/\s+/).slice(1)
+      if (w.length === 0) return { text: renderChecks(await read($, checks), installed) }
+      const t = await $.clock.now()
+      if (w[0] === 'pass' && w.length > 1) {
+        return { text: await withChecks($, cur => {
+          const r = closeChecks(cur, w.slice(1), 'pass', 'user', undefined, t)
+          return 'error' in r ? { checks: cur, out: `Not closed: ${r.error}` } : { checks: r.checks, out: r.text }
+        }) }
+      }
+      if (w[0] === 'fail' && w.length > 1) {
+        return { text: await withChecks($, cur => {
+          const r = closeChecks(cur, [w[1]!], 'fail', 'user', w.slice(2).join(' '), t)
+          return 'error' in r ? { checks: cur, out: `Not closed: ${r.error}` } : { checks: r.checks, out: `${w[1]} failed; main starts a manager on the follow-up (/flow resume lists it).` }
+        }) }
+      }
+      return { text: 'Usage: /flow checks, /flow checks pass <id...>, /flow checks fail <id> <note>' }
+    }
     if (arg === 'preflight') {
       return { text: renderStatus(await read($, preflight), await read($, inbox), endedManagers(await read($, roster)), await $.clock.now(), preflightWaitMs) }
     }
@@ -2702,8 +2838,10 @@ export const register: Register = (on, options) => {
         return rows.length ? [`${title}:`, ...rows.map(i => `  ${i.line}`)] : []
       }
       const again = found.skipped.length ? ['Already resumed in this session:', ...found.skipped.map(i => `  ${i.line}`)] : []
-      if (found.items.length === 0) return { text: ['Nothing unfinished.', ...again].join('\n') }
+      const checkLines = resumeChecksLines(await read($, checks), installed)
+      if (found.items.length === 0) return { text: [...(checkLines.length ? [] : ['Nothing unfinished.']), ...checkLines, ...again].join('\n') }
       const text = [
+        ...checkLines,
         ...(found.error !== undefined ? [found.error] : []),
         ...lines('pr', 'Open PRs'), ...lines('branch', 'Branches without a PR'), ...lines('worktree', 'Worktrees with leftover work'), ...again,
       ].join('\n')
@@ -2744,7 +2882,7 @@ export const register: Register = (on, options) => {
       await refresh($)
       return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -2904,6 +3042,7 @@ export const register: Register = (on, options) => {
       pr, title: info.title, head: info.headRefOid, branch: info.headRefName,
       reportTo: String(input.report_to ?? 'main'), verified: String(input.verified ?? ''),
       pending: String(input.pending ?? 'none'), afterDeploy: String(input.after_deploy ?? 'none'),
+      ...(typeof input.verify_command === 'string' && input.verify_command.trim() !== '' ? { verifyCommand: input.verify_command.trim() } : {}),
       evidence: checked.evidence, status: 'pending', at: t, ...(asked !== undefined ? { mode: asked } : {}),
     }
     // A labelling failure is reported, not fatal: the stored mode still gates the queue.
@@ -2982,8 +3121,18 @@ export const register: Register = (on, options) => {
     })
     if (action !== 'take') void $.ui.toast(`PR #${key} ${next.status === 'done' ? `merged ${next.sha ?? ''}` : `returned: ${next.reason ?? ''}`}`)
     if (action === 'done') autoSweep($)
+    let verify = ''
+    if (action === 'done') {
+      await best($, 'capturing checks', async () => {
+        const added = await captureChecks($, next, settings.verifyPaths, true)
+        const scripted = added.filter(c => c.verifyCommand !== undefined)
+        verify = scripted.map(c => ` Run \`${c.verifyCommand}\` in your worktree at the merged main now; on exit 0 call mcp__flow__check action pass id ${c.id} with a one-line note of the output tail; on failure call action fail with the failure tail as the note.`).join('')
+        const skipped = added.filter(c => c.note !== undefined && c.verifyCommand === undefined)
+        if (skipped.length) verify += ` Scripted verification is skipped for ${skipped.map(c => c.id).join(', ')} (${SKIP_NOTE.replace('scripted verification skipped: ', '')}); the check stays open for a person.`
+      })
+    }
     await refresh($)
-    return { result: `PR #${key}: ${next.status}.` }
+    return { result: `PR #${key}: ${next.status}.${verify}` }
   })
 
   on('tool.call', { tool: 'mcp__flow__plan' }, async ($, e) => {
@@ -3270,6 +3419,33 @@ export const register: Register = (on, options) => {
     return { result: 'Unknown action: use list, add or remove.' }
   })
 
+  on('tool.call', { tool: 'mcp__flow__check' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const me = e.agentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.agentId)
+    const isMain = e.agentId === undefined
+    if (!isMain && me?.type !== QUEUE) return { result: 'Refused: only main closes person checks. Tell main in your report.' }
+    const action = String(input.action ?? 'list')
+    if (action === 'list') return { result: renderChecks(await read($, checks), installed) }
+    const t = await $.clock.now()
+    if (action === 'pass' || action === 'fail') {
+      const ids = Array.isArray(input.ids) ? input.ids.map(String) : typeof input.id === 'string' ? [input.id] : []
+      const by = isMain ? 'main' : (me?.name ?? 'queue')
+      const note = typeof input.note === 'string' ? input.note : undefined
+      return { result: await withChecks($, cur => {
+        const r = closeChecks(cur, ids, action, by, note, t, !isMain)
+        return 'error' in r ? { checks: cur, out: `Refused: ${r.error}` } : { checks: r.checks, out: r.text }
+      }) }
+    }
+    if (action === 'started') {
+      if (!isMain) return { result: 'Refused: only main marks a follow-up started.' }
+      return { result: await withChecks($, cur => {
+        const r = markStarted(cur, String(input.id ?? ''), String(input.manager ?? ''))
+        return 'error' in r ? { checks: cur, out: `Refused: ${r.error}` } : { checks: r.checks, out: r.text }
+      }) }
+    }
+    return { result: 'Unknown action: use list, pass, fail or started.' }
+  })
+
   on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     const manager = String(input.manager ?? '').trim()
@@ -3521,7 +3697,8 @@ export const register: Register = (on, options) => {
     const leftover = leftoverLine(leftCounts)
     const openQs = openAll(await read($, inbox)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
     const askers = askingNames(await read($, inbox))
-    const inboxRows = openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)
+    const checksLine = paneChecksLine(await read($, checks), installed)
+    const inboxRows = (openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)) + (checksLine === undefined ? 0 : 1)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
     const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
@@ -3924,6 +4101,7 @@ export const register: Register = (on, options) => {
         ))}
         {openQs.length > 5 && <Text dimColor>and {openQs.length - 5} more</Text>}
         {openQs.length > 0 && <Text dimColor>/flow inbox to read, answer in the chat</Text>}
+        {checksLine !== undefined && <Text dimColor wrap="truncate-end">{checksLine}</Text>}
         {unhanded.length > 0 && (
           <Text color="warning" wrap="truncate-end">
             ⚠ {unhanded.length} PR{unhanded.length > 1 ? 's' : ''} nobody handed over: {unhanded.map(u => `#${u.pr}`).join(' ')}

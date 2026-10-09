@@ -32,6 +32,7 @@ export const KEYS: Record<string, Kind> = {
   decision_phrases: 'list',
   worker_checks: 'list',
   always_tests: 'list',
+  verify_paths: 'list',
   deploy_targets: 'objects',
   standing_answers: 'objects',
   state_file: 'object',
