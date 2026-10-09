@@ -63,6 +63,7 @@ fix X" is enough.
 | `/flow inbox` | Lists the questions waiting for your answer. |
 | `/flow checks` | Lists the after-deploy checks that only a person can do. |
 | `/flow approve <n>` | Approves PR `n` when it is waiting for you. |
+| `/flow push` | Pushes the batch the reviewer built and checked, when `push_mode` is `confirm`. `/flow push back <pr>` returns one PR, `/flow push drop` all of them. |
 | `/flow hold <target>` / `/flow release <target>` | Keeps a deploy target from deploying, or lets it go again. |
 | `/flow resume` | Picks up unfinished work after a restart. |
 | `/flow clean` | Lists leftover worktrees and branches. Add `--yes` to remove them. |
