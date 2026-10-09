@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The Flow pane's key-hint row (`j next · k prev · o open · c collapse · q reviewer · g ...`) now sits at the very bottom of the tree view, below the Reviewer section and the deploy lines, instead of above them.
+### Fixed
+
+- Cleanup removes the locked worktrees of ended reviewers: a lock naming this Claude process (found as the nearest `claude` ancestor of the plugin's process) is broken when its agent ended or is missing from the roster (empty after a plugin reload), the worktree is clean and landed, and, for a missing agent, the lock is over 10 minutes old. Never `--force`.
+- The automatic sweep also runs at session start and when a reviewer is first seen already ended, so a reload no longer leaves reviewer worktrees behind.
 
 ## [0.4.1] - 2026-10-10
 
