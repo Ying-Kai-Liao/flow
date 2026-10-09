@@ -118,3 +118,15 @@ export function setVersion(text: string, path: string, version: string): string 
   const s = locate(text, path)
   return text.slice(0, s.start) + version + text.slice(s.end)
 }
+
+// The body of "## [version] ..." up to the next "## " heading (or a link reference line), trimmed; undefined when
+// the changelog has no such section. Used for the GitHub Release notes.
+export function changelogSection(text: string, version: string): string | undefined {
+  const lines = text.split('\n')
+  const re = new RegExp(`^## \\[?v?${version.replaceAll('.', '\\.')}\\]?(\\s|$)`)
+  const at = lines.findIndex(l => re.test(l))
+  if (at < 0) return undefined
+  let end = at + 1
+  while (end < lines.length && !lines[end]!.startsWith('## ') && !isRef(lines[end]!)) end++
+  return lines.slice(at + 1, end).join('\n').trim()
+}

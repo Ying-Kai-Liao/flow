@@ -3,7 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import { fill, MANAGER_PROMPT, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
-import { bumpVersion, cutChangelog, highestBump, labelBump, readVersion, setVersion } from '../hooks/release'
+import { bumpVersion, changelogSection, cutChangelog, highestBump, labelBump, readVersion, setVersion } from '../hooks/release'
 import { KEYS, mergeLayers } from '../hooks/settings'
 
 type Dollar = Parameters<TestBody>[0]
@@ -149,8 +149,12 @@ test('prompts: release slots are empty when off, present when on', () => {
 const ok = (stdout = '') => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 const BODY = '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- the full check'
 
-function world(on: On, labels: Record<number, string[] | 'fail'> = {}) {
-  mock.clock(on, { now: Date.UTC(2026, 9, 10) })
+let clock: ReturnType<typeof mock.clock>
+
+type Proc = (argv: readonly string[]) => { value: { exitCode: number; stdout: string; stderr: string; isStdoutTruncated: boolean; isStderrTruncated: boolean } } | undefined
+
+function world(on: On, labels: Record<number, string[] | 'fail'> = {}, proc?: Proc) {
+  clock = mock.clock(on, { now: Date.UTC(2026, 9, 10) })
   const files = new Map<string, string>([
     ['/q/CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n\n- A line.\n\n## [0.3.31] - 2026-10-09\n\n- Old.\n'],
     ['/q/plugin.json', '{\n  "name": "x",\n  "version": "0.3.31"\n}\n'],
@@ -175,6 +179,8 @@ function world(on: On, labels: Record<number, string[] | 'fail'> = {}) {
   })
   on('process.run', (_, e) => {
     const a = e.argv
+    const custom = proc?.(a)
+    if (custom !== undefined) return custom
     if (a[0] === 'git' && a[1] === 'rev-parse') return ok('/r/.git\n')
     if (a[0] === 'mv') {
       files.set(a[2] ?? '', files.get(a[1] ?? '') ?? '')
@@ -257,4 +263,116 @@ test('refuses when the changelog is missing', { options: OPTS }, async ($, on) =
   files.delete('/q/CHANGELOG.md')
   expect(await release($)).toContain('CHANGELOG.md does not exist')
   expect(files.get('/q/plugin.json')).toContain('0.3.31')
+})
+
+// ---- changelogSection and publish ----
+
+test('changelogSection: a middle section, the last section, a missing version', () => {
+  const log = '# C\n\n## [Unreleased]\n\n- U.\n\n## [1.1.0] - 2026-02-01\n\n### Added\n\n- B.\n\n## [1.0.0] - 2026-01-01\n\n- A.\n\n[1.0.0]: https://x/1.0.0\n'
+  expect(changelogSection(log, '1.1.0')).toBe('### Added\n\n- B.')
+  expect(changelogSection(log, '1.0.0')).toBe('- A.')
+  expect(changelogSection(log, '1.10.0')).toBeUndefined()
+  expect(changelogSection(log, '1x0x0')).toBeUndefined()
+})
+
+const fail = (stderr: string) => ({ value: { exitCode: 1, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false } })
+const PUB = { release: 'on', release_files: ['plugin.json'], release_github: 'on' }
+const publish = ($: Dollar, extra: Record<string, unknown> = {}) => $.tool.call({ tool: 'mcp__flow__release', action: 'publish', dir: '/q', ...extra } as never).then(r => String(r.result))
+
+function gitgh(opts: { merge?: boolean; tagAt?: string; releaseExists?: boolean; createFails?: boolean; subject?: string } = {}) {
+  const calls: (readonly string[])[] = []
+  const proc: Proc = a => {
+    if (a[0] !== 'git' && a[0] !== 'gh') return undefined
+    if (a[0] === 'gh' && a[1] === 'pr') return undefined
+    if (a[0] === 'git' && a[1] === 'rev-parse') return undefined
+    calls.push(a)
+    const sha = 'a'.repeat(40)
+    if (a[0] === 'git' && a[3] === 'log') return ok((opts.merge ? `${'f'.repeat(40)} Merge origin/main\n` : '') + `${sha} ${opts.subject ?? 'Release 0.3.32'}\n`)
+    if (a[0] === 'git' && a[3] === 'merge-base') return ok()
+    if (a[0] === 'git' && a[3] === 'rev-parse') return opts.tagAt === undefined ? fail('') : ok(opts.tagAt + '\n')
+    if (a[0] === 'gh' && a[2] === 'view') return a.includes('--json') ? ok('https://github.com/o/r/releases/tag/v0.3.32\n') : opts.releaseExists ? ok() : fail('not found')
+    if (a[0] === 'gh' && a[2] === 'create' && opts.createFails) return fail('HTTP 502')
+    return ok()
+  }
+  return { calls, proc }
+}
+
+test('publish: tags, pushes the tag and creates the release with the changelog section', { options: PUB }, async ($, on) => {
+  const g = gitgh()
+  const files = world(on, {}, g.proc)
+  files.set('/q/CHANGELOG.md', '# C\n\n## [Unreleased]\n\n## [0.3.32] - 2026-10-10\n\n- Shipped.\n\n## [0.3.31] - x\n\n- Old.\n')
+  const r = await publish($, { version: '0.3.32' })
+  expect(r).toContain('Published v0.3.32: tag pushed, GitHub Release created https://github.com/o/r/releases/tag/v0.3.32')
+  expect(g.calls).toContainEqual(['git', '-C', '/q', 'tag', '-a', 'v0.3.32', '-m', 'Release 0.3.32', 'a'.repeat(40)])
+  expect(g.calls).toContainEqual(['git', '-C', '/q', 'push', 'origin', 'v0.3.32'])
+  const create = g.calls.find(c => c[2] === 'create')!
+  expect(create.slice(0, 7)).toEqual(['gh', 'release', 'create', 'v0.3.32', '--title', 'v0.3.32', '--notes-file'])
+  expect(create).toContain('--verify-tag')
+  expect(files.get(create[7]!)).toBe('- Shipped.\n')
+})
+
+test('publish: tag already at the sha and release already exists is a skip', { options: PUB }, async ($, on) => {
+  const g = gitgh({ tagAt: 'a'.repeat(40), releaseExists: true })
+  world(on, {}, g.proc)
+  const r = await publish($, { version: '0.3.32' })
+  expect(r).toContain('Published v0.3.32')
+  expect(r).toContain('already existed')
+  expect(g.calls.some(c => c[3] === 'tag' || c[2] === 'create')).toBe(false)
+})
+
+test('publish: a tag at another sha is reported, not moved', { options: PUB }, async ($, on) => {
+  const g = gitgh({ tagAt: 'deadbeef' })
+  world(on, {}, g.proc)
+  expect(await publish($, { version: '0.3.32' })).toContain('Not published: tag v0.3.32 already exists at deadbeef')
+})
+
+test('publish: gh release create failing every attempt gives a Not published line after 4 tries', { options: PUB }, async ($, on) => {
+  const g = gitgh({ createFails: true })
+  world(on, {}, g.proc)
+  const pending = publish($, { version: '0.3.32' })
+  for (let i = 0; i < 5; i++) await clock.advance(10_000)
+  const r = await pending
+  expect(r).toContain('Not published: gh release create failed: HTTP 502')
+  expect(r).toContain('the batch stays done')
+  expect(g.calls.filter(c => c[2] === 'create').length).toBe(4)
+})
+
+test('publish: finds the release commit below a merge commit at HEAD', { options: PUB }, async ($, on) => {
+  const g = gitgh({ merge: true })
+  world(on, {}, g.proc)
+  expect(await publish($, { version: '0.3.32' })).toContain('Published v0.3.32')
+  expect(g.calls).toContainEqual(['git', '-C', '/q', 'tag', '-a', 'v0.3.32', '-m', 'Release 0.3.32', 'a'.repeat(40)])
+})
+
+test('publish: refuses when no release commit is found', { options: PUB }, async ($, on) => {
+  world(on, {}, gitgh({ subject: 'Merge PR #5' }).proc)
+  expect(await publish($, { version: '0.3.32' })).toContain('no commit "Release 0.3.32"')
+})
+
+test('publish: defaults to the version of the last cut', { options: PUB }, async ($, on) => {
+  const g = gitgh()
+  world(on, {}, g.proc)
+  await handover($, 1)
+  await release($)
+  expect(await publish($)).toContain('Published v0.3.32')
+})
+
+test('publish: refused when release_github is off', { options: OPTS }, async ($, on) => {
+  const g = gitgh()
+  world(on, {}, g.proc)
+  expect(await publish($, { version: '0.3.32' })).toContain('release_github setting is off')
+  expect(g.calls.length).toBe(0)
+})
+
+test('prompts: the publish step needs release and release_github; the branch protection rule is always there', () => {
+  const on = { ...base, release: true, releaseGithub: true, releaseFiles: ['p.json'], changelogFile: 'CHANGELOG.md' }
+  expect(fill(REVIEWER_PROMPT, on)).toContain('action "publish"')
+  expect(fill(REVIEWER_PROMPT, on)).toContain('GitHub Release: ok|failed')
+  expect(fill(REVIEWER_PROMPT, { ...on, releaseGithub: false })).not.toContain('action "publish"')
+  expect(fill(REVIEWER_PROMPT, { ...base, releaseGithub: true })).not.toContain('action "publish"')
+  for (const s of [base, on]) {
+    const p = fill(REVIEWER_PROMPT, s)
+    expect(p).toContain('GH006')
+    expect(p).toContain('refused by branch protection')
+  }
 })

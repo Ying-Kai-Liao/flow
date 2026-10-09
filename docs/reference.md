@@ -20,6 +20,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `preflight_wait` | 10 | `/config`, file | minutes the main session waits for managers to file before sending the round |
 | `release` | `off` | `/config`, file | `on`: release at merge, the reviewer bumps the version once per batch (see Releases) |
 | `release_files` | none (`package.json` at the repo root when there is one) | file only | repo-relative JSON or TOML files whose version the release bumps, a list; the first one gives the current version |
+| `release_github` | `off` | `/config`, file | `on` (with `release` on): after the release push the reviewer tags `v<x.y.z>`, pushes the tag and creates a GitHub Release from the changelog section; needs `gh` authenticated with repo write |
 | `changelog_file` | `CHANGELOG.md` | `/config`, file | the changelog the release cuts and workers add their lines to |
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
 | `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
@@ -85,7 +86,7 @@ The files are checked every few seconds by modification time. New settings apply
 ## Tools the agents use
 
 - `migrations` (read-only; used by the reviewer): `prs` (PR numbers in merge order) and `ref` (default HEAD). It reports the highest migration number on the base branch and at `ref`, each PR's added migrations as ok, clash or at-or-below, the next free number with its zero padding kept, the suggested `git mv`, and where the PR references the old number.
-- `release`: the reviewer, once per batch before the push (release on): cuts the changelog, bumps the version files, returns the commit command (see Releases).
+- `release`: the reviewer, once per batch before the push (release on): cuts the changelog, bumps the version files, returns the commit command (see Releases). With `action: "publish"` (`release_github` on, after the push; optional `version`, default the last cut) it tags, pushes the tag and creates the GitHub Release.
 - `handover`: a manager hands a reviewed PR over (optional `release`: `patch`, `minor` or `major`; optional `env`: a list of `{target, name, value | secret: true, why, login?}` env changes, one inbox item each, see Deploying; `target` must be a configured deploy target, `name` an env variable name, an entry with both `value` and `secret: true` is refused without repeating the value, and a non-empty `env` is refused when no deploy target is configured; a secret has no value in flow; optional `verify_command`, a shell command the reviewer runs after merge to close a needs-a-person check, see Person checks); the plugin records its head and starts
   a reviewer if none is running. `report_to` is optional and defaults to the caller's own name
   (`main` for the main session). A name that matches no agent of the session is refused, naming
