@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover } from '../types'
+import type { Activity, AgentRow, Handover, OpenPr, PrCache } from '../types'
 import {
   fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT,
 } from './prompts'
@@ -41,6 +41,53 @@ const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as stri
 const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
 const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
+// The open PRs gh listed last, so the 3 s refresh never calls gh itself.
+const prCache = atom({ plugin: 'flow', key: 'prCache' } as const, { prs: [], fetchedAt: 0 } as PrCache)
+
+const PR_POLL_MS = 5 * 60_000
+const PR_MIN_GAP_MS = 60_000
+// A worker that just ended: its manager is probably reviewing the PR.
+const GRACE_MS = 20 * 60_000
+// Set by register(); refresh() and the pane flag nothing when there is no merge queue.
+let queueOn = true
+
+export type Unhanded = { pr: number; title: string; branch: string; note: string }
+
+// Open flow/* PRs that nobody handed to the merge queue and nobody is working on any more.
+// A draft is a WIP handoff, a pending/taken/done handover is in hand, a returned one needs a
+// manager again. The worker is the agent named like the branch, or its continuation (-2, -3).
+export function unhandedPrs(
+  prs: OpenPr[], handovers: Record<string, Handover>, roster: AgentRow[],
+  activity: Record<string, Activity>, t: number, graceMs = GRACE_MS,
+): Unhanded[] {
+  const out: Unhanded[] = []
+  for (const p of prs) {
+    if (p.isDraft || !p.headRefName.startsWith('flow/')) continue
+    const h = handovers[String(p.number)]
+    if (h !== undefined && h.status !== 'returned') continue
+    const slug = p.headRefName.slice('flow/'.length)
+    const mine = roster.filter(a => a.name === slug || (a.name?.startsWith(`${slug}-`) === true && /^\d+$/.test(a.name.slice(slug.length + 1))))
+    if (mine.some(a => !ENDED.has(a.status))) continue
+    const endedAt = Math.max(...mine.map(a => activity[a.id]?.endedAt ?? activity[a.id]?.lastAt ?? 0))
+    if (mine.length > 0 && endedAt > 0 && t - endedAt < graceMs) continue
+    const last = mine.length > 0 ? mine.reduce((x, y) => (activity[y.id]?.endedAt ?? 0) >= (activity[x.id]?.endedAt ?? 0) ? y : x) : undefined
+    const note = h !== undefined ? `returned: ${h.reason ?? ''}`
+      : last === undefined ? 'no agent in this session'
+        : `no handover, worker ${labelOf(last)} ended${endedAt > 0 ? ` ${ago(t - endedAt)} ago` : ''}`
+    out.push({ pr: p.number, title: p.title, branch: p.headRefName, note })
+  }
+  return out
+}
+
+const unhandedLine = (u: Unhanded): string => `#${u.pr} ${u.title} (${u.branch}) — ${u.note}`
+
+async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
+  if (!queueOn) return []
+  const [cache, hs, rows, acts, t] = await Promise.all([
+    read($, prCache), read($, handovers), read($, roster), read($, activity), $.clock.now(),
+  ])
+  return unhandedPrs(cache.prs, hs, rows, acts, t)
+}
 
 // One line for a tool call: the tool and its most telling argument.
 function describeCall(e: Record<string, unknown>): string {
@@ -241,7 +288,9 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     count(WORKER) && `${count(WORKER)} workers`,
     queued && `queue: ${queued} PR${queued > 1 ? 's' : ''}`,
   ].filter(Boolean)
-  $.ui.status(rows.length === 0 && hs.length === 0 ? undefined
+  const unhanded = (await currentUnhanded($)).length
+  if (unhanded) parts.push(`${unhanded} unhanded`)
+  $.ui.status(rows.length === 0 && hs.length === 0 && !unhanded ? undefined
     : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`} · /flow`)
   return rows
 }
@@ -439,8 +488,33 @@ async function warnMain($: EngineInterface, settings: ReturnType<typeof settings
   return main.window
 }
 
+// One gh call at a time: the timer and a status call may meet.
+let fetching: Promise<void> | undefined
+function fetchPrs($: EngineInterface): Promise<void> {
+  fetching ??= (async () => {
+    let error: string | undefined
+    let prs: OpenPr[] | undefined
+    try {
+      const r = await $.process.run(
+        ['gh', 'pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,isDraft,url,updatedAt', '--limit', '100'],
+        { timeoutMs: 20_000 })
+      if (r.exitCode !== 0) throw new Error(r.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no output')
+      const parsed = JSON.parse(r.stdout || '[]') as unknown
+      if (!Array.isArray(parsed)) throw new Error('unexpected gh output')
+      prs = (parsed as OpenPr[]).filter(p => typeof p.headRefName === 'string' && p.headRefName.startsWith('flow/'))
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+    }
+    const t = await $.clock.now()
+    // A failure keeps the last list, and counts as a fetch so a status call does not retry at once.
+    await update($, prCache, c => ({ prs: prs ?? c.prs, fetchedAt: t, error }))
+  })().catch(() => undefined).finally(() => { fetching = undefined })
+  return fetching
+}
+
 export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
+  queueOn = settings.useQueue
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
@@ -457,7 +531,7 @@ export const register: Register = (on, options) => {
         const remote = await $.process.run(['git', 'ls-remote', '--symref', 'origin', 'HEAD'], { timeoutMs: 10_000 })
         base = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(remote.stdout)?.[1] ?? ''
       }
-      if (base !== '') settings = settingsOf(options, base)
+      if (base !== '') { settings = settingsOf(options, base); queueOn = settings.useQueue }
     } catch {
       // Not a git repo, or no remote: keep "main".
     }
@@ -537,6 +611,9 @@ export const register: Register = (on, options) => {
     })
 
     $.clock.every(POLL_MS, () => void refresh($))
+    // gh is not free: a slow timer, one look shortly after the start, and status when the list is stale.
+    $.clock.every(PR_POLL_MS, () => void fetchPrs($))
+    void fetchPrs($)
     // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
     $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
     return next(e)
@@ -681,7 +758,9 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', { tool: 'mcp__flow__status' }, async $ => {
+    if (queueOn && (await $.clock.now()) - (await read($, prCache)).fetchedAt > PR_MIN_GAP_MS) await fetchPrs($)
     const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
+    const [unhanded, cache] = [await currentUnhanded($), await read($, prCache)]
     const lines: string[] = []
     const byParent = new Map<string | undefined, AgentRow[]>()
     for (const a of rows) byParent.set(a.parentId, [...(byParent.get(a.parentId) ?? []), a])
@@ -697,6 +776,11 @@ export const register: Register = (on, options) => {
       result: [
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
         list.length ? 'Handed-over PRs:' : 'No PRs handed over.', ...list.map(handoverLine),
+        ...(unhanded.length ? [
+          'Needs attention:', ...unhanded.map(u => `  ${unhandedLine(u)}`),
+          'A manager reviews it and hands it over, or closes it.',
+        ] : []),
+        ...(queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
       ].join('\n'),
     }
   })
@@ -778,8 +862,8 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [list, acts, pick, t, hs] = await Promise.all([
-      read($, roster), read($, activity), read($, selected), read($, now), read($, handovers),
+    const [list, acts, pick, t, hs, unhanded] = await Promise.all([
+      read($, roster), read($, activity), read($, selected), read($, now), read($, handovers), currentUnhanded($),
     ])
     const rows = e.viewport?.rows ?? 24
     const warnOf = (window: number) => warnPercent(settings, window)
@@ -901,7 +985,7 @@ export const register: Register = (on, options) => {
     // Header and the PR lines are fixed; the root and the agents share what is left. Full cards
     // (4 rows) if all fit, else compact rows, else compact rows and a "+N more" line.
     const prRows = prs.length > 0 ? 1 + Math.min(prs.length, 5) : 0
-    const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0)
+    const avail = rows - 1 - prRows - (list.length === 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0)
     const fullTree = (flat.length + 1) * CARD_ROWS <= avail
     const rootFull = fullTree || avail >= CARD_ROWS + flat.length
     const left = avail - (rootFull ? CARD_ROWS : 1)
@@ -913,6 +997,11 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PRs handed over` : ''} · press one to see it</Text>
+        {unhanded.length > 0 && (
+          <Text color="warning" wrap="truncate-end">
+            ⚠ {unhanded.length} PR{unhanded.length > 1 ? 's' : ''} nobody handed over: {unhanded.map(u => `#${u.pr}`).join(' ')}
+          </Text>
+        )}
         {rootFull ? (
           <Box flexDirection="column" borderStyle="round" paddingX={1}>
             <Text bold>{ROOT_GLYPH} main <Text dimColor> super manager</Text></Text>

@@ -48,6 +48,7 @@ anything.
   `[1m]` model).
   On a short terminal the cards shrink to one-line rows (just `42%`), and `+N more` stands in
   for rows that don't fit.
+- **Unhanded PRs**: open, non-draft `flow/*` PRs with no handover (or a returned one) and no live worker show as "⚠ N PRs nobody handed over" under the pane header and under "Needs attention:" in `status`. Checked with `gh pr list` every 5 minutes; a worker that ended less than 20 minutes ago gets a grace period. Off when the merge queue is off.
 - **The status line**: `flow: 2 managers · 3 workers · queue: 1 PR · /flow`.
 - **Toasts** when an agent finishes, asks a question, or a PR merges or comes back.
 
