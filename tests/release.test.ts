@@ -279,15 +279,16 @@ const fail = (stderr: string) => ({ value: { exitCode: 1, stdout: '', stderr, is
 const PUB = { release: 'on', release_files: ['plugin.json'], release_github: 'on' }
 const publish = ($: Dollar, extra: Record<string, unknown> = {}) => $.tool.call({ tool: 'mcp__flow__release', action: 'publish', dir: '/q', ...extra } as never).then(r => String(r.result))
 
-function gitgh(opts: { tagAt?: string; releaseExists?: boolean; createFails?: boolean; subject?: string } = {}) {
+function gitgh(opts: { merge?: boolean; tagAt?: string; releaseExists?: boolean; createFails?: boolean; subject?: string } = {}) {
   const calls: (readonly string[])[] = []
   const proc: Proc = a => {
     if (a[0] !== 'git' && a[0] !== 'gh') return undefined
     if (a[0] === 'gh' && a[1] === 'pr') return undefined
     if (a[0] === 'git' && a[1] === 'rev-parse') return undefined
     calls.push(a)
-    if (a[0] === 'git' && a[3] === 'rev-parse' && a[4] === 'HEAD') return ok('abc123\n')
-    if (a[0] === 'git' && a[3] === 'log') return ok((opts.subject ?? 'Release 0.3.32') + '\n')
+    const sha = 'a'.repeat(40)
+    if (a[0] === 'git' && a[3] === 'log') return ok((opts.merge ? `${'f'.repeat(40)} Merge origin/main\n` : '') + `${sha} ${opts.subject ?? 'Release 0.3.32'}\n`)
+    if (a[0] === 'git' && a[3] === 'merge-base') return ok()
     if (a[0] === 'git' && a[3] === 'rev-parse') return opts.tagAt === undefined ? fail('') : ok(opts.tagAt + '\n')
     if (a[0] === 'gh' && a[2] === 'view') return a.includes('--json') ? ok('https://github.com/o/r/releases/tag/v0.3.32\n') : opts.releaseExists ? ok() : fail('not found')
     if (a[0] === 'gh' && a[2] === 'create' && opts.createFails) return fail('HTTP 502')
@@ -302,7 +303,7 @@ test('publish: tags, pushes the tag and creates the release with the changelog s
   files.set('/q/CHANGELOG.md', '# C\n\n## [Unreleased]\n\n## [0.3.32] - 2026-10-10\n\n- Shipped.\n\n## [0.3.31] - x\n\n- Old.\n')
   const r = await publish($, { version: '0.3.32' })
   expect(r).toContain('Published v0.3.32: tag pushed, GitHub Release created https://github.com/o/r/releases/tag/v0.3.32')
-  expect(g.calls).toContainEqual(['git', '-C', '/q', 'tag', '-a', 'v0.3.32', '-m', 'Release 0.3.32', 'abc123'])
+  expect(g.calls).toContainEqual(['git', '-C', '/q', 'tag', '-a', 'v0.3.32', '-m', 'Release 0.3.32', 'a'.repeat(40)])
   expect(g.calls).toContainEqual(['git', '-C', '/q', 'push', 'origin', 'v0.3.32'])
   const create = g.calls.find(c => c[2] === 'create')!
   expect(create.slice(0, 7)).toEqual(['gh', 'release', 'create', 'v0.3.32', '--title', 'v0.3.32', '--notes-file'])
@@ -311,7 +312,7 @@ test('publish: tags, pushes the tag and creates the release with the changelog s
 })
 
 test('publish: tag already at the sha and release already exists is a skip', { options: PUB }, async ($, on) => {
-  const g = gitgh({ tagAt: 'abc123', releaseExists: true })
+  const g = gitgh({ tagAt: 'a'.repeat(40), releaseExists: true })
   world(on, {}, g.proc)
   const r = await publish($, { version: '0.3.32' })
   expect(r).toContain('Published v0.3.32')
@@ -336,9 +337,16 @@ test('publish: gh release create failing every attempt gives a Not published lin
   expect(g.calls.filter(c => c[2] === 'create').length).toBe(4)
 })
 
-test('publish: refuses when HEAD is not the release commit', { options: PUB }, async ($, on) => {
+test('publish: finds the release commit below a merge commit at HEAD', { options: PUB }, async ($, on) => {
+  const g = gitgh({ merge: true })
+  world(on, {}, g.proc)
+  expect(await publish($, { version: '0.3.32' })).toContain('Published v0.3.32')
+  expect(g.calls).toContainEqual(['git', '-C', '/q', 'tag', '-a', 'v0.3.32', '-m', 'Release 0.3.32', 'a'.repeat(40)])
+})
+
+test('publish: refuses when no release commit is found', { options: PUB }, async ($, on) => {
   world(on, {}, gitgh({ subject: 'Merge PR #5' }).proc)
-  expect(await publish($, { version: '0.3.32' })).toContain('not "Release 0.3.32"')
+  expect(await publish($, { version: '0.3.32' })).toContain('no commit "Release 0.3.32"')
 })
 
 test('publish: defaults to the version of the last cut', { options: PUB }, async ($, on) => {

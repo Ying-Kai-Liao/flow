@@ -607,7 +607,7 @@ async function publishRelease($: EngineInterface, settings: Settings, dir: strin
     for (let i = 0; i < PUBLISH_ATTEMPTS; i++) {
       if (i > 0) await $.clock.sleep(2000 * 2 ** (i - 1))
       try {
-        const r = await $.process.run(argv)
+        const r = await $.process.run(argv, { cwd: dir })
         if (r.exitCode === 0) return { ok: true }
         last = tail(r)
       } catch (err) { last = err instanceof Error ? err.message : String(err) }
@@ -615,11 +615,13 @@ async function publishRelease($: EngineInterface, settings: Settings, dir: strin
     return { ok: false, line: `Not published: ${step} failed: ${last}. The release commit is pushed; report this, the batch stays done.` }
   }
   try {
-    const head = await git('rev-parse', 'HEAD')
-    const subject = await git('log', '-1', '--format=%s')
-    if (head.exitCode !== 0 || subject.exitCode !== 0) return `Not published: could not read HEAD of ${dir}: ${tail(head.exitCode !== 0 ? head : subject)}. The release commit is pushed; report this, the batch stays done.`
-    const sha = head.stdout.trim()
-    if (subject.stdout.trim() !== `Release ${version}`) return `Refused: HEAD of ${dir} is "${subject.stdout.trim()}", not "Release ${version}". Publish only the release commit.`
+    // The release commit may sit below a merge commit (a rejected push is fetched, merged and pushed again).
+    const log = await git('log', '--first-parent', '-n', '50', '--format=%H %s')
+    if (log.exitCode !== 0) return `Not published: could not read the log of ${dir}: ${tail(log)}. The release commit is pushed; report this, the batch stays done.`
+    const sha = log.stdout.split('\n').find(l => l.slice(41) === `Release ${version}`)?.slice(0, 40)
+    if (sha === undefined) return `Refused: no commit "Release ${version}" in the last 50 first-parent commits of ${dir}. Publish only after the release commit is in HEAD.`
+    const anc = await git('merge-base', '--is-ancestor', sha, 'HEAD')
+    if (anc.exitCode !== 0) return `Refused: the commit "Release ${version}" is not an ancestor of HEAD in ${dir}.`
     const existing = await git('rev-parse', '--verify', '--quiet', `refs/tags/${tag}^{commit}`)
     if (existing.exitCode === 0 && existing.stdout.trim() !== sha) return `Not published: tag ${tag} already exists at ${existing.stdout.trim().slice(0, 8)}, not at the release commit ${sha.slice(0, 8)}; it was not moved. The release commit is pushed; report this, the batch stays done.`
     if (existing.exitCode !== 0) {
@@ -628,7 +630,7 @@ async function publishRelease($: EngineInterface, settings: Settings, dir: strin
     }
     const pushed = await run('pushing the tag', ['git', '-C', dir, 'push', 'origin', tag])
     if (!pushed.ok) return pushed.line
-    const view = await $.process.run(['gh', 'release', 'view', tag])
+    const view = await $.process.run(['gh', 'release', 'view', tag], { cwd: dir })
     if (view.exitCode === 0) return `Published ${tag}: tag pushed, GitHub Release already existed.`
     const logName = settings.changelogFile || 'CHANGELOG.md'
     const section = await $.fs.exists(`${dir}/${logName}`) ? changelogSection(await $.fs.read(`${dir}/${logName}`), version) : undefined
@@ -637,7 +639,7 @@ async function publishRelease($: EngineInterface, settings: Settings, dir: strin
     await $.fs.write(notes, section !== undefined && section !== '' ? section + '\n' : `Release ${version}\n`)
     const made = await run('gh release create', ['gh', 'release', 'create', tag, '--title', tag, '--notes-file', notes, '--verify-tag'])
     if (!made.ok) return made.line
-    const url = await $.process.run(['gh', 'release', 'view', tag, '--json', 'url', '--jq', '.url'])
+    const url = await $.process.run(['gh', 'release', 'view', tag, '--json', 'url', '--jq', '.url'], { cwd: dir })
     return `Published ${tag}: tag pushed, GitHub Release created${url.exitCode === 0 && url.stdout.trim() !== '' ? ' ' + url.stdout.trim() : ''}.${section === undefined || section === '' ? ` The changelog has no ${version} section, so the notes are "Release ${version}".` : ''}`
   } catch (err) {
     return `Not published: ${err instanceof Error ? err.message : String(err)}. The release commit is pushed; report this, the batch stays done.`
