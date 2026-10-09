@@ -18,7 +18,7 @@ export type Activity = {
   answer?: string
 }
 
-// A PR a manager handed to the merge queue (flow_handover), and what the queue did with it.
+// A PR a manager handed to the merge queue (the handover tool), and what the queue did with it.
 export type Handover = {
   pr: number
   title: string
@@ -37,7 +37,7 @@ export type Handover = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'flow-board': {
+    'flow': {
       roster: AgentRow[]
       activity: Record<string, Activity>
       selected: string | null

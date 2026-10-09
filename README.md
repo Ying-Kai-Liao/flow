@@ -1,4 +1,4 @@
-# flow-board
+# flow
 
 The orca-flow pattern inside one Claude Code session, with nothing else installed: no Orca, no
 tmux. You talk to the main session; it runs the work through managers, workers and one merge
@@ -19,9 +19,9 @@ you ── main session (super manager)
 | Role | What it is | Job |
 |---|---|---|
 | Super manager | your main session, with the `dispatch` skill | splits your request into tasks, starts one manager per task, relays questions and answers |
-| `flow-board:manager` | background agent, named after its task | writes briefs, starts workers, reviews their PRs, hands approved ones to the queue; refused if it tries to edit code |
-| `flow-board:worker` | background agent in a worktree of its own | builds one brief, pushes `flow/<name>`, opens a PR, reports or asks |
-| `flow-board:queue` | background agent, started by the plugin | merges handed-over PRs in batches, runs the full check once per batch, pushes, deploys, reports back |
+| `flow:manager` | background agent, named after its task | writes briefs, starts workers, reviews their PRs, hands approved ones to the queue; refused if it tries to edit code |
+| `flow:worker` | background agent in a worktree of its own | builds one brief, pushes `flow/<name>`, opens a PR, reports or asks |
+| `flow:queue` | background agent, started by the plugin | merges handed-over PRs in batches, runs the full check once per batch, pushes, deploys, reports back |
 
 Reports and questions travel up the tree on their own: a worker's report wakes its manager, a
 manager's wakes the main session. Answers go down by message. Only the main session asks you
@@ -40,7 +40,7 @@ anything.
 In a Claude Code session:
 
 ```
-/plugin install flow-board --marketplace Ying-Kai-Liao/flow-board
+/plugin install flow --marketplace Ying-Kai-Liao/flow
 ```
 
 Then ask for work: "start managers for these three tasks: …", or for one change, "start a
@@ -48,7 +48,7 @@ worker to fix X".
 
 ## Settings
 
-`/config` → flow-board:
+`/config` → flow:
 
 | Option | Default | Used by |
 |---|---|---|
@@ -65,10 +65,10 @@ An unset full check or deploy is a step that's skipped and reported, never impro
 
 ## Tools the agents use
 
-- `flow_handover`: a manager hands a reviewed PR over; the plugin records its head and starts
+- `handover`: a manager hands a reviewed PR over; the plugin records its head and starts
   a queue if none is running.
-- `flow_queue`: the queue's worklist (`list`, `take`, `done`, `back`).
-- `flow_status`: the tree and the handovers as text, for check-ins.
+- `queue`: the queue's worklist (`list`, `take`, `done`, `back`).
+- `status`: the tree and the handovers as text, for check-ins.
 
 ## Limits
 
@@ -86,4 +86,4 @@ tsc -p .
 ```
 
 Bump `version` in `.claude-plugin/plugin.json` before pushing a change, so
-`claude plugin update flow-board@flow-board` picks it up.
+`claude plugin update flow@flow` picks it up.

@@ -8,16 +8,16 @@ import {
 import type { Settings } from './prompts'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
-// (the `dispatch` skill); it starts `flow-board:manager` agents, which start
-// `flow-board:worker` agents in worktrees of their own and hand approved PRs to the
-// `flow-board:queue` agent through this plugin's tools. The pane in main shows the tree.
+// (the `dispatch` skill); it starts `flow:manager` agents, which start
+// `flow:worker` agents in worktrees of their own and hand approved PRs to the
+// `flow:queue` agent through this plugin's tools. The pane in main shows the tree.
 
 const PANE = 'flow'
 const POLL_MS = 3000
 const LOG_MAX = 40
-const MANAGER = 'flow-board:manager'
-const WORKER = 'flow-board:worker'
-const QUEUE = 'flow-board:queue'
+const MANAGER = 'flow:manager'
+const WORKER = 'flow:worker'
+const QUEUE = 'flow:queue'
 const ENDED = new Set(['completed', 'failed', 'killed'])
 const LIVE = new Set(['pending', 'running', 'waiting'])
 // Display order: what may need a person first, finished agents last.
@@ -33,16 +33,16 @@ const HANDOVER_GLYPH: Record<Handover['status'], string> = {
   pending: '…', taken: '●', done: '✓', returned: '↩',
 }
 
-const roster = atom({ plugin: 'flow-board', key: 'roster' } as const, [] as AgentRow[])
-const activity = atom({ plugin: 'flow-board', key: 'activity' } as const, {} as Record<string, Activity>)
-const selected = atom({ plugin: 'flow-board', key: 'selected' } as const, null as string | null)
-const now = atom({ plugin: 'flow-board', key: 'now' } as const, 0)
-const handovers = atom({ plugin: 'flow-board', key: 'handovers' } as const, {} as Record<string, Handover>)
-const queueRuns = atom({ plugin: 'flow-board', key: 'queueRuns' } as const, 0)
+const roster = atom({ plugin: 'flow', key: 'roster' } as const, [] as AgentRow[])
+const activity = atom({ plugin: 'flow', key: 'activity' } as const, {} as Record<string, Activity>)
+const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as string | null)
+const now = atom({ plugin: 'flow', key: 'now' } as const, 0)
+const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Record<string, Handover>)
+const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 
 // One line for a tool call: the tool and its most telling argument.
 function describeCall(e: Record<string, unknown>): string {
-  const tool = String(e.tool ?? '?').replace(/^mcp__flow-board__/, '')
+  const tool = String(e.tool ?? '?').replace(/^mcp__flow__/, '')
   const arg = [e.file_path, e.command, e.pattern, e.path, e.url, e.description, e.action, e.prompt]
     .find(v => typeof v === 'string' && v.length > 0) as string | undefined
   const short = arg === undefined ? '' : ' ' + arg.replace(/\s+/g, ' ').slice(0, 90)
@@ -123,7 +123,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
 
 async function openPane($: EngineInterface): Promise<void> {
   const r = await $.ui.open({ id: PANE, title: 'Flow' })
-  if (!r.isPlaced) void $.ui.toast('flow-board is running agents: type /flow to watch them')
+  if (!r.isPlaced) void $.ui.toast('flow is running agents: type /flow to watch them')
 }
 
 // Starts a merge queue unless one is live. The queue drains every pending handover, then ends;
@@ -141,7 +141,7 @@ async function ensureQueue($: EngineInterface): Promise<string> {
     subagentType: QUEUE,
     name: `merge-queue-${n}`,
     description: 'merge queue',
-    prompt: `Pending handovers: ${pending.map(h => `#${h.pr}`).join(', ')}. Start with mcp__flow-board__flow_queue action "list".`,
+    prompt: `Pending handovers: ${pending.map(h => `#${h.pr}`).join(', ')}. Start with mcp__flow__queue action "list".`,
   })
   if (started.deny !== undefined) return `Could not start a merge queue: ${started.deny}`
   return `Started merge queue merge-queue-${n}.`
@@ -177,14 +177,14 @@ export const register: Register = (on, options) => {
     })
     await $.agent.register({
       name: 'manager',
-      description: 'A flow-board manager: owns one task, writes briefs, starts flow-board:worker agents, reviews their PRs and hands them to the merge queue. ' +
+      description: 'A flow manager: owns one task, writes briefs, starts flow:worker agents, reviews their PRs and hands them to the merge queue. ' +
         'Pass the task in the user\'s words as the prompt and a short task slug as the name; run it in the background.',
       prompt: fill(MANAGER_PROMPT.replace('{{QUEUE_RULE}}', settings.useQueue ? QUEUE_RULE : NO_QUEUE_RULE), settings),
       background: true,
     })
     await $.agent.register({
       name: 'worker',
-      description: 'A flow-board worker: implements one brief in a git worktree of its own and opens a PR. ' +
+      description: 'A flow worker: implements one brief in a git worktree of its own and opens a PR. ' +
         'Pass the whole brief as the prompt, its first line "Your name: <slug>", and the slug as the name.',
       prompt: fill(WORKER_PROMPT, settings),
       isolation: 'worktree',
@@ -192,15 +192,15 @@ export const register: Register = (on, options) => {
     })
     await $.agent.register({
       name: 'queue',
-      description: 'The flow-board merge queue. Started by the plugin when a PR is handed over; never start it yourself.',
+      description: 'The flow merge queue. Started by the plugin when a PR is handed over; never start it yourself.',
       prompt: fill(QUEUE_PROMPT, settings),
       isolation: 'worktree',
       background: true,
     })
 
     await $.tool.register({
-      name: 'flow_handover',
-      description: 'Hand an approved PR to the flow-board merge queue. Records the PR at its current head and starts a queue if none is running. ' +
+      name: 'handover',
+      description: 'Hand an approved PR to the flow merge queue. Records the PR at its current head and starts a queue if none is running. ' +
         'Managers call this after reviewing a worker\'s PR; leave the branch alone afterwards.',
       inputSchema: {
         type: 'object',
@@ -216,7 +216,7 @@ export const register: Register = (on, options) => {
       isDeferred: false,
     })
     await $.tool.register({
-      name: 'flow_queue',
+      name: 'queue',
       description: 'The merge queue\'s worklist. action "list": pending and taken handovers in arrival order. ' +
         '"take" (pr), "done" (pr, sha, report) or "back" (pr, reason) record what the queue did. Only the merge queue calls this.',
       inputSchema: {
@@ -233,7 +233,7 @@ export const register: Register = (on, options) => {
       isDeferred: false,
     })
     await $.tool.register({
-      name: 'flow_status',
+      name: 'status',
       description: 'The flow at a glance: every manager, worker and queue of this session with its status and last report, and every handed-over PR.',
       inputSchema: { type: 'object', properties: {} },
       isDeferred: false,
@@ -271,7 +271,7 @@ export const register: Register = (on, options) => {
       if (['Edit', 'Write', 'NotebookEdit', 'MultiEdit'].includes(e.tool)) {
         const me = (await $.agent.list()).find(a => a.id === id)
         if (me?.type === MANAGER) {
-          return { deny: 'flow-board: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
+          return { deny: 'flow: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
         }
       }
       const t = await $.clock.now()
@@ -284,7 +284,7 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('tool.call', { tool: 'mcp__flow-board__flow_handover' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__flow__handover' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     const pr = Number(input.pr)
     if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: pr must be a PR number.' }
@@ -309,7 +309,7 @@ export const register: Register = (on, options) => {
     return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The queue reports back to ${h.reportTo} by message.` }
   })
 
-  on('tool.call', { tool: 'mcp__flow-board__flow_queue' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__flow__queue' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     const action = String(input.action)
     const all = await read($, handovers)
@@ -336,7 +336,7 @@ export const register: Register = (on, options) => {
     return { result: `PR #${key}: ${next.status}.` }
   })
 
-  on('tool.call', { tool: 'mcp__flow-board__flow_status' }, async $ => {
+  on('tool.call', { tool: 'mcp__flow__status' }, async $ => {
     const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
     const lines: string[] = []
     const byParent = new Map<string | undefined, AgentRow[]>()

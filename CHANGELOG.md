@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-10-09
+
+### Changed
+
+- Renamed from flow-board to flow: the plugin and marketplace are `flow`, the agent types
+  `flow:manager`, `flow:worker`, `flow:queue`, the skill `flow:dispatch`, and the tools
+  `mcp__flow__handover`, `mcp__flow__queue`, `mcp__flow__status`. Install with
+  `/plugin install flow --marketplace Ying-Kai-Liao/flow`.
+- The dispatch skill leaves work run through Orca to the orca-flow skill.
+
 ## [0.2.2] - 2026-10-09
 
 ### Fixed

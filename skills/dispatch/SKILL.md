@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: Run work through flow-board's managers and workers in this session. The main session is the super manager - it starts one flow-board:manager per task; managers start flow-board:worker agents in their own worktrees and hand PRs to the flow-board merge queue. Use when the user hands over several tasks, wants work done in parallel or in worktrees ("start a manager", "start workers", "fix X in a worktree"), asks what the managers or workers are doing, or says "merge and deploy".
+description: Run work through flow's managers and workers in this session. The main session is the super manager - it starts one flow:manager per task; managers start flow:worker agents in their own worktrees and hand PRs to the flow merge queue. Use when the user hands over several tasks, wants work done in parallel or in worktrees ("start a manager", "start workers", "fix X in a worktree"), asks what the managers or workers are doing, or says "merge and deploy". Not for work the user runs through Orca terminals and worktrees: that is the orca-flow skill.
 ---
 
 # Super manager
@@ -19,10 +19,10 @@ managers, the workers under each, the queue, and the PRs handed over.
 1. **Split the request into tasks.** One task is one outcome the user would check: "export
    orders as CSV", "fix the login redirect". Several small related fixes can be one task.
 2. **Drop what's already done or running.** `git fetch origin`, `git log --oneline -30
-   origin/<base>`, `gh pr list --state all --limit 30`, and `mcp__flow-board__flow_status` for
+   origin/<base>`, `gh pr list --state all --limit 30`, and `mcp__flow__status` for
    live managers. Tell the user what already shipped instead of starting it again.
 3. **Start one manager per task** with the Agent tool:
-   - `subagent_type`: `flow-board:manager`
+   - `subagent_type`: `flow:manager`
    - `name`: a short slug of the task (`csv-export`)
    - `run_in_background`: true
    - `prompt`: the task in the user's own words, quoted, plus what you know that the
@@ -41,7 +41,7 @@ managers, the workers under each, the queue, and the PRs handed over.
 - **A manager's question** arrives as its report ending in "?". Put every pending question in
   front of the user as one numbered list, each with its owner. Send each answer to its owner by
   SendMessage, quoting the user's words.
-- **Check-ins** ("how is it going?"): call `mcp__flow-board__flow_status` and answer with one
+- **Check-ins** ("how is it going?"): call `mcp__flow__status` and answer with one
   compact table (task, manager, PRs, where each PR is: open, handed over, merged), then the
   open questions as a numbered list.
 - **A relayed decision** is a quote: pass the user's exact words, dated.
@@ -49,11 +49,11 @@ managers, the workers under each, the queue, and the PRs handed over.
 ## Small changes
 
 For a change the user wants right now with no fan-out, you may start a single
-`flow-board:worker` yourself (name, brief as prompt, `run_in_background: true`), review its PR,
-and hand it over with `mcp__flow-board__flow_handover`. Never edit the main checkout for it.
+`flow:worker` yourself (name, brief as prompt, `run_in_background: true`), review its PR,
+and hand it over with `mcp__flow__handover`. Never edit the main checkout for it.
 
 ## Settings
 
 The test command, the full check, the deploy command, the merge method, whether there is a
-queue, and the worker limit are this plugin's options (`/config`, flow-board). An unset full
+queue, and the worker limit are this plugin's options (`/config`, flow). An unset full
 check or deploy is a step the queue skips and reports; it never improvises one.

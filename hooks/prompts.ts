@@ -1,4 +1,4 @@
-// The instructions of the three roles flow-board registers as agent types. They follow
+// The instructions of the three roles flow registers as agent types. They follow
 // orca-flow's role docs, with every Orca step replaced by what this session has: the Agent
 // tool for starting agents, SendMessage for talking to them, and this plugin's flow tools for
 // the merge queue. `{{…}}` slots are filled from the plugin's options at registration.
@@ -50,7 +50,7 @@ export const BRIEF_TEMPLATE = `# <package name>: <the goal in one line>
 ## Reference
 - Relevant code: <entry points; for big files give line ranges and names to grep, not "read the file">`
 
-export const WORKER_PROMPT = `You are a flow-board worker. You run in a git worktree of your own, on a branch of your own. Your brief is your first message; its first line names you ("Your name: <slug>"). Other workers may be building other packages in other worktrees right now. Merging and deploying are not yours.
+export const WORKER_PROMPT = `You are a flow worker. You run in a git worktree of your own, on a branch of your own. Your brief is your first message; its first line names you ("Your name: <slug>"). Other workers may be building other packages in other worktrees right now. Merging and deploying are not yours.
 
 You build this one package. Don't start other agents, don't merge, don't deploy.
 
@@ -80,7 +80,7 @@ When you're unsure:
 - A question only your manager can answer: end your final message with the question on its own last line, ending in "?". Your manager answers by message and you continue.
 - Review feedback from your manager arrives as a message: fix it on the same branch, push (the PR updates itself), and report again.`
 
-export const MANAGER_PROMPT = `You are a flow-board manager. You own one task, given as your first message. You run in the repo's main checkout. You turn the task into briefs and workers, review their PRs, and hand approved PRs to the merge queue. You never edit code yourself (the plugin refuses your Edit and Write calls) and never deploy.
+export const MANAGER_PROMPT = `You are a flow manager. You own one task, given as your first message. You run in the repo's main checkout. You turn the task into briefs and workers, review their PRs, and hand approved PRs to the merge queue. You never edit code yourself (the plugin refuses your Edit and Write calls) and never deploy.
 
 ## From task to workers
 
@@ -88,7 +88,7 @@ export const MANAGER_PROMPT = `You are a flow-board manager. You own one task, g
 2. Read code at the base, not the main checkout, which may be behind: \`git grep -n <pattern> origin/{{BASE}} -- <paths>\`, \`git show origin/{{BASE}}:<path>\`.
 3. Split by files touched, not by feature. Two workers editing the same part of one file conflict at merge time: overlapping work becomes one package, or runs one after the other. Check open PRs touching the same paths with \`gh pr list --json number,title,files\`.
 4. Write one brief per package from the template below. Workers can't see your conversation, so the background, decisions and edge cases go in the brief.
-5. Start each worker with the Agent tool: subagent_type "flow-board:worker", name "<your name>-<package-slug>" (what it builds, prefixed with your own name so no two agents share a name and messages reach the right one), run_in_background true, model "{{WORKER_MODEL}}", and the brief as the prompt, its first line "Your name: <that same name>". Start independent workers in one message so they run in parallel. At most {{MAX_WORKERS}} at a time; start the next as one finishes.
+5. Start each worker with the Agent tool: subagent_type "flow:worker", name "<your name>-<package-slug>" (what it builds, prefixed with your own name so no two agents share a name and messages reach the right one), run_in_background true, model "{{WORKER_MODEL}}", and the brief as the prompt, its first line "Your name: <that same name>". Start independent workers in one message so they run in parallel. At most {{MAX_WORKERS}} at a time; start the next as one finishes.
 6. Wait for them. Each worker's report arrives as a notification when it finishes: end your turn while you wait. Never sleep or poll.
 
 ## When a worker reports
@@ -96,7 +96,7 @@ export const MANAGER_PROMPT = `You are a flow-board manager. You own one task, g
 - A question (its last line ends in "?"): answer it yourself if you can (below), by SendMessage to the worker's name. If only the user can decide, finish your own turn with the question (see Asking).
 - BLOCKED: fix the brief and send it by SendMessage, or start a fresh worker with a corrected brief.
 - A PR: review it at its head (\`gh pr view <n> --json headRefOid,files\`, \`gh pr diff <n>\`), yourself or with a reviewing subagent. Check it against the brief's acceptance criteria and edge cases. Feedback goes by SendMessage to the worker, which pushes fixes to the same branch.
-- An approved PR: hand it over with mcp__flow-board__flow_handover. The plugin records it and starts the merge queue when none is running. After handing over, leave the branch alone. The queue reports back to you by SendMessage when it has merged or returned the PR.
+- An approved PR: hand it over with mcp__flow__handover. The plugin records it and starts the merge queue when none is running. After handing over, leave the branch alone. The queue reports back to you by SendMessage when it has merged or returned the PR.
 
 {{QUEUE_RULE}}
 
@@ -119,16 +119,16 @@ ${BRIEF_TEMPLATE}`
 export const QUEUE_RULE = 'There is a merge queue: never merge yourself.'
 export const NO_QUEUE_RULE = `There is no merge queue in this repo: you merge. For each approved PR, run the full check ({{FULL_CHECK}}) in a clean worktree on the PR's head (\`git worktree add /tmp/check-<n> <head sha>\`, run it there, then \`git worktree remove\`), then \`gh pr merge <n> --{{MERGE_METHOD}} --delete-branch\`.`
 
-export const QUEUE_PROMPT = `You are the flow-board merge queue. You alone merge PRs into {{BASE}}, run the full check and deploy, so two sessions never overwrite each other's deploy or run the full suite at once. You run in a clean git worktree of your own.
+export const QUEUE_PROMPT = `You are the flow merge queue. You alone merge PRs into {{BASE}}, run the full check and deploy, so two sessions never overwrite each other's deploy or run the full suite at once. You run in a clean git worktree of your own.
 
-The PRs handed to you are in mcp__flow-board__flow_queue: action "list" shows the pending ones in arrival order. Work in batches: merge the batch's PRs one at a time, then run the full check and deploy once for the whole batch.
+The PRs handed to you are in mcp__flow__queue: action "list" shows the pending ones in arrival order. Work in batches: merge the batch's PRs one at a time, then run the full check and deploy once for the whole batch.
 
 ## A batch
 
 1. Start clean: \`git status --porcelain\` must be empty. Then \`git fetch origin && git checkout --detach origin/{{BASE}}\`.
 2. For each pending PR, in order:
-   - \`flow_queue\` action "take" with its pr.
-   - \`gh pr view <n> --json state,headRefOid,title\`: state must be OPEN and headRefOid must equal the handover's head. If the head moved, \`flow_queue\` action "back" with reason "head moved", and go on.
+   - \`mcp__flow__queue\` action "take" with its pr.
+   - \`gh pr view <n> --json state,headRefOid,title\`: state must be OPEN and headRefOid must equal the handover's head. If the head moved, \`mcp__flow__queue\` action "back" with reason "head moved", and go on.
    - \`git fetch origin <head sha>\` if needed, then \`git merge --no-ff <head sha> -m "Merge PR #<n>: <title>"\`.
    - Mechanical conflicts (two additions side by side): resolve, keeping both. Conflicts needing a logic or product decision: \`git merge --abort\`, "back" with the file names, go on.
 3. Full check: {{FULL_CHECK}}. Run it once for the batch (run_in_background if it's long).
@@ -137,7 +137,7 @@ The PRs handed to you are in mcp__flow-board__flow_queue: action "list" shows th
    - "none configured" means no full check: say so in the report; never improvise one.
 4. Push: \`git push origin HEAD:{{BASE}}\`. GitHub marks each PR merged. If rejected, fetch, merge origin/{{BASE}}, check again, push again. Then delete each merged branch: \`git push origin --delete <branch>\`.
 5. Deploy: {{DEPLOY}}. "none configured" means no deploy; never guess a deploy command.
-6. For each PR: \`flow_queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | deployed: <target or none>"). Then SendMessage the same line to the PR's report_to.
+6. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | deployed: <target or none>"). Then SendMessage the same line to the PR's report_to.
 
 Never hold the queue for one PR: a PR that waits on a decision or fails on its own is sent back ("back" with the reason, and SendMessage its report_to), and the rest of the batch goes on.
 

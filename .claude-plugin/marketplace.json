@@ -1,12 +1,12 @@
 {
-  "name": "flow-board",
-  "description": "flow-board: parallel coding workers in one Claude Code session, with a Flow pane",
+  "name": "flow",
+  "description": "flow: parallel coding workers in one Claude Code session, with a Flow pane",
   "owner": {
     "name": "Ying-Kai Liao"
   },
   "plugins": [
     {
-      "name": "flow-board",
+      "name": "flow",
       "source": "./"
     }
   ]
