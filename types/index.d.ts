@@ -14,10 +14,14 @@ export type Activity = {
   lastAt: number
   // The newest last, at most LOG_MAX lines: "Edit src/app.ts", "Bash npm test".
   log: string[]
+  // The newest call in a few plain words for the card: "running tests", "editing app.ts".
+  doing?: string
   // The last turn's final text: a worker's report, or the question it ended on.
   answer?: string
   // The latest turn.step's context fill; absent until the agent has taken one.
   usage?: { tokens: number; model: string }
+  // When the roster first saw the agent ended; its running time stops there.
+  endedAt?: number
   // When the plugin told this agent to hand off; once per agent.
   handoffNotifiedAt?: number
 }
