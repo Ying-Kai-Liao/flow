@@ -1,0 +1,49 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.2.0] - 2026-10-09
+
+### Added
+
+- Managers, workers and a merge queue in one session. The main session is the super manager
+  (the `dispatch` skill) and starts one `flow-board:manager` per task.
+- `flow-board:manager` owns a task: it writes briefs, starts `flow-board:worker` agents in git
+  worktrees of their own, and reviews their PRs. Managers can't edit code.
+- `flow_handover` tool: a manager hands an approved PR to the plugin, which records its head and
+  starts a `flow-board:queue` agent if none is running.
+- `flow-board:queue` agent: merges handed-over PRs, runs the full check, pushes and deploys.
+  Its worklist is the `flow_queue` tool (`list`, `take`, `done`, `back`).
+- `flow_status` tool: the tree and the handed-over PRs as text, for check-ins.
+- Options (`/config` → flow-board): `test_command`, `full_check_command`, `deploy_command`,
+  `merge_queue`, `merge_method`, `max_workers`, `worker_model` and `base_branch`. An unset full
+  check or deploy is skipped and reported, not improvised.
+
+### Changed
+
+- The Flow pane draws the tree of the main session, managers and workers, and the PRs handed to
+  the queue, instead of a flat list of workers.
+- The status line reports managers, workers and queued PRs, for example
+  `flow: 2 managers · 3 workers · queue: 1 PR · /flow`.
+- The README describes the roles, settings and tools above.
+
+## [0.1.0] - 2026-10-09
+
+### Added
+
+- Parallel coding workers in one Claude Code session. Workers are background subagents of the
+  main session, each in a git worktree of its own, started through the `flow-board:worker`
+  agent type.
+- The Flow pane (`/flow`): one row per worker with its status. Click a row to see that worker's
+  tool calls and final report; **Message** starts a message to the selected worker in the
+  prompt, **Back** returns to the list.
+- A status line with the count of live and ended workers.
+- Toasts when a worker finishes its turn, asks a question or changes status.
+- Moved out of orca-flow (`mod/flow-board`, #21) into a plugin of its own, with a marketplace
+  file so it installs with `/plugin install`.
+
+[0.2.0]: https://github.com/Ying-Kai-Liao/flow-board/commit/314ae64
+[0.1.0]: https://github.com/Ying-Kai-Liao/flow-board/commit/8828e2f
