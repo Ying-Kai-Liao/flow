@@ -1,5 +1,6 @@
 import type { AgentInfo } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const

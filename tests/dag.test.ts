@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from './support'
 import type { DagNode, Handover } from '../types'
 import { addNodes, agentFor, asksQuestion, describe, evaluate, layers, noticeText, settle } from '../hooks/dag'
 import type { AgentFact, Facts, Graph, Plan } from '../hooks/dag'

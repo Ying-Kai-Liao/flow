@@ -1,4 +1,5 @@
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
 import { ancestryQueries, containedCandidates, dirtyFiles, leftoverLine, parsePorcelain, selectCleanup, sweepText, typeLinks, waitingPaths } from '../hooks/clean'
 import type { CleanInputs, PrRow } from '../hooks/clean'
