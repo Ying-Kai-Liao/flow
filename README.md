@@ -89,7 +89,9 @@ worker to fix X".
 |---|---|---|
 | `test_command` | tests covering the changed files | workers |
 | `full_check_command` | none (the queue says so) | the queue, once per batch |
-| `deploy_command` | none (no deploy) | the queue, after pushing |
+| `deploy_command` | none (no deploy) | the queue, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
+| `deploy_targets` | none | the queue: ordered deploy targets (see Deploying). A JSON array or a JSON string; wins over `deploy_command` |
+| `state_file` | none | the queue: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
 | `merge_queue` | on | off: managers merge themselves with `merge_method` |
 | `merge_method` | `squash` | managers, when there is no queue |
 | `max_workers` | 3 | workers per manager at a time |
@@ -99,6 +101,25 @@ worker to fix X".
 | `base_branch` | the remote's default branch | everyone |
 
 An unset full check or deploy is a step that's skipped and reported, never improvised.
+
+## Deploying
+
+`deploy_targets` is an ordered list. Per target, the queue runs `backup` commands (every batch, checking their output is sane), then the `deploy` commands, then fetches `health_url` (retrying a few minutes) until it contains the short sha just pushed, then follows the free-text `verify` notes. It stops at the first failing target and reports it, e.g. `deployed: demo ✓, production ✗ at health: ...`. The PRs are already merged by then; they are marked done with the failure in the report.
+
+```json
+{
+  "deploy_targets": [
+    { "name": "demo", "deploy": ["./deploy.sh demo"], "health_url": "https://demo.example.com/health" },
+    { "name": "production", "backup": ["./scripts/backup.sh"], "deploy": ["./deploy.sh prod"],
+      "health_url": "https://example.com/health", "verify": ["check the error rate for 5 minutes"] }
+  ],
+  "state_file": { "path": "NOW.md", "keep": 10 }
+}
+```
+
+`state_file` (keys are read from the options; a per-repo `.claude/flow.json` loader, when present, is the natural home): after deploying, the queue adds one entry at the top of the file (date, PRs with titles, deployed sha and targets, verified, not verified, pending decisions), moves entries beyond `keep` (default 10) to the end of the archive (default `<stem>-archive.md` next to it, oldest last), and commits and pushes "Status: <PRs> deployed <sha>" without deploying again. Workers are told never to edit it.
+
+After deploying, a PR whose `after_deploy` an agent can check gets a check-only worker (`<queue>-verify-<pr>`); one that needs a person is reported as `needs a person: PR #<n>: ...`. A PR's `pending` decisions go into the reports and the status entry as `pending decisions: PR #<n>: ...`.
 
 ## Tools the agents use
 

@@ -8,21 +8,108 @@ export type Settings = {
   testCommand: string
   fullCheck: string
   deployCommand: string
+  deployTargets: DeployTarget[]
+  stateFile: StateFile | undefined
   mergeMethod: string
   useQueue: boolean
   maxWorkers: number
   workerModel: string
 }
 
+export type DeployTarget = { name: string; backup: string[]; deploy: string[]; healthUrl?: string; verify: string[] }
+export type StateFile = { path: string; keep: number; archive: string }
+
+function strings(v: unknown): string[] | undefined {
+  if (typeof v === 'string') return v.trim() === '' ? [] : [v]
+  if (Array.isArray(v) && v.every(x => typeof x === 'string')) return v.filter(x => x.trim() !== '')
+  return undefined
+}
+
+function jsonOf(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw
+  try { return JSON.parse(raw) } catch { return undefined }
+}
+
+// Plugin options can only carry strings, so a JSON string is accepted next to a real array.
+// An entry without a name or without deploy commands is dropped: a half-configured target
+// must never turn into a guessed deploy.
+export function deployTargetsOf(raw: unknown): DeployTarget[] {
+  const list = jsonOf(raw)
+  if (!Array.isArray(list)) return []
+  const out: DeployTarget[] = []
+  for (const e of list) {
+    if (typeof e !== 'object' || e === null) continue
+    const r = e as Record<string, unknown>
+    const deploy = strings(r.deploy)
+    const backup = r.backup === undefined ? [] : strings(r.backup)
+    const verify = r.verify === undefined ? [] : strings(r.verify)
+    if (typeof r.name !== 'string' || r.name.trim() === '' || !deploy || deploy.length === 0 || !backup || !verify) continue
+    const healthUrl = typeof r.health_url === 'string' && r.health_url.trim() !== '' ? r.health_url.trim() : undefined
+    out.push({ name: r.name.trim(), backup, deploy, ...(healthUrl ? { healthUrl } : {}), verify })
+  }
+  return out
+}
+
+// A plain path or { path, keep?, archive? }; the archive sits next to the file as <stem>-archive.md.
+export function stateFileOf(raw: unknown): StateFile | undefined {
+  let v = raw
+  if (typeof v === 'string' && v.trim().startsWith('{')) v = jsonOf(v)
+  if (typeof v === 'string') v = { path: v }
+  if (typeof v !== 'object' || v === null) return undefined
+  const r = v as Record<string, unknown>
+  if (typeof r.path !== 'string' || r.path.trim() === '') return undefined
+  const path = r.path.trim()
+  const keep = typeof r.keep === 'number' && r.keep >= 1 ? Math.floor(r.keep) : 10
+  const archive = typeof r.archive === 'string' && r.archive.trim() !== ''
+    ? r.archive.trim() : path.replace(/(\.[^./]*)?$/, '-archive.md')
+  return { path, keep, archive }
+}
+
+// No targets but a deploy_command: one target, so older configs keep working.
+export function targetsOf(s: Pick<Settings, 'deployCommand' | 'deployTargets'>): DeployTarget[] {
+  if (s.deployTargets.length > 0) return s.deployTargets
+  return s.deployCommand ? [{ name: 'default', backup: [], deploy: [s.deployCommand], verify: [] }] : []
+}
+
+export function deploySection(s: Pick<Settings, 'deployCommand' | 'deployTargets'>): string {
+  const targets = targetsOf(s)
+  if (targets.length === 0) return 'none configured: no deploy; never guess a deploy command.'
+  const lines = [`${targets.length === 1 ? 'one target' : `${targets.length} targets, in this order`}. Stop at the first target that fails: do not deploy the ones after it.`]
+  targets.forEach((t, i) => {
+    lines.push(`   ${i + 1}) Target "${t.name}":`)
+    let n = 0
+    if (t.backup.length > 0) {
+      lines.push(`      ${++n}. Backup, before deploying: run ${t.backup.map(c => `\`${c}\``).join(', then ')}. Check the output is sane (for a restore listing, the counts are above 0). A bad backup fails this target before anything is deployed.`)
+    }
+    lines.push(`      ${++n}. Deploy: run ${t.deploy.map(c => `\`${c}\``).join(', then ')}, in this order; a non-zero exit fails the target.`)
+    if (t.healthUrl) {
+      lines.push(`      ${++n}. Health: fetch ${t.healthUrl} (retry for a few minutes while it restarts). The response must contain the short sha just pushed; if it never does, this target failed at health.`)
+    }
+    if (t.verify.length > 0) {
+      lines.push(`      ${++n}. Verify, free text for you to follow and report: ${t.verify.join(' / ')}`)
+    }
+  })
+  lines.push(`   The PRs are already pushed and merged when a target fails: say so. They are still marked "done", with the failure in the report (not "back"). Report per target, like "deployed: demo ✓, production ✗ at health: <what>", to each PR's report_to and to main.`)
+  return lines.join('\n')
+}
+
+function stateStep(f: StateFile | undefined): string {
+  if (!f) return ''
+  return `
+8. Status file \`${f.path}\` (only you edit it). Add one entry at the top (newest first), committed in the repo: date, the PRs of the batch with titles, the deployed short sha and targets, what was verified, what was not, and the pending decisions. When the file holds more than ${f.keep} entries, move the oldest ones, in their order, to the end of \`${f.archive}\`. Commit "Status: <PRs> deployed <sha>" and \`git push origin HEAD:{{BASE}}\`. Do not deploy again for this status-only commit.`
+}
+
 export function fill(text: string, s: Settings): string {
   return text
-    .replaceAll('{{BASE}}', s.base)
     .replaceAll('{{TEST}}', s.testCommand || 'none configured: run the tests that cover the files you changed')
     .replaceAll('{{FULL_CHECK}}', s.fullCheck || 'none configured')
-    .replaceAll('{{DEPLOY}}', s.deployCommand || 'none configured')
+    .replaceAll('{{STATE_FILE_RULE}}', s.stateFile ? `\n- Never edit the status file \`${s.stateFile.path}\`: only the merge queue writes it.` : '')
+    .replaceAll('{{STATE_STEP}}', stateStep(s.stateFile))
+    .replaceAll('{{DEPLOY}}', deploySection(s))
     .replaceAll('{{MERGE_METHOD}}', s.mergeMethod)
     .replaceAll('{{MAX_WORKERS}}', String(s.maxWorkers))
     .replaceAll('{{WORKER_MODEL}}', s.workerModel)
+    .replaceAll('{{BASE}}', s.base)
 }
 
 export const BRIEF_TEMPLATE = `# <package name>: <the goal in one line>
@@ -54,6 +141,8 @@ export const WORKER_PROMPT = `You are a flow worker. You run in a git worktree o
 
 You build this one package. Don't start other agents, don't merge, don't deploy.
 
+If the line after the name in your brief says "Check only:", you verify a deployed change and nothing else: skip the branch rename, the read-before-change steps and Finishing below. Edit nothing, commit nothing, open no PR. Report pass or fail with evidence (commands run, output, status codes) as your final message.
+
 Before you touch anything:
 - Rename your branch so people can find it: \`git branch -m flow/<your name>\`. If the brief has a line \`Continue on branch: flow/<x>\`, you continue earlier work instead: \`git fetch origin && git checkout -B flow/<x> origin/flow/<x>\` (no rename), read the PR's \`## Handoff\` section (\`gh pr view --json body\`), and push to that same branch.
 - Read what you're going to change and what calls it: a small file whole; for a big one, the functions you touch and their callers, found with grep.
@@ -63,7 +152,7 @@ Before you touch anything:
 How to write it:
 - Code that reads like the code around it. Comments say why, not what.
 - Change a rule, change its tests. Don't delete tests. A new rule gets a test.
-- No drive-by refactors or renames.
+- No drive-by refactors or renames.{{STATE_FILE_RULE}}
 
 Verifying: run {{TEST}}. Don't run the full check ({{FULL_CHECK}}); the merge queue runs it once per batch. Stop only processes you started, by PID; never pkill or killall.
 
@@ -159,9 +248,12 @@ The PRs handed to you are in mcp__flow__queue: action "list" shows the pending o
    - A real bug in one PR: reset to before its merge (\`git log --first-parent --oneline origin/{{BASE}}..HEAD\`, \`git reset --hard <its merge commit>^1\`), redo the merges after it, send it back with the failing output, check again.
    - "none configured" means no full check: say so in the report; never improvise one.
 4. Push: \`git push origin HEAD:{{BASE}}\`. GitHub marks each PR merged. If rejected, fetch, merge origin/{{BASE}}, check again, push again. Then delete each merged branch: \`git push origin --delete <branch>\`.
-5. Deploy: {{DEPLOY}}. "none configured" means no deploy; never guess a deploy command.
-6. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | deployed: <target or none>"). Then SendMessage the same line to the PR's report_to.
+5. Deploy: {{DEPLOY}}
+6. After_deploy checks. Only for PRs whose targets all deployed fine (for a PR whose deploy failed, skip the check and say why). For each such PR whose \`after_deploy\` is not "none", judge from its text:
+   - An agent can check it (commands, HTTP calls, logs, an e2e skill): start a check-only worker with the Agent tool: subagent_type "flow:worker", name "<your name>-verify-<pr>", run_in_background, brief starting with the line "Check only:" then what to check, the deployed short sha and where. Wait for its report before you finish; the result goes to the PR's report_to.
+   - It needs a person (a browser look, a real conversation, a judgment call): write the line "needs a person: PR #<n>: <after_deploy>" in the report to report_to, SendMessage the same line to main, and put it in your final report.
+7. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | deployed: <per target result, or none> | after_deploy: <result or needs a person line> | pending decisions: <its pending, if not none>"). Then SendMessage the same line to the PR's report_to. Every PR's \`pending\` (not "none") goes into this line, as "pending decisions: PR #<n>: …"; SendMessage each such line to main as well.{{STATE_STEP}}
 
 Never hold the queue for one PR: a PR that waits on a decision or fails on its own is sent back ("back" with the reason, and SendMessage its report_to), and the rest of the batch goes on.
 
-After a batch, call action "list" again: PRs may have arrived meanwhile. When it is empty, end with a short report of what you merged, the commit, and what you sent back. The plugin starts a fresh queue when the next PR is handed over.`
+After a batch, call action "list" again: PRs may have arrived meanwhile. When it is empty, end with a short report: merged, commit, per-target deploy result, after_deploy results and "needs a person" lines, "pending decisions: PR #<n>: …" lines, and what you sent back. The plugin starts a fresh queue when the next PR is handed over.`
