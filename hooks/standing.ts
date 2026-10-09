@@ -13,10 +13,12 @@ import type { Inbox, Question } from './inbox'
 //   answer   must resolve to one of the question's options (text, letter or number), else the rule is skipped
 //   blocking a blocking question is answered only by a rule with blocking: true
 //   from     the asker's name (a manager's continuation `foo-2` counts as `foo`)
+//   kinds    the kinds of inbox item it may answer ("ask" for an ordinary question, "deploy" for a deploy
+//            approval). Absent: ordinary questions only. A deploy approval is answered only by a rule that names "deploy".
 // A rule without an id gets a derived one from its file and 1-based position in that file's list:
 // `personal:1`, `repo:2`, `config:1`. Positions count every entry, valid or not, so they stay stable.
 
-export type Rule = { id?: string; topic?: string; match?: string; answer: string; blocking?: boolean; from?: string; note?: string }
+export type Rule = { id?: string; topic?: string; match?: string; answer: string; blocking?: boolean; from?: string; note?: string; kinds?: string[] }
 export type Source = 'personal' | 'repo' | 'config'
 export type Resolved = { rid: string; source: Source; pos: number; rule: Rule; re?: RegExp }
 
@@ -35,6 +37,8 @@ export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { erro
   if (topic === '' && match === '') return { error: 'needs a topic or a match' }
   if (answer === '') return { error: 'needs an answer' }
   if (r.blocking !== undefined && typeof r.blocking !== 'boolean') return { error: 'blocking must be true or false' }
+  const kinds = Array.isArray(r.kinds) ? r.kinds.map(text).filter(k => k !== '') : typeof r.kinds === 'string' && text(r.kinds) !== '' ? [text(r.kinds)] : undefined
+  if (r.kinds !== undefined && (kinds === undefined || kinds.length === 0)) return { error: 'kinds must be a list of kind names' }
   let re: RegExp | undefined
   if (match !== '') {
     try {
@@ -50,6 +54,7 @@ export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { erro
     answer,
     ...(r.blocking === true ? { blocking: true } : {}),
     ...(text(r.from) !== '' ? { from: text(r.from) } : {}),
+    ...(kinds !== undefined ? { kinds } : {}),
     ...(text(r.note) !== '' ? { note: text(r.note) } : {}),
   }
   return { rule, ...(re !== undefined ? { re } : {}) }
@@ -84,7 +89,7 @@ export function parseRules(value: unknown, source: Source, label: string, warnin
   return out
 }
 
-export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner'> & { topic?: string }
+export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner' | 'kind'> & { topic?: string }
 
 // The first rule that applies to the question, and the option it answers with. A rule whose answer is not
 // one of the question's options does not apply; the next rule gets its turn.
@@ -96,6 +101,10 @@ export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answ
     if (r.re !== undefined && !r.re.test(qText)) continue
     if (rule.from !== undefined && noteKey(rule.from) !== noteKey(q.owner)) continue
     if (q.blocking && rule.blocking !== true) continue
+    // A deploy approval is the user's call: only a rule that names the kind may answer it.
+    const kind = q.kind ?? 'ask'
+    if (kind === 'deploy' && rule.kinds?.includes('deploy') !== true) continue
+    if (rule.kinds !== undefined && !rule.kinds.includes(kind)) continue
     const c = parseChoice(q.options, rule.answer)
     if (c.free) continue
     return { rule: r, answer: c.text }

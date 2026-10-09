@@ -21,10 +21,10 @@ test('deployTargetsOf keeps valid entries and drops invalid ones', () => {
     { name: 'nodeploy' },
     { name: 'bad', deploy: [1] },
     'text',
-    { name: 'full', backup: ['b'], deploy: 'd', health_url: ' http://h ', verify: ['v'] },
+    { name: 'full', mode: 'auto', backup: ['b'], deploy: 'd', health_url: ' http://h ', verify: ['v'] },
   ])).toEqual([
-    { name: 'demo', backup: [], deploy: ['x'], verify: [] },
-    { name: 'full', backup: ['b'], deploy: ['d'], healthUrl: 'http://h', verify: ['v'] },
+    { name: 'demo', mode: 'auto', backup: [], deploy: ['x'], verify: [] },
+    { name: 'full', mode: 'auto', backup: ['b'], deploy: ['d'], healthUrl: 'http://h', verify: ['v'] },
   ])
 })
 
@@ -58,7 +58,8 @@ test('a deploy_command alone is one target named default', () => {
 test('two targets render in order with backup, health and verify only where set', () => {
   const out = fill('{{DEPLOY}}', { ...BASE, deployTargets: TWO })
   expect(out.indexOf('Target "demo"')).toBeLessThan(out.indexOf('Target "production"'))
-  expect(out).toContain('Stop at the first target that fails')
+  expect(out).toContain('A target that FAILS stops the ones after it')
+  expect(out).toContain('A target that is skipped')
   expect(out).toContain('https://demo.example/health')
   expect(out).toContain('`./backup`')
   expect(out).toContain('`./deploy a`, then `./deploy b`')

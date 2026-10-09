@@ -196,6 +196,9 @@ export type Question = {
   blocking: boolean
   context?: string
   topic?: string
+  // What kind of item: absent is an ordinary question. "deploy" asks the user to approve one deploy
+  // target at one sha; standing answers never answer it, and no agent waits for the reply.
+  kind?: 'deploy'
   askedAt: number
   state: 'open' | 'answered'
   answer?: string
@@ -212,6 +215,22 @@ export type Question = {
 }
 
 export type Inbox = { next: number; items: Question[] }
+
+// Deploy gates (hooks/deploy.ts), kept in <state dir>/deploys.json.
+export type DeployMode = 'auto' | 'confirm'
+export type Hold = { until: 'batch' | 'released'; by: string; at: number; reason?: string }
+// The inbox item that asks for a deploy, and the one sha it approves.
+export type Approval = { qid: string; sha: string; state: 'pending' | 'approved'; at: number }
+export type TargetState = {
+  deployedSha?: string
+  deployedAt?: number
+  hold?: Hold
+  approval?: Approval
+  // A deploy-only run has work here: set by an approved deploy, or by releasing a hold on an auto
+  // target; cleared when the target is deployed.
+  due?: boolean
+}
+export type Deploys = { targets: Record<string, TargetState> }
 
 export type Filing = {
   summary: string
@@ -262,6 +281,9 @@ declare module 'claude-code' {
       inbox: Inbox
       queueRuns: number
       prCache: PrCache
+      // Deploy gates, mirrored from <state dir>/deploys.json, and how many commits each target is behind the base.
+      deploys: Deploys
+      behind: Record<string, number>
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots

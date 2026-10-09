@@ -321,7 +321,13 @@ session included. A rule in a prompt can be skipped; a refused tool call can't.
 
 ## Deploying
 
-`deploy_targets` is an ordered list. Per target, the queue runs `backup` commands (every batch, checking their output is sane), then the `deploy` commands, then fetches `health_url` (retrying a few minutes) until it contains the short sha just pushed, then follows the free-text `verify` notes. It stops at the first failing target and reports it, e.g. `deployed: demo ✓, production ✗ at health: ...`. The PRs are already merged by then; they are marked done with the failure in the report.
+`deploy_targets` is an ordered list. Per target, the queue runs `backup` commands (every batch, checking their output is sane), then the `deploy` commands, then fetches `health_url` (retrying a few minutes) until it contains the short sha just pushed, then follows the free-text `verify` notes. A target that fails stops the ones after it and is reported, e.g. `deployed: demo ✓, production ✗ at health: ...`. The PRs are already merged by then; they are marked done with the failure in the report.
+
+Each target has a `mode`: `auto` (the default; deployed every batch) or `confirm`. Any other value is treated as `confirm` and the settings warning says so. Before each target the queue calls `mcp__flow__deploy` `gate` with the target and the short sha, and gets `Go`, `Held: <why>` or `Awaits approval: <qid>`; a held or awaiting target is skipped for that batch and the next target goes on (only a failed one stops the rest). The queue records each result with `deployed`, and reports per target, e.g. `deployed: demo ✓, production ⏸ awaits approval (q12)`.
+
+- **Confirm targets.** The gate opens one blocking inbox item for you ("Deploy production at abc12345?", options `deploy` / `not now`, default `not now`, with the commits since that target's last deploy). Repeat gates reuse the open item and move it to the newest sha. Answering `deploy` approves exactly that sha and starts a deploy-only queue run (no merge, no full check, the approved sha); a later batch with a newer sha needs a new approval. `not now` leaves the target behind and the next batch asks again. Standing answers never answer a deploy approval (a rule would have to name `"kinds": ["deploy"]`), and `always` on one makes no rule.
+- **Holds.** `/flow hold <target> [batch|released]` (default `released`) keeps a target from deploying: `batch` stops only the next gate call for it, `released` stays until `/flow release <target>`. Releasing an auto target starts a deploy-only run that catches it up. Main does the same with `mcp__flow__deploy` `hold` / `release` when you say "demo only, hold production"; agents cannot.
+- **Behind count.** `mcp__flow__status` and the Flow pane's merge queue section show `production behind by N commits` (commits between the target's last deployed sha and `origin/<base>`, refreshed with the PR list, never on every render), or `production: no deploy recorded` for a target flow has not deployed. `mcp__flow__deploy` `list` shows every target with mode, hold, last sha and approval. The state is in `deploys.json` next to `inbox.json`.
 
 ```json
 {
@@ -457,7 +463,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `test_command` | tests covering the changed files | `/config`, file | workers |
 | `full_check_command` | none (the queue says so) | `/config`, file | the queue, once per batch |
 | `deploy_command` | none (no deploy) | `/config`, file | the queue, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
-| `deploy_targets` | none | file only | the queue: ordered deploy targets (see Deploying). A JSON array or a JSON string; wins over `deploy_command` |
+| `deploy_targets` | none | file only | the queue: ordered deploy targets, each with an optional `mode` of `auto` (default) or `confirm` (see Deploying). A JSON array or a JSON string; wins over `deploy_command` |
 | `state_file` | none | file only | the queue: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
 | `merge_queue` | on | `/config`, file | off: managers merge themselves with `merge_method` |
 | `merge_method` | `squash` | `/config`, file | managers, when there is no queue |

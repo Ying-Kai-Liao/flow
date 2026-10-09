@@ -107,6 +107,7 @@ put them in front of the user.
   `mcp__flow__standing` `list` shows the rules and suggestions (questions answered the same way
   3+ times): offer a suggestion to the user, don't add it unasked. `remove` a rule when the user
   wants it revoked. Auto-answered questions show in `/flow inbox`.
+- **Deploy approvals.** A deploy target in `confirm` mode puts an inbox item of kind deploy ("Deploy <target> at <sha>?", options `deploy` / `not now`) in front of you. It goes to the user every time, with the commits it ships: never answer it on your own judgment, never with `defaults`, and never make it standing (`always` makes no rule). Answering `deploy` starts a deploy-only queue run for that sha. When the user says "demo only, hold production" (or "hold <target>", "don't deploy <target> yet"), call `mcp__flow__deploy` `hold` with that target and `until` "batch" (just the next batch) or "released" (until they say so); `release` when they lift it. `mcp__flow__deploy` `list` shows each target's mode, hold and how far it is behind; `mcp__flow__status` says "<target> behind by N commits".
 - **Anything you relay to a manager** (answers, scope additions, mid-task fixes) goes both in the
   SendMessage and in `mcp__flow__note` (manager = its name, kind "decision", the user's words
   quoted, with the date), so it survives a restart whether or not the manager writes it down.

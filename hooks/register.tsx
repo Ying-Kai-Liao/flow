@@ -26,7 +26,7 @@ import {
   fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, SESSION_PROMPT, WORKER_PROMPT,
 } from './prompts'
 import type { Settings } from './prompts'
-import { deployTargetsOf, stateFileOf } from './prompts'
+import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
 import { isFable, mergeLayers } from './settings'
 import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
@@ -40,6 +40,11 @@ import {
 import type { Digest, HarnessSpec, Limit } from './sessions'
 import { buildDigest, findWorktree, noteKey, ownerFor } from './state'
 import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
+import {
+  applyAnswer, approvalContext, behindLines, decideGate, EMPTY_DEPLOYS, isApprove, normalizeDeploys, openApprovalItem, openDeployIds, recordDeployed,
+  release, renderList, retargetItem, unknownTarget, withApproval, withHold,
+} from './deploy'
+import type { Deploys, DeployMode, Hold, TargetInfo, TargetState } from './deploy'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
@@ -106,6 +111,10 @@ const sessions = atom({ plugin: 'flow', key: 'sessions' } as const, {} as Record
 const harnessLimits = atom({ plugin: 'flow', key: 'harnessLimits' } as const, [] as Limit[])
 const armed = atom({ plugin: 'flow', key: 'armed' } as const, null as { key: string; at: number } | null)
 const leftovers = atom({ plugin: 'flow', key: 'leftovers' } as const, { worktrees: 0, branches: 0, needsLook: 0 } as Leftovers)
+// Deploy gates, mirrored from <state dir>/deploys.json.
+const deploys = atom({ plugin: 'flow', key: 'deploys' } as const, EMPTY_DEPLOYS as Deploys)
+// Commits each target is behind the base, from git off the 3 s refresh path (refreshBehind).
+const behind = atom({ plugin: 'flow', key: 'behind' } as const, {} as Record<string, number>)
 
 const PR_POLL_MS = 5 * 60_000
 const PR_MIN_GAP_MS = 60_000
@@ -116,6 +125,9 @@ let queueOn = true
 // The cleanup setting and the base it sweeps against; set by register() like queueOn.
 let cleanupMode: 'auto' | 'off' = 'auto'
 let cleanupBase = 'main'
+// The deploy targets and their modes; set by register() like queueOn.
+let deployInfos: TargetInfo[] = []
+const infosOf = (s: Parameters<typeof targetsOf>[0]): TargetInfo[] => targetsOf(s).map(t => ({ name: t.name, mode: t.mode }))
 
 export type Unhanded = { pr: number; title: string; branch: string; note: string }
 
@@ -837,6 +849,7 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
   if (marked.kind === 'refused') return `${id}: refused, it is addressed to ${marked.q.addressee}, not ${by}.`
   if (marked.kind === 'empty') return `${id}: refused, the choice is empty.`
   const { q, answer, isDefault } = marked
+  const deployNote = q.kind === 'deploy' ? await onDeployAnswer($, q, answer) : ''
   let delivered = true
   let hint = ''
   if (needsMessage(q, isDefault)) {
@@ -852,7 +865,148 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
     inbox: { ...cur, items: cur.items.map(x => (x.id === id ? { ...x, delivered } : x)) }, out: undefined,
   }))
   await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${q.question}: ${answer}"`)
-  return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.`
+  return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.${deployNote}`
+}
+
+// Deploy gate changes run one after another, like the inbox's.
+let deploysChain: Promise<unknown> = Promise.resolve()
+
+// Read deploys.json, let fn change it, write it back atomically and set the atom. fn returns the new state
+// (the same object when nothing changed) and whatever the caller wants back.
+function withDeploys<T>($: EngineInterface, fn: (cur: Deploys) => { deploys: Deploys; out: T }): Promise<T> {
+  const run = async (): Promise<T> => {
+    const dir = await stateDir($)
+    const cur = dir === undefined ? await read($, deploys) : normalizeDeploys(await readJson($, `${dir}/deploys.json`))
+    const { deploys: next, out } = fn(cur)
+    if (next !== cur) {
+      if (dir !== undefined) {
+        await $.process.run(['mkdir', '-p', dir])
+        await writeJsonAtomic($, `${dir}/deploys.json`, next)
+      }
+      await update($, deploys, () => next)
+    }
+    return out
+  }
+  const result = deploysChain.then(run, run)
+  deploysChain = result.catch(() => undefined)
+  return result
+}
+
+const setTarget = (d: Deploys, name: string, ts: TargetState): Deploys => ({ targets: { ...d.targets, [name]: ts } })
+
+// Commits behind the base for each target with a recorded deploy. One git call per target, never from a render.
+let behindRun: Promise<void> | undefined
+function refreshBehind($: EngineInterface): Promise<void> {
+  behindRun ??= (async () => {
+    const d = await read($, deploys)
+    const out: Record<string, number> = {}
+    for (const t of deployInfos) {
+      const sha = d.targets[t.name]?.deployedSha
+      if (sha === undefined) continue
+      const r = await $.process.run(['git', 'rev-list', '--count', `${sha}..origin/${cleanupBase}`], { timeoutMs: 10_000 }).catch(() => undefined)
+      const n = r !== undefined && r.exitCode === 0 ? Number(r.stdout.trim()) : NaN
+      if (Number.isInteger(n)) out[t.name] = n
+    }
+    await update($, behind, () => out)
+  })().catch(() => undefined).finally(() => { behindRun = undefined })
+  return behindRun
+}
+
+// The commits an approval would ship: one line each, at most 15.
+async function commitsSince($: EngineInterface, last: string | undefined, sha: string): Promise<string[]> {
+  if (last === undefined) return []
+  const r = await $.process.run(['git', 'log', '--oneline', '-15', `${last}..${sha}`], { timeoutMs: 10_000 }).catch(() => undefined)
+  return r !== undefined && r.exitCode === 0 ? r.stdout.split('\n').map(l => l.trim()).filter(Boolean) : []
+}
+
+// The user's answer to a deploy approval item: record it on its target, and start a deploy-only run for "deploy".
+async function onDeployAnswer($: EngineInterface, q: Question, answer: string): Promise<string> {
+  const name = await withDeploys($, cur => {
+    const hit = Object.entries(cur.targets).find(([, ts]) => ts.approval?.qid === q.id)
+    if (hit === undefined) return { deploys: cur, out: undefined }
+    return { deploys: setTarget(cur, hit[0], applyAnswer(hit[1], answer)), out: hit[0] }
+  })
+  if (name === undefined) return ''
+  if (!isApprove(answer)) return ` ${name} stays behind; the next batch asks again.`
+  return ` ${name} approved. ${await ensureQueue($)}`
+}
+
+// A person's (or main's) hold on a target.
+async function holdTarget($: EngineInterface, name: string, until: Hold['until'], by: string, reason: string | undefined): Promise<string> {
+  const bad = unknownTarget(deployInfos, name)
+  if (bad !== undefined) return bad
+  const at = await $.clock.now()
+  await withDeploys($, cur => {
+    const hold: Hold = { until, by, at, ...(reason ? { reason } : {}) }
+    return { deploys: setTarget(cur, name, withHold(cur.targets[name], hold)), out: undefined }
+  })
+  return until === 'batch'
+    ? `${name} held for the next batch: the queue's next gate call for it answers Held and the hold ends. Release earlier with release.`
+    : `${name} held until released: the queue skips it every batch. Release with release (/flow release ${name}).`
+}
+
+async function releaseTarget($: EngineInterface, name: string): Promise<string> {
+  const info = deployInfos.find(t => t.name === name)
+  const bad = unknownTarget(deployInfos, name)
+  if (bad !== undefined || info === undefined) return bad ?? ''
+  const had = await withDeploys($, cur => {
+    const r = release(cur.targets[name], info.mode)
+    return { deploys: r.had ? setTarget(cur, name, r.state) : cur, out: r.had }
+  })
+  if (!had) return `${name} has no hold.`
+  if (info.mode === 'confirm') return `${name} released. It is a confirm target: the next gate still asks for approval.`
+  return `${name} released. ${await ensureQueue($)}`
+}
+
+// mcp__flow__deploy. The gate is the one place that decides whether a target deploys in this batch.
+async function deployTool($: EngineInterface, input: Record<string, unknown>, isMain: boolean, caller: string): Promise<string> {
+  const action = String(input.action ?? 'list')
+  const target = typeof input.target === 'string' ? input.target.trim() : ''
+  const sha = typeof input.sha === 'string' ? input.sha.trim() : ''
+  if (action === 'list') {
+    await refreshBehind($)
+    return renderList(deployInfos, await withDeploys($, cur => ({ deploys: cur, out: cur })), await read($, behind))
+  }
+  if (action !== 'gate' && action !== 'deployed' && action !== 'hold' && action !== 'release') return 'Unknown action: use gate, deployed, hold, release or list.'
+  if ((action === 'hold' || action === 'release') && !isMain) return 'Refused: only main holds or releases a target, on the user\'s word. Ask main.'
+  const info = deployInfos.find(t => t.name === target)
+  if (info === undefined) return `Refused: ${unknownTarget(deployInfos, target)}`
+  if (action === 'hold') {
+    const until = input.until === 'released' ? 'released' : input.until === 'batch' ? 'batch' : undefined
+    if (until === undefined) return 'Refused: hold needs until: "batch" or "released".'
+    return holdTarget($, target, until, caller, typeof input.reason === 'string' ? input.reason.trim() : undefined)
+  }
+  if (action === 'release') return releaseTarget($, target)
+  if (sha === '') return 'Refused: sha is required (the short sha just pushed).'
+  const at = await $.clock.now()
+  if (action === 'deployed') {
+    if (typeof input.ok !== 'boolean') return 'Refused: deployed needs ok true or false.'
+    await withDeploys($, cur => ({ deploys: setTarget(cur, target, recordDeployed(cur.targets[target], sha, input.ok === true, at)), out: undefined }))
+    await refreshBehind($)
+    return input.ok === true ? `${target}: recorded as deployed at ${sha}.` : `${target}: failure noted; the last good deploy stays recorded.`
+  }
+  // gate
+  const open = openDeployIds(await read($, inbox))
+  const decided = await withDeploys($, cur => {
+    const r = decideGate(cur.targets[target], info.mode, sha, qid => open.has(qid))
+    return { deploys: r.state === cur.targets[target] ? cur : setTarget(cur, target, r.state), out: r }
+  })
+  const gate = decided.gate
+  if (gate.kind === 'go') return 'Go'
+  if (gate.kind === 'held') return `Held: ${gate.why}. Skip ${target} for this batch and go on with the next target.`
+  const last = (await read($, deploys)).targets[target]?.deployedSha
+  const context = approvalContext(target, sha, last, await commitsSince($, last, sha))
+  if (gate.kind === 'awaits') {
+    await withInbox($, cur => ({ inbox: retargetItem(cur, gate.qid, target, sha, context), out: undefined }))
+    return `Awaits approval: ${gate.qid}. Skip ${target} for this batch and go on with the next target.`
+  }
+  const q = await withInbox($, cur => {
+    const r = openApprovalItem(cur, target, sha, context, at)
+    return { inbox: r.inbox, out: r.q }
+  })
+  await withDeploys($, cur => ({ deploys: setTarget(cur, target, withApproval(cur.targets[target], q.id, sha, at)), out: undefined }))
+  void $.ui.toast(`Deploy ${target} awaits your approval: /flow inbox (${q.id})`)
+  return `Awaits approval: ${q.id}. Skip ${target} for this batch and go on with the next target.`
 }
 
 // Standing answers (standing.ts): the rules of both settings files, read fresh so a rule made a moment ago
@@ -945,6 +1099,7 @@ async function alwaysRule(
   if (before.state !== 'open') return `${id}: no rule made, it was already answered.`
   const q = (await read($, inbox)).items.find(x => x.id === id)
   if (q === undefined || q.state !== 'answered' || q.answeredBy !== 'main') return `${id}: no rule made, the answer was not recorded.`
+  if (q.kind === 'deploy') return `${id}: no rule made, a deploy approval is the user's call every time.`
   if (parseChoice(q.options, choice).free) return `${id}: no rule made, a free-text answer cannot be a rule; pick one of the options.`
   const rule = ruleFromQuestion(q, q.answer ?? '', await today($))
   const r = await addRule($, options, rule)
@@ -1241,14 +1396,15 @@ async function startQueue($: EngineInterface): Promise<string> {
     return 'The running merge queue picks it up at its next list.'
   }
   const pending = Object.values(await read($, handovers)).filter(h => h.status === 'pending')
-  if (pending.length === 0) return 'Nothing pending.'
+  const dueTargets = Object.entries((await read($, deploys)).targets).filter(([name, t]) => t.due === true && deployInfos.some(i => i.name === name)).map(([name]) => name)
+  if (pending.length === 0 && dueTargets.length === 0) return 'Nothing pending.'
   const n = (await read($, queueRuns)) + 1
   await update($, queueRuns, () => n)
   const started = await $.agent.spawn({
     subagentType: QUEUE,
     name: `merge-queue-${n}`,
     description: 'merge queue',
-    prompt: `Pending handovers: ${pending.map(h => `#${h.pr}`).join(', ')}. Start with mcp__flow__queue action "list".`,
+    prompt: `Pending handovers: ${pending.length === 0 ? 'none' : pending.map(h => `#${h.pr}`).join(', ')}.${dueTargets.length === 0 ? '' : ` Deploy-only work due: ${dueTargets.join(', ')}.`} Start with mcp__flow__deploy action "list" and mcp__flow__queue action "list".`,
   })
   if (started.deny !== undefined) return `Could not start a merge queue: ${started.deny}`
   return `Started merge queue merge-queue-${n}.`
@@ -1810,7 +1966,8 @@ async function loadSettings($: EngineInterface, options: Record<string, unknown>
   const seen = await signature($, paths)
   const layers = await Promise.all(paths.map(async path => ({ path, text: await readText($, path) })))
   const loaded = mergeLayers(options, layers)
-  if (loaded.warnings.length > 0) void $.ui.toast(`flow settings:\n${loaded.warnings.join('\n')}`)
+  const warnings = [...loaded.warnings, ...deployModeWarnings(loaded.raw.deploy_targets)]
+  if (warnings.length > 0) void $.ui.toast(`flow settings:\n${warnings.join('\n')}`)
   return { settings: settingsOf(loaded.raw, base), seen }
 }
 
@@ -2280,6 +2437,7 @@ export const register: Register = (on, options) => {
   queueOn = settings.useQueue
   cleanupMode = settings.cleanup
   cleanupBase = settings.base
+  deployInfos = infosOf(settings)
   maxManagers = settings.maxManagers
   slotLimit = settings.testSlots
   decisionPhrases = settings.decisionPhrases
@@ -2296,6 +2454,7 @@ export const register: Register = (on, options) => {
     queueOn = s.useQueue
     cleanupMode = s.cleanup
     cleanupBase = s.base
+    deployInfos = infosOf(s)
     maxManagers = s.maxManagers
     slotLimit = s.testSlots
     decisionPhrases = s.decisionPhrases
@@ -2330,6 +2489,14 @@ export const register: Register = (on, options) => {
       if (dir === undefined) return
       const disk = normalizeInbox(await readJson($, `${dir}/inbox.json`))
       await update($, inbox, () => disk)
+    })
+    await best($, 'loading deploy gates', async () => {
+      const dir = await stateDir($)
+      if (dir === undefined) return
+      const disk = normalizeDeploys(await readJson($, `${dir}/deploys.json`))
+      await update($, deploys, () => disk)
+      queueDue = queueDue || Object.entries(disk.targets).some(([name, t]) => t.due === true && deployInfos.some(i => i.name === name))
+      void refreshBehind($)
     })
     await best($, 'loading pre-flight', async () => {
       const dir = await stateDir($)
@@ -2376,7 +2543,7 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow inbox lists the open questions to answer, /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow inbox lists the open questions to answer, /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
       argumentHint: '[inbox|preflight|close|resume|approve <pr>|clean]',
     })
     await $.command.register({
@@ -2560,6 +2727,26 @@ export const register: Register = (on, options) => {
     })
 
     await $.tool.register({
+      name: 'deploy',
+      description: 'Per-target deploy gates. The merge queue calls action "gate" (target, sha) before each deploy target and gets exactly one of "Go", "Held: <why>" or "Awaits approval: <qid>"; on the last two it skips that target for this batch and goes on. ' +
+        'A confirm target opens one inbox item for the user; only the user\'s "deploy" answer lets that sha through. The queue calls "deployed" (target, sha, ok) after each target. ' +
+        'Main only, on the user\'s word: "hold" (target, until "batch" or "released", reason?) and "release" (target); "demo only, hold production" is a hold on production. "list" shows every target with mode, hold, last deployed sha, how far behind, and any approval.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['gate', 'deployed', 'hold', 'release', 'list'] },
+          target: { type: 'string', description: 'A deploy target name from the deploy_targets setting' },
+          sha: { type: 'string', description: 'gate, deployed: the short sha the batch deploys' },
+          ok: { type: 'boolean', description: 'deployed: true when every step of the target passed' },
+          until: { type: 'string', enum: ['batch', 'released'], description: 'hold: just the next batch, or until released' },
+          reason: { type: 'string', description: 'hold: why' },
+        },
+        required: ['action'],
+      },
+      isDeferred: false,
+    })
+
+    await $.tool.register({
       name: 'clean',
       description: 'Leftover worktrees under .claude/worktrees/ and local branches of finished work. Without apply, a dry run: what would be removed and what is kept and why. ' +
         'With apply true, removes only clean work that is on the base or in a merged PR (or pushed with its PR closed); uncommitted, unpushed, locked and live work is never touched.',
@@ -2666,7 +2853,7 @@ export const register: Register = (on, options) => {
       }).finally(() => { checking = false })
     })
     // gh is not free: a slow timer, one look shortly after the start, and status when the list is stale.
-    $.clock.every(PR_POLL_MS, () => { void fetchPrs($); refreshLeftovers($) })
+    $.clock.every(PR_POLL_MS, () => { void fetchPrs($); void refreshBehind($); refreshLeftovers($) })
     void fetchPrs($)
     refreshLeftovers($)
     // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
@@ -2744,7 +2931,17 @@ export const register: Register = (on, options) => {
       await refresh($)
       return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (words[0] === 'hold' || words[0] === 'release') {
+      // A person's command, the same as the deploy tool is for main.
+      const [, name, until] = words
+      if (name === undefined || words.length > (words[0] === 'hold' ? 3 : 2) || (until !== undefined && until !== 'batch' && until !== 'released')) {
+        return { text: words[0] === 'hold' ? 'Usage: /flow hold <target> [batch|released] (default released)' : 'Usage: /flow release <target>' }
+      }
+      const text = words[0] === 'hold' ? await holdTarget($, name, until === 'batch' ? 'batch' : 'released', 'user', undefined) : await releaseTarget($, name)
+      await refreshBehind($)
+      return { text }
+    }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the merge queue merge a PR that awaits your approval, /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -3347,6 +3544,12 @@ export const register: Register = (on, options) => {
     return { result: await sessionTool($, e as unknown as Record<string, unknown>, caller, settings) }
   })
 
+  on('tool.call', { tool: 'mcp__flow__deploy' }, async ($, e) => {
+    const isMain = e.agentId === undefined
+    const caller = isMain ? 'main' : await ownerNameOf($, e.agentId!)
+    return { result: await deployTool($, e as unknown as Record<string, unknown>, isMain, caller) }
+  })
+
   on('tool.call', { tool: 'mcp__flow__status' }, async ($, e) => {
     const asked = Number((e as unknown as Record<string, unknown>).pr)
     if (Number.isInteger(asked) && asked > 0) {
@@ -3383,6 +3586,7 @@ export const register: Register = (on, options) => {
     return {
       result: [
         ...inboxHead(await read($, inbox), await $.clock.now()),
+        ...behindLines(deployInfos, await read($, deploys), await read($, behind)).map(l => `Deploy: ${l}`),
         limitsLine(rows, settings.maxWorkers),
         ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
@@ -3522,6 +3726,7 @@ export const register: Register = (on, options) => {
     const openQs = openAll(await read($, inbox)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
     const askers = askingNames(await read($, inbox))
     const inboxRows = openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)
+    const deployLines = behindLines(deployInfos, await read($, deploys), await read($, behind)).slice(0, 3)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
     const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
@@ -3866,7 +4071,7 @@ export const register: Register = (on, options) => {
     const queueOpen = fold[MERGE_QUEUE_KEY] === false
     const prRows = prs.length > 0 ? 1 + (queueOpen ? Math.min(prs.length, 5) : 0) : 0
     const usageRows = rows >= 20 ? Math.min(4, limits.length) : 0
-    const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows
+    const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows - deployLines.length
     const wide = treeItems(list, fold, cur ?? first, false, acts)
     const fullTree = CARD_ROWS + wide.items.reduce((n, i) => n + (i.collapsed ? 1 : CARD_ROWS), 0) <= avail
     const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
@@ -3975,6 +4180,7 @@ export const register: Register = (on, options) => {
             {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}` : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
           </Text>
         ))}
+        {deployLines.map(l => <Text key={`deploy-${l}`} dimColor wrap="truncate-end">{'  '}⏸ {l}</Text>)}
       </Box>
     )
     })()

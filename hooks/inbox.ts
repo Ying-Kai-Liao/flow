@@ -146,7 +146,7 @@ export const askingNames = (inbox: Inbox | undefined): string[] =>
   (inbox?.items ?? []).filter(x => x.state === 'open' && x.blocking).map(x => x.owner)
 
 // A non-blocking question answered with its default needs no message: the asker already went on it.
-export const needsMessage = (q: Question, isDefault: boolean): boolean => q.blocking || !isDefault
+export const needsMessage = (q: Question, isDefault: boolean): boolean => q.kind !== 'deploy' && (q.blocking || !isDefault)
 
 // What the asker is told when its question is answered.
 export function answerMessage(q: Question, answer: string, by: string, isDefault: boolean): string {
@@ -189,7 +189,7 @@ export function renderInbox(inbox: Inbox | undefined, now: number): string {
   for (const o of owners) {
     lines.push(`${o}:`)
     for (const q of open.filter(x => x.owner === o)) {
-      lines.push(`  ${q.id} ${q.blocking ? 'BLOCKING' : 'non-blocking'}${q.topic ? ` [${q.topic}]` : ''} (${age(now - q.askedAt)}, for ${q.addressee}): ${q.question}`)
+      lines.push(`  ${q.id} ${q.blocking ? 'BLOCKING' : 'non-blocking'}${q.kind === 'deploy' ? ' DEPLOY APPROVAL' : ''}${q.topic ? ` [${q.topic}]` : ''} (${age(now - q.askedAt)}, for ${q.addressee}): ${q.question}`)
       q.options.forEach((opt, i) => lines.push(`      ${String.fromCharCode(97 + i)}) ${opt}${opt === q.default ? '  (default)' : ''}`))
       if (q.context) lines.push(`      context: ${q.context}`)
     }
