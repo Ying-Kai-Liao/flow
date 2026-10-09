@@ -15,7 +15,8 @@ function entry(line: string): string | undefined {
   if (t === '') return undefined
   const q = /^(["'`])(.*)\1$/.exec(t)
   if (q) t = q[2]!.trim()
-  return t === '' ? undefined : t
+  // "none" and friends say there is nothing attached.
+  return t === '' || /^\(?\s*(none|n\/a|-)\s*\)?\.?$/i.test(t) ? undefined : t
 }
 
 // The paths listed under a `## Attachments` heading or an `Attachments:` line, with the index of

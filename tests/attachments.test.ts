@@ -25,6 +25,15 @@ test('after a blank line only list items continue; plain text ends the section',
   expect(paths('Attachments:\n- /a/1.png\n\n- /a/2.png\n\nThen do the thing.\n- /a/3.png')).toEqual(['/a/1.png', '/a/2.png'])
 })
 
+test('none, n/a, a dash or (none) mean no attachments', () => {
+  expect(paths('Attachments: none')).toEqual([])
+  expect(paths('## Attachments\n- None')).toEqual([])
+  expect(paths('## Attachments\n- n/a')).toEqual([])
+  expect(paths('## Attachments\n- -')).toEqual([])
+  expect(paths('## Attachments\n(none)')).toEqual([])
+  expect(paths('## Attachments\n- `none`')).toEqual([])
+})
+
 test('no section means no attachments', () => {
   expect(paths('Your name: x\n\nBuild it. See attachments of the PR.')).toEqual([])
 })
