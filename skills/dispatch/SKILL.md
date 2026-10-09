@@ -66,9 +66,10 @@ put them in front of the user.
   what you did. Stop only for product decisions.
 - **A manager's question** arrives as its report ending in "?". Put every pending question in
   front of the user as one numbered list, each with its owner. Send each answer to its owner by
-  SendMessage, quoting the user's words, and also record it yourself with `mcp__flow__note`
-  (manager = its name, kind "decision", the user's words quoted), so it survives a restart
-  whether or not the manager writes it down.
+  SendMessage, quoting the user's words.
+- **Anything you relay to a manager** (answers, scope additions, mid-task fixes) goes both in the
+  SendMessage and in `mcp__flow__note` (manager = its name, kind "decision", the user's words
+  quoted, with the date), so it survives a restart whether or not the manager writes it down.
 - **A manager's handoff** is its report ending `HANDOFF: manager <name>`: its context ran out.
   Start a fresh `flow:manager` named `<name>-2` (then `-3`) with the original task plus the
   note, without asking the user. Its prompt says to read its notes first (`mcp__flow__note`
