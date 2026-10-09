@@ -1,6 +1,7 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
+import { summarizeCall } from '../hooks/register'
 
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const
 
@@ -28,8 +29,14 @@ test('the pane lists workers, shows what one did, and goes back', async ($, on) 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'flow', surface, ...PANE })
     expect(await ui.find({ type: 'Text', text: /2 agents · 1 live/ })).toBeDefined()
-    expect(await ui.find({ text: /Edit src\/login\.ts/ })).toBeDefined()
+    // The card shows a short summary; the raw call is in the detail view's log.
+    expect(await ui.find({ text: /editing login\.ts/ })).toBeDefined()
+    expect(await ui.find({ text: /Edit src\/login\.ts/ })).toBeUndefined()
     expect(await ui.find({ text: /MAIN-ONLY/ })).toBeUndefined()
+
+    await ui.press({ key: 'w1' })
+    expect(await ui.find({ text: /Edit src\/login\.ts/ })).toBeDefined()
+    await ui.press({ key: 'back' })
 
     await ui.press({ key: 'w2' })
     expect(await ui.find({ type: 'Text', text: /PR #7 is open/ })).toBeDefined()
@@ -112,9 +119,9 @@ const step = async ($: Dollar, agentId?: string) => {
 
 test('cards show role, name and a second line, the main meter, and a card opens its agent', async ($, on) => {
   await setup($, on, 84_000)
-  const ui = await mount($)
+  const ui = await mount($, 40)
   expect(await ui.find({ type: 'Text', text: /42% · 84k\/200k/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /manager task/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /manager/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /A task.*2 under it/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Fix the login bug/ })).toBeDefined()
   await ui.press({ key: 'm1' })
@@ -236,11 +243,11 @@ const RAW = /"(yellow|red|green|cyan|gray|white)"/
 
 test('the pane paints with theme keys, in a light and a dark theme', async ($, on) => {
   on('config.set', (_, e) => ({ value: e.value }))
-  await setup($, on, 95_000)
+  await setup($, on, 190_000)
   for (const theme of ['light', 'dark']) {
     await $.config.set({ key: 'theme', value: theme } as never)
     const ui = await mount($)
-    const meter = JSON.stringify(await ui.find({ type: 'Text', text: /47% · 95k/ }))
+    const meter = JSON.stringify(await ui.find({ type: 'Text', text: /95% · 190k/ }))
     expect(meter).toContain('"error"')
     const running = JSON.stringify(await ui.find({ type: 'Text', text: '●' }))
     expect(running).toContain('"suggestion"')
@@ -259,4 +266,41 @@ test('a theme change redraws the pane and leaves the value alone', async ($, on)
   expect(await ui.find({ type: 'Text', text: /42% · 84k\/200k/ })).toBeDefined()
   await ui.unmount()
   await $.config.set({ key: 'theme', value: 'dark' } as never)
+})
+
+test('summarizeCall gives a short human line and never code', () => {
+  const heredoc = summarizeCall({ tool: 'Bash', command: "cat > a.ts <<'EOF'\nconst secret = 1\nEOF" })
+  expect(heredoc).toBe('running a command')
+  expect(heredoc).not.toContain('secret')
+  expect(summarizeCall({ tool: 'Bash', command: 'bun test tests/' })).toBe('running tests')
+  expect(summarizeCall({ tool: 'Bash', command: 'tsc -p .' })).toBe('running tests')
+  expect(summarizeCall({ tool: 'Bash', command: 'git push -u origin HEAD' })).toBe('git push')
+  expect(summarizeCall({ tool: 'Bash', command: 'git commit -m "add test"' })).toBe('git commit')
+  expect(summarizeCall({ tool: 'Bash', command: 'gh pr create --base main' })).toBe('gh pr create')
+  expect(summarizeCall({ tool: 'Edit', file_path: '/a/b/src/login.ts' })).toBe('editing login.ts')
+  expect(summarizeCall({ tool: 'Write', file_path: 'x/new.md' })).toBe('writing new.md')
+  expect(summarizeCall({ tool: 'Read', file_path: 'README.md' })).toBe('reading README.md')
+  expect(summarizeCall({ tool: 'Grep', pattern: 'foo' })).toBe('searching')
+  expect(summarizeCall({ tool: 'Agent', subagent_type: 'flow:worker', name: 'csv', prompt: 'long brief' })).toBe('started worker csv')
+  expect(summarizeCall({ tool: 'WebFetch', url: 'https://x.y' })).toBe('WebFetch')
+})
+
+test('cards have no brackets, and the description shows only while there is no activity', async ($, on) => {
+  await setup($, on, 84_000)
+  on('tool.call', () => ({ result: 'ok' }))
+  const ui = await mount($, 40)
+  expect(await ui.find({ type: 'Text', text: /Fix the login bug/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\[.*\]/ })).toBeUndefined()
+  await ui.unmount()
+
+  await $.tool.call({ tool: 'Bash', command: "cat > a.ts <<'EOF'\nsecret code\nEOF", agentId: 'w1' } as never)
+  const busy = await mount($, 40)
+  expect(await busy.find({ type: 'Text', text: /running a command/ })).toBeDefined()
+  expect(await busy.find({ type: 'Text', text: /secret code/ })).toBeUndefined()
+  expect(await busy.find({ type: 'Text', text: /Fix the login bug/ })).toBeUndefined()
+  expect(await busy.find({ type: 'Text', text: /\[.*\]/ })).toBeUndefined()
+  // The detail view keeps the description.
+  await busy.press({ key: 'w1' })
+  expect(await busy.find({ type: 'Text', text: /Fix the login bug/ })).toBeDefined()
+  await busy.unmount()
 })

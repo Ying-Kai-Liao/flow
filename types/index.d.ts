@@ -20,6 +20,8 @@ export type Activity = {
   answer?: string
   // The latest turn.step's context fill; absent until the agent has taken one.
   usage?: { tokens: number; model: string }
+  // When the roster first saw the agent ended; its running time stops there.
+  endedAt?: number
   // When the plugin told this agent to hand off; once per agent.
   handoffNotifiedAt?: number
 }
