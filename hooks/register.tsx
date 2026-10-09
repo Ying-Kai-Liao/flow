@@ -207,7 +207,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs',
+      description: 'Show the flow in a pane: managers, their workers, the merge queue and handed-over PRs. /flow close closes it',
+      argumentHint: '[close]',
     })
     await $.agent.register({
       name: 'manager',
@@ -277,7 +278,21 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'flow' }, async $ => {
+  // A closed pane stays closed: only this command and a newly started agent (openPane) open it,
+  // never the roster poll, so `/flow close` holds while agents keep running.
+  on('command.run', { command: 'flow' }, async ($, e) => {
+    // A plugin's $.command.run may leave args out.
+    const arg = (e.args ?? '').trim()
+    if (arg === 'close') {
+      if (!(await $.ui.panes()).some(p => p.id === PANE)) return { text: 'The Flow pane is not open.' }
+      try {
+        await $.ui.close({ id: PANE })
+      } catch (err) {
+        return { text: `The Flow pane stayed open: ${err instanceof Error ? err.message : String(err)}` }
+      }
+      return { text: 'Flow pane closed.' }
+    }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it.` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
