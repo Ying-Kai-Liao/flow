@@ -2,6 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
 import type { Activity, AgentRow, Handover, OpenPr, PrCache } from '../types'
+import type { Activity, AgentRow, Handover } from '../types'
+import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
+import type { Facts, Graph, Notice, Plan } from './dag'
 import {
   fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT,
 } from './prompts'
@@ -92,6 +95,7 @@ async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
   ])
   return unhandedPrs(cache.prs, hs, rows, acts, t)
 }
+const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
 
 // One line for a tool call: the tool and its most telling argument.
 function describeCall(e: Record<string, unknown>): string {
@@ -154,11 +158,6 @@ function ago(ms: number): string {
 
 function labelOf(a: AgentRow): string {
   return a.name ?? a.description ?? a.id.slice(0, 8)
-}
-
-function asksQuestion(answer: string | undefined): boolean {
-  const last = (answer ?? '').trim().split('\n').pop() ?? ''
-  return /[?？][*_`'")\s]*$/.test(last)
 }
 
 const DEFAULT_WINDOW = 200_000
@@ -234,7 +233,7 @@ function rank(status: string): number {
 // The pane's context meter marks this percent; the rest of the settings go into the prompts.
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean } & Guards {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   return {
@@ -252,8 +251,73 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     mergeMethod: str('merge_method', 'squash'),
     useQueue: options.merge_queue !== false,
     maxWorkers: num('max_workers', 3),
+    maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
     workerModel: str('worker_model', 'sonnet'),
   }
+}
+
+// How many managers main runs at once; refresh needs it to tell main how many slots are free.
+let maxManagers = 20
+// Managers whose end already freed a slot (and woke main), so a poll does not wake it twice.
+const freedSeen = new Set<string>()
+
+const isManagerOf = (owner: string, name: string | undefined) =>
+  name !== undefined && (name === owner || (name.startsWith(owner + '-') && /^\d+$/.test(name.slice(owner.length + 1))))
+
+// Whose graph an agent works on: its own name, or the manager it continues (`<name>-N`); main has none.
+function ownerOf(plans: Plan, name: string | undefined): string {
+  if (name === undefined) return 'main'
+  if (plans[name]) return name
+  const m = /^(.+)-\d+$/.exec(name)
+  return m && plans[m[1]!] ? m[1]! : name
+}
+
+const liveManagers = (rows: AgentRow[]) => rows.filter(a => a.type === MANAGER && !ENDED.has(a.status))
+
+// Settles every plan against the roster and handovers in one update, then tells each owner once.
+// `edit` changes the plan first (the plan tool); `quietOwner` is the caller, who sees the outcome
+// in its own tool result and needs no message.
+async function syncPlans(
+  $: EngineInterface, rows: AgentRow[], edit?: (p: Plan) => Plan, quietOwner?: string,
+): Promise<Plan> {
+  // Marked before the first await, so two overlapping polls count an ended manager once.
+  const freed = rows.filter(a => a.type === MANAGER && ENDED.has(a.status) && !freedSeen.has(a.id))
+  for (const a of freed) freedSeen.add(a.id)
+  if (edit === undefined && Object.keys(await read($, plan)).length === 0) return {}
+  const [acts, hs] = await Promise.all([read($, activity), read($, handovers)])
+  const facts: Facts = {
+    agents: rows.map(a => ({ name: a.name, status: a.status, answer: acts[a.id]?.answer })),
+    handovers: Object.values(hs),
+  }
+  const slots = Math.max(0, maxManagers - liveManagers(rows).length)
+  let notices: Notice[] = []
+  let result: Plan = {}
+  await update($, plan, p => {
+    const r = settle(edit ? edit(p) : p, facts, { slots })
+    notices = r.notices
+    result = r.plan
+    // A slot freed while ready tasks wait: tell main again, once per ended manager.
+    const waiting = Object.values(r.plan['main'] ?? {}).filter(n => n.state === 'ready')
+    if (freed.length > 0 && slots > 0 && waiting.length > 0 && !notices.some(n => n.owner === 'main')) {
+      notices = [...notices, { owner: 'main', ready: waiting, blocked: [], done: [], slots }]
+    }
+    return r.plan
+  })
+  for (const n of notices) {
+    if (n.owner === quietOwner) continue
+    const text = noticeText(n)
+    if (n.owner === 'main') {
+      $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
+    } else {
+      const agent = agentFor(n.owner, rows.filter(a => !ENDED.has(a.status)))
+      if (agent) await $.session.send({ to: { agentId: agent.id }, text }).catch(() => undefined)
+    }
+  }
+  return result
+}
+
+function limitsLine(rows: AgentRow[], workers: number): string {
+  return `Limits: managers ${liveManagers(rows).length}/${maxManagers}, workers per manager ${workers}`
 }
 
 // The roster as the board shows it: every agent of the session, with its role.
@@ -300,6 +364,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   if (unhanded) parts.push(`${unhanded} unhanded`)
   $.ui.status(rows.length === 0 && hs.length === 0 && !unhanded ? undefined
     : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`} · /flow`)
+  await syncPlans($, rows).catch(() => undefined)
   return rows
 }
 
@@ -310,7 +375,15 @@ async function openPane($: EngineInterface): Promise<void> {
 
 // Starts a merge queue unless one is live. The queue drains every pending handover, then ends;
 // the next handover, or a queue that ended with work left, starts a fresh one.
-async function ensureQueue($: EngineInterface): Promise<string> {
+// Calls run one after another: handovers arriving back to back must not each see "no queue yet".
+let queueChain: Promise<unknown> = Promise.resolve()
+function ensureQueue($: EngineInterface): Promise<string> {
+  const run = queueChain.then(() => startQueue($))
+  queueChain = run.catch(() => undefined)
+  return run
+}
+
+async function startQueue($: EngineInterface): Promise<string> {
   const list = await $.agent.list()
   if (list.some(a => a.type === QUEUE && LIVE.has(a.status))) {
     return 'The running merge queue picks it up at its next list.'
@@ -467,10 +540,10 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
   }
 }
 
-function resumeInstructions(items: Leftover[]): string {
+function resumeInstructions(items: Leftover[], limit: number): string {
   return [
     'The user ran /flow resume. Unfinished flow work was found (below). Start flow managers for it with the Agent tool, without asking:',
-    '- One flow:manager per task, named resume-<slug>, run_in_background true, at most 3 at a time; start the rest as each finishes. Items whose branch names share a manager prefix (flow/csv-export-endpoint and flow/csv-export-button) are one task.',
+    '- One flow:manager per task, named resume-<slug>, run_in_background true, at most ' + limit + ' at a time; start the rest as each finishes. Items whose branch names share a manager prefix (flow/csv-export-endpoint and flow/csv-export-button) are one task.',
     '- Each manager\'s prompt carries, for every item of its task: the branch, the PR number and URL, the PR description (including any ## Handoff section), and for a worktree its path. It carries the work on from there and must not redo work already merged into the base branch.',
     '',
     'Found:',
@@ -556,6 +629,7 @@ function fetchPrs($: EngineInterface): Promise<void> {
 export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
   queueOn = settings.useQueue
+  maxManagers = settings.maxManagers
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
@@ -573,6 +647,7 @@ export const register: Register = (on, options) => {
         base = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(remote.stdout)?.[1] ?? ''
       }
       if (base !== '') { settings = settingsOf(options, base); queueOn = settings.useQueue }
+      maxManagers = settings.maxManagers
     } catch {
       // Not a git repo, or no remote: keep "main".
     }
@@ -651,6 +726,38 @@ export const register: Register = (on, options) => {
       isDeferred: false,
     })
 
+    await $.tool.register({
+      name: 'plan',
+      description: 'Declare which packages (or, for main, tasks) wait for others, so the plugin can refuse to start them early and tell you when they are ready. ' +
+        'action "add": nodes [{id, title, after?, until?}]; id is the agent name you will start (or its prefix before -N), after lists node ids, until is "merged" (default: the PR is merged) or "reported" (the agent reported back). ' +
+        '"list": your graph (main may pass owner). "done" (id, note?) / "block" (id, reason): set a node by hand. "remove" (id): drop a waiting or ready node nothing depends on.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['add', 'list', 'done', 'block', 'remove'] },
+          nodes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                title: { type: 'string' },
+                after: { type: 'array', items: { type: 'string' } },
+                until: { type: 'string', enum: ['merged', 'reported'] },
+              },
+              required: ['id'],
+            },
+          },
+          id: { type: 'string' },
+          note: { type: 'string' },
+          reason: { type: 'string' },
+          owner: { type: 'string', description: 'main only: whose graph to list' },
+        },
+        required: ['action'],
+      },
+      isDeferred: false,
+    })
+
     $.clock.every(POLL_MS, () => void refresh($))
     // gh is not free: a slow timer, one look shortly after the start, and status when the list is stale.
     $.clock.every(PR_POLL_MS, () => void fetchPrs($))
@@ -693,7 +800,7 @@ export const register: Register = (on, options) => {
       $.clock.after(0, () => {
         void $.prompt.submit({ text: 'Carry out the /flow resume instructions: start the managers.' }).catch(() => undefined)
       })
-      return { text, context: [resumeInstructions(found.items)] }
+      return { text, context: [resumeInstructions(found.items, settings.maxManagers)] }
     }
     if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow close closes it, /flow resume picks up unfinished work.` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
@@ -711,6 +818,17 @@ export const register: Register = (on, options) => {
   })
 
   on('agent.spawn', async ($, e, next) => {
+    // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
+    const plans = await read($, plan)
+    if (Object.keys(plans).length > 0 && e.name !== undefined) {
+      const parent = e.parentAgentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.parentAgentId)
+      const graph = plans[ownerOf(plans, parent?.name)] ?? {}
+      const node = Object.values(graph).find(n => n.state === 'waiting' && isManagerOf(n.id, e.name))
+      if (node) {
+        const deps = node.after.filter(d => graph[d]?.state !== 'done').map(d => `${d} (${graph[d]?.state ?? '?'})`)
+        return { deny: `flow plan: ${node.id} waits on ${deps.join(', ')}. Start it when the plugin says it is ready.` }
+      }
+    }
     const started = await next(e)
     if (started.agentId !== undefined) {
       const t = await $.clock.now()
@@ -808,6 +926,78 @@ export const register: Register = (on, options) => {
     return { result: `PR #${key}: ${next.status}.` }
   })
 
+  on('tool.call', { tool: 'mcp__flow__plan' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const rows = await refresh($)
+    const me = e.agentId === undefined ? undefined : rows.find(a => a.id === e.agentId)
+    const plans = await read($, plan)
+    const owner = e.agentId === undefined ? 'main' : ownerOf(plans, me?.name)
+    const view = (p: Plan, who: string) => {
+      const graph = p[who] ?? {}
+      const lines = Object.keys(graph).length ? describe(graph) : ['No plan.']
+      const ready = Object.values(graph).filter(n => n.state === 'ready').map(n => n.id)
+      return [
+        ...lines,
+        ready.length ? `Ready now: ${ready.join(', ')}.` : 'Nothing is ready now.',
+        ...(who === 'main' ? [limitsLine(rows, settings.maxWorkers)] : []),
+      ].join('\n')
+    }
+    const action = String(input.action)
+    if (action === 'list') {
+      const who = owner === 'main' && typeof input.owner === 'string' && input.owner !== '' ? input.owner : owner
+      return { result: view(await syncPlans($, rows).then(() => read($, plan)), who) }
+    }
+    const id = String(input.id ?? '')
+    const change = async (edit: (g: Graph) => Graph | string) => {
+      let refused: string | undefined
+      const after = await syncPlans($, rows, p => {
+        const r = edit(p[owner] ?? {})
+        if (typeof r === 'string') {
+          refused = r
+          return p
+        }
+        return { ...p, [owner]: r }
+      }, owner)
+      return refused !== undefined ? `Refused: ${refused}` : view(after, owner)
+    }
+    if (action === 'add') {
+      const nodes = Array.isArray(input.nodes) ? input.nodes as Array<Record<string, unknown>> : []
+      if (nodes.length === 0) return { result: 'Refused: add needs nodes: [{id, title, after?, until?}].' }
+      const r = await change(g => {
+        const added = addNodes(g, nodes.map(n => ({
+          id: String(n.id ?? ''),
+          title: typeof n.title === 'string' ? n.title : undefined,
+          after: Array.isArray(n.after) ? n.after.map(String) : undefined,
+          until: n.until === 'reported' ? 'reported' : 'merged',
+        })))
+        return 'error' in added ? added.error : added.graph
+      })
+      return { result: r }
+    }
+    const node = (plans[owner] ?? {})[id]
+    if (!node) return { result: `Refused: no node "${id}" in ${owner === 'main' ? 'main' : owner}'s plan.` }
+    if (action === 'done') {
+      return { result: await change(g => ({ ...g, [id]: { ...g[id]!, manual: 'done', info: typeof input.note === 'string' && input.note !== '' ? input.note : undefined } })) }
+    }
+    if (action === 'block') {
+      return { result: await change(g => ({ ...g, [id]: { ...g[id]!, manual: 'blocked', info: String(input.reason ?? 'blocked by hand') } })) }
+    }
+    if (action === 'remove') {
+      return {
+        result: await change(g => {
+          const n = g[id]
+          if (!n) return `no node "${id}"`
+          if (n.state !== 'waiting' && n.state !== 'ready') return `${id} is ${n.state}; only waiting or ready nodes can be removed`
+          const dependents = Object.values(g).filter(o => o.after.includes(id)).map(o => o.id)
+          if (dependents.length) return `${dependents.join(', ')} still wait${dependents.length === 1 ? 's' : ''} on ${id}`
+          const { [id]: _gone, ...rest } = g
+          return rest
+        }),
+      }
+    }
+    return { result: `Unknown action "${action}".` }
+  })
+
   on('tool.call', { tool: 'mcp__flow__status' }, async $ => {
     if (queueOn && (await $.clock.now()) - (await read($, prCache)).fetchedAt > PR_MIN_GAP_MS) await fetchPrs($)
     const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
@@ -823,8 +1013,10 @@ export const register: Register = (on, options) => {
     }
     for (const a of rows.filter(r => r.parentId === undefined || !ids.has(r.parentId))) walk(a, 0)
     const list = Object.values(hs).sort((a, b) => a.at - b.at)
+    const plans = Object.entries(await read($, plan)).filter(([, g]) => Object.keys(g).length > 0)
     return {
       result: [
+        limitsLine(rows, settings.maxWorkers),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
         list.length ? 'Handed-over PRs:' : 'No PRs handed over.', ...list.map(handoverLine),
         ...(unhanded.length ? [
@@ -832,6 +1024,7 @@ export const register: Register = (on, options) => {
           'A manager reviews it and hands it over, or closes it.',
         ] : []),
         ...(queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
+        ...(plans.length ? ['Plans:', ...plans.flatMap(([who, g]) => [`${who}:`, ...describe(g).map(l => `  ${l}`)])] : []),
       ].join('\n'),
     }
   })
