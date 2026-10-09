@@ -256,7 +256,7 @@ test('a refused [1m] model falls back once to the plain model, tells once, and l
 // The test loader cannot import JSON, so the userConfig keys of .claude-plugin/plugin.json are listed by hand: keep in step.
 // A key the loader does not know would be set in the plugin UI and silently ignored.
 const USER_CONFIG_KEYS = [
-  'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_queue', 'max_managers', 'max_workers',
+  'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_mode', 'merge_queue', 'max_managers', 'max_workers',
   'test_slots', 'context_warn_percent', 'context_warn_percent_1m', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow', 'max_continues',
   'worker_model', 'manager_model', 'queue_model', 'language', 'base_branch', 'cleanup',
 ]

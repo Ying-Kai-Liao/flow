@@ -13,6 +13,7 @@ export type Settings = {
   deployTargets: DeployTarget[]
   stateFile: StateFile | undefined
   mergeMethod: string
+  mergeMode: string
   useQueue: boolean
   maxWorkers: number
   testSlots: number
@@ -262,7 +263,7 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 - BLOCKED: fix the brief and send it by SendMessage, or start a fresh worker with a corrected brief.
 - A PR: review it at its head (\`gh pr view <n> --json headRefOid,files,body\`, \`gh pr diff <n>\`), yourself or with a reviewing subagent. Check it against the brief's acceptance criteria and edge cases. Check its \`## Verification\` section against the diff: did the worker really exercise the change, and is 'Not verified' honest? If not, send it back. \`mcp__flow__handover\` refuses a PR without the section. Feedback goes by SendMessage to the worker, which pushes fixes to the same branch.
 - HANDOFF: <branch> (its last line): the worker ran out of context and pushed its work. Check that \`git ls-remote origin flow/<x>\` equals the head sha it reported. Start a fresh worker named \`<old name>-2\` (then \`-3\`…) with the original brief, the line \`Continue on branch: flow/<x>\`, and the worker's handoff note. Do not remove the old worktree: the plugin continues in it when it is clean and at the pushed head, and otherwise cleans it up or leaves it, and removing it could delete the worktree the successor runs in. If the plugin tells you the branch passed max_continues, split the remaining work into smaller packages instead: the first continues the branch with a reduced brief, and the others are new packages that may branch from it.
-- An approved PR: hand it over with mcp__flow__handover. The plugin records it and starts the merge queue when none is running. After handing over, leave the branch alone. The queue reports back to you by SendMessage when it has merged or returned the PR.
+- An approved PR: hand it over with mcp__flow__handover. The plugin records it and starts the merge queue when none is running. After handing over, leave the branch alone. The queue reports back to you by SendMessage when it has merged or returned the PR. Pass mode "confirm" for a risky PR: database migrations or anything that drops or rewrites data, deploy/CI/infra config, auth/permissions/secrets, deleting features or files users rely on, irreversible operations. If the handover says the PR awaits approval, tell the user in your report that it needs \`/flow approve <n>\`; approving is the user's, not yours.
 - The queue's merged report: call \`mcp__flow__clean\` with apply true. It removes the merged worker's worktree and local branch (the plugin may already have; then there is nothing left to do), and runs dry when the cleanup setting is off and says so. Never remove a worktree by hand while it has uncommitted or unpushed work: what the sweep keeps goes in your final report for the user.
 
 {{QUEUE_RULE}}
@@ -339,6 +340,7 @@ The PRs handed to you are in mcp__flow__queue: action "list" shows the pending o
 1. Start clean: \`git status --porcelain\` must be empty. Then \`git fetch origin && git checkout --detach origin/{{BASE}}\`.
 2. For each pending PR, in order:
    - \`mcp__flow__queue\` action "take" with its pr.
+   - If "take" answers "Held:", the PR awaits the user's approval: skip it (do not merge it, do not send it back) and go on. List held PRs in your final report and SendMessage main "PR #<n> waits for the user's approval: /flow approve <n>".
    - \`gh pr view <n> --json state,headRefOid,title\`: state must be OPEN and headRefOid must equal the handover's head. If the head moved, \`mcp__flow__queue\` action "back" with reason "head moved", and go on.
    - \`git fetch origin <head sha>\` if needed, then \`git merge --no-ff <head sha> -m "Merge PR #<n>: <title>"\`.
    - Mechanical conflicts (two additions side by side): resolve, keeping both. Conflicts needing a logic or product decision: \`git merge --abort\`, "back" with the file names, go on.

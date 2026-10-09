@@ -64,7 +64,11 @@ export type Handover = {
   afterDeploy: string
   // Parsed from the PR's ## Verification section at handover; absent in handovers saved before it existed.
   evidence?: { ran: string[]; exercised: string; notVerified: string[] }
-  status: 'pending' | 'taken' | 'done' | 'returned'
+  status: 'pending' | 'awaiting' | 'taken' | 'done' | 'returned'
+  // Set by the handover tool; the PR's flow:* label and the merge_mode setting are checked too.
+  mode?: 'auto' | 'confirm'
+  // The head the user approved with /flow approve; the queue merges a confirm PR only at this head.
+  approvedHead?: string
   at: number
   sha?: string
   report?: string
@@ -172,7 +176,7 @@ export type Session = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'handoff' | 'continue' | 'note' | 'clean'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string

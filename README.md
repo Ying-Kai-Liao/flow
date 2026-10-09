@@ -65,7 +65,7 @@ add login-redirect  after: csv-export
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
-  `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
+  `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
   `c` folds or unfolds its children. In an agent's detail, `b` goes back and `m` starts a message.
@@ -256,6 +256,28 @@ at the base, goes once the queue is gone). Never two sweeps at once; errors go t
 e.g. `3 leftover worktrees · 12 branches · 1 needs a look · /flow clean`, from a dry sweep
 refreshed with the PR list (every 5 minutes).
 
+## Merge mode
+
+By default the queue merges every PR a manager hands over. Set `merge_mode` to `confirm` and it
+holds each one until you approve it. A PR's effective mode comes from, in order:
+
+1. Its labels: `flow:confirm` or `flow:auto` (with both, `confirm` wins).
+2. The `mode` the manager gave when handing it over (`mcp__flow__handover` takes `auto` or `confirm`;
+   the plugin adds the matching label, and a label that fails to apply is reported, not fatal).
+3. The `merge_mode` setting.
+
+Managers can only raise a PR to `confirm`: under a `confirm` setting a handover with mode `auto` is
+refused, so only you can add `flow:auto` there. Managers mark a PR `confirm` when it has database
+migrations or data rewrites, deploy/CI/infra config, auth/permissions/secrets, deletions of
+things users rely on, or irreversible operations.
+
+A PR waiting for you has status `awaiting`: no queue is started for it, and it shows in the pane,
+in `status` and in `/flow resume`. Run `/flow approve <n>` (yours only; it works on awaiting PRs
+and nothing else) to put it in the queue. The approval is tied to the head commit: if the
+branch moves and the manager hands it over again, you approve again. The queue re-reads the labels
+and head when it takes a PR; a PR still unapproved answers "Held:" and is skipped, and if `gh` fails
+the labels count as none, so it never merges something it could not check.
+
 ## Guards
 
 The plugin's `tool.call` hook refuses three things for every agent of the flow, the main
@@ -303,6 +325,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `state_file` | none | file only | the queue: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
 | `merge_queue` | on | `/config`, file | off: managers merge themselves with `merge_method` |
 | `merge_method` | `squash` | `/config`, file | managers, when there is no queue |
+| `merge_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` holds every handed-over PR until you run `/flow approve <n>` (see Merge mode) |
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
 | `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `max_workers` | 3 | `/config`, file | workers per manager at a time |

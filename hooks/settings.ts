@@ -11,6 +11,7 @@ export const KEYS: Record<string, Kind> = {
   full_check_command: 'string',
   deploy_command: 'string',
   merge_method: 'string',
+  merge_mode: 'string',
   merge_queue: 'boolean',
   max_workers: 'number',
   context_warn_percent: 'number',

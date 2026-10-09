@@ -5,7 +5,7 @@ import type { Settings } from '../hooks/prompts'
 
 const base: Settings = {
   base: 'main', testCommand: 'npm test', fullCheck: '', deployCommand: '', deployTargets: [], stateFile: undefined,
-  mergeMethod: 'merge', useQueue: true, maxWorkers: 3, testSlots: 1, workerModel: 'sonnet', managerModel: 'opus', queueModel: 'opus',
+  mergeMethod: 'merge', mergeMode: 'auto', useQueue: true, maxWorkers: 3, testSlots: 1, workerModel: 'sonnet', managerModel: 'opus', queueModel: 'opus',
   language: 'English', bigFiles: [], bigFileLines: 1500, migrationsDir: '', decisionPhrases: [], workerChecks: [], alwaysTests: [],
 }
 const all = (s: Settings) => [WORKER_PROMPT, MANAGER_PROMPT.replace('{{QUEUE_RULE}}', QUEUE_RULE), QUEUE_PROMPT].map((p) => fill(p, s))
@@ -61,4 +61,11 @@ test('the manager, the no-queue rule and the queue call the cleanup sweep', () =
   expect(q).toContain('`mcp__flow__clean` with apply true')
   expect(fill(NO_QUEUE_RULE, base)).toContain('`mcp__flow__clean` with apply true')
   expect(m).toContain('Do not remove the old worktree')
+})
+
+test('the manager hands over mode confirm for risky PRs and the queue skips a Held take', () => {
+  const [, m, q] = all(base)
+  expect(m).toContain('Pass mode "confirm" for a risky PR')
+  expect(m).toContain('/flow approve <n>')
+  expect(q).toContain('If "take" answers "Held:"')
 })
