@@ -115,8 +115,10 @@ Six worktrees running the whole suite at once can exhaust memory and time out th
 Workers call `test_slot` `acquire` before a heavy run (a whole suite, anything over about a
 minute) and `release` after it; the queue does the same around the full check. At most
 `test_slots` runs hold a slot; the rest wait first come, first served. A hook has a 10 second
-budget, so `acquire` waits at most 8 seconds and then answers "queued, position N"; the caller
-asks again, and its place in line is kept while it keeps asking (about 3 minutes). A slot is
+budget, so `acquire` waits at most a few seconds and then answers "queued, position N". The
+head of the line is granted a free slot at once and told two ways: a file
+`<git-common-dir>/flow/test-slots/<agent>.granted` (wait with `until [ -e FILE ]; do sleep 3; done`)
+and a message; it confirms with one `acquire` within 2 minutes, else the grant passes on. A slot is
 freed when its agent ends, when released, or after a 45 minute lease (with a toast). The Flow
 status line shows `tests 1/1`. The lock lives in this session's plugin state: it covers every
 worktree of the session's agents, not other Claude sessions, and a plugin reload empties it.

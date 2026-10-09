@@ -42,12 +42,16 @@ const handovers = atom({ plugin: 'flow', key: 'handovers' } as const, {} as Reco
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders: [], waiters: [] } as TestSlots)
 
-// A hook has a 10 s budget, a $.clock wait included, so acquire blocks only briefly and the
-// caller asks again; a waiter that has not asked again for STALE_MS has gone away.
+// A hook has a 10 s budget, a $.clock wait included, so acquire blocks only briefly. A free slot
+// is granted to the head waiter at once (claimed: false); it has CLAIM_MS to confirm with acquire,
+// else the grant passes on. The grant is signalled by a file and a message, so waiting costs no turns.
 const LEASE_MS = 45 * 60_000
+const CLAIM_MS = 2 * 60_000
 const WAIT_MAX_S = 8
-const WAIT_DEFAULT_S = 5
-const STALE_MS = 3 * 60_000
+const WAIT_DEFAULT_S = 2
+// <git-common-dir>/flow/test-slots, set at session start; undefined when not in a git repo.
+let slotDir: string | undefined
+const grantFile = (key: string): string | undefined => slotDir && `${slotDir}/${key.replace(/[^\w.-]/g, '_')}.granted`
 // The test_slots setting, for refresh()'s status line (set where the settings are read).
 let slotLimit = 1
 
@@ -57,8 +61,7 @@ const span = (ms: number): string => {
 }
 const heldBy = (h: SlotEntry, t: number): string => `${h.name} (${h.label}, ${span(t - h.since)})`
 
-// Drops holders and waiters whose agent ended or is gone, holders past the lease and waiters
-// that stopped asking. The main session (key "main") never ends. Returns the new state and what was dropped.
+// Drops holders and waiters whose agent ended or is gone and holders past the lease. The main session (key "main") never ends. Returns the new state and what was dropped.
 export function reapSlots(state: TestSlots, rows: AgentRow[], t: number): { state: TestSlots; notes: string[] } {
   const status = new Map(rows.map(a => [a.id, a.status]))
   const gone = (key: string) => key !== 'main' && (status.get(key) === undefined || ENDED.has(status.get(key)!))
@@ -71,9 +74,72 @@ export function reapSlots(state: TestSlots, rows: AgentRow[], t: number): { stat
     }
     return true
   })
-  const waiters = state.waiters.filter(w => !gone(w.key) && t - w.lastAt < STALE_MS)
+  const waiters = state.waiters.filter(w => !gone(w.key))
   const changed = holders.length !== state.holders.length || waiters.length !== state.waiters.length
   return { state: changed ? { holders, waiters } : state, notes }
+}
+
+// Gives free slots to the head waiters, after dropping grants nobody confirmed within CLAIM_MS.
+// Pure: the caller does the signalling for `granted`.
+export function grantSlots(state: TestSlots, limit: number, t: number): { state: TestSlots; granted: SlotEntry[]; notes: string[] } {
+  const notes: string[] = []
+  const holders = state.holders.filter(h => {
+    if (h.claimed !== false || t - h.since < CLAIM_MS) return true
+    notes.push(`test slot offered to ${h.name} (${h.label}) passed on: not confirmed within ${span(CLAIM_MS)}`)
+    return false
+  })
+  const waiters = [...state.waiters]
+  const granted: SlotEntry[] = []
+  while (holders.length < limit && waiters.length > 0) {
+    const w = { ...waiters.shift()!, since: t, claimed: false }
+    holders.push(w)
+    granted.push(w)
+  }
+  const changed = holders.length !== state.holders.length || granted.length > 0
+  return { state: changed ? { holders, waiters } : state, granted, notes }
+}
+
+// Applies `pre`, reaps, grants, and signals: a grant file and a message per new holder, the files
+// of everyone who left the line removed. Every slot change goes through here, inside one update().
+async function settleSlots($: EngineInterface, rows: AgentRow[], t: number, pre: (s: TestSlots) => TestSlots = s => s, me?: string): Promise<void> {
+  const notes: string[] = []
+  let granted: SlotEntry[] = []
+  let left: string[] = []
+  await update($, testSlots, st => {
+    notes.length = 0
+    const r = reapSlots(pre(st), rows, t)
+    const g = grantSlots(r.state, slotLimit, t)
+    notes.push(...r.notes, ...g.notes)
+    // The caller of acquire is here to hear it: its grant is confirmed on the spot, with no signal.
+    const state = me === undefined ? g.state
+      : { ...g.state, holders: g.state.holders.map(h => h.key === me ? { ...h, claimed: true } : h) }
+    granted = g.granted.filter(h => h.key !== me)
+    const stay = new Set([...state.holders, ...state.waiters].map(e => e.key))
+    left = [...st.holders, ...st.waiters].map(e => e.key).filter(k => !stay.has(k))
+    return state
+  })
+  for (const n of notes) void $.ui.toast(n)
+  await signalSlots($, granted, left)
+}
+
+const sh = ($: EngineInterface, script: string, ...args: string[]) =>
+  $.process.run(['sh', '-c', script, 'sh', ...args], { timeoutMs: 5_000 }).catch(() => undefined)
+
+async function signalSlots($: EngineInterface, granted: SlotEntry[], left: string[]): Promise<void> {
+  for (const key of left) {
+    const f = grantFile(key)
+    if (f) await sh($, 'rm -f "$1"', f)
+  }
+  for (const g of granted) {
+    const f = grantFile(g.key)
+    if (f) await sh($, 'mkdir -p "$(dirname "$1")" && : > "$1"', f)
+    if (g.key !== 'main') {
+      await $.session.send({
+        to: { agentId: g.key },
+        text: `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`,
+      }).catch(() => undefined)
+    }
+  }
 }
 
 function slotLine(state: TestSlots, limit: number, t: number): string {
@@ -233,14 +299,8 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   }
   if (JSON.stringify(rows) !== JSON.stringify(before)) await update($, roster, () => rows)
   await update($, now, () => t)
-  // Free the test slots of ended agents; update() keeps the same state object when nothing changed.
-  const notes: string[] = []
-  await update($, testSlots, st => {
-    const r = reapSlots(st, rows, t)
-    notes.push(...r.notes)
-    return r.state
-  })
-  for (const n of notes) void $.ui.toast(n)
+  // Free the test slots of ended agents and pass them on.
+  await settleSlots($, rows, t)
 
   const hs = Object.values(await read($, handovers))
   const live = rows.filter(a => !ENDED.has(a.status))
@@ -425,6 +485,17 @@ export const register: Register = (on, options) => {
       }
     } catch {
       // Not a git repo, or no remote: keep "main".
+    }
+
+    // Grant files of a previous session would read as grants; start from an empty directory.
+    try {
+      const r = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+      if (r.exitCode === 0 && r.stdout.trim() !== '') {
+        slotDir = `${r.stdout.trim()}/flow/test-slots`
+        await sh($, 'rm -rf "$1" && mkdir -p "$1"', slotDir)
+      }
+    } catch {
+      slotDir = undefined
     }
 
     await $.command.register({
@@ -677,7 +748,7 @@ export const register: Register = (on, options) => {
     }
     if (action === 'release') {
       let freed = false
-      await update($, testSlots, st => {
+      await settleSlots($, rows, t, st => {
         freed = st.holders.some(h => h.key === key)
         return freed ? { ...st, holders: st.holders.filter(h => h.key !== key) } : st
       })
@@ -685,27 +756,22 @@ export const register: Register = (on, options) => {
     }
     if (action !== 'acquire') return { result: `Unknown action "${action}".` }
 
-    // Check and take inside one update(), so two callers never both get the last slot.
+    // Check and take inside one update(), so two callers never both get the last slot. A holder
+    // whose grant is still unclaimed confirms it here.
     const attempt = async (): Promise<string | undefined> => {
-      let outcome: string | undefined
+      let already: SlotEntry | undefined
       const at = await $.clock.now()
-      await update($, testSlots, st => {
-        const mine = st.holders.find(h => h.key === key)
-        if (mine) {
-          outcome = `You already hold a test slot (${mine.label}, ${span(at - mine.since)}). Release it when your run is over.`
-          return st
-        }
-        const waiters = st.waiters.some(w => w.key === key)
-          ? st.waiters.map(w => w.key === key ? { ...w, lastAt: at, label } : w)
-          : [...st.waiters, { key, name, label, since: at, lastAt: at }]
-        if (st.holders.length < limit && waiters[0]!.key === key) {
-          outcome = `Test slot granted (${st.holders.length + 1}/${limit}). Run, then release it, also if the run fails. It frees by itself after ${span(LEASE_MS)}.`
-          return { holders: [...st.holders, { key, name, label, since: at, lastAt: at }], waiters: waiters.slice(1) }
-        }
-        outcome = undefined
-        return { ...st, waiters }
-      })
-      return outcome
+      await settleSlots($, rows, at, st => {
+        already = st.holders.find(h => h.key === key)
+        if (already || st.waiters.some(w => w.key === key)) return st
+        return { ...st, waiters: [...st.waiters, { key, name, label, since: at }] }
+      }, key)
+      if (already?.claimed === true) {
+        return `You already hold a test slot (${already.label}, ${span(at - already.since)}). Release it when your run is over.`
+      }
+      const st = await read($, testSlots)
+      if (!st.holders.some(h => h.key === key)) return undefined
+      return `Test slot granted (${st.holders.length}/${limit}). Run, then release it, also if the run fails. It frees by itself after ${span(LEASE_MS)}.`
     }
 
     const wait = Math.min(WAIT_MAX_S, Math.max(0, Number.isFinite(Number(input.wait_s)) ? Number(input.wait_s) : WAIT_DEFAULT_S))
@@ -720,8 +786,9 @@ export const register: Register = (on, options) => {
     }
     const st = await read($, testSlots)
     const pos = st.waiters.findIndex(w => w.key === key) + 1
+    const f = grantFile(key)
     return {
-      result: `No slot after ${wait} s; queued, position ${pos}. Held by ${st.holders.map(h => heldBy(h, t)).join(', ') || 'nobody'}. Call acquire again (your place in line is kept while you keep asking).`,
+      result: `No slot after ${wait} s; queued, position ${pos}. Held by ${st.holders.map(h => heldBy(h, t)).join(', ') || 'nobody'}. You keep your place and are granted the slot when it is your turn (it is offered for ${span(CLAIM_MS)}). Don't poll acquire. ${f ? `Wait with Bash (timeout 600000, or run_in_background and continue when notified): until [ -e '${f}' ]; do sleep 3; done . Or do other work; a "your test slot is granted" message arrives.` : 'Do other work; a "your test slot is granted" message arrives.'} Then call acquire once to confirm, run, and release.`,
     }
   })
 

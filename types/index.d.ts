@@ -44,7 +44,8 @@ export type Handover = {
 }
 
 // A holder of, or a waiter for, a test slot (the test_slot tool). key is the agent id, or "main".
-export type SlotEntry = { key: string; name: string; label: string; since: number; lastAt: number }
+export type SlotEntry = { key: string; name: string; label: string; since: number; claimed?: boolean }
+// claimed is false for a holder granted the slot from the line who has not yet confirmed with acquire.
 
 export type TestSlots = { holders: SlotEntry[]; waiters: SlotEntry[] }
 
