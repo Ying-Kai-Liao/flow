@@ -2417,7 +2417,8 @@ export const register: Register = (on, options) => {
       await update($, checks, () => disk)
       // Done handovers from before checks existed (or a session that died first) get theirs once.
       for (const h of Object.values(await read($, handovers))) {
-        if (h.status === 'done') await captureChecks($, h, settings.verifyPaths, false)
+        // A PR that already has a check (any state) runs no git calls on a normal restart.
+        if (h.status === 'done' && !(await read($, checks)).items.some(c => c.pr === h.pr)) await captureChecks($, h, settings.verifyPaths, false)
       }
       // Once per installed version: the checks it now covers go to main as a prompt.
       const due = dueForPrompt(await read($, checks), installed)

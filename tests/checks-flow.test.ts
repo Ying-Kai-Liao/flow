@@ -19,6 +19,7 @@ function world(on: On, opts: { shaVersion?: string; installed?: string; changed?
   ]
   const files = new Map<string, string>()
   const submitted: string[] = []
+  const calls: string[][] = []
   on('agent.list', () => ({ value: agents }))
   on('session.start', () => ({ cwd: '/r' }))
   on('command.register', () => ({ value: undefined } as never))
@@ -41,6 +42,7 @@ function world(on: On, opts: { shaVersion?: string; installed?: string; changed?
   on('fs.list', (_, e) => ({ value: [...files.keys()].filter(k => k.startsWith(`${e.path}/`)).map(k => ({ name: k.slice(e.path.length + 1), isDirectory: false })) }) as never)
   on('process.run', (_, e) => {
     const a = e.argv
+    calls.push(a)
     if (a[0] === 'git' && a[1] === 'rev-parse') return ok('/r/.git\n')
     if (a[0] === 'git' && a[1] === 'show') return opts.shaVersion === undefined ? fail() : ok(JSON.stringify({ version: opts.shaVersion }))
     if (a[0] === 'gh' && a[1] === 'pr' && a[2] === 'view' && a.includes('files')) {
@@ -52,7 +54,7 @@ function world(on: On, opts: { shaVersion?: string; installed?: string; changed?
     }
     return ok()
   })
-  return { agents, files, submitted, clock }
+  return { agents, files, submitted, clock, calls }
 }
 
 const handover = (n: number, extra: Record<string, unknown> = {}) => ({
@@ -98,8 +100,11 @@ test('backfill: a done handover on disk gets its check once, not twice across re
   const w = world(on)
   seed(w, 30, { status: 'done', sha: 's', report: 'needs a person: PR #30: try it' })
   await start($)
+  const shows = () => w.calls.filter(c => c[0] === 'git' && c[1] === 'show').length
+  const first = shows()
   await start($)
   expect(stored(w).items.map(i => i.id)).toEqual(['c1'])
+  expect(shows()).toBe(first)
 })
 
 test('pass, fail with a follow-up, and refusal of a closed check; managers and workers are refused', async ($, on) => {
