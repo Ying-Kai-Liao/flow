@@ -172,6 +172,17 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   3 defaults" or free text), a manager for its workers'. The answer is messaged to the asker and
   recorded as a decision note. If the asker is gone, the result says undelivered and the main
   session relays it to the successor (`<name>-2`).
+- **FYIs.** For a reversible choice (a threshold, wording, a name, a default) an agent does not ask: it
+  decides, continues, and records `mcp__flow__fyi` (`from`, `items: [{decision, why, alternative?, topic?}]`;
+  the batch is validated whole, main cannot call it). An FYI is a non-blocking inbox item (`kind: "fyi"`,
+  same `q<n>` ids, options Keep / Overturn, default Keep), addressed like an ask: a worker's to its
+  manager, a manager's to main. Nobody is messaged or toasted when one is recorded, and it never
+  counts as asking. `/flow inbox` lists them in their own section, `status` and the pane as a count.
+  `mcp__flow__answer` acks (the choice Keep, or `defaults: true`, also with `ids`): no message. Any other
+  choice, free text included, overturns: the owner is messaged what it decided and what to do instead,
+  or, if it is no longer running, its manager (naming the owner); the overturn is noted as a decision.
+  The addressee may answer an FYI, and so may main (the user overrides what a manager has not looked at).
+  Standing answers never answer an FYI.
 - A report whose last line ends in `?` still counts as a question, for agents that don't use the
   tool. `decision_phrases` is deprecated.
 
@@ -355,7 +366,8 @@ Not verified:
 - `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
 - `preflight`: a manager files its pre-flight before starting workers (see Pre-flight).
 - `ask`: questions with options, a recommended default and `blocking` (see Questions and the inbox).
-- `answer`: answers inbox questions by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
+- `fyi`: records a decision the agent took itself, non-blocking and overturnable (see Questions and the inbox).
+- `answer`: answers inbox questions (and acks or overturns FYIs) by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
 - `standing`: main only: list, add and remove standing answers.
 - `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
   `text` it returns the notes.

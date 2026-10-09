@@ -57,25 +57,61 @@ export function parseAsk(input: unknown): { questions: AskedQuestion[] } | { err
   return { questions: out }
 }
 
+export const KEEP = 'Keep'
+export const OVERTURN = 'Overturn'
+export const isFyi = (q: Question): boolean => q.kind === 'fyi'
+
+export type AskedFyi = { decision: string; why: string; alternative?: string; topic?: string }
+
+// An FYI batch checked whole, like parseAsk: one bad item refuses the call and nothing is recorded.
+export function parseFyi(input: unknown): { items: AskedFyi[] } | { error: string } {
+  const raw = (input as { items?: unknown } | null)?.items
+  if (!Array.isArray(raw) || raw.length === 0) return { error: 'items must be a non-empty list.' }
+  const out: AskedFyi[] = []
+  for (const [i, r] of raw.entries()) {
+    const at = `items[${i}]`
+    if (typeof r !== 'object' || r === null) return { error: `${at} must be an object.` }
+    const f = r as Record<string, unknown>
+    const decision = str(f.decision)
+    if (decision === '') return { error: `${at}.decision is required.` }
+    const why = str(f.why)
+    if (why === '') return { error: `${at}.why is required.` }
+    out.push({
+      decision, why,
+      ...(str(f.alternative) !== '' ? { alternative: str(f.alternative) } : {}),
+      ...(str(f.topic) !== '' ? { topic: str(f.topic) } : {}),
+    })
+  }
+  return { items: out }
+}
+
+// An FYI as a stored question: the decision is the text, the why the context; Keep is the default.
+export const fyiAsked = (f: AskedFyi): AskedQuestion => ({
+  question: f.decision, options: [KEEP, OVERTURN], default: KEEP, blocking: false,
+  context: f.alternative === undefined ? f.why : `${f.why} (otherwise: ${f.alternative})`,
+  ...(f.topic !== undefined ? { topic: f.topic } : {}),
+})
+
 const same = (a: string, b: string) => a.trim().replace(/\s+/g, ' ').toLowerCase() === b.trim().replace(/\s+/g, ' ').toLowerCase()
 
 export type Asker = { name: string; id?: string; isManager: boolean }
 
 // Stores the batch. The same owner asking the same open question again gets the existing id back.
 export function addQuestions(
-  inbox: Inbox, asker: Asker, addressee: string, asked: AskedQuestion[], now: number,
+  inbox: Inbox, asker: Asker, addressee: string, asked: AskedQuestion[], now: number, kind?: 'fyi',
 ): { inbox: Inbox; added: Array<{ q: Question; fresh: boolean }> } {
   let next = inbox.next
   const items = [...inbox.items]
   const added: Array<{ q: Question; fresh: boolean }> = []
   for (const a of asked) {
-    const dup = items.find(x => x.state === 'open' && x.owner === asker.name && same(x.question, a.question))
+    const dup = items.find(x => x.state === 'open' && x.owner === asker.name && isFyi(x) === (kind === 'fyi') && same(x.question, a.question))
     if (dup !== undefined) {
       added.push({ q: dup, fresh: false })
       continue
     }
     const q: Question = {
       id: `q${next++}`, owner: asker.name, addressee, ...a, askedAt: now, state: 'open', delivered: false,
+      ...(kind === 'fyi' ? { kind } : {}),
       ...(asker.id !== undefined ? { askerId: asker.id } : {}), askerIsManager: asker.isManager,
     }
     items.push(q)
@@ -124,7 +160,8 @@ export function markAnswered(inbox: Inbox, id: string, choice: string | null, by
   const q = inbox.items.find(x => x.id === id)
   if (q === undefined) return { kind: 'unknown' }
   if (q.state === 'answered') return { kind: 'answered', q }
-  if (rule === undefined && !isAddressee(q, by)) return { kind: 'refused', q }
+  // Main may also answer any FYI: the user overrides what a manager has not looked at.
+  if (rule === undefined && !isAddressee(q, by) && !(isFyi(q) && by === 'main')) return { kind: 'refused', q }
   const answer = choice === null ? q.default : parseChoice(q.options, choice).text
   if (answer === '') return { kind: 'empty', q }
   // Answering with the default's text counts as the default, however it was typed.
@@ -143,19 +180,27 @@ export const openAll = (inbox: Inbox): Question[] => inbox.items.filter(x => x.s
 
 // The agents with an open blocking ask: they count as asking.
 export const askingNames = (inbox: Inbox | undefined): string[] =>
-  (inbox?.items ?? []).filter(x => x.state === 'open' && x.blocking).map(x => x.owner)
+  (inbox?.items ?? []).filter(x => x.state === 'open' && x.blocking && !isFyi(x)).map(x => x.owner)
 
 // A non-blocking question answered with its default needs no message: the asker already went on it.
 export const needsMessage = (q: Question, isDefault: boolean): boolean => q.blocking || !isDefault
 
 // What the asker is told when its question is answered.
 export function answerMessage(q: Question, answer: string, by: string, isDefault: boolean): string {
+  if (isFyi(q)) {
+    const instead = answer === OVERTURN ? 'undo it' : answer
+    return `flow: ${by} overturned your FYI ${q.id}: you decided "${q.question}". Instead: ${instead}. Change your work (on your branch / PR if it is still open) and say so in your report.`
+  }
   const head = `flow: ${by} answered ${q.id}. Question: "${q.question}" Answer: ${answer}.`
   if (q.blocking) return `${head} Carry on from this answer.`
   return isDefault
     ? `${head} That is your default; nothing changes.`
     : `${head} You went on with the default "${q.default}": change your work to the answer, and say so in your report.`
 }
+
+// Questions only; FYIs have their own section.
+const questionsOf = (inbox: Inbox | undefined): Question[] => openAll(inbox ?? EMPTY_INBOX).filter(q => !isFyi(q))
+const fyisOf = (inbox: Inbox | undefined): Question[] => openAll(inbox ?? EMPTY_INBOX).filter(isFyi).sort((a, b) => a.askedAt - b.askedAt)
 
 // Blocking questions first, then oldest first.
 function ordered(items: Question[]): Question[] {
@@ -176,13 +221,18 @@ export const recentAuto = (inbox: Inbox | undefined, now: number): Question[] =>
 
 // /flow inbox: the open questions grouped by owner, blocking first, ready to answer.
 export function renderInbox(inbox: Inbox | undefined, now: number): string {
-  const open = ordered(openAll(inbox ?? EMPTY_INBOX))
+  const open = ordered(questionsOf(inbox))
+  const fyis = fyisOf(inbox)
+  const fyiLines = fyis.length === 0 ? [] : [
+    `FYI (decided, say if wrong; ack all with mcp__flow__answer defaults true, overturn with a choice): ${fyis.length}`,
+    ...fyis.map(q => `  ${q.id} ${q.owner} (${age(now - q.askedAt)}): ${q.question}${q.context ? ` - why: ${q.context}` : ''}`),
+  ]
   const auto = recentAuto(inbox, now)
   const autoLines = auto.length === 0 ? [] : [
     `Auto-answered (last 24 h, ${auto.length} shown; revoke with mcp__flow__standing remove <id>):`,
     ...auto.map(q => `  ${q.id} ${q.owner}: ${q.question} -> ${q.answer ?? ''} (rule ${q.rule ?? '?'})`),
   ]
-  if (open.length === 0) return autoLines.length === 0 ? 'No open questions.' : ['No open questions.', ...autoLines].join('\n')
+  if (open.length === 0) return ['No open questions.', ...fyiLines, ...autoLines].join('\n')
   const owners = [...new Set(open.map(q => q.owner))]
   const blocking = open.filter(q => q.blocking).length
   const lines = [`Open questions: ${open.length}${blocking ? ` (${blocking} blocking)` : ''}. Answer with mcp__flow__answer: answers [{id, choice}] (option text, letter or number), or defaults true for the recommended ones.`]
@@ -194,19 +244,22 @@ export function renderInbox(inbox: Inbox | undefined, now: number): string {
       if (q.context) lines.push(`      context: ${q.context}`)
     }
   }
-  return [...lines, ...autoLines].join('\n')
+  return [...lines, ...fyiLines, ...autoLines].join('\n')
 }
 
 // The head of mcp__flow__status: a count and one line per open question, blocking first.
 export function inboxHead(inbox: Inbox | undefined, now = Date.now()): string[] {
-  const open = ordered(openAll(inbox ?? EMPTY_INBOX))
+  const open = ordered(questionsOf(inbox))
+  const fyi = fyisOf(inbox).length
   const auto = recentAuto(inbox, now).length
   const autoLine = auto === 0 ? [] : [`Inbox: ${auto} auto-answered by standing answers in the last 24 h (/flow inbox).`]
-  if (open.length === 0) return autoLine
+  const fyiLine = fyi === 0 ? [] : [`Inbox: ${fyi} FYI (decided by agents, non-blocking; /flow inbox lists them, mcp__flow__answer defaults true acks).`]
+  if (open.length === 0) return [...fyiLine, ...autoLine]
   const blocking = open.filter(q => q.blocking).length
   return [
     `Inbox: ${open.length} open${blocking ? `, ${blocking} blocking` : ''} (/flow inbox shows them with options):`,
     ...open.map(q => `  ${q.id} ${q.blocking ? 'BLOCKING ' : ''}${q.owner}: ${q.question.slice(0, 140)}`),
+    ...fyiLine,
     ...autoLine,
   ]
 }

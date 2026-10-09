@@ -136,3 +136,42 @@ test('status starts with the inbox head while a blocking question is open', asyn
   expect(out.startsWith('Inbox: 1 open, 1 blocking')).toBe(true)
   expect(out).toContain('q1 BLOCKING csv-worker: Which format?')
 })
+
+const fyi = ($: Dollar, agentId: string | null, items: unknown[]) =>
+  $.tool.call({ tool: 'mcp__flow__fyi', from: 'x', items, ...(agentId === null ? {} : { agentId }) } as never).then(r => String(r.result))
+const D1 = { decision: 'Use a 30 s timeout', why: 'the conservative choice' }
+
+test('an FYI is recorded quietly, listed, and acked with defaults without a message', async ($, on) => {
+  const w = world(on)
+  expect(await fyi($, null, [D1])).toContain('Refused')
+  expect(await fyi($, 'w1', [D1, { decision: 'x' }])).toContain('Refused, nothing recorded')
+  const r = await fyi($, 'w1', [D1])
+  expect(r).toContain('Recorded q1')
+  expect(r).toContain('only if it is overturned')
+  expect(await fyi($, 'w1', [D1])).toContain('Recorded q1')
+  expect(w.sent).toEqual([])
+  expect(w.toasts).toEqual([])
+  const text = await inbox($)
+  expect(text).toContain('No open questions.')
+  expect(text).toContain('q1 csv-worker')
+  expect(await answer($, 'm1', { defaults: true })).toContain('q1: Keep (default)')
+  expect(w.sent).toEqual([])
+  expect(await inbox($)).toBe('No open questions.')
+})
+
+test('overturning an FYI messages the owner; with the owner gone, its manager', async ($, on) => {
+  const w = world(on)
+  await fyi($, 'w1', [D1, { decision: 'Name it exporter', why: 'matches the module' }])
+  const r = await answer($, null, { answers: [{ id: 'q1', choice: 'use 60 s' }] })
+  expect(r).toContain('q1: use 60 s')
+  expect(w.sent[0]!.to).toBe('w1')
+  expect(w.sent[0]!.text).toContain('overturned your FYI q1: you decided "Use a 30 s timeout". Instead: use 60 s.')
+  expect(notes(w.files)).toContain('overturned, use 60 s')
+
+  w.agents.splice(1, 1)
+  await answer($, null, { answers: [{ id: 'q2', choice: 'Overturn' }] })
+  const last = w.sent[w.sent.length - 1]!
+  expect(last.to).toBe('m1')
+  expect(last.text).toContain('overturned your FYI q2')
+  expect(last.text).toContain('csv-worker')
+})

@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.gitignore` ignores `.claude-plugin/types` without the trailing slash, so the symlink `npm run typecheck`
   creates in a worktree is ignored too and `git worktree remove` no longer refuses it.
 
+## [0.3.34] - 2026-10-10
+
+### Added
+
+- FYI inbox items: `mcp__flow__fyi` records "I decided X because Y; say if wrong" as a non-blocking inbox
+  item (`kind: "fyi"`). `mcp__flow__answer` acks it (Keep, or `defaults: true`) or overturns it, which
+  messages the owner (its manager if the owner is gone). Main may answer any FYI. `/flow inbox` lists
+  FYIs in their own section; status and the pane show a count. Worker and manager prompts now say to
+  pick the conservative option for reversible choices, record it as an FYI and continue.
+
 ## [0.3.32] - 2026-10-10
 
 ### Added
