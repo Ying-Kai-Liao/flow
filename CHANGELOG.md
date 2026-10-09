@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-10-09
+
+### Added
+
+- The Flow pane tree starts with a root row for the main session (super manager); managers
+  and the merge queue sit under it.
+- An agent's detail view lists the agents under it as buttons that open their detail view.
+
+### Changed
+
+- Back in the detail view returns to the parent agent, or to the tree from a top-level agent.
+
 ## [0.2.3] - 2026-10-09
 
 ### Changed

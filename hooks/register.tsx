@@ -29,6 +29,7 @@ const COLOR: Record<string, string> = {
   running: 'cyan', waiting: 'yellow', idle: 'yellow', completed: 'green', failed: 'red', killed: 'red',
 }
 const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [QUEUE]: 'queue' }
+const ROOT_GLYPH = '◆'
 const HANDOVER_GLYPH: Record<Handover['status'], string> = {
   pending: '…', taken: '●', done: '✓', returned: '↩',
 }
@@ -384,11 +385,13 @@ export const register: Register = (on, options) => {
       const act = acts[agent.id]
       const answer = (act?.answer ?? '').trim()
       const room = Math.max(3, rows - 12)
-      const children = list.filter(a => a.parentId === agent.id)
+      const children = list.filter(a => a.parentId === agent.id).sort((a, b) => rank(a.status) - rank(b.status))
+      // The parent chain is the history: Back climbs one level, an orphan or top-level agent goes to the tree.
+      const parent = list.find(a => a.id === agent.parentId)
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" gap={1}>
-            <Button key="back" hotkey="b" onPress={() => update($, selected, () => null)}>Back</Button>
+            <Button key="back" hotkey="b" onPress={() => update($, selected, () => parent?.id ?? null)}>Back</Button>
             <Button key="msg" hotkey="m" onPress={() => $.prompt.fill({
               text: `Send a message to ${ROLE[agent.type] ?? 'agent'} "${labelOf(agent)}": `, mode: 'replace',
             })}>Message</Button>
@@ -398,6 +401,13 @@ export const register: Register = (on, options) => {
             {act ? ` · started ${ago(t - act.startedAt)} ago` : ''}{children.length ? ` · ${children.length} under it` : ''}</Text>
           </Text>
           <Text dimColor>{agent.description}</Text>
+          {children.length > 0 && <Text bold>Under it</Text>}
+          {children.map(c => (
+            <Button key={c.id} dimColor={ENDED.has(c.status)} onPress={() => update($, selected, () => c.id)}>
+              <Text color={COLOR[c.status]}>{GLYPH[c.status] ?? '?'}</Text> {ROLE[c.type] ? `${ROLE[c.type]} ` : ''}{labelOf(c)}
+              <Text dimColor> {c.status}</Text>
+            </Button>
+          ))}
           <Text bold>Activity</Text>
           {(act?.log ?? []).length === 0 && <Text dimColor>Nothing seen yet.</Text>}
           {(act?.log ?? []).slice(-room).map(line => <Text wrap="truncate-end">{line}</Text>)}
@@ -422,19 +432,20 @@ export const register: Register = (on, options) => {
     for (const a of kids(undefined)) walk(a, 0)
     const prs = Object.values(hs).sort((a, b) => b.at - a.at)
     const live = list.filter(a => !ENDED.has(a.status)).length
-    const room = Math.max(1, rows - 4 - Math.min(prs.length, 5))
+    const room = Math.max(1, rows - 5 - Math.min(prs.length, 5))
 
     return (
       <Box flexDirection="column">
         <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PRs handed over` : ''} · press one to see it</Text>
-        {list.length === 0 && <Text dimColor>Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
+        <Text bold>{ROOT_GLYPH} main <Text dimColor>· super manager</Text></Text>
+        {list.length === 0 && <Text dimColor>  Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
         {flat.slice(0, room).map(({ a, depth }) => {
           const act = acts[a.id]
           const last = asksQuestion(act?.answer) && !['running', 'pending'].includes(a.status)
             ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop()
             : act?.log[act.log.length - 1] ?? ''
           return (
-            <Box key={`row-${a.id}`} paddingLeft={depth * 2}>
+            <Box key={`row-${a.id}`} paddingLeft={(depth + 1) * 2}>
               <Button key={a.id} dimColor={ENDED.has(a.status)} onPress={() => update($, selected, () => a.id)}>
                 <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> {ROLE[a.type] ? `${ROLE[a.type]} ` : ''}{labelOf(a)}
                 <Text dimColor> {act ? ago(t - act.lastAt) : ''} {last.slice(0, 70)}</Text>
@@ -442,10 +453,10 @@ export const register: Register = (on, options) => {
             </Box>
           )
         })}
-        {prs.length > 0 && <Text bold>Merge queue</Text>}
+        {prs.length > 0 && <Text bold>  Merge queue</Text>}
         {prs.slice(0, 5).map(h => (
           <Text key={`pr-${h.pr}`} dimColor={h.status === 'done'} wrap="truncate-end">
-            {HANDOVER_GLYPH[h.status]} #{h.pr} {h.status}{h.status === 'returned' ? `: ${h.reason ?? ''}` : ''} <Text dimColor>{h.title}</Text>
+            {'    '}{HANDOVER_GLYPH[h.status]} #{h.pr} {h.status}{h.status === 'returned' ? `: ${h.reason ?? ''}` : ''} <Text dimColor>{h.title}</Text>
           </Text>
         ))}
       </Box>
