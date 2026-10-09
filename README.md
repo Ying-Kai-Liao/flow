@@ -42,7 +42,7 @@ anything.
   `/flow close` closes the pane, `/flow resume` picks up unfinished work (below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **A context meter on each card**: `███│░░░░░░░ 42%   1m 43s · ↓ 84.0k tokens`, with `│` marking the warning
-  threshold (`context_warn_percent`). The meter turns the theme's warning color at or past the threshold and its error
+  threshold (the lower of `context_warn_tokens` and `context_warn_percent`). The meter turns the theme's warning color at or past the threshold and its error
   color from 90%. The time runs while the agent runs and freezes when it ends. Where an agent's usage isn't known yet it says `context ?` and shows no tokens, never a guess. A
   subagent's window is the main session's when it runs the same model, else 200k (1M for a
   `[1m]` model).
@@ -53,8 +53,17 @@ anything.
 
 ## Continuing work
 
-**Handoff.** When a worker or manager reaches `context_warn_percent` (once per agent; the queue
-and the main session never get it), the plugin sends it a notice and a toast. A worker finishes
+**Handoff.** When a worker or manager reaches the limit (once per agent; the queue never gets it),
+the plugin tells it to wrap up and shows a toast. The limit is the lower of `context_warn_tokens`
+(default 350000) and `context_warn_percent` (default 40) of the agent's window, so a 1M model hands
+off at 350k tokens and a 200k model at 80k. The wrap-up reaches the agent two ways: a message (read
+when the agent is idle or waiting) and a reminder appended to a tool result (read mid-turn: on the
+first tool call past the limit, every 10th after, and when usage rises another 10 points). Nothing
+is denied or interrupted. After a compaction the reminders stop until the next crossing. The window
+is the main session's when the agent runs the same model, else 200k, and 1M once its usage exceeds
+200k; that is a guess the engine does not confirm. The main session can't be replaced, so while
+flow agents exist it gets one toast and log line per crossing (run `/compact`, or restart and
+`/flow resume`), never an automatic compaction. A worker finishes
 its small step, commits everything as `WIP handoff: …`, pushes `flow/<name>`, opens or updates a
 draft PR, writes the note into the PR description under `## Handoff` (Done / Remaining /
 Decisions / Gotchas) and ends its report with `HANDOFF: <branch>`. Its manager checks the push,
@@ -96,8 +105,9 @@ worker to fix X".
 | `merge_method` | `squash` | managers, when there is no queue |
 | `max_workers` | 3 | workers per manager at a time |
 | `worker_model` | `sonnet` | workers |
-| `context_warn_percent` | 40 | the pane's context meter: where the marker sits and the meter turns yellow (1 to 100) |
-| `handoff` | on | workers and managers: at `context_warn_percent` they are told to hand off (see Continuing work). Off: the meter only shows |
+| `context_warn_percent` | 40 | the context limit as a percent of the window (1 to 100) |
+| `context_warn_tokens` | 350000 | the context limit in tokens; the lower of the two applies, so a 200k model still hands off at 80k. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
+| `handoff` | on | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
 | `base_branch` | the remote's default branch | everyone |
 
 An unset full check or deploy is a step that's skipped and reported, never improvised.

@@ -24,6 +24,12 @@ export type Activity = {
   endedAt?: number
   // When the plugin told this agent to hand off; once per agent.
   handoffNotifiedAt?: number
+  // The context percent when it was told, and how many wrap-up reminders rode on its tool results since.
+  handoffPercent?: number
+  remindersSent?: number
+  // Reminder bookkeeping: tool calls since the threshold, and the percent at the last reminder.
+  callsPastLimit?: number
+  remindedPercent?: number
 }
 
 // A PR a manager handed to the merge queue (the handover tool), and what the queue did with it.
