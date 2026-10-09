@@ -137,7 +137,8 @@ test('the pane draws workers under their manager, and the queue', async ($, on) 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'flow', surface, ...PANE })
     expect(await ui.find({ text: /csv-export/ })).toBeDefined()
-    await ui.press({ key: 'fold-m1' })
+    // The fold choice outlives a mount: open the manager only if its worker is still hidden.
+    if (!await ui.find({ text: /worker/ })) await ui.press({ key: 'fold-m1' })
     expect(await ui.find({ text: /worker/ })).toBeDefined()
     await ui.press({ key: 'm1' })
     expect(await ui.find({ type: 'Text', text: /1 under it/ })).toBeDefined()

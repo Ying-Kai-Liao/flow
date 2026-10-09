@@ -380,6 +380,7 @@ test('the meter shows the token limit next to the marker for a [1m] worker', { o
   await $.agent.spawn({ prompt: 'brief', description: 'A task', subagentType: 'flow:manager', model: ONE_M } as never)
   await step($, 'w1', ONE_M)
   const ui = await $.ui.mount({ plugin: 'flow', surface: 'terminal', component: 'Pane', props: { title: 'Flow' }, requestId: 'flow', viewport: { columns: 100, rows: 40 } } as never)
+  await ui.press({ key: 'fold-m1' })
   expect(await ui.find({ type: 'Text', text: /300k│/ })).toBeDefined()
 })
 
@@ -438,6 +439,7 @@ test('the meter of a worker spawned with sonnet[1m] shows 1M with the marker at 
   await spawned($, on, 'sonnet[1m]', 100_000)
   await step($, 'w1', 'claude-sonnet-5')
   const ui = await $.ui.mount({ plugin: 'flow', surface: 'terminal', component: 'Pane', props: { title: 'Flow' }, requestId: 'flow', viewport: { columns: 100, rows: 40 } } as never)
+  await ui.press({ key: 'fold-m1' })
   // 12 cells: 10% fills 1, the marker sits at cell 4 (floor of 35% of 12).
   expect(await ui.find({ type: 'Text', text: /█░{2}░│░{7} 10%/ })).toBeDefined()
 })

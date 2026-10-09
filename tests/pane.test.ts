@@ -107,9 +107,20 @@ async function setup($: Dollar, on: On, tokens?: number) {
   await $.agent.spawn({ prompt: 'brief', description: 'A task', subagentType: 'flow:manager' } as never)
 }
 
-const mount = ($: Dollar, rows?: number) => $.ui.mount({
+const mountCollapsed = ($: Dollar, rows?: number) => $.ui.mount({
   plugin: 'flow', surface: 'terminal', ...PANE, ...(rows === undefined ? {} : { viewport: { columns: 100, rows } }),
 } as never)
+
+// Managers start collapsed; most tests look at their workers, so open them first.
+const mount = async ($: Dollar, rows?: number) => {
+  const ui = await mountCollapsed($, rows)
+  // The fold choice lives in an atom that outlives a mount, so open only a manager still drawn collapsed.
+  for (const id of ['m1', 'm2']) {
+    const chevron = await ui.find({ type: 'Button', key: `fold-${id}` })
+    if (chevron && JSON.stringify(chevron).includes('▸')) await ui.press({ key: `fold-${id}` })
+  }
+  return ui
+}
 
 // A streaming event: read the stream to its end, as the engine does, so the hooks over it see the result.
 const step = async ($: Dollar, agentId?: string) => {
@@ -409,6 +420,53 @@ test('a completed agent whose report ends with HANDOFF shows "handed off", other
   } finally { TREE[1]!.status = 'running' }
 })
 
+test('a manager starts collapsed to one line; its worker shows on the chevron or c; hidden asks are summed', async ($, on) => {
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  await setup($, on, 84_000)
+  TREE[1]!.status = 'completed'
+  try {
+    await finish($, 'Two ways to fix it. Which one do you want?')
+    const ui = await mountCollapsed($, 40)
+    expect(await ui.find({ type: 'Button', key: 'm1' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'w1' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: / · 1 asks/ })).toBeDefined()
+    // TODO(handoff): the hint reads the highlighted card; the highlight starts on main, so assert it after j.
+    await ui.press({ key: 'fold-m1' })
+    expect(await ui.find({ type: 'Button', key: 'w1' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: / · 1 asks/ })).toBeUndefined()
+    await ui.press({ key: 'nav-fold' })
+    expect(await ui.find({ type: 'Button', key: 'w1' })).toBeUndefined()
+    await ui.press({ key: 'nav-fold' })
+    expect(await ui.find({ type: 'Button', key: 'w1' })).toBeDefined()
+    await ui.unmount()
+  } finally { TREE[1]!.status = 'running' }
+})
+
+test('q toggles the Merge queue section, collapsed to a status-count line', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('agent.list', () => ({ value: [
+    { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
+    { id: 'q1', name: 'queue', description: 'q', type: 'flow:queue', status: 'running' },
+  ] as AgentInfo[] }))
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'q1' }))
+  on('process.run', () => {
+    const view = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: 'flow/p7', title: 'Export CSV', body: '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- full check' }
+    return { value: { exitCode: 0, stdout: JSON.stringify(view), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  await $.tool.call({ tool: 'mcp__flow__handover', pr: 7, verified: 'x', report_to: 'csv-export', agentId: 'm1' } as never)
+  const ui = await mountCollapsed($, 40)
+  expect(await ui.find({ text: /1 pending/ })).toBeDefined()
+  expect(await ui.find({ text: /#7 pending/ })).toBeUndefined()
+  await ui.press({ key: 'nav-queue' })
+  expect(await ui.find({ text: /#7 pending/ })).toBeDefined()
+  await ui.press({ key: 'nav-queue' })
+  expect(await ui.find({ text: /#7 pending/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 // The Merge queue rows are JSX inside a map over the handovers; a parameter there named `h`
 // once shadowed the JSX factory and blanked the whole pane, but only while a handover existed.
 test('the pane draws a Merge queue row for every handover status', async ($, on) => {
@@ -439,6 +497,8 @@ test('the pane draws a Merge queue row for every handover status', async ($, on)
     const ui = await $.ui.mount({ plugin: 'flow', surface, ...PANE })
     expect(await ui.find({ text: /failed to draw/ })).toBeUndefined()
     expect(await ui.find({ text: /Merge queue/ })).toBeDefined()
+    // The section starts collapsed; the choice outlives a mount, so open it only when still collapsed.
+    if (!await ui.find({ text: /#7 pending/ })) await ui.press({ key: 'fold-#merge-queue' })
     expect(await ui.find({ text: /#7 pending/ })).toBeDefined()
     expect(await ui.find({ text: /#8 taken/ })).toBeDefined()
     expect(await ui.find({ text: /#9 done/ })).toBeDefined()

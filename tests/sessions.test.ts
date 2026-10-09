@@ -399,6 +399,7 @@ test('the pane: a session shows its digest and screen; restart takes a second pr
   expect(await ui.find({ type: 'Text', text: /claude 5h/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /15% left/ })).toBeDefined()
 
+  await ui.press({ key: 'fold-m1' })
   await ui.press({ key: 'session:csv-codex' })
   expect(await ui.find({ type: 'Button', key: 'key-1' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /tmux attach -t flow-csv-codex/ })).toBeDefined()
