@@ -3,6 +3,8 @@
 // tool for starting agents, SendMessage for talking to them, and this plugin's flow tools for
 // the merge queue. `{{…}}` slots are filled from the plugin's options at registration.
 
+import { EVIDENCE_FORMAT } from './evidence'
+
 export type Settings = {
   base: string
   testCommand: string
@@ -112,7 +114,7 @@ export function deploySection(s: Pick<Settings, 'deployCommand' | 'deployTargets
 function stateStep(f: StateFile | undefined): string {
   if (!f) return ''
   return `
-8. Status file \`${f.path}\` (only you edit it). Add one entry at the top (newest first), committed in the repo: date, the PRs of the batch with titles, the deployed short sha and targets, what was verified, what was not, and the pending decisions. When the file holds more than ${f.keep} entries, move the oldest ones, in their order, to the end of \`${f.archive}\`. Commit "Status: <PRs> deployed <sha>" and \`git push origin HEAD:{{BASE}}\`. Do not deploy again for this status-only commit.`
+8. Status file \`${f.path}\` (only you edit it). Add one entry at the top (newest first), committed in the repo: date, the PRs of the batch with titles, the deployed short sha and targets, what was verified, what was not, and the pending decisions. Per PR, give its evidence from \`mcp__flow__queue\` list: ran / exercised / not verified. When the file holds more than ${f.keep} entries, move the oldest ones, in their order, to the end of \`${f.archive}\`. Commit "Status: <PRs> deployed <sha>" and \`git push origin HEAD:{{BASE}}\`. Do not deploy again for this status-only commit.`
 }
 
 // Each slot below starts with a space (or newline) when it has text, so an empty one leaves the sentence before it unchanged.
@@ -218,7 +220,11 @@ Verifying: run {{TEST}}.{{ALWAYS_TESTS}} Before a heavy run (a whole test suite,
 Finishing:
 1. Commit with a one-line message saying what changed and why, plus whatever attribution lines your session was told to use.
 2. \`git push -u origin HEAD\`, then \`gh pr create --base {{BASE}}\`. Don't merge. If there is no remote or gh fails, leave the commits on your branch and say so.
-3. The PR description carries: a one-line status, which rules changed, calls you made yourself (marked), the commands you ran, each with pass/fail, including every required check, what you did NOT verify (say so explicitly), and what to watch after deploy.
+3. The PR description carries: a one-line status, which rules changed, calls you made yourself (marked), and what to watch after deploy. It must also end with a \`## Verification\` section in exactly this format; \`mcp__flow__handover\` refuses the PR without it:
+\`\`\`
+${EVIDENCE_FORMAT}
+\`\`\`
+   Ran lists every command you ran with its result, including every required check named above (each must appear under Ran). Exercised says how you ran the change for real; "n/a: <reason>" is only for docs or prompt-only changes. Not verified lists at least one honest item (everything you did not check, such as the full check), or "none, because <reason>".
 4. On a continuation the PR already exists, as a draft: mark it ready (\`gh pr ready\`) when you are done, and replace its \`## Handoff\` section with the normal description above.
 
 ## Handoff
@@ -254,7 +260,7 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 
 - A question (its last line ends in "?"): answer it yourself if you can (below), by SendMessage to the worker's name. If only the user can decide, finish your own turn with the question (see Asking).
 - BLOCKED: fix the brief and send it by SendMessage, or start a fresh worker with a corrected brief.
-- A PR: review it at its head (\`gh pr view <n> --json headRefOid,files\`, \`gh pr diff <n>\`), yourself or with a reviewing subagent. Check it against the brief's acceptance criteria and edge cases. Feedback goes by SendMessage to the worker, which pushes fixes to the same branch.
+- A PR: review it at its head (\`gh pr view <n> --json headRefOid,files,body\`, \`gh pr diff <n>\`), yourself or with a reviewing subagent. Check it against the brief's acceptance criteria and edge cases. Check its \`## Verification\` section against the diff: did the worker really exercise the change, and is 'Not verified' honest? If not, send it back. \`mcp__flow__handover\` refuses a PR without the section. Feedback goes by SendMessage to the worker, which pushes fixes to the same branch.
 - HANDOFF: <branch> (its last line): the worker ran out of context and pushed its work. Check that \`git ls-remote origin flow/<x>\` equals the head sha it reported. Start a fresh worker named \`<old name>-2\` (then \`-3\`…) with the original brief, the line \`Continue on branch: flow/<x>\`, and the worker's handoff note. Do not remove the old worktree: the plugin continues in it when it is clean and at the pushed head, and otherwise cleans it up or leaves it, and removing it could delete the worktree the successor runs in. If the plugin tells you the branch passed max_continues, split the remaining work into smaller packages instead: the first continues the branch with a reduced brief, and the others are new packages that may branch from it.
 - An approved PR: hand it over with mcp__flow__handover. The plugin records it and starts the merge queue when none is running. After handing over, leave the branch alone. The queue reports back to you by SendMessage when it has merged or returned the PR.
 - The queue's merged report: call \`mcp__flow__clean\` with apply true. It removes the merged worker's worktree and local branch (the plugin may already have; then there is nothing left to do), and runs dry when the cleanup setting is off and says so. Never remove a worktree by hand while it has uncommitted or unpushed work: what the sweep keeps goes in your final report for the user.
@@ -345,7 +351,7 @@ The PRs handed to you are in mcp__flow__queue: action "list" shows the pending o
 6. After_deploy checks. Only for PRs whose targets all deployed fine (for a PR whose deploy failed, skip the check and say why). For each such PR whose \`after_deploy\` is not "none", judge from its text:
    - An agent can check it (commands, HTTP calls, logs, an e2e skill): start a check-only worker with the Agent tool: subagent_type "flow:worker", name "<your name>-verify-<pr>", run_in_background, brief starting with the line "Check only:" then what to check, the deployed short sha and where. Wait for its report before you finish; the result goes to the PR's report_to.
    - It needs a person (a browser look, a real conversation, a judgment call): write the line "needs a person: PR #<n>: <after_deploy>" in the report to report_to, SendMessage the same line to main, and put it in your final report.
-7. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | deployed: <per target result, or none> | after_deploy: <result or needs a person line> | pending decisions: <its pending, if not none>"). Then SendMessage the same line to the PR's report_to. Every PR's \`pending\` (not "none") goes into this line, as "pending decisions: PR #<n>: …"; SendMessage each such line to main as well.{{STATE_STEP}}
+7. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | evidence: <the PR's ran / exercised / not verified from mcp__flow__queue list> | deployed: <per target result, or none> | after_deploy: <result or needs a person line> | pending decisions: <its pending, if not none>"). Then SendMessage the same line to the PR's report_to. Every PR's \`pending\` (not "none") goes into this line, as "pending decisions: PR #<n>: …"; SendMessage each such line to main as well.{{STATE_STEP}}
 
 Never hold the queue for one PR: a PR that waits on a decision or fails on its own is sent back ("back" with the reason, and SendMessage its report_to), and the rest of the batch goes on.
 

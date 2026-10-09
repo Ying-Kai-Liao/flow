@@ -62,6 +62,8 @@ export type Handover = {
   verified: string
   pending: string
   afterDeploy: string
+  // Parsed from the PR's ## Verification section at handover; absent in handovers saved before it existed.
+  evidence?: { ran: string[]; exercised: string; notVerified: string[] }
   status: 'pending' | 'taken' | 'done' | 'returned'
   at: number
   sha?: string
