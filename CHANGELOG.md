@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Docs for person checks: README "Person checks" section, `check` tool, `verify_command` and `verify_paths`; the dispatch playbook tells main to list checks by version and close them only on the user's word; manager and queue prompts mention `verify_command` and the recorded check.
 - Release at merge: new settings `release` (`on`/`off`, default off), `release_files` and
   `changelog_file`. With it on, workers add changelog lines under `## [Unreleased]` and never touch
   the version; the merge queue calls the new `mcp__flow__release` tool once per batch, which cuts the

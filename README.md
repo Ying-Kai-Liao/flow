@@ -38,7 +38,7 @@ change, "start a worker to fix X" is enough.
 
 ## How it works
 
-Sections below, in order: roles, dependencies, what you see, pre-flight, questions and the inbox, continuing work, merge mode, cleanup, guards, merge queue rules, deploying, verification, workers in other harnesses.
+Sections below, in order: roles, dependencies, what you see, pre-flight, questions and the inbox, person checks, continuing work, merge mode, cleanup, guards, merge queue rules, deploying, verification, workers in other harnesses.
 
 ## Roles
 
@@ -89,7 +89,7 @@ add login-redirect  after: csv-export
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
-  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
+  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow checks` lists the after-deploy checks that need a person (see Person checks), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
   `c` collapses or expands the highlighted card, `q` the Merge queue section. In an agent's detail, `b` goes back and `m` starts a message.
@@ -225,6 +225,20 @@ id to revoke.
   count, and suggests rules for questions you answered the same way 3 or more times; `add`
   (`topic` or `match`, `answer`, optional `blocking`, `from`) writes the personal file; `remove`
   (`id`) removes a rule from whichever file holds it (a repo-file rule is a committed file).
+
+## Person checks
+
+An after-deploy check that needs a person (a browser look, a real conversation, a judgment call) becomes a durable item instead of a line in a chat report. Checks are separate from inbox questions and shown alongside them.
+
+- **What creates one.** Each `needs a person: PR #<n>: <steps>` line in the merge queue's done report for a PR. The same PR and steps never get two checks. A version in the steps ("install 0.3.31", else any `X.Y.Z`) is kept on the check. Handovers that were already done before this existed are backfilled once at session start.
+- **Where.** `<state dir>/checks.json`. A check has an id (`c1`, `c2`, ...), the PR, its steps, an optional version and an optional verify command. State is `open`, `passed` or `failed`; a failed check also carries a follow-up that is `open` or `started`.
+- **`/flow checks`** lists the open checks grouped by what they need: "Needs install of X and a restart" (one group per version, ascending), "Ready on the installed version", "No version", and "Version unknown" (a versioned check when the installed version cannot be read). Open follow-ups are listed after them. `/flow inbox` has a "Checks" section with the count, the pane has a `Checks: n open` line, and `/flow resume` lists open checks (for the user, nothing to start) and open follow-ups (for main to start).
+- **Pass and fail.** `/flow checks pass <id...>` closes checks as passed. `/flow checks fail <id> <note>` fails one check; the note (what went wrong) is required. A failed check creates a follow-up for main: main starts a manager on it with the PR, the steps and the note, then marks it with `mcp__flow__check` `started` (id and manager name). Closing a closed or unknown id is refused.
+- **Who closes.** The user with `/flow checks`, or main with `mcp__flow__check` on the user's word. The merge queue may close only a check that carries a verify command, see below.
+- **After an update.** Once per installed version, when an update installs the version some open checks were waiting for, main gets one prompt listing the checks that can now be done. Main tells the user; it starts no managers for them.
+- **Scripted checks.** A manager can pass `verify_command` (a shell command, such as an e2e or smoke run) on `mcp__flow__handover` when the after-deploy check can be scripted. If the check still needs a person, the queue runs the command at the merged main and closes the check itself: pass on exit 0, fail otherwise. The file-only `verify_paths` setting limits this: when set and the PR changes no matching file, the command is skipped and the check stays open for a person, with a note saying so.
+
+Not to be confused with the check-only verify worker (for after-deploy checks an agent can do, see Deploying), FYIs and standing answers (see Questions and the inbox).
 
 ## Attachments
 
@@ -398,7 +412,7 @@ Each target has a `mode`: `auto` (the default; deployed every batch) or `confirm
 
 `state_file` (set it per repo, see Settings per repo): after deploying, the queue adds one entry at the top of the file (date, PRs with titles, deployed sha and targets, verified, not verified, pending decisions), moves entries beyond `keep` (default 10) to the end of the archive (default `<stem>-archive.md` next to it, oldest last), and commits and pushes "Status: <PRs> deployed <sha>" without deploying again. Workers are told never to edit it.
 
-After deploying, a PR whose `after_deploy` an agent can check gets a check-only worker (`<queue>-verify-<pr>`); one that needs a person is reported as `needs a person: PR #<n>: ...`. A PR's `pending` decisions go into the reports and the status entry as `pending decisions: PR #<n>: ...`.
+After deploying, a PR whose `after_deploy` an agent can check gets a check-only worker (`<queue>-verify-<pr>`); one that needs a person is reported as `needs a person: PR #<n>: ...` and recorded as a check (see Person checks). A PR's `pending` decisions go into the reports and the status entry as `pending decisions: PR #<n>: ...`.
 
 ## Verification
 Ran:
@@ -420,6 +434,7 @@ Not verified:
 - `fyi`: records a decision the agent took itself, non-blocking and overturnable (see Questions and the inbox).
 - `answer`: answers inbox questions (and acks or overturns FYIs) by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
 - `standing`: main only: list, add and remove standing answers.
+- `check`: main only (the merge queue may close checks that carry a verify command): `list`, `pass` (`ids`, optional `note`), `fail` (`id`, required `note`) and `started` (`id`, `manager`) for a failed check's follow-up (see Person checks).
 - `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
   `text` it returns the notes.
 - `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.
@@ -544,6 +559,7 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `migrations_dir` | none | file only | the directory of migrations: workers number new ones after the highest on the base branch, and the merge queue renumbers a clash (see Merge queue rules) |
 | `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |
 | `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
+| `verify_paths` | none | file only | path globs (a list): a handover's `verify_command` runs only when the PR changes a matching file, e.g. only PRs touching migrations or code with outbound effects; otherwise the check stays open for a person. Unset: the command always runs (see Person checks) |
 | `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
 | `flaky_tests` | none | file only | test files known to fail now and then: when they are the only failures of the full check, the queue reruns them once (a list) |
@@ -593,7 +609,7 @@ The files are checked every few seconds by modification time. New settings apply
 
 - `migrations` (read-only; used by the merge queue): `prs` (PR numbers in merge order) and `ref` (default HEAD). It reports the highest migration number on the base branch and at `ref`, each PR's added migrations as ok, clash or at-or-below, the next free number with its zero padding kept, the suggested `git mv`, and where the PR references the old number.
 - `release`: the merge queue, once per batch before the push (release on): cuts the changelog, bumps the version files, returns the commit command (see Releases).
-- `handover`: a manager hands a reviewed PR over (optional `release`: `patch`, `minor` or `major`); the plugin records its head and starts
+- `handover`: a manager hands a reviewed PR over (optional `release`: `patch`, `minor` or `major`; optional `verify_command`, a shell command the queue runs after merge to close a needs-a-person check, see Person checks); the plugin records its head and starts
   a queue if none is running. `report_to` is optional and defaults to the caller's own name
   (`main` for the main session). A name that matches no agent of the session is refused, naming
   the caller's own name; the caller's own worker's name is corrected to the caller's, with a note.
@@ -652,6 +668,7 @@ stops a tool call.
   handoffs/<branch-slug>/<n>.md  transcript digest of a worker's n-th handoff
   managers/<key>/notes.md  a manager's notes
   preflight.json           pre-flight filings and rounds (see Pre-flight)
+  checks.json              person checks and their follow-ups (see Person checks)
   config.json              not state: the settings loader's file, never touched by flow
 ```
 
