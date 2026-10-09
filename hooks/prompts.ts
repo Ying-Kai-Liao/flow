@@ -233,6 +233,9 @@ export const BRIEF_TEMPLATE = `# <package name>: <the goal in one line>
 ## Decisions already made (follow them; don't reopen them)
 - <date>: <decision>
 
+## Attachments (optional)
+- <one absolute path per line: screenshots, mockups, logs the worker should open>
+
 ## Reference
 - Relevant code: <entry points; for big files give line ranges and names to grep, not "read the file">`
 
@@ -244,6 +247,7 @@ If the line after the name in your brief says "Check only:", you verify a deploy
 
 Before you touch anything:
 - Rename your branch so people can find it: \`git branch -m flow/<your name>\`. If the brief has a line \`Continue on branch: flow/<x>\`, you continue earlier work instead: \`git fetch origin && git checkout -B flow/<x> origin/flow/<x>\` (no rename; if the prompt says you continue in the same worktree, skip the checkout; if \`git checkout -B\` fails because the branch is checked out elsewhere, work on a local branch and push \`HEAD:flow/<x>\`), read the PR's \`## Handoff\` section (\`gh pr view --json body\`), and push to that same branch.
+- If the brief has an Attachments section, open each file first with Read (images show visually). Attachments are part of the brief: what they show counts as acceptance criteria context. If one can't be opened, stop and end with "BLOCKED: attachment <path> could not be opened".
 - Read what you're going to change and what calls it: a small file whole; for a big one, the functions you touch and their callers, found with grep.{{BIG_FILES}}
 - Confirm the goal isn't already on \`{{BASE}}\` (\`git fetch origin && git log --oneline -30 origin/{{BASE}}\`). If it is, stop and report that.
 - Touch only the files this package needs. A "while I'm here" change outside your scope becomes someone's merge conflict.
@@ -289,7 +293,7 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 1. Recon first, with no workers yet (Explore and general-purpose subagents are fine). Check the work isn't already done: \`git fetch origin\`, \`git log --oneline -30 origin/{{BASE}}\`, \`gh pr list --state all --limit 30\`, the plan or status of other tasks (\`mcp__flow__status\`), and the relevant code. Read code at the base, not the main checkout, which may be behind: \`git grep -n <pattern> origin/{{BASE}} -- <paths>\`, \`git show origin/{{BASE}}:<path>\`.
 2. File your pre-flight with \`mcp__flow__preflight\`: from (your name), summary, criteria (acceptance criteria), shipped (what already exists, with its PR or commit), depends (other tasks you need), optionally workers (your estimate), and questions in the \`mcp__flow__ask\` shape, each with a recommended default, blocking only for a product decision that stops the work. The plugin refuses your worker starts until it is filed (filing again replaces the earlier filing). With blocking questions, end your turn: the answers arrive by message, then start workers. Without them, start workers right away. If the task shipped entirely, file it with shipped and report instead of starting workers. If your prompt has the line \`Pre-flight: skip\`, or the plugin does not ask for a pre-flight, skip this step.
 3. Split by files touched, not by feature. Two workers editing the same part of one file conflict at merge time: overlapping work becomes one package, or runs one after the other.{{MIGRATIONS_MANAGER}} Check open PRs touching the same paths with \`gh pr list --json number,title,files\`.
-4. Write one brief per package from the template below. Workers can't see your conversation, so the background, decisions and edge cases go in the brief.{{BIG_FILES}}
+4. Write one brief per package from the template below. Workers can't see your conversation, so the background, decisions and edge cases go in the brief. When your task prompt carries attachment paths (screenshots, mockups, logs), put the ones a package needs into that brief's Attachments section as absolute paths; never paraphrase an image the worker can open itself. The spawn is refused if a listed file doesn't exist.{{BIG_FILES}}
 5. Start each worker with the Agent tool: subagent_type "flow:worker", name "<your name>-<package-slug>" (what it builds, prefixed with your own name so no two agents share a name and messages reach the right one), run_in_background true, model "{{WORKER_MODEL}}", and the brief as the prompt, its first line "Your name: <that same name>". Start independent workers in one message so they run in parallel. At most {{MAX_WORKERS}} at a time; start the next as one finishes.{{HARNESS_RULE}}
 6. When a package needs another's merged code, declare the packages before starting any worker: \`mcp__flow__plan\` action \`add\`, nodes \`{ id: "<worker name>", title, after: [ids] }\`, with \`until: "reported"\` when only the other worker's report is needed. Start only the ready ones. When a \`flow plan:\` message says nodes are ready, start them with briefs built on the merged code (\`git fetch origin\` first). A blocked node is yours to fix, or to mark with \`block\` or \`done\`. Independent packages need no plan.
 7. Wait for them. Each worker's report arrives as a notification when it finishes: end your turn while you wait. Never sleep or poll.

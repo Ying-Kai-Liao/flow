@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check needs a person, the queue is told to run it at the merged main and pass or fail the check
   itself (the only closing besides main). The new `verify_paths` setting (a list of path globs, file
   only) limits this to PRs that change a matching file; otherwise the check stays open for a person.
+- Attachments in briefs: an optional `## Attachments` section (or `Attachments:` line) lists file paths a
+  worker opens first. The spawn hook refuses a manager, worker or continuation spawn whose listed files are
+  missing, unreadable or directories (naming each), and rewrites relative paths to absolute ones. The worker
+  prompt reports `BLOCKED: attachment <path> could not be opened`; the dispatch skill passes user files to
+  managers as paths.
 
 ## [0.3.38] - 2026-10-10
 

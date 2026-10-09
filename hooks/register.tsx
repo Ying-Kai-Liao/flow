@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
 import type { Activity, AgentRow, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
+import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
@@ -1368,6 +1369,32 @@ const CONTINUE_LINE = /^Continue on branch:\s*(flow\/\S+)\s*$/m
 const gitOut = async ($: EngineInterface, argv: string[]): Promise<string | undefined> => {
   const r = await $.process.run(['git', ...argv])
   return r.exitCode === 0 ? r.stdout.trim() : undefined
+}
+
+// The brief's attachments, checked: each must be a readable file. Returns the prompt with the paths made
+// absolute, or the denial naming every bad path. A prompt without the section is returned as it was.
+async function checkAttachments($: EngineInterface, prompt: string): Promise<{ prompt: string } | { deny: string }> {
+  const items = parseAttachments(prompt)
+  if (items.length === 0) return { prompt }
+  const cwd = (await $.session.cwd().catch(() => undefined)) ?? ''
+  const home = items.some(i => i.path.startsWith('~'))
+    ? (await $.process.run(['sh', '-c', 'printf %s "$HOME"'])).stdout.trim()
+    : ''
+  const ok = async (flag: string, path: string) => (await $.process.run(['test', flag, path])).exitCode === 0
+  const bad: string[] = []
+  const seen = new Set<string>()
+  for (const { path } of items) {
+    const abs = absolutePath(path, cwd, home)
+    if (seen.has(abs)) continue
+    seen.add(abs)
+    if (await ok('-d', abs)) bad.push(`${abs} (a directory: list the files in it)`)
+    else if (!(await ok('-f', abs))) bad.push(`${abs} (does not exist)`)
+    else if (!(await ok('-r', abs))) bad.push(`${abs} (not readable)`)
+  }
+  if (bad.length > 0) {
+    return { deny: `flow: the brief's Attachments must be readable files. Fix or drop:\n${bad.map(b => `- ${b}`).join('\n')}` }
+  }
+  return { prompt: rewriteAttachments(prompt, items, p => absolutePath(p, cwd, home)) }
 }
 
 // A continuing worker's spawn: add the previous worker's digest, then either run it in the old worktree
@@ -3130,7 +3157,8 @@ export const register: Register = (on, options) => {
   // the spawn hook below dispatches its own rewrite, since the host checks the offer for a rewrite too.
   on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: continuing > 0 }))
 
-  on('agent.spawn', async ($, e, next) => {
+  on('agent.spawn', async ($, input, next) => {
+    let e = input
     // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
     const plans = await read($, plan)
     if (Object.keys(plans).length > 0 && e.name !== undefined) {
@@ -3146,6 +3174,13 @@ export const register: Register = (on, options) => {
     if (e.subagentType === WORKER) {
       const gated = await preflightGate($, e.parentAgentId)
       if (gated !== undefined) return { deny: gated }
+    }
+    // Attachments: every listed file must exist, and a relative path becomes absolute here, since the
+    // worker runs in another worktree. Before the continue rewrite and the retries, which carry this prompt.
+    if (e.subagentType === WORKER || e.subagentType === CONTINUE || e.subagentType === MANAGER) {
+      const checked = await checkAttachments($, e.prompt)
+      if ('deny' in checked) return { deny: checked.deny }
+      if (checked.prompt !== e.prompt) e = { ...e, prompt: checked.prompt }
     }
     if (await fableDenied($, e)) return { deny: FABLE_DENY }
     // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and

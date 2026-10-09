@@ -27,7 +27,11 @@ managers, the workers under each, the queue, and the PRs handed over.
    - `run_in_background`: true
    - `prompt`: the task in the user's own words, quoted, plus what you know that the
      manager can't see: decisions the user made, links, constraints, images described or
-     their paths. The manager can't see this conversation. If the user wants workers in
+     their paths. The manager can't see this conversation. Pass images and files the user gave
+     you as file paths, under an `Attachments:` heading with one path per line; the manager
+     puts them in the briefs, and the spawn is refused if a path doesn't exist. An image the
+     user pasted that has no file path you can see is described in words; ask the user for the
+     file if the detail matters. If the user wants workers in
      another harness or a terminal they can watch ("use codex for this", "run it in tmux"),
      say so in the prompt: the manager starts those with `mcp__flow__session`.
    Start all managers for the request in one message, so they form one pre-flight round (see
