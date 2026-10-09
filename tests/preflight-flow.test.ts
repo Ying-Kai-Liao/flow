@@ -25,6 +25,13 @@ function world(on: On) {
     agents.push({ id, name: input.name, description: input.description, type: input.subagentType, status: 'running', parentId: input.parentAgentId })
     return { model: 'sonnet', agentId: id }
   })
+  // Only the load test starts the session.
+  on('session.start', () => ({ cwd: '/r' }))
+  on('command.register', () => ({ value: undefined } as never))
+  on('tool.register', () => ({ value: undefined } as never))
+  on('agent.register', (_, e) => ({ value: { agent: (e as unknown as { name: string }).name } }))
+  on('fs.exists', (_, e) => ({ value: files.has((e as unknown as { path: string }).path) }))
+  on('fs.stat', () => { throw new Error('ENOENT') })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -214,6 +221,26 @@ test('a round of only skipped managers sends nothing; a manager that ended count
   await w.clock.advance(5)
   expect(w.submitted.length).toBe(1)
   expect(w.submitted[0]).toContain('login: ended without pre-flight')
+})
+
+test('a round left undelivered by an ended session is closed on load, and a new manager gets a round of its own', async ($, on) => {
+  const w = world(on)
+  const stale = {
+    next: 2,
+    entries: { ghost: { name: 'ghost', phase: 'recon', round: 1, spawnedAt: 0, blocking: [], asked: [] } },
+    rounds: [{ id: 1, openedAt: 0, members: ['ghost'], delivered: false, reported: [] }],
+  }
+  w.files.set(`${DIR}/preflight.json`, JSON.stringify(stale))
+  await ($ as never as { session: { start: (e: unknown) => Promise<unknown> } }).session.start({ cwd: '/r', surface: null, isInteractive: false })
+  await w.clock.advance(20 * MIN)
+  expect(w.submitted).toEqual([])
+
+  await manager($, 'csv')
+  await file($, 'a1')
+  await w.clock.advance(5)
+  expect(w.submitted.length).toBe(1)
+  expect(w.submitted[0]).toContain('Pre-flight: 1 task')
+  expect(w.submitted[0]).not.toContain('ghost')
 })
 
 test('mcp__flow__session start by a gated manager is refused', async ($, on) => {

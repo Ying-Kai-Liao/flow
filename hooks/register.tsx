@@ -12,7 +12,7 @@ import {
 } from './inbox'
 import type { Inbox } from './inbox'
 import {
-  denyText, dueRound, EMPTY_PREFLIGHT, followUp, FILE_HELP, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
+  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, FILE_HELP, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
   recordFiling, recordSpawn, renderFollowUp, renderRound, renderStatus,
 } from './preflight'
 import type { Preflight } from './preflight'
@@ -623,7 +623,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     // The queue's worktree (detached at the base) goes once the queue is gone.
     if (ENDED.has(a.status) && a.type === QUEUE) autoSweep($)
     if (ENDED.has(a.status) || a.status === 'idle') {
-      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases) || askers.includes(a.name)
+      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases) || askers.includes(a.name ?? '')
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
       void $.ui.toast(`${role}${labelOf(a)}: ${asks ? 'asks a question' : a.status === 'idle' ? 'finished its turn' : a.status}`)
     }
@@ -812,7 +812,7 @@ async function preflightGate($: EngineInterface, agentId: string | undefined): P
 async function recordManager($: EngineInterface, name: string, prompt: string): Promise<void> {
   const t = await $.clock.now()
   const opened = await withPreflight($, cur => {
-    const next = recordSpawn(cur, name, isSkip(prompt), t)
+    const next = recordSpawn(cur, name, isSkip(prompt), t, preflightWaitMs)
     return { state: next, out: next.rounds.length > cur.rounds.length }
   })
   if (opened) $.clock.after(preflightWaitMs, () => void refresh($).catch(() => undefined))
@@ -2233,6 +2233,10 @@ export const register: Register = (on, options) => {
       if (dir === undefined) return
       const disk = normalizePreflight(await readJson($, `${dir}/preflight.json`))
       await update($, preflight, () => disk)
+      // A round left undelivered by a session that ended is not sent now.
+      const live = (await $.agent.list()).filter(a => a.type === MANAGER && !ENDED.has(a.status) && a.name !== undefined).map(a => a.name!)
+      const t = await $.clock.now()
+      await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } })
     })
     // The base branch: the option, else the remote's default branch, else main.
     // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
@@ -3388,7 +3392,7 @@ export const register: Register = (on, options) => {
       const act = acts[a.id]
       const hand = handoffOf(a, act)
       const dim = ENDED.has(a.status) && hand?.kind !== 'done'
-      const asks = (asksQuestion(act?.answer, settings.decisionPhrases) || askers.includes(a.name)) && !['running', 'pending'].includes(a.status)
+      const asks = (asksQuestion(act?.answer, settings.decisionPhrases) || askers.includes(a.name ?? '')) && !['running', 'pending'].includes(a.status)
       const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
       const u = usageOf(a)
       const under = list.filter(c => c.parentId === a.id).length
@@ -3595,8 +3599,8 @@ export const register: Register = (on, options) => {
           <Text bold>Activity</Text>
           {(act?.log ?? []).length === 0 && <Text dimColor>Nothing seen yet.</Text>}
           {(act?.log ?? []).slice(-room).map(line => <Text wrap="truncate-end">{line}</Text>)}
-          {answer !== '' && <Text bold color={asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name) ? 'warning' : undefined}>
-            {asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name) ? 'Asks' : 'Last report'}
+          {answer !== '' && <Text bold color={asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name ?? '') ? 'warning' : undefined}>
+            {asksQuestion(answer, settings.decisionPhrases) || askers.includes(agent.name ?? '') ? 'Asks' : 'Last report'}
           </Text>}
           {answer !== '' && <Text>{answer.length > 1200 ? '…' + answer.slice(-1200) : answer}</Text>}
         </Box>

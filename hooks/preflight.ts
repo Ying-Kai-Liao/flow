@@ -120,12 +120,16 @@ export function phaseOf(state: Preflight, inbox: Inbox, name: string): Phase | u
 
 // A manager main spawns: recorded in the open round, or in a new one. A successor of a recorded
 // manager inherits its record. Returns the same object when nothing changes.
-export function recordSpawn(state: Preflight, name: string, skip: boolean, now: number): Preflight {
+export function recordSpawn(state: Preflight, name: string, skip: boolean, now: number, waitMs: number): Preflight {
   const key = noteKey(name)
   const old = state.entries[key]
   if (old !== undefined && /-\d+$/.test(name)) return { ...state, entries: { ...state.entries, [key]: { ...old, name } } }
   let rounds = state.rounds
   let next = state.next
+  // A round already past its wait (left over from a session that ended) is closed unsent: joining it
+  // would deliver at once and lose the combined round.
+  const stale = rounds.find(r => !r.delivered && now - r.openedAt >= waitMs)
+  if (stale !== undefined) rounds = rounds.map(r => (r === stale ? closed(state, r, now) : r))
   let open = rounds.find(r => !r.delivered)
   if (open === undefined) {
     open = { id: next++, openedAt: now, members: [], delivered: false, reported: [] }
@@ -164,6 +168,18 @@ export function dueRound(state: Preflight, ended: ReadonlySet<string>, now: numb
   const late = now - round.openedAt >= waitMs
   if (!done && !late) return undefined
   return { round, timedOut: !done }
+}
+
+const closed = (state: Preflight, r: Round, now: number): Round =>
+  ({ ...r, delivered: true, deliveredAt: now, reported: r.members.filter(k => state.entries[k]?.phase !== 'recon') })
+
+// On load: an undelivered round with no member among the live managers belongs to a dead session; it
+// is closed without sending. Same object when nothing is stale.
+export function closeStale(state: Preflight, liveNames: string[], now: number): Preflight {
+  const live = new Set(liveNames.map(noteKey))
+  const dead = state.rounds.filter(r => !r.delivered && !r.members.some(k => live.has(k)))
+  if (dead.length === 0) return state
+  return { ...state, rounds: state.rounds.map(r => (dead.includes(r) ? closed(state, r, now) : r)) }
 }
 
 // Marks the round delivered; the members it covers are the ones settled now.

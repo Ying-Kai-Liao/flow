@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { addQuestions, EMPTY_INBOX, markAnswered } from '../hooks/inbox'
 import type { Inbox } from '../hooks/inbox'
 import {
-  denyText, dueRound, EMPTY_PREFLIGHT, followUp, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
+  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
   recordFiling, recordSpawn, renderFollowUp, renderRound, renderStatus,
 } from '../hooks/preflight'
 import type { Preflight } from '../hooks/preflight'
@@ -43,7 +43,7 @@ test('the skip marker is a line of its own, any case', () => {
 })
 
 test('gate: recon refuses, filed releases, an open blocking question refuses, answering releases', () => {
-  let s = recordSpawn(EMPTY_PREFLIGHT, 'csv', false, 1)
+  let s = recordSpawn(EMPTY_PREFLIGHT, 'csv', false, 1, 10 * MIN)
   expect(gateOf(s, EMPTY_INBOX, 'csv')).toEqual({ kind: 'unfiled' })
   expect(phaseOf(s, EMPTY_INBOX, 'csv')).toBe('recon')
 
@@ -63,7 +63,7 @@ test('gate: recon refuses, filed releases, an open blocking question refuses, an
 
 test('gate: unrecorded and skipped managers are never gated; the deny text names the tool', () => {
   expect(gateOf(EMPTY_PREFLIGHT, EMPTY_INBOX, 'old-manager')).toBeUndefined()
-  const s = recordSpawn(EMPTY_PREFLIGHT, 'small', true, 1)
+  const s = recordSpawn(EMPTY_PREFLIGHT, 'small', true, 1, 10 * MIN)
   expect(gateOf(s, EMPTY_INBOX, 'small')).toBeUndefined()
   expect(phaseOf(s, EMPTY_INBOX, 'small')).toBe('skipped')
   expect(denyText({ kind: 'unfiled' })).toContain('mcp__flow__preflight')
@@ -71,26 +71,26 @@ test('gate: unrecorded and skipped managers are never gated; the deny text names
 })
 
 test('a successor inherits its predecessor; a fresh spawn of the same slug starts over', () => {
-  let s = filed(recordSpawn(EMPTY_PREFLIGHT, 'csv', false, 1), 'csv')
-  s = recordSpawn(s, 'csv-2', false, 9)
+  let s = filed(recordSpawn(EMPTY_PREFLIGHT, 'csv', false, 1, 10 * MIN), 'csv')
+  s = recordSpawn(s, 'csv-2', false, 9, 10 * MIN)
   expect(gateOf(s, EMPTY_INBOX, 'csv-2')).toBeUndefined()
   expect(s.entries['csv']!.name).toBe('csv-2')
-  s = recordSpawn(s, 'csv', false, 10)
+  s = recordSpawn(s, 'csv', false, 10, 10 * MIN)
   expect(gateOf(s, EMPTY_INBOX, 'csv')).toEqual({ kind: 'unfiled' })
 })
 
 test('rounds: managers join the open round; a delivered round is followed by a new one', () => {
-  let s = recordSpawn(EMPTY_PREFLIGHT, 'a', false, 1)
-  s = recordSpawn(s, 'b', false, 2)
+  let s = recordSpawn(EMPTY_PREFLIGHT, 'a', false, 1, 10 * MIN)
+  s = recordSpawn(s, 'b', false, 2, 10 * MIN)
   expect(s.rounds.length).toBe(1)
   expect(s.rounds[0]!.members).toEqual(['a', 'b'])
   s = markDelivered(s, 1, 3)
-  s = recordSpawn(s, 'c', false, 4)
+  s = recordSpawn(s, 'c', false, 4, 10 * MIN)
   expect(s.rounds.map(r => r.members)).toEqual([['a', 'b'], ['c']])
 })
 
 test('dueRound: waits for everyone, counts ended managers, times out', () => {
-  let s = recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0), 'b', false, 0)
+  let s = recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0, 10 * MIN), 'b', false, 0, 10 * MIN)
   expect(dueRound(s, NONE, 1, 10 * MIN)).toBeUndefined()
   s = filed(s, 'a')
   expect(dueRound(s, NONE, 1, 10 * MIN)).toBeUndefined()
@@ -108,7 +108,7 @@ test('renderRound: counts line, per-manager facts, numbered questions, closing i
   }
   ask('a', true)
   ask('b', false)
-  let s = recordSpawn(recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0), 'b', false, 0), 'c', false, 0)
+  let s = recordSpawn(recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0, 10 * MIN), 'b', false, 0, 10 * MIN), 'c', false, 0, 10 * MIN)
   s = filed(s, 'a', { ...OK, summary: 'do a', workers: 1 }, { asked: ['q1'], blocking: ['q1'] })
   s = filed(s, 'b', { ...OK, summary: 'do b', shipped: [{ what: 'half done', ref: '#9' }], depends: [{ on: 'a', why: 'schema' }] }, { asked: ['q2'], blocking: [] })
   const text = renderRound(s, inbox, s.rounds[0]!, NONE, 5, true)
@@ -125,7 +125,7 @@ test('renderRound: counts line, per-manager facts, numbered questions, closing i
 })
 
 test('followUp is sent once for a filing after its round was delivered', () => {
-  let s = recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0), 'b', false, 0)
+  let s = recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0, 10 * MIN), 'b', false, 0, 10 * MIN)
   s = markDelivered(filed(s, 'a'), 1, 9)
   expect(s.rounds[0]!.reported).toEqual(['a'])
   s = filed(s, 'b')
@@ -138,7 +138,7 @@ test('followUp is sent once for a filing after its round was delivered', () => {
 
 test('renderStatus describes the open or latest round; normalizePreflight drops junk', () => {
   expect(renderStatus(undefined, undefined, NONE, 0, MIN)).toBe('No pre-flight round yet.')
-  const s = filed(recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0), 'b', false, 0), 'a')
+  const s = filed(recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0, 10 * MIN), 'b', false, 0, 10 * MIN), 'a')
   expect(renderStatus(s, EMPTY_INBOX, NONE, 0, 10 * MIN)).toContain('Round 1: open, 1 of 2 filed')
   expect(normalizePreflight({ entries: { x: { name: 'x', phase: 'bogus' }, y: { name: 'y', phase: 'recon' } }, rounds: [{ id: 'z' }, { id: 4, members: [] }] }))
     .toEqual({ next: 5, entries: { y: { name: 'y', phase: 'recon', blocking: [], asked: [], round: 0, spawnedAt: 0 } }, rounds: [{ id: 4, members: [], reported: [] }] })
@@ -150,4 +150,21 @@ test('settings: preflight takes on or off, another value warns and is ignored', 
   expect(r.raw['preflight_wait']).toBe(5)
   expect(r.warnings.join('\n')).toContain('"preflight" is "maybe"')
   expect(mergeLayers({}, [{ path: '/repo/flow.json', text: JSON.stringify({ preflight: 'off' }) }]).raw['preflight']).toBe('off')
+})
+
+test('recordSpawn closes an open round past its wait unsent and opens a new one', () => {
+  let s = filed(recordSpawn(EMPTY_PREFLIGHT, 'old', false, 0, 10 * MIN), 'old')
+  s = recordSpawn(s, 'ghost', false, 1, 10 * MIN)
+  s = recordSpawn(s, 'fresh', false, 11 * MIN, 10 * MIN)
+  expect(s.rounds.map(r => [r.delivered, r.members])).toEqual([[true, ['old', 'ghost']], [false, ['fresh']]])
+  expect(s.rounds[0]!.reported).toEqual(['old'])
+  expect(dueRound(s, NONE, 12 * MIN, 10 * MIN)).toBeUndefined()
+})
+
+test('closeStale closes undelivered rounds with no live member, keeps the rest', () => {
+  const s = recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0, 10 * MIN), 'b', false, 0, 10 * MIN)
+  expect(closeStale(s, ['a-2'], 5)).toBe(s)
+  const c = closeStale(s, [], 5)
+  expect(c.rounds[0]!.delivered).toBe(true)
+  expect(dueRound(c, NONE, 99 * MIN, MIN)).toBeUndefined()
 })

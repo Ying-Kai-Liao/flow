@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handoff successor (inherits the record), and managers not in the record (older data never blocks).
 - `/flow preflight` shows the current or latest round; `mcp__flow__status` shows each manager's
   pre-flight phase. Settings `preflight` (on or off) and `preflight_wait` (minutes, default 10).
-- State in `<git-common-dir>/flow/preflight.json`.
+- State in `<git-common-dir>/flow/preflight.json`. A round left undelivered by an ended session is
+  closed unsent on load, and a round already past its wait is closed when the next manager is
+  spawned, so old rounds never swallow a new one.
 
 ## [0.3.27] - 2026-10-10
 

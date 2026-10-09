@@ -205,6 +205,8 @@ declare module 'claude-code' {
       overrideView: string | null | undefined
       hinted: boolean
       handoffs: Record<string, HandoffRecord>
+      inbox: import('../hooks/inbox').Inbox
+      preflight: import('../hooks/preflight').Preflight
       leftovers: Leftovers
       sessions: Record<string, Session>
       // Quota windows of the harnesses flow can read (Codex's own logs), for the pane.
