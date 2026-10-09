@@ -92,7 +92,7 @@ add login-redirect  after: csv-export
 - **A context meter on each card**: `███│░░░░░░░ 42%   1m 43s · ↓ 84.0k tokens`, with `│` marking the warning
   threshold (`context_warn_percent`, or `context_warn_percent_1m` on a 1M window, capped by `context_warn_tokens` when that is set). The meter turns the theme's warning color at or past the threshold and its error
   color from 90%. The time runs while the agent runs and freezes when it ends. Where an agent's usage isn't known yet it says `context ?` and shows no tokens, never a guess. A
-  subagent's window is the one it was started with (1M when spawned with a `[1m]` model, 200k otherwise); for an agent without a recorded one, the main session's when it runs the same model, else 200k (1M for a
+  subagent's window is the one it was started with (1M when spawned with a `[1m]` model); otherwise the main session's when it runs the same model, else 200k (1M for a
   `[1m]` model).
   On a short terminal the cards shrink to one-line rows (just `42%`), and `+N more` stands in
   for rows that don't fit.

@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - An agent's window is the one it was started with (`[1m]` in the model it was finally spawned
-  with means 1M), not a guess from the step's model id. A `sonnet[1m]` worker was told to hand
+  with means 1M; a plain model keeps the old rule), not a guess from the step's model id. A `sonnet[1m]` worker was told to hand
   off at 80k when the step model lacked `[1m]`.
 - `context_warn_tokens` now defaults to 0 (off); it stays an optional cap over both percents.
   Set it to 350000 for the old behaviour.

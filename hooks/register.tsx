@@ -2298,9 +2298,10 @@ export const register: Register = (on, options) => {
     if ('agentId' in started && started.agentId !== undefined) {
       const t = await $.clock.now()
       const id = started.agentId
-      // The window the agent really got, from the model finally used (after the refused-[1m] fallback).
+      // Recorded only for a `[1m]` model finally used (after the refused-[1m] fallback). A plain
+      // model leaves it unset: its window may be the main session's, which windowOf borrows.
       const used = ev.model ?? wanted
-      const spawnWindow = typeof used !== 'string' || used === '' ? undefined : used.includes('[1m]') ? LARGE_WINDOW : DEFAULT_WINDOW
+      const spawnWindow = typeof used === 'string' && used.includes('[1m]') ? LARGE_WINDOW : undefined
       await update($, activity, acts => ({
         ...acts, [id]: { startedAt: t, lastAt: t, log: [`started: ${e.description}`], ...(spawnWindow !== undefined && { spawnWindow }) },
       }))
