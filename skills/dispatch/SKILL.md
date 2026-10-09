@@ -27,7 +27,9 @@ managers, the workers under each, the queue, and the PRs handed over.
    - `run_in_background`: true
    - `prompt`: the task in the user's own words, quoted, plus what you know that the
      manager can't see: decisions the user made, links, constraints, images described or
-     their paths. The manager can't see this conversation.
+     their paths. The manager can't see this conversation. If the user wants workers in
+     another harness or a terminal they can watch ("use codex for this", "run it in tmux"),
+     say so in the prompt: the manager starts those with `mcp__flow__session`.
    Start independent managers in one message. Keep at most `max_managers` running (a
    setting, default 20; `mcp__flow__status` shows it as `Limits`); start the rest as each
    finishes, without asking again.

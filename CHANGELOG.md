@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.19] - 2026-10-09
+
+### Added
+
+- Workers in any harness: the `session` tool lets a manager run a worker as Codex, Claude on its
+  own, Gemini, OpenCode, a harness from the `harnesses` setting or any command line, in an Orca
+  terminal or a tmux session, and drive every one the same way: `start`, `send` (a message),
+  `keys` (Enter, Escape, Ctrl-C, arrows, or text, for prompts and menus), `read`, `restart`
+  (resuming its conversation where the harness has a resume line), `list`, `stop`.
+- The plugin makes the worktree on `flow/<name>`, writes the prompt (worker rules plus brief) to
+  `<git-common-dir>/flow/sessions/<name>/prompt.md`, and watches three things the same way for
+  every harness: the report file the worker writes (sent to its manager as a message), the screen
+  (unchanged for 90 s with no report: the manager is told it is idle, with the screen), and the
+  terminal (gone or back at its shell: told once).
+- A start checks the harness's program is installed, and for a harness with a quota reader
+  (Codex's own rate-limit logs built in, or a command) that at least `min_quota` percent is left;
+  otherwise it is refused and the manager starts an agent worker instead.
+- Sessions show in the pane as workers under their manager and count as live for plans,
+  `status`, `/flow resume` and the cleanup.
+- Settings `worker_harness` (`agent` default: unchanged), `session_host` (`auto`, `orca`,
+  `tmux`), `harnesses` (name to a start line or `{start, resume, program, quota}`) and
+  `min_quota` (default 10).
+
 ## [0.3.18] - 2026-10-09
 
 ### Fixed

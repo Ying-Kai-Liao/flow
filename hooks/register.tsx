@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { ancestryQueries, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
@@ -9,7 +9,7 @@ import type { Facts, Graph, Notice, Plan } from './dag'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
 import {
-  fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT,
+  fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, SESSION_PROMPT, WORKER_PROMPT,
 } from './prompts'
 import type { Settings } from './prompts'
 import { deployTargetsOf, stateFileOf } from './prompts'
@@ -18,6 +18,11 @@ import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
+import {
+  codexRemaining, commandFor, findHandle, findWorktreePath, goneMessage, harnessesOf, idleMessage, keysOf, NAME_RULE, percentOf,
+  pickHost, programOf, reportMessage, screenHash, SESSION, sessionKey, sessionLine, sessionRow, tmuxName,
+} from './sessions'
+import type { HarnessSpec } from './sessions'
 import { buildDigest, findWorktree, noteKey, ownerFor } from './state'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
@@ -34,7 +39,7 @@ const MANAGER = 'flow:manager'
 const WORKER = 'flow:worker'
 // A worker continued in its predecessor's worktree: the plugin rewrites a spawn to it, the model never picks it.
 const CONTINUE = 'flow:continue'
-const WORKERS = new Set([WORKER, CONTINUE])
+const WORKERS = new Set([WORKER, CONTINUE, SESSION])
 const QUEUE = 'flow:queue'
 const ENDED = new Set(['completed', 'failed', 'killed'])
 const LIVE = new Set(['pending', 'running', 'waiting'])
@@ -46,7 +51,7 @@ const GLYPH: Record<string, string> = {
 const COLOR: Record<string, string> = {
   running: 'suggestion', waiting: 'warning', idle: 'warning', completed: 'success', failed: 'error', killed: 'error',
 }
-const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [CONTINUE]: 'worker', [QUEUE]: 'queue' }
+const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [CONTINUE]: 'worker', [SESSION]: 'worker', [QUEUE]: 'queue' }
 const ROOT_GLYPH = '◆'
 // Plan states, drawn like the agent statuses they turn into; a waiting node has no agent yet.
 const PLAN_GLYPH: Record<string, string> = { waiting: '○', ready: '◌', running: '●', done: '✓', blocked: '✗' }
@@ -74,6 +79,7 @@ const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
 const prCache = atom({ plugin: 'flow', key: 'prCache' } as const, { prs: [], fetchedAt: 0 } as PrCache)
 // The last dry cleanup sweep, refreshed with the PR list so a render never runs git.
+const sessions = atom({ plugin: 'flow', key: 'sessions' } as const, {} as Record<string, Session>)
 const leftovers = atom({ plugin: 'flow', key: 'leftovers' } as const, { worktrees: 0, branches: 0, needsLook: 0 } as Leftovers)
 
 const PR_POLL_MS = 5 * 60_000
@@ -447,12 +453,13 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; cleanup: 'auto' | 'off' } & Guards {
+function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
   // Sub-agents don't run on Fable, whatever the source says.
   const model = (k: string, d: string) => { const m = str(k, d); return isFable(m) ? d : m }
+  const harnesses = harnessesOf(options.harnesses)
   return {
     contextWarn: Math.min(100, Math.max(1, Math.round(num('context_warn_percent', 40)))),
     contextWarnTokens: Math.max(0, Math.round(num('context_warn_tokens', 350000))),
@@ -482,6 +489,11 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     decisionPhrases: strs('decision_phrases'),
     workerChecks: strs('worker_checks'),
     alwaysTests: strs('always_tests'),
+    workerHarness: str('worker_harness', 'agent'),
+    sessionHost: ['orca', 'tmux'].includes(str('session_host', 'auto')) ? str('session_host', 'auto') : 'auto',
+    harnesses,
+    harnessNames: Object.keys(harnesses),
+    minQuota: Math.min(100, Math.max(0, Math.round(num('min_quota', 10)))),
   }
 }
 
@@ -559,6 +571,8 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     id: a.id, name: a.name, description: a.description, type: a.type,
     status: a.status, parentId: a.parentId,
   }))
+  // Workers in other harnesses stand in the tree like agents, under the manager that started them.
+  rows.push(...Object.values(await read($, sessions)).map(sessionRow))
   const was = new Map(before.map(a => [a.id, a.status]))
   const ended: string[] = []
   for (const a of rows) {
@@ -1080,6 +1094,7 @@ async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<st
   // A live agent named like the branch owns it.
   const liveAgents = (await $.agent.list()).filter(a => OWNED.has(a.status))
   const owners = new Set(liveAgents.filter(a => a.name !== undefined).map(a => `flow/${a.name}`))
+  for (const s of Object.values(await read($, sessions))) if (s.status === 'running' || s.status === 'reported') owners.add(s.branch)
   // A worktree path ends in agent-<agentId>: that covers a worker that has not renamed its branch, and the queue.
   const liveIds = new Set(liveAgents.map(a => `agent-${a.id}`))
 
@@ -1212,6 +1227,10 @@ async function gatherClean($: EngineInterface, base: string): Promise<CleanGathe
   // The main session may itself run in a linked worktree: never pull the floor from under it.
   const here = await $.session.cwd().catch(() => undefined)
   if (here) roster.push({ id: 'main', live: true, name: 'the main session', cwd: here })
+  // A worker in another harness lives in its worktree until it is stopped or its terminal is gone.
+  for (const s of Object.values(await read($, sessions))) {
+    roster.push({ id: sessionKey(s.name), live: s.status === 'running' || s.status === 'reported', name: s.name, cwd: s.worktree })
+  }
   const partial = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting }
   const ancestry = new Set<string>()
   for (const q of ancestryQueries(partial)) {
@@ -1508,6 +1527,333 @@ async function recheck($: EngineInterface, options: Record<string, unknown>, pat
   }
 }
 
+// Workers in other harnesses (sessions.ts): started in an Orca terminal or a tmux session, watched
+// through the report file they write. A command that can't start is an exit code here, never a throw.
+type Ran = { exitCode: number; stdout: string; stderr: string }
+
+async function runCmd($: EngineInterface, argv: string[], timeoutMs = 60_000): Promise<Ran> {
+  try {
+    return await $.process.run(argv, { timeoutMs })
+  } catch (err) {
+    return { exitCode: 127, stdout: '', stderr: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+const why = (r: Ran): string => (r.stderr.trim() || r.stdout.trim()).split('\n')[0]?.slice(0, 300) || `exit ${r.exitCode}`
+
+// A terminal is checked this often; the report file on every poll.
+const ALIVE_MS = 30_000
+// A screen is looked at this often, and a running harness whose screen has not changed for
+// IDLE_MS (and wrote no new report) is told to its manager as idle.
+const LOOK_MS = 10_000
+const IDLE_MS = 90_000
+// A report file younger than this may still be being written: it waits for the next poll.
+const SETTLE_MS = 2000
+const SHELLS = new Set(['zsh', 'bash', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'nu'])
+
+type Caller = { id: string; name: string }
+
+async function startSession($: EngineInterface, input: Record<string, unknown>, caller: Caller, s: ReturnType<typeof settingsOf>): Promise<string> {
+  const name = String(input.name ?? '').trim()
+  if (!NAME_RULE.test(name)) return 'Refused: name must be letters, digits, "-" or "_" (it becomes the branch flow/<name>).'
+  const brief = String(input.brief ?? '').trim()
+  if (brief === '') return 'Refused: brief is empty.'
+  const old = (await read($, sessions))[name]
+  if (old !== undefined && !['exited', 'stopped'].includes(old.status)) return `Refused: session ${name} is already running (${old.harness} in ${old.host}).`
+  if ((await $.agent.list()).some(a => a.name === name && !ENDED.has(a.status))) return `Refused: an agent named ${name} is running; pick another name.`
+  const harness = String(input.harness ?? (s.workerHarness === 'agent' ? '' : s.workerHarness)).trim()
+  const custom = String(input.command ?? '').trim()
+  const spec: HarnessSpec | undefined = harness === 'command' ? (custom ? { start: custom } : undefined) : s.harnesses[harness]
+  if (harness === 'command' && spec === undefined) return 'Refused: harness "command" needs command, the command line that starts it ({prompt} or {prompt_file} where the prompt goes).'
+  if (spec === undefined) return `Refused: unknown harness "${harness}". Known: ${Object.keys(s.harnesses).join(', ')}; or harness "command" with command.`
+  const template = spec.start
+
+  // Installed? Homebrew's prefixes are added: a GUI-started engine often lacks them on PATH.
+  const program = spec.program ?? programOf(template)
+  if (program !== undefined) {
+    const found = await runCmd($, ['sh', '-c', 'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin" command -v "$1"', 'sh', program], 10_000)
+    if (found.exitCode !== 0) return `Refused: ${program} is not installed (not on PATH). Start this worker as a flow:worker agent instead, or pick another harness.`
+  }
+  if (spec.quota !== undefined && s.minQuota > 0) {
+    const left = await quotaLeft($, spec.quota)
+    if (left !== undefined && left < s.minQuota) {
+      return `Refused: ${harness} has ${left}% of its quota left, below min_quota (${s.minQuota}%). Start this worker as a flow:worker agent instead, or with another harness.`
+    }
+  }
+
+  const dir = await stateDir($)
+  const wl = await runCmd($, ['git', 'worktree', 'list', '--porcelain'])
+  const main = /^worktree (.+)$/m.exec(wl.stdout)?.[1]
+  if (dir === undefined || main === undefined) return 'Refused: not in a git repo.'
+  const choice = String(input.host ?? s.sessionHost)
+  const orcaUp = choice !== 'tmux' && await runCmd($, ['orca', 'status'], 10_000).then(r => r.exitCode === 0 && /runtimeReachable:\s*true/.test(r.stdout))
+  const tmuxUp = choice !== 'orca' && !orcaUp && (await runCmd($, ['tmux', '-V'], 10_000)).exitCode === 0
+  const host = pickHost(choice, orcaUp, tmuxUp)
+  if (typeof host !== 'string') return `Refused: ${host.error}`
+
+  const branch = `flow/${name}`
+  await runCmd($, ['git', 'fetch', 'origin', s.base], 120_000)
+  let worktree: string
+  if (host === 'tmux') {
+    worktree = `${main}/.claude/worktrees/${name}`
+    const r = await runCmd($, ['git', 'worktree', 'add', '-b', branch, worktree, `origin/${s.base}`], 120_000)
+    if (r.exitCode !== 0) return `Could not create the worktree: ${why(r)}`
+  } else {
+    const r = await runCmd($, ['orca', 'worktree', 'create', '--repo', `path:${main}`, '--name', name, '--base-branch', `origin/${s.base}`, '--json'], 180_000)
+    const path = r.exitCode === 0 ? findWorktreePath(r.stdout) : undefined
+    if (path === undefined) return `Could not create an Orca worktree: ${why(r)}`
+    worktree = path
+    const m = await runCmd($, ['git', '-C', worktree, 'branch', '-m', branch])
+    if (m.exitCode !== 0) return `Created the Orca worktree ${worktree}, but could not name its branch ${branch}: ${why(m)}. Nothing was started in it.`
+  }
+
+  const sdir = `${dir}/sessions/${name}`
+  const promptFile = `${sdir}/prompt.md`
+  const reportFile = `${sdir}/report.md`
+  // A report left by an earlier session of this name would read as this one's.
+  await runCmd($, ['rm', '-f', reportFile])
+  const prompt = fill(SESSION_PROMPT, s)
+    .replaceAll('{{HARNESS}}', harness === 'command' ? 'a coding agent' : harness)
+    .replaceAll('{{OWNER}}', caller.name).replaceAll('{{NAME}}', name)
+    .replaceAll('{{BRANCH}}', branch).replaceAll('{{REPORT}}', reportFile)
+  await $.fs.write(promptFile, `${prompt}${brief}\n`)
+  const line = commandFor(template, promptFile)
+
+  let handle: string
+  if (host === 'tmux') {
+    handle = tmuxName(name)
+    const r = await runCmd($, ['tmux', 'new-session', '-d', '-s', handle, '-c', worktree])
+    if (r.exitCode !== 0) return `The worktree ${worktree} is ready, but tmux could not start: ${why(r)}`
+    // A tmux server started from here inherits this session's environment; a nested claude refuses to run under it.
+    await runCmd($, ['tmux', 'send-keys', '-t', handle, '-l', `unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ${line}`])
+    await runCmd($, ['tmux', 'send-keys', '-t', handle, 'Enter'])
+  } else {
+    const r = await runCmd($, ['orca', 'terminal', 'create', '--worktree', `path:${worktree}`, '--title', name, '--command', line, '--json'])
+    const h = r.exitCode === 0 ? findHandle(r.stdout) : undefined
+    if (h === undefined) return `The worktree ${worktree} is ready, but the Orca terminal could not start: ${why(r)}`
+    handle = h
+  }
+
+  const t = await $.clock.now()
+  const session: Session = {
+    name, harness, host, handle, worktree, branch, promptFile, reportFile, start: template,
+    ...(spec.resume !== undefined && { resume: spec.resume }),
+    owner: caller.id, ownerName: caller.name, status: 'running', startedAt: t,
+  }
+  await update($, sessions, all => ({ ...all, [name]: session }))
+  await update($, activity, acts => ({ ...acts, [sessionKey(name)]: { startedAt: t, lastAt: t, log: [`started ${harness} in ${host}`] } }))
+  await appendLog($, { event: 'spawn', agent: name, owner: caller.name, branch })
+  await refresh($)
+  void openPane($)
+  return `Started ${name}: ${harness} in ${host} (${host === 'tmux' ? `tmux attach -t ${handle}` : handle}), worktree ${worktree}, branch ${branch}. ` +
+    'Its report comes to you as a "flow session:" message: end your turn while you wait.'
+}
+
+// The share of a harness's quota left: "codex-logs" reads Codex's own rate-limit logs, anything
+// else is a shell command that prints a percent. Undefined when it can't tell, which never blocks.
+async function quotaLeft($: EngineInterface, how: string): Promise<number | undefined> {
+  if (how === 'codex-logs') return codexQuotaLeft($)
+  const r = await runCmd($, ['sh', '-c', how], 20_000)
+  return r.exitCode === 0 ? percentOf(r.stdout) : undefined
+}
+
+// The newest Codex rate-limit reading, from the five newest rollout files; undefined when there is
+// none or it is too old to say anything.
+async function codexQuotaLeft($: EngineInterface): Promise<number | undefined> {
+  const r = await runCmd($, ['sh', '-c',
+    'ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -5 | while read -r f; do grep -h \'"rate_limits":{\' "$f" | tail -1; done'], 10_000)
+  const t = await $.clock.now()
+  for (const line of r.stdout.split('\n')) {
+    const left = codexRemaining(line, t)
+    if (left !== undefined) return left
+  }
+  return undefined
+}
+
+// Whether the harness is still there: the terminal exists, and in tmux it is not back at its shell.
+async function sessionAlive($: EngineInterface, s: Session): Promise<boolean> {
+  if (s.host === 'orca') {
+    // A closed terminal still shows, with connected false and why it exited.
+    const r = await runCmd($, ['orca', 'terminal', 'show', '--terminal', s.handle, '--json'], 10_000)
+    return r.exitCode === 0 && !/"ok":\s*false|"connected":\s*false|"exitCause"/.test(r.stdout)
+  }
+  const r = await runCmd($, ['tmux', 'display-message', '-p', '-t', s.handle, '#{pane_current_command}'], 10_000)
+  return r.exitCode === 0 && !SHELLS.has(r.stdout.trim().replace(/^-/, ''))
+}
+
+async function sessionTail($: EngineInterface, s: Session, lines: number): Promise<Ran> {
+  return s.host === 'tmux'
+    ? runCmd($, ['tmux', 'capture-pane', '-p', '-J', '-t', s.handle, '-S', `-${lines}`], 10_000)
+    : runCmd($, ['orca', 'terminal', 'read', '--terminal', s.handle, '--limit', String(lines)], 10_000)
+}
+
+// What the terminal shows now (the rendered screen, not the scrollback).
+async function sessionScreen($: EngineInterface, s: Session): Promise<string | undefined> {
+  const r = s.host === 'tmux'
+    ? await runCmd($, ['tmux', 'capture-pane', '-p', '-t', s.handle], 10_000)
+    : await runCmd($, ['orca', 'terminal', 'read', '--terminal', s.handle, '--screen'], 10_000)
+  return r.exitCode === 0 ? r.stdout : undefined
+}
+
+// Types a line into the terminal and submits it: a paste in tmux keeps a multi-line message whole in a TUI.
+async function typeInto($: EngineInterface, s: Session, text: string): Promise<Ran> {
+  if (s.host === 'orca') return runCmd($, ['orca', 'terminal', 'send', '--terminal', s.handle, '--text', text, '--enter', '--json'])
+  let r = await runCmd($, ['tmux', 'set-buffer', '-b', `flow-${s.name}`, '--', text])
+  if (r.exitCode === 0) r = await runCmd($, ['tmux', 'paste-buffer', '-d', '-p', '-b', `flow-${s.name}`, '-t', s.handle])
+  if (r.exitCode === 0) r = await runCmd($, ['tmux', 'send-keys', '-t', s.handle, 'Enter'])
+  return r
+}
+
+async function tellOwner($: EngineInterface, s: Session, text: string): Promise<void> {
+  if (s.owner === 'main') $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
+  else await $.session.send({ to: { agentId: s.owner }, text }).catch(() => undefined)
+}
+
+async function noteSession($: EngineInterface, name: string, t: number, line: string, answer?: string): Promise<void> {
+  const key = sessionKey(name)
+  await update($, activity, acts => {
+    const a = acts[key] ?? { startedAt: t, lastAt: t, log: [] }
+    return { ...acts, [key]: { ...a, lastAt: t, log: [...a.log, line].slice(-LOG_MAX), ...(answer !== undefined && { answer }) } }
+  })
+}
+
+// One poll: a settled, newer report file goes to the owner; a terminal that went away is told once.
+let watching = false
+async function watchSessions($: EngineInterface): Promise<void> {
+  if (watching) return
+  watching = true
+  try {
+    const t = await $.clock.now()
+    for (const s of Object.values(await read($, sessions))) {
+      if (s.status === 'stopped' || s.status === 'exited') continue
+      const st = await $.fs.stat(s.reportFile).catch(() => undefined)
+      if (st !== undefined && st.mtimeMs > (s.reportAt ?? 0) && t - st.mtimeMs >= SETTLE_MS) {
+        const report = String(await $.fs.read(s.reportFile).catch(() => '')).trim()
+        if (report !== '') {
+          await update($, sessions, all => ({ ...all, [s.name]: { ...all[s.name]!, status: 'reported' as const, reportAt: st.mtimeMs } }))
+          await noteSession($, s.name, t, 'reported', report)
+          await appendLog($, { event: 'report', agent: s.name, owner: s.ownerName, text: report.split('\n').pop() ?? '' })
+          await tellOwner($, s, reportMessage(s, report))
+          continue
+        }
+      }
+      // A running harness whose screen stopped changing is told once as idle; a change wakes it again.
+      if ((s.status === 'running' || s.status === 'idle') && t - (s.lookedAt ?? s.startedAt) >= LOOK_MS) {
+        const screen = await sessionScreen($, s)
+        if (screen !== undefined) {
+          const hash = screenHash(screen)
+          const changed = hash !== s.screen
+          const since = changed ? t : s.screenAt ?? t
+          const idle = !changed && s.status === 'running' && t - since >= IDLE_MS && (s.reportAt ?? 0) < since
+          const status = changed && s.status === 'idle' ? 'running' as const : idle ? 'idle' as const : s.status
+          await update($, sessions, all => ({ ...all, [s.name]: { ...all[s.name]!, screen: hash, screenAt: since, lookedAt: t, status } }))
+          if (idle) {
+            await noteSession($, s.name, t, 'idle')
+            await tellOwner($, s, idleMessage(s, ago(t - since), screen.split('\n').slice(-40).join('\n')))
+          }
+        }
+      }
+      if (t - (s.checkedAt ?? s.startedAt) < ALIVE_MS) continue
+      const alive = await sessionAlive($, s)
+      await update($, sessions, all => ({ ...all, [s.name]: { ...all[s.name]!, checkedAt: t, ...(!alive && { status: 'exited' as const }) } }))
+      if (!alive) {
+        const tail = await sessionTail($, s, 30)
+        await noteSession($, s.name, t, 'ended')
+        await tellOwner($, s, goneMessage(s, tail.exitCode === 0 ? tail.stdout.slice(-3000) : ''))
+      }
+    }
+  } catch (err) {
+    await warn($, 'watching sessions', err)
+  } finally {
+    watching = false
+  }
+}
+
+async function sessionTool($: EngineInterface, input: Record<string, unknown>, caller: Caller, s: ReturnType<typeof settingsOf>): Promise<string> {
+  const action = String(input.action ?? '')
+  if (action === 'start') return startSession($, input, caller, s)
+  const all = await read($, sessions)
+  if (action === 'list') {
+    const list = Object.values(all).sort((a, b) => a.startedAt - b.startedAt)
+    return list.length === 0 ? 'No sessions.' : list.map(x => `${sessionLine(x)}, owner ${x.ownerName}`).join('\n')
+  }
+  const name = String(input.name ?? '')
+  const ss = all[name]
+  if (ss === undefined) return `No session named "${name}". action "list" shows them.`
+  const t = await $.clock.now()
+  if (action === 'read') {
+    const lines = Math.min(1000, Math.max(10, Math.round(Number(input.lines) || 80)))
+    const r = await sessionTail($, ss, lines)
+    if (r.exitCode !== 0) return `Could not read ${name}'s terminal: ${why(r)}`
+    return r.stdout.length > 12_000 ? `…${r.stdout.slice(-12_000)}` : r.stdout || '(empty)'
+  }
+  if (action === 'send') {
+    const text = String(input.text ?? '').trim()
+    if (text === '') return 'Refused: text is empty.'
+    if (ss.status === 'stopped' || ss.status === 'exited') return `Refused: ${name} has ${ss.status}. Start a new session to go on.`
+    const r = await typeInto($, ss, text)
+    if (r.exitCode !== 0) return `Could not send to ${name}: ${why(r)}`
+    await update($, sessions, x => ({ ...x, [name]: { ...x[name]!, status: 'running' as const } }))
+    await noteSession($, name, t, `message: ${text.replace(/\s+/g, ' ').slice(0, 80)}`)
+    return `Sent to ${name}. Its next report comes to you as a "flow session:" message.`
+  }
+  if (action === 'keys') {
+    const keys = String(input.keys ?? '').trim()
+    if (keys === '') return 'Refused: keys is empty. Named keys: enter, escape, interrupt, tab, up, down, left, right, backspace, space; any other word is typed as it is.'
+    if (ss.status === 'stopped' || ss.status === 'exited') return `Refused: ${name} has ${ss.status}.`
+    const k = keysOf(keys)
+    const r = ss.host === 'tmux'
+      ? await runCmd($, ['tmux', 'send-keys', '-t', ss.handle, ...k.tmux])
+      : await runCmd($, ['orca', 'terminal', 'send', '--terminal', ss.handle, '--text', k.raw, '--json'])
+    if (r.exitCode !== 0) return `Could not press keys in ${name}: ${why(r)}`
+    await update($, sessions, x => ({ ...x, [name]: { ...x[name]!, status: 'running' as const } }))
+    await noteSession($, name, t, `keys: ${keys}`)
+    return `Pressed ${keys} in ${name}. "read" shows what it did.`
+  }
+  if (action === 'restart') {
+    // In the same terminal: the harness is stopped if it still runs, then its resume line (or its
+    // start line with the same prompt) is typed into the shell left behind.
+    const line = ss.resume !== undefined ? ss.resume : commandFor(ss.start, ss.promptFile)
+    if (ss.host === 'tmux') {
+      const alive = await runCmd($, ['tmux', 'has-session', '-t', ss.handle], 10_000)
+      if (alive.exitCode !== 0) return `Refused: ${name}'s tmux session is gone. Start a new session (a new name) to go on.`
+      // A fresh shell in the same pane, whatever the old harness was doing: no harness's own quit keys needed.
+      const fresh = await runCmd($, ['tmux', 'respawn-pane', '-k', '-t', ss.handle, '-c', ss.worktree], 10_000)
+      if (fresh.exitCode !== 0) return `Could not restart ${name}: ${why(fresh)}`
+      await runCmd($, ['tmux', 'send-keys', '-t', ss.handle, '-l', `unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ${line}`])
+      await runCmd($, ['tmux', 'send-keys', '-t', ss.handle, 'Enter'])
+    } else {
+      const r = await runCmd($, ['orca', 'terminal', 'create', '--worktree', `path:${ss.worktree}`, '--title', name, '--command', line, '--json'])
+      const h = r.exitCode === 0 ? findHandle(r.stdout) : undefined
+      if (h === undefined) return `Could not open a new Orca terminal for ${name}: ${why(r)}`
+      await runCmd($, ['orca', 'terminal', 'close', '--terminal', ss.handle, '--json'])
+      await update($, sessions, x => ({ ...x, [name]: { ...x[name]!, handle: h } }))
+    }
+    await update($, sessions, x => ({ ...x, [name]: { ...x[name]!, status: 'running' as const, checkedAt: t, lookedAt: t } }))
+    await noteSession($, name, t, ss.resume !== undefined ? 'restarted (resumed)' : 'restarted (fresh)')
+    return `Restarted ${name} with ${ss.resume !== undefined ? 'its resume line' : 'its start line and the same prompt'}: ${line}. ` +
+      'Tell it what to do next with action "send" once "read" shows it is up.'
+  }
+  if (action === 'stop') {
+    const r = ss.host === 'tmux'
+      ? await runCmd($, ['tmux', 'kill-session', '-t', ss.handle])
+      : await runCmd($, ['orca', 'terminal', 'close', '--terminal', ss.handle, '--json'])
+    const closed = r.exitCode === 0 ? 'Terminal closed.' : `The terminal did not close (${why(r)}); it may be gone already.`
+    await update($, sessions, x => ({ ...x, [name]: { ...x[name]!, status: 'stopped' as const } }))
+    await noteSession($, name, t, 'stopped')
+    if (input.remove_worktree !== true) return `Stopped ${name}. ${closed} The worktree ${ss.worktree} stays.`
+    // Removed only when nothing in it would be lost: no changes, and HEAD on a remote branch.
+    const dirty = (await runCmd($, ['git', '-C', ss.worktree, 'status', '--porcelain'])).stdout.trim() !== ''
+    const pushed = (await runCmd($, ['git', '-C', ss.worktree, 'branch', '-r', '--contains', 'HEAD'])).stdout.trim() !== ''
+    if (dirty || !pushed) return `Stopped ${name}. ${closed} Kept the worktree ${ss.worktree}: ${dirty ? 'it has uncommitted changes' : 'its commits are not pushed'}.`
+    const rm = ss.host === 'tmux'
+      ? await runCmd($, ['git', 'worktree', 'remove', ss.worktree])
+      : await runCmd($, ['orca', 'worktree', 'rm', '--worktree', `path:${ss.worktree}`, '--json'], 120_000)
+    return `Stopped ${name}. ${closed} ${rm.exitCode === 0 ? `Removed the worktree ${ss.worktree}.` : `Kept the worktree ${ss.worktree}: ${why(rm)}`}`
+  }
+  return `Unknown action "${action}".`
+}
+
 export const register: Register = (on, options) => {
   let settings = settingsOf(options, 'main')
   queueOn = settings.useQueue
@@ -1713,8 +2059,35 @@ export const register: Register = (on, options) => {
       isDeferred: false,
     })
 
+    await $.tool.register({
+      name: 'session',
+      description: 'Workers outside this session: another harness (codex, gemini, opencode, claude, or your own command line) in an Orca terminal or a tmux session the user can watch. ' +
+        'action "start" (name, brief, harness, host?, command?) makes a worktree on flow/<name> from the base and starts the harness with the worker rules and the brief; its report comes back to you as a "flow session:" message. ' +
+        'The same controls work for every harness: "send" (name, text) types a message and submits it, "keys" (name, keys) presses keys ("1", "y enter", "escape", "interrupt", "down enter"), ' +
+        '"read" (name, lines?) shows the end of its terminal, "restart" (name) starts it again in its worktree (resuming its conversation where the harness can), "list" all sessions, "stop" (name, remove_worktree?) closes it. ' +
+        'A harness that goes quiet without a report is told to you as idle.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['start', 'send', 'keys', 'read', 'restart', 'list', 'stop'] },
+          name: { type: 'string', description: 'The worker name, as for an agent worker: <your name>-<package-slug>' },
+          brief: { type: 'string', description: 'start: the whole brief, its first line "Your name: <name>"' },
+          harness: { type: 'string', description: 'start: claude, codex, gemini, opencode, a name from the harnesses setting, or "command". Default: the worker_harness setting' },
+          command: { type: 'string', description: 'start with harness "command": the command line; {prompt} is the prompt as one shell word, {prompt_file} its path' },
+          host: { type: 'string', enum: ['orca', 'tmux'], description: 'start: where it runs. Default: the session_host setting (Orca when it runs, else tmux)' },
+          text: { type: 'string', description: 'send: what to type into its terminal' },
+          keys: { type: 'string', description: 'keys: space-separated; enter, escape, interrupt (Ctrl-C), tab, up, down, left, right, backspace, space by name, any other word typed as it is' },
+          lines: { type: 'number', description: 'read: how many lines from the end (default 80)' },
+          remove_worktree: { type: 'boolean', description: 'stop: also remove the worktree, only if it is clean and pushed' },
+        },
+        required: ['action'],
+      },
+      isDeferred: false,
+    })
+
     $.clock.every(POLL_MS, () => {
       void refresh($)
+      void watchSessions($)
       if (checking) return
       checking = true
       void recheck($, options, paths, detected, seen).then(m => {
@@ -2095,6 +2468,12 @@ export const register: Register = (on, options) => {
     return { result: await sweep($, settings.base, apply) }
   })
 
+  on('tool.call', { tool: 'mcp__flow__session' }, async ($, e) => {
+    const id = e.agentId
+    const caller: Caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await ownerNameOf($, id) }
+    return { result: await sessionTool($, e as unknown as Record<string, unknown>, caller, settings) }
+  })
+
   on('tool.call', { tool: 'mcp__flow__status' }, async ($, e) => {
     const asked = Number((e as unknown as Record<string, unknown>).pr)
     if (Number.isInteger(asked) && asked > 0) {
@@ -2466,7 +2845,10 @@ export const register: Register = (on, options) => {
             <Button key="back" hotkey="b" onPress={async () => { await acted(); await update($, selected, () => parent?.id ?? null) }}>Back</Button>
             {agent.type === MANAGER && toggle}
             <Button key="msg" hotkey="m" onPress={() => $.prompt.fill({
-              text: `Send a message to ${ROLE[agent.type] ?? 'agent'} "${labelOf(agent)}": `, mode: 'replace',
+              text: agent.type === SESSION
+                ? `Send to session "${labelOf(agent)}" with mcp__flow__session action "send": `
+                : `Send a message to ${ROLE[agent.type] ?? 'agent'} "${labelOf(agent)}": `,
+              mode: 'replace',
             })}>Message</Button>
           </Box>
           <Text bold color={COLOR[agent.status]}>

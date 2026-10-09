@@ -24,6 +24,12 @@ export type Settings = {
   decisionPhrases: string[]
   workerChecks: string[]
   alwaysTests: string[]
+  // "agent" (the Agent tool) or a harness name: what managers start workers with by default.
+  workerHarness?: string
+  // Where session workers run: "auto", "orca" or "tmux".
+  sessionHost?: string
+  // The harness names the session tool accepts.
+  harnessNames?: string[]
 }
 
 export type DeployTarget = { name: string; backup: string[]; deploy: string[]; healthUrl?: string; verify: string[] }
@@ -133,9 +139,20 @@ function alwaysTestsLine(s: Settings): string {
   return ` Also run these every time, on top of the tests for the files you changed: ${s.alwaysTests.map((t) => `\`${t}\``).join(', ')}. ${how}`
 }
 
+// Step 5's default for this repo: the Agent tool, or a harness through the session tool.
+function harnessRule(s: Settings): string {
+  const h = s.workerHarness ?? 'agent'
+  if (h === 'agent') return ''
+  return ` This repo runs workers in ${h}: start each with \`mcp__flow__session\` action "start", harness "${h}" (see Workers in a terminal), not the Agent tool, unless the task asks for an agent.`
+}
+
 export function fill(text: string, s: Settings): string {
   const mig = s.migrationsDir
+  const host = s.sessionHost ?? 'auto'
   return text
+    .replaceAll('{{HARNESS_RULE}}', harnessRule(s))
+    .replaceAll('{{HARNESS_LIST}}', (s.harnessNames ?? ['claude', 'codex', 'gemini', 'opencode']).map(n => `"${n}"`).join(', '))
+    .replaceAll('{{SESSION_HOST}}', host === 'auto' ? 'Orca when it is running, else tmux' : host)
     .replaceAll('{{LANGUAGE}}', languageLine(s))
     .replaceAll('{{BIG_FILES}}', bigFilesLine(s))
     .replaceAll('{{WORKER_CHECKS}}', workerChecksLine(s))
@@ -229,7 +246,7 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 2. Read code at the base, not the main checkout, which may be behind: \`git grep -n <pattern> origin/{{BASE}} -- <paths>\`, \`git show origin/{{BASE}}:<path>\`.
 3. Split by files touched, not by feature. Two workers editing the same part of one file conflict at merge time: overlapping work becomes one package, or runs one after the other.{{MIGRATIONS_MANAGER}} Check open PRs touching the same paths with \`gh pr list --json number,title,files\`.
 4. Write one brief per package from the template below. Workers can't see your conversation, so the background, decisions and edge cases go in the brief.{{BIG_FILES}}
-5. Start each worker with the Agent tool: subagent_type "flow:worker", name "<your name>-<package-slug>" (what it builds, prefixed with your own name so no two agents share a name and messages reach the right one), run_in_background true, model "{{WORKER_MODEL}}", and the brief as the prompt, its first line "Your name: <that same name>". Start independent workers in one message so they run in parallel. At most {{MAX_WORKERS}} at a time; start the next as one finishes.
+5. Start each worker with the Agent tool: subagent_type "flow:worker", name "<your name>-<package-slug>" (what it builds, prefixed with your own name so no two agents share a name and messages reach the right one), run_in_background true, model "{{WORKER_MODEL}}", and the brief as the prompt, its first line "Your name: <that same name>". Start independent workers in one message so they run in parallel. At most {{MAX_WORKERS}} at a time; start the next as one finishes.{{HARNESS_RULE}}
 6. When a package needs another's merged code, declare the packages before starting any worker: \`mcp__flow__plan\` action \`add\`, nodes \`{ id: "<worker name>", title, after: [ids] }\`, with \`until: "reported"\` when only the other worker's report is needed. Start only the ready ones. When a \`flow plan:\` message says nodes are ready, start them with briefs built on the merged code (\`git fetch origin\` first). A blocked node is yours to fix, or to mark with \`block\` or \`done\`. Independent packages need no plan.
 7. Wait for them. Each worker's report arrives as a notification when it finishes: end your turn while you wait. Never sleep or poll.
 
@@ -243,6 +260,16 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 - The queue's merged report: call \`mcp__flow__clean\` with apply true. It removes the merged worker's worktree and local branch (the plugin may already have; then there is nothing left to do), and runs dry when the cleanup setting is off and says so. Never remove a worktree by hand while it has uncommitted or unpushed work: what the sweep keeps goes in your final report for the user.
 
 {{QUEUE_RULE}}
+
+## Workers in a terminal
+
+When the task or the user asks for a worker in another harness (codex, gemini, opencode, or claude on its own) or in a terminal the user can watch, start it with \`mcp__flow__session\` action "start" instead of the Agent tool: name (the same naming rule as agent workers), harness (one of {{HARNESS_LIST}}, or "command" with your own command line for a harness the plugin doesn't know), and the brief, its first line "Your name: <name>". It runs in {{SESSION_HOST}}; pass host only when the task names one. The plugin makes a worktree on branch \`flow/<name>\` from {{BASE}}, opens the terminal and starts the harness with the worker rules and your brief. Session workers count against your {{MAX_WORKERS}}.
+- A start refused because the harness isn't installed or Codex is low on quota: start that worker as a flow:worker agent instead, without asking, and say so in your report.
+- Its report arrives as a \`flow session:\` message, like an agent's notification: end your turn while you wait. Never sleep or poll.
+- Its report follows the worker rules: a question on the last line, BLOCKED, a PR, or HANDOFF. Answer it and send review feedback with action "send" (name, text), never SendMessage. "read" shows the end of its terminal, "list" all sessions.
+- Every harness is driven the same way, whatever it is. A \`flow session:\` message that it is idle means its screen stopped changing with no report: "read" it, then answer what it shows, with "send" for a message or "keys" for a prompt or menu ("1", "y enter", "escape", "down enter"); "keys" "interrupt" stops what it is doing. One that crashed, exited or is stuck past that: "restart", which continues its conversation where the harness supports it, then "send" what to do next.
+- It has no context meter. A \`HANDOFF:\` report is handled as for an agent, except the successor is started with "start" again and its brief carries the \`Continue on branch:\` line.
+- When its PR is merged or abandoned, action "stop" closes the terminal; with remove_worktree true it also removes the worktree, only if it is clean and pushed.
 
 ## Notes
 
@@ -278,6 +305,21 @@ When every PR is merged (or you merged it, without a queue), end with a short re
 ## Brief template
 
 ${BRIEF_TEMPLATE}`
+
+// What a worker in another harness reads before the worker rules and its brief. `{{NAME}}` and
+// the rest are filled per session by the session tool.
+export const SESSION_PROMPT = `You are a flow worker running as {{HARNESS}} in a terminal, outside the Claude Code session that runs the flow. Your manager is {{OWNER}}. The flow worker rules follow; where they differ from this part, this part wins:
+- Your name is {{NAME}}. The current directory is your worktree, already on branch \`{{BRANCH}}\`: skip the rename. A "Continue on branch:" line in the brief still applies.
+- You have no flow tools (mcp__flow__*): skip the test slot steps, and leave whole-suite runs that take minutes to the merge queue.
+- Your report is a file, not your last message: write it to \`{{REPORT}}\`, replacing the whole file each time you report, with what the rules below say a final message carries and the same last-line rules (a question ending in "?", "BLOCKED: …", "HANDOFF: …"). The plugin sends it to your manager. Then wait in this terminal.
+- Your manager's answers and review feedback are typed into this terminal. Act on them, then write the report file again.
+- Nobody tells you when your context runs low. If you notice it, follow the Handoff steps on your own and put the note in the report file.
+
+${WORKER_PROMPT}
+
+# Your brief
+
+`
 
 export const QUEUE_RULE = 'There is a merge queue: never merge yourself.'
 export const NO_QUEUE_RULE = `There is no merge queue in this repo: you merge. For each approved PR, run the full check ({{FULL_CHECK}}) in a clean worktree on the PR's head (\`git worktree add /tmp/check-<n> <head sha>\`, run it there, then \`git worktree remove\`), then \`gh pr merge <n> --{{MERGE_METHOD}} --delete-branch\`, then \`mcp__flow__clean\` with apply true.`

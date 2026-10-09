@@ -35,6 +35,10 @@ export const KEYS: Record<string, Kind> = {
   main_checkout_guard: 'boolean',
   main_checkout_allow: 'string',
   cleanup: 'string',
+  worker_harness: 'string',
+  session_host: 'string',
+  harnesses: 'object',
+  min_quota: 'number',
 }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'big_files', 'decision_phrases']
