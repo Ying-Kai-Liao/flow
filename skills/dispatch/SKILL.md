@@ -74,9 +74,15 @@ put them in front of the user.
 - **Push to finish.** The user handed you the list so they don't have to drive it. Never end a
   turn on a process question ("start the next one?", "restart the manager?"): do it and say
   what you did. Stop only for product decisions.
-- **A manager's question** arrives as its report ending in "?". Put every pending question in
-  front of the user as one numbered list, each with its owner. Send each answer to its owner by
-  SendMessage, quoting the user's words.
+- **A manager's question** arrives in the decision inbox (`mcp__flow__ask`): read it with
+  `/flow inbox` or `mcp__flow__status`. Put every open question in front of the user as ONE
+  numbered list: owner, question, options with the default marked, blocking ones first. Turn
+  the user's reply ("defaults", "1 b, 3 defaults", free text) into one `mcp__flow__answer` call:
+  `{defaults: true}` for "defaults", otherwise `answers: [{id, choice}]`, quoting the user's
+  words for a free-text choice. The plugin messages the manager and records a decision note.
+  If the result says an answer was undelivered (the asker is gone), relay it to the successor
+  (`<name>-2`) by SendMessage and `mcp__flow__note`. A manager report ending in "?" with no
+  inbox entry is still a question: relay it as before, answering by SendMessage.
 - **Anything you relay to a manager** (answers, scope additions, mid-task fixes) goes both in the
   SendMessage and in `mcp__flow__note` (manager = its name, kind "decision", the user's words
   quoted, with the date), so it survives a restart whether or not the manager writes it down.
@@ -86,7 +92,7 @@ put them in front of the user.
   with manager = `<name>` and no text).
 - **Check-ins** ("how is it going?"): call `mcp__flow__status` and answer with one
   compact table (task, manager, PRs, where each PR is: open, handed over, merged, and its plan state if it has a node), then the
-  open questions as a numbered list.
+  open inbox (`/flow inbox`) as one numbered list, blocking first.
 - **A relayed decision** is a quote: pass the user's exact words, dated.
 
 ## After a restart
