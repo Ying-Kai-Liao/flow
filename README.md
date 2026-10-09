@@ -38,7 +38,7 @@ change, "start a worker to fix X" is enough.
 
 ## How it works
 
-Sections below, in order: roles, dependencies, what you see, pre-flight, questions and the inbox, continuing work, merge mode, cleanup, guards, deploying, verification, workers in other harnesses.
+Sections below, in order: roles, dependencies, what you see, pre-flight, questions and the inbox, continuing work, merge mode, cleanup, guards, merge queue rules, deploying, verification, workers in other harnesses.
 
 ## Roles
 
@@ -319,9 +319,18 @@ session included. A rule in a prompt can be skipped; a refused tool call can't.
   session and managers, and by any `cd` or `git -C` in the command; a worker's relative paths
   land in its own worktree and pass. Turn it off with `main_checkout_guard`.
 
+## Merge queue rules
+
+Beyond merging, checking and deploying, the queue handles four things on its own:
+
+- **Migration clashes** (when `migrations_dir` is set). After taking a PR and checking its head, the queue calls `mcp__flow__migrations` with the PR and the earlier PRs of the batch. If a migration of the PR has the same number as one on the base branch, at HEAD or in an earlier PR of the batch, or is at or below the highest on the base branch, the queue renumbers it in a temporary worktree on the PR's head: `git mv` to the next free number the tool reports (highest + 1, no gaps), updates the PR's own mechanical references to the old number (the paired down migration, a journal or index entry, a file name in a list), commits "Renumber migration <old> to <new> (merge queue)" and pushes to the PR's branch (never forced), then merges the new head. The batch's full check covers it. The done line and the report to the manager say so. When the number is referenced in a way it cannot update safely (code constants, generated checksums or snapshots, data that records the version) or the branch moved meanwhile, the PR goes back with the reason. Two packages that both add migrations can therefore run in parallel.
+- **Infrastructure flakes.** A push that fails with a server or network error (5xx, timeout, connection reset; a rejection keeps the fetch, merge, check rule) is retried with backoff (30s, 1m, 2m, 4m, then every 4m) for at most 20 minutes, as is any `gh` call of the batch; the retry count goes in the done line. After that the batch's PRs go back with "push to <base> failed for 20 minutes (infrastructure); PR unchanged, hand it over again" and main is told. Health checks get 30 seconds before the first fetch and 10 minutes of retries.
+- **Flaky tests.** With `flaky_tests` set, a full check whose failing tests are all in those files is rerun once for those files (through `test_command` with `{files}` if it has that slot, else the full check once more). If they pass, the batch passes and the report says "flaky rerun: <file> failed, passed on rerun". Any other failure, or a second one, is real.
+- **Both-sides additions.** A merge conflict where both sides added lines at the same place (imports, list entries, registry entries, README table rows, CHANGELOG entries) keeps both, drops exact duplicates and keeps sorted lists sorted; the full check covers it and the report says "kept both sides in <files>". The same line changed differently, or a deletion against an edit, goes back to the worker.
+
 ## Deploying
 
-`deploy_targets` is an ordered list. Per target, the queue runs `backup` commands (every batch, checking their output is sane), then the `deploy` commands, then fetches `health_url` (retrying a few minutes) until it contains the short sha just pushed, then follows the free-text `verify` notes. It stops at the first failing target and reports it, e.g. `deployed: demo ✓, production ✗ at health: ...`. The PRs are already merged by then; they are marked done with the failure in the report.
+`deploy_targets` is an ordered list. Per target, the queue runs `backup` commands (every batch, checking their output is sane), then the `deploy` commands, then fetches `health_url` until it contains the short sha just pushed (it waits 30 seconds after the deploy, then retries with backoff for up to 10 minutes; a failed fetch inside that window is not a failure), then follows the free-text `verify` notes. It stops at the first failing target and reports it, e.g. `deployed: demo ✓, production ✗ at health: ...`. The PRs are already merged by then; they are marked done with the failure in the report.
 
 ```json
 {
@@ -474,11 +483,12 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `language` | `English` | `/config`, file | the language agents write reports and PR text in |
 | `big_files` | none | file only | files workers grep and never read whole (a list) |
 | `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
-| `migrations_dir` | none | file only | the directory of migrations |
+| `migrations_dir` | none | file only | the directory of migrations: workers number new ones after the highest on the base branch, and the merge queue renumbers a clash (see Merge queue rules) |
 | `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |
 | `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
 | `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
+| `flaky_tests` | none | file only | test files known to fail now and then: when they are the only failures of the full check, the queue reruns them once (a list) |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
 | `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
 | `context_warn_tokens` | 0 | `/config`, file | an optional cap in tokens over both percents; the lower applies. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
@@ -513,7 +523,7 @@ A repo can carry its own settings in `.claude/flow.json`, a flat JSON object wit
 
 A personal overlay lives in `<git-common-dir>/flow/config.json` (that is `.git/flow/config.json`) and is never committed.
 
-Precedence, lowest first: built-in defaults, `/config`, `.claude/flow.json`, the personal file. For `worker_checks`, `always_tests`, `big_files` and `decision_phrases` the personal file's entries are added to the repo file's, each once; every other key is replaced.
+Precedence, lowest first: built-in defaults, `/config`, `.claude/flow.json`, the personal file. For `worker_checks`, `always_tests`, `flaky_tests`, `big_files` and `decision_phrases` the personal file's entries are added to the repo file's, each once; every other key is replaced.
 
 An unknown key, bad JSON or a wrong type is a warning (shown as a toast) and the layer below applies for that key or file.
 
@@ -521,6 +531,7 @@ The files are checked every few seconds by modification time. New settings apply
 
 ## Tools the agents use
 
+- `migrations` (read-only; used by the merge queue): `prs` (PR numbers in merge order) and `ref` (default HEAD). It reports the highest migration number on the base branch and at `ref`, each PR's added migrations as ok, clash or at-or-below, the next free number with its zero padding kept, the suggested `git mv`, and where the PR references the old number.
 - `handover`: a manager hands a reviewed PR over; the plugin records its head and starts
   a queue if none is running.
   It refuses a PR whose description has no valid `## Verification` section (checked after the

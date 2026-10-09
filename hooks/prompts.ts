@@ -27,6 +27,8 @@ export type Settings = {
   decisionPhrases: string[]
   workerChecks: string[]
   alwaysTests: string[]
+  // Test files the merge queue reruns once when they are the only failures of the full check.
+  flakyTests?: string[]
   // "agent" (the Agent tool) or a harness name: what managers start workers with by default.
   workerHarness?: string
   // Where session workers run: "auto", "orca" or "tmux".
@@ -90,6 +92,12 @@ export function targetsOf(s: Pick<Settings, 'deployCommand' | 'deployTargets'>):
   return s.deployCommand ? [{ name: 'default', backup: [], deploy: [s.deployCommand], verify: [] }] : []
 }
 
+// Bounds the merge queue works to; prompt constants on purpose, not settings.
+export const PUSH_RETRY_MINUTES = 20
+export const PUSH_RETRY_BACKOFF = '30s, 1m, 2m, 4m, then every 4m'
+export const HEALTH_FIRST_WAIT_SECONDS = 30
+export const HEALTH_RETRY_MINUTES = 10
+
 export function deploySection(s: Pick<Settings, 'deployCommand' | 'deployTargets'>): string {
   const targets = targetsOf(s)
   if (targets.length === 0) return 'none configured: no deploy; never guess a deploy command.'
@@ -102,7 +110,7 @@ export function deploySection(s: Pick<Settings, 'deployCommand' | 'deployTargets
     }
     lines.push(`      ${++n}. Deploy: run ${t.deploy.map(c => `\`${c}\``).join(', then ')}, in this order; a non-zero exit fails the target.`)
     if (t.healthUrl) {
-      lines.push(`      ${++n}. Health: fetch ${t.healthUrl} (retry for a few minutes while it restarts). The response must contain the short sha just pushed; if it never does, this target failed at health.`)
+      lines.push(`      ${++n}. Health: fetch ${t.healthUrl}: wait ${HEALTH_FIRST_WAIT_SECONDS}s after the deploy before the first fetch, then retry with backoff (e.g. 15s, 30s, 1m, then every 1m) for at most ${HEALTH_RETRY_MINUTES} minutes while it restarts. A failed fetch inside that window is not a failure. The response must contain the short sha just pushed; if it never does within the window, this target failed at health.`)
     }
     if (t.verify.length > 0) {
       lines.push(`      ${++n}. Verify, free text for you to follow and report: ${t.verify.join(' / ')}`)
@@ -110,6 +118,17 @@ export function deploySection(s: Pick<Settings, 'deployCommand' | 'deployTargets
   })
   lines.push(`   The PRs are already pushed and merged when a target fails: say so. They are still marked "done", with the failure in the report (not "back"). Report per target, like "deployed: demo ✓, production ✗ at health: <what>", to each PR's report_to and to main.`)
   return lines.join('\n')
+}
+
+function migrationsStep(s: Settings): string {
+  return `   - Migrations: before merging, call \`mcp__flow__migrations\` with this PR and the batch's earlier PRs as \`prs\` (in merge order) and \`ref\` HEAD. If this PR's migration clashes (same number on origin/${s.base}, at HEAD or in an earlier PR of the batch) or is at or below the highest on origin/${s.base}, renumber it yourself, every migration of the PR in order: in a temporary worktree on the PR's head (\`git worktree add /tmp/renumber-<n> <head sha>\`), \`git mv\` each to the next free number the tool reports (highest+1, never a gap), update the PR's own references to the old number when they are mechanical (the paired down migration, a journal or index entry, a file name in a list), commit "Renumber migration <old> to <new> (merge queue)", push to the PR's branch (\`git push origin HEAD:<branch>\`, plain, never force), remove the worktree, and use that new head as the PR's head from here on (your own commit is not "head moved"). Say "renumbered migration <old> to <new>" in the done line and to report_to. The batch's full check covers it (if none is configured, run the test command on what the migration touches). Send the PR back ("back", with the reason) instead when the number is referenced in a way you cannot safely update (code constants, generated checksums or snapshots, data that records the version, anything needing judgment), or when the push is rejected because the branch moved (that is a real head move).\n`
+}
+
+function flakyLine(s: Settings): string {
+  const files = s.flakyTests ?? []
+  if (!files.length) return ''
+  const rerun = s.testCommand.includes('{files}') ? 'through the test command with the files in place of {files}' : 'by running the full check once more'
+  return `\n   - Known flaky tests: ${files.map(f => `\`${f}\``).join(', ')}. When the full check fails and every failing test is in a file of this list, rerun only those files once (${rerun}). If they pass, the batch passes; put "flaky rerun: <file> failed, passed on rerun" in the done line and the final report. A failure outside the list, or a second failure, is real: handle it as below.`
 }
 
 function stateStep(f: StateFile | undefined): string {
@@ -160,9 +179,11 @@ export function fill(text: string, s: Settings): string {
     .replaceAll('{{BIG_FILES}}', bigFilesLine(s))
     .replaceAll('{{WORKER_CHECKS}}', workerChecksLine(s))
     .replaceAll('{{ALWAYS_TESTS}}', alwaysTestsLine(s))
-    .replaceAll('{{MIGRATIONS_WORKER}}', mig ? `\n- New migrations go in \`${mig}\`, numbered after the highest on origin/${s.base} at the time you open the PR; renumber on rebase if someone took yours.` : '')
-    .replaceAll('{{MIGRATIONS_MANAGER}}', mig ? ' Two packages that both add migrations run one after the other.' : '')
-    .replaceAll('{{MIGRATIONS_QUEUE}}', mig ? ` Before merging a batch, check no two PRs add a migration with the same number in \`${mig}\`; send the later one back.` : '')
+    .replaceAll('{{MIGRATIONS_WORKER}}', mig ? `\n- New migrations go in \`${mig}\`, numbered after the highest on origin/${s.base} at the time you open the PR; renumber on rebase if someone took yours. If two PRs still clash, the merge queue renumbers the later one itself.` : '')
+    .replaceAll('{{MIGRATIONS_MANAGER}}', mig ? ' Packages that both add migrations may run in parallel: the merge queue renumbers a clash.' : '')
+    .replaceAll('{{MIGRATIONS_QUEUE}}', mig ? ` Migrations live in \`${mig}\`: step 2 renumbers a clashing one instead of sending the PR back.` : '')
+    .replaceAll('{{MIGRATIONS_STEP}}', mig ? migrationsStep(s) : '')
+    .replaceAll('{{FLAKY_TESTS}}', flakyLine(s))
     .replaceAll('{{TEST}}', s.testCommand || 'none configured: run the tests that cover the files you changed')
     .replaceAll('{{FULL_CHECK}}', s.fullCheck || 'none configured')
     .replaceAll('{{STATE_FILE_RULE}}', s.stateFile ? `\n- Never edit the status file \`${s.stateFile.path}\`: only the merge queue writes it.` : '')
@@ -342,18 +363,18 @@ The PRs handed to you are in mcp__flow__queue: action "list" shows the pending o
    - \`mcp__flow__queue\` action "take" with its pr.
    - If "take" answers "Held:", the PR awaits the user's approval: skip it (do not merge it, do not send it back) and go on. List held PRs in your final report and SendMessage main "PR #<n> waits for the user's approval: /flow approve <n>".
    - \`gh pr view <n> --json state,headRefOid,title\`: state must be OPEN and headRefOid must equal the handover's head. If the head moved, \`mcp__flow__queue\` action "back" with reason "head moved", and go on.
-   - \`git fetch origin <head sha>\` if needed, then \`git merge --no-ff <head sha> -m "Merge PR #<n>: <title>"\`.
-   - Mechanical conflicts (two additions side by side): resolve, keeping both. Conflicts needing a logic or product decision: \`git merge --abort\`, "back" with the file names, go on.
+{{MIGRATIONS_STEP}}   - \`git fetch origin <head sha>\` if needed, then \`git merge --no-ff <head sha> -m "Merge PR #<n>: <title>"\`.
+   - Mechanical conflicts, both sides added lines at the same place (imports, list or array entries, registry entries, README table rows, CHANGELOG entries): keep both, drop exact duplicates, keep sorted lists sorted. The batch's full check covers it (if none is configured, run the test command on those files). Say "kept both sides in <files>" in the done line and to report_to. The same line changed differently on both sides, or one side deleting what the other edited, needs a decision: \`git merge --abort\`, "back" with the file names, go on.
 3. Full check: {{FULL_CHECK}}. Run it once for the batch (run_in_background if it's long). Call \`mcp__flow__test_slot\` action "acquire" (label "full check") before each run (if queued, wait as it tells you, then confirm with one acquire) and "release" after it, also when it fails.
    - A failure from combining PRs (each fine alone): fix it yourself in one small commit on top ("Fix combination of #a and #b: <what>") and run the check again. Anything bigger is a logic conflict: send the later PR back.
    - A real bug in one PR: reset to before its merge (\`git log --first-parent --oneline origin/{{BASE}}..HEAD\`, \`git reset --hard <its merge commit>^1\`), redo the merges after it, send it back with the failing output, check again.
-   - "none configured" means no full check: say so in the report; never improvise one.
-4. Push: \`git push origin HEAD:{{BASE}}\`. GitHub marks each PR merged. If rejected, fetch, merge origin/{{BASE}}, check again, push again. Then delete each merged branch: \`git push origin --delete <branch>\`.
+   - "none configured" means no full check: say so in the report; never improvise one.{{FLAKY_TESTS}}
+4. Push: \`git push origin HEAD:{{BASE}}\`. GitHub marks each PR merged. If rejected (a non-fast-forward), fetch, merge origin/{{BASE}}, check again, push again. If the push fails with a server or network error (5xx, timeout, connection reset; not a rejection), retry the same push with backoff (${PUSH_RETRY_BACKOFF}) for at most ${PUSH_RETRY_MINUTES} minutes and put the retry count in the done line ("push retries: <n>"). The same goes for any gh or GitHub API call in the batch. After that bound, stop: send every PR of the batch back with the reason "push to {{BASE}} failed for ${PUSH_RETRY_MINUTES} minutes (infrastructure); PR unchanged, hand it over again", and SendMessage main the same. Then delete each merged branch: \`git push origin --delete <branch>\`.
 5. Deploy: {{DEPLOY}}
 6. After_deploy checks. Only for PRs whose targets all deployed fine (for a PR whose deploy failed, skip the check and say why). For each such PR whose \`after_deploy\` is not "none", judge from its text:
    - An agent can check it (commands, HTTP calls, logs, an e2e skill): start a check-only worker with the Agent tool: subagent_type "flow:worker", name "<your name>-verify-<pr>", run_in_background, brief starting with the line "Check only:" then what to check, the deployed short sha and where. Wait for its report before you finish; the result goes to the PR's report_to.
    - It needs a person (a browser look, a real conversation, a judgment call): write the line "needs a person: PR #<n>: <after_deploy>" in the report to report_to, SendMessage the same line to main, and put it in your final report.
-7. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | evidence: <the PR's ran / exercised / not verified from mcp__flow__queue list> | deployed: <per target result, or none> | after_deploy: <result or needs a person line> | pending decisions: <its pending, if not none>"). Then SendMessage the same line to the PR's report_to. Every PR's \`pending\` (not "none") goes into this line, as "pending decisions: PR #<n>: …"; SendMessage each such line to main as well.{{STATE_STEP}}
+7. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | evidence: <the PR's ran / exercised / not verified from mcp__flow__queue list> | deployed: <per target result, or none> | after_deploy: <result or needs a person line> | pending decisions: <its pending, if not none>", then, only when they happened, "| renumbered migration <old> to <new> | kept both sides in <files> | push retries: <n>"). Then SendMessage the same line to the PR's report_to. Every PR's \`pending\` (not "none") goes into this line, as "pending decisions: PR #<n>: …"; SendMessage each such line to main as well.{{STATE_STEP}}
 
 Never hold the queue for one PR: a PR that waits on a decision or fails on its own is sent back ("back" with the reason, and SendMessage its report_to), and the rest of the batch goes on.
 

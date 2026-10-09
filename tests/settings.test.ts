@@ -71,11 +71,12 @@ test('the repo file lays over /config, the overlay over the repo file', { option
 
 test('list keys from the overlay are added to the repo file\'s, once each', () => {
   const r = mergeLayers({}, [
-    { path: REPO, text: JSON.stringify({ worker_checks: ['a', 'b'], always_tests: ['t'], big_files: ['x'] }) },
-    { path: OVERLAY, text: JSON.stringify({ worker_checks: ['b', 'c'], always_tests: [], big_files: null }) },
+    { path: REPO, text: JSON.stringify({ worker_checks: ['a', 'b'], always_tests: ['t'], flaky_tests: ['f1'], big_files: ['x'] }) },
+    { path: OVERLAY, text: JSON.stringify({ worker_checks: ['b', 'c'], always_tests: [], flaky_tests: ['f2', 'f1'], big_files: null }) },
   ])
   expect(r.raw.worker_checks).toEqual(['a', 'b', 'c'])
   expect(r.raw.always_tests).toEqual(['t'])
+  expect(r.raw.flaky_tests).toEqual(['f1', 'f2'])
   expect(r.raw.big_files).toEqual(['x'])
   expect(r.files).toEqual([REPO, OVERLAY])
   expect(r.warnings).toEqual([])

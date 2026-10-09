@@ -532,6 +532,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     decisionPhrases: strs('decision_phrases'),
     workerChecks: strs('worker_checks'),
     alwaysTests: strs('always_tests'),
+    flakyTests: strs('flaky_tests'),
     workerHarness: str('worker_harness', 'agent'),
     sessionHost: ['orca', 'tmux'].includes(str('session_host', 'auto')) ? str('session_host', 'auto') : 'auto',
     harnesses,

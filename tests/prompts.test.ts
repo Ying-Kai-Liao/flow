@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { fill, MANAGER_PROMPT, NO_QUEUE_RULE, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT } from '../hooks/prompts'
+import { deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_QUEUE_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
 
 const base: Settings = {
@@ -75,8 +75,47 @@ test('big files render with the threshold, and the threshold alone when the list
 test('migrations reach the worker, the manager and the queue', () => {
   const [w, m, q] = all({ ...base, migrationsDir: 'db/migrations' })
   expect(w).toContain('New migrations go in `db/migrations`, numbered after the highest on origin/main')
-  expect(m).toContain('Two packages that both add migrations run one after the other.')
-  expect(q).toContain('no two PRs add a migration with the same number in `db/migrations`; send the later one back.')
+  expect(w).toContain('the merge queue renumbers the later one itself')
+  expect(m).toContain('may run in parallel: the merge queue renumbers a clash.')
+  expect(q).toContain('step 2 renumbers a clashing one instead of sending the PR back')
+  expect(q).toContain('`mcp__flow__migrations`')
+  expect(q).toContain('Renumber migration <old> to <new> (merge queue)')
+  expect(q).toContain('plain, never force')
+  expect(q).toContain('not "head moved"')
+})
+
+test('without migrations_dir the queue prompt says nothing about migrations', () => {
+  const q = all(base)[2]
+  expect(q).not.toContain('mcp__flow__migrations')
+  expect(q).not.toContain('Renumber migration')
+})
+
+test('the queue retries infrastructure failures within fixed bounds', () => {
+  const q = all(base)[2]
+  expect(q).toContain('(5xx, timeout, connection reset; not a rejection)')
+  expect(q).toContain(`${PUSH_RETRY_BACKOFF}) for at most ${PUSH_RETRY_MINUTES} minutes`)
+  expect(q).toContain('push to main failed for 20 minutes (infrastructure); PR unchanged, hand it over again')
+  expect(q).toContain('push retries: <n>')
+  const h = deploySection({ deployCommand: '', deployTargets: [{ name: 'p', backup: [], deploy: ['d'], healthUrl: 'https://x/h', verify: [] }] })
+  expect(h).toContain(`wait ${HEALTH_FIRST_WAIT_SECONDS}s after the deploy`)
+  expect(h).toContain(`at most ${HEALTH_RETRY_MINUTES} minutes`)
+})
+
+test('flaky_tests adds the rerun rule, and nothing when empty', () => {
+  expect(all(base)[2]).not.toContain('flaky')
+  expect(all({ ...base, flakyTests: [] })[2]).not.toContain('flaky')
+  const q = all({ ...base, flakyTests: ['tests/a.test.ts'] })[2]
+  expect(q).toContain('Known flaky tests: `tests/a.test.ts`')
+  expect(q).toContain('by running the full check once more')
+  expect(q).toContain('flaky rerun: <file> failed, passed on rerun')
+  expect(all({ ...base, flakyTests: ['tests/a.test.ts'], testCommand: 'vitest run {files}' })[2]).toContain('in place of {files}')
+})
+
+test('both-sided additions are kept and reported', () => {
+  const q = all(base)[2]
+  expect(q).toContain('keep both, drop exact duplicates, keep sorted lists sorted')
+  expect(q).toContain('kept both sides in <files>')
+  expect(q).toContain('one side deleting what the other edited')
 })
 
 test('the manager, the no-queue rule and the queue call the cleanup sweep', () => {

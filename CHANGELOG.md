@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.34] - 2026-10-10
+
+### Added
+
+- Merge queue rules: with `migrations_dir` set the queue renumbers a clashing migration itself (new
+  read-only tool `mcp__flow__migrations`: highest numbers, per-PR ok / clash / at-or-below, next free
+  number, suggested `git mv`, references) instead of sending the PR back, so packages that add
+  migrations may run in parallel. Pushes and `gh` calls that fail with a server or network error are
+  retried with backoff for up to 20 minutes before the batch goes back; health checks wait 30 seconds
+  and retry for up to 10 minutes. New list setting `flaky_tests` (file only, appended like
+  `always_tests`): the queue reruns those files once when they are the only failures. Conflicts where
+  both sides added lines at the same place keep both sides and are reported.
+
 ## [0.3.33] - 2026-10-10
 
 ### Fixed
