@@ -263,7 +263,7 @@ export function viewOf<T>(items: T[], at: number, size: number): { top: number; 
 
 // A plan node with an agent is drawn by the agent's status; one without has only its plan state.
 const planState = (n: GNode): boolean => n.agentId === undefined && n.state in PLAN_GLYPH
-const nodeGlyph = (n: GNode): string => (planState(n) ? PLAN_GLYPH[n.state] : GLYPH[n.state] ?? PLAN_GLYPH[n.state] ?? '?')
+const nodeGlyph = (n: GNode): string => (planState(n) ? PLAN_GLYPH[n.state] ?? '?' : GLYPH[n.state] ?? PLAN_GLYPH[n.state] ?? '?')
 const nodeColor = (n: GNode): string | undefined => (planState(n) ? PLAN_COLOR[n.state] : COLOR[n.state] ?? PLAN_COLOR[n.state])
 
 // One line for a tool call: the tool and its most telling argument.
