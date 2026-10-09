@@ -141,6 +141,8 @@ export const WORKER_PROMPT = `You are a flow worker. You run in a git worktree o
 
 You build this one package. Don't start other agents, don't merge, don't deploy.
 
+If the line after the name in your brief says "Check only:", you verify a deployed change and nothing else: skip the branch rename, the read-before-change steps and Finishing below. Edit nothing, commit nothing, open no PR. Report pass or fail with evidence (commands run, output, status codes) as your final message.
+
 Before you touch anything:
 - Rename your branch so people can find it: \`git branch -m flow/<your name>\`. If the brief has a line \`Continue on branch: flow/<x>\`, you continue earlier work instead: \`git fetch origin && git checkout -B flow/<x> origin/flow/<x>\` (no rename), read the PR's \`## Handoff\` section (\`gh pr view --json body\`), and push to that same branch.
 - Read what you're going to change and what calls it: a small file whole; for a big one, the functions you touch and their callers, found with grep.
@@ -153,8 +155,6 @@ How to write it:
 - No drive-by refactors or renames.{{STATE_FILE_RULE}}
 
 Verifying: run {{TEST}}. Don't run the full check ({{FULL_CHECK}}); the merge queue runs it once per batch. Stop only processes you started, by PID; never pkill or killall.
-
-Check-only briefs: if the line after the name says "Check only:", you verify a deployed change. Edit nothing, commit nothing, open no PR, don't rename the branch. Report pass or fail with evidence (commands run, output, status codes).
 
 Finishing:
 1. Commit with a one-line message saying what changed and why, plus whatever attribution lines your session was told to use.
@@ -251,8 +251,8 @@ The PRs handed to you are in mcp__flow__queue: action "list" shows the pending o
 5. Deploy: {{DEPLOY}}
 6. After_deploy checks. Only for PRs whose targets all deployed fine (for a PR whose deploy failed, skip the check and say why). For each such PR whose \`after_deploy\` is not "none", judge from its text:
    - An agent can check it (commands, HTTP calls, logs, an e2e skill): start a check-only worker with the Agent tool: subagent_type "flow:worker", name "<your name>-verify-<pr>", run_in_background, brief starting with the line "Check only:" then what to check, the deployed short sha and where. Wait for its report before you finish; the result goes to the PR's report_to.
-   - It needs a person (a browser look, a real conversation, a judgment call): write the line "needs a person: PR #<n>: <after_deploy>" in the report to report_to and in your final report.
-7. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | deployed: <per target result, or none> | after_deploy: <result or needs a person line> | pending decisions: <its pending, if not none>"). Then SendMessage the same line to the PR's report_to. Every PR's \`pending\` (not "none") goes into this line, as "pending decisions: PR #<n>: …".{{STATE_STEP}}
+   - It needs a person (a browser look, a real conversation, a judgment call): write the line "needs a person: PR #<n>: <after_deploy>" in the report to report_to, SendMessage the same line to main, and put it in your final report.
+7. For each PR: \`mcp__flow__queue\` action "done" with pr, sha (short) and a one-line report ("full check: N tests passed | deployed: <per target result, or none> | after_deploy: <result or needs a person line> | pending decisions: <its pending, if not none>"). Then SendMessage the same line to the PR's report_to. Every PR's \`pending\` (not "none") goes into this line, as "pending decisions: PR #<n>: …"; SendMessage each such line to main as well.{{STATE_STEP}}
 
 Never hold the queue for one PR: a PR that waits on a decision or fails on its own is sent back ("back" with the reason, and SendMessage its report_to), and the rest of the batch goes on.
 
