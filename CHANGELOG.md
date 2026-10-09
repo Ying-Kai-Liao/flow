@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `push_mode` setting (`auto` by default, `confirm` in this repo): with `confirm` the reviewer builds the batch, runs the full check and cuts the release, then stops. It saves the batch head under `refs/flow/push/<id>` and records it with `mcp__flow__reviewer` action `ready`; nothing is pushed, deleted, published or deployed until you run `/flow push`.
+- A ready batch shows at the top of the Flow pane, in `mcp__flow__status` under "Needs the user", in `/flow resume` and in `/flow inbox` (a `push` item, never answered by standing answers), and raises a toast. It survives a restart (`push.json` in the state dir).
+- `/flow push` pushes the batch (a reviewer checks the base did not move, pushes, marks the PRs done, publishes and deploys); `/flow push back <pr>` returns one PR and the rest is rebuilt, re-checked and asked again; `/flow push drop` returns them all. Main has the same through the `mcp__flow__push` tool (list, push, send-back, drop) or by answering the inbox item "push", "send back #n" or "drop".
+- If the base moved before the push, the reviewer rebuilds the batch on the new base, re-checks it and asks again; `mcp__flow__release` takes `recut` for that.
+- While a batch is ready, new handovers stay pending and no new batch starts.
+
 ## [0.5.0] - 2026-10-09
 
 ### Changed

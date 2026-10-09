@@ -66,7 +66,8 @@ export type Handover = {
   verifyCommand?: string
   // Parsed from the PR's ## Verification section at handover; absent in handovers saved before it existed.
   evidence?: { ran: string[]; exercised: string; notVerified: string[] }
-  status: 'pending' | 'awaiting' | 'taken' | 'done' | 'returned'
+  // 'ready': built into a batch that awaits the user's /flow push (push_mode confirm).
+  status: 'pending' | 'awaiting' | 'taken' | 'ready' | 'done' | 'returned'
   // Set by the handover tool; the PR's flow:* label and the merge_mode setting are checked too.
   mode?: 'auto' | 'confirm'
   // The head the user approved with /flow approve; the reviewer merges a confirm PR only at this head.
@@ -182,7 +183,7 @@ export type Session = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string
@@ -198,7 +199,8 @@ export type Question = {
   // (unless a rule names the kind), and no agent waits for the reply.
   // 'env' asks the user about one env/secret change on a deploy target (or a step they do themselves);
   // like 'deploy', only a rule that names the kind answers it.
-  kind?: 'question' | 'fyi' | 'deploy' | 'env'
+  // 'push' asks the user to push one ready batch (hooks/pushgate.ts); standing answers never answer it.
+  kind?: 'question' | 'fyi' | 'deploy' | 'env' | 'push'
   // Only on kind 'env': which part of an env change this item is. 'change' asks to set NAME=value, 'secret' asks
   // the user to set a secret themselves, 'login' is a step they do first, 'apply' asks them to apply an approved
   // value themselves (the target has no env_command). Never carries a secret value (there is none).
@@ -296,6 +298,29 @@ export type TargetState = {
 }
 export type Deploys = { targets: Record<string, TargetState> }
 
+// The push gate (hooks/pushgate.ts), kept in <state dir>/push.json: the batch the reviewer built and checked and
+// the user has not pushed yet. 'ready' awaits the user; 'pushing' is released (a reviewer pushes it); 'rebuilding'
+// needs a fresh build (a PR was sent back, or the base moved).
+export type BatchItem = { pr: number; title: string; branch: string; head: string; evidence: string }
+export type ReadyBatch = {
+  id: string
+  state: 'ready' | 'pushing' | 'rebuilding'
+  prs: number[]
+  items: BatchItem[]
+  sha: string
+  baseSha: string
+  ref: string
+  check: string
+  version?: string
+  createdAt: number
+  // The open inbox item (kind 'push') that asks the user, while state is 'ready'.
+  qid?: string
+  releasedAt?: number
+  // Why a rebuild was asked for.
+  reason?: string
+}
+export type PushState = { batch?: ReadyBatch }
+
 export type Filing = {
   summary: string
   workers?: number
@@ -352,6 +377,8 @@ declare module 'claude-code' {
       // Deploy gates, mirrored from <state dir>/deploys.json, and how many commits each target is behind the base.
       deploys: Deploys
       behind: Record<string, number>
+      // The ready batch awaiting the user's push, mirrored from <state dir>/push.json.
+      push: PushState
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots

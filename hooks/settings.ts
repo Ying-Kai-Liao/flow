@@ -18,6 +18,7 @@ export const KEYS: Record<string, Kind> = {
   deploy_command: 'string',
   merge_method: 'string',
   merge_mode: 'string',
+  push_mode: 'string',
   reviewer: 'boolean',
   merge_queue: 'boolean',
   max_workers: 'number',
@@ -62,7 +63,7 @@ export const KEYS: Record<string, Kind> = {
 }
 
 // String settings with a closed set of values: another value is dropped with a warning.
-export const CHOICES: Record<string, string[]> = { preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'] }
+export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'] }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 

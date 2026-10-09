@@ -51,6 +51,11 @@ import { ADD_OPTION, addMapping, guardReport, guardTestsFor, parseGuardTests, pa
 import type { GuardMap } from './guardtests'
 import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
 import {
+  batchId, closePushItem, DROPPED_REASON, dropStep, EMPTY_PUSH, itemOf, newBatch, normalizePush, openPushItem, parsePushMode, parseVerdict,
+  PUSH_KIND, recordable, refOf, releaseStep, renderBatch, reviewerNote, sendBackStep, SENT_BACK_REASON, settlePrs,
+} from './pushgate'
+import type { PushState, ReadyBatch } from './pushgate'
+import {
   applyAnswer, applyViewOf, approvalContext, behindLines, closeEnvItems, declinedEntries, decideEnv, decideGate, EMPTY_DEPLOYS, ENV_KIND, envCommandFor, envListLine,
   envSummary, isApprove, normalizeDeploys, openApplyItem, openApprovalItem, reopenItem, openDeployIds, openEnvItems, parseEnvInput, pendingEnv, recordDeployed,
   release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
@@ -93,7 +98,7 @@ const ROOT_GLYPH = '◆'
 const PLAN_GLYPH: Record<string, string> = { waiting: '○', ready: '◌', running: '●', done: '✓', blocked: '✗' }
 const PLAN_COLOR: Record<string, string | undefined> = { waiting: undefined, ready: 'warning', running: 'suggestion', done: 'success', blocked: 'error' }
 const HANDOVER_GLYPH: Record<Handover['status'], string> = {
-  pending: '…', awaiting: '⏸', taken: '●', done: '✓', returned: '↩',
+  pending: '…', awaiting: '⏸', taken: '●', ready: '⇪', done: '✓', returned: '↩',
 }
 
 const roster = atom({ plugin: 'flow', key: 'roster' } as const, [] as AgentRow[])
@@ -140,6 +145,8 @@ const leftovers = atom({ plugin: 'flow', key: 'leftovers' } as const, { worktree
 const deploys = atom({ plugin: 'flow', key: 'deploys' } as const, EMPTY_DEPLOYS as Deploys)
 // Commits each target is behind the base, from git off the 3 s refresh path (refreshBehind).
 const behind = atom({ plugin: 'flow', key: 'behind' } as const, {} as Record<string, number>)
+// The ready batch awaiting the user's push, mirrored from <state dir>/push.json.
+const pushState = atom({ plugin: 'flow', key: 'push' } as const, EMPTY_PUSH as PushState)
 
 const PR_POLL_MS = 5 * 60_000
 const PR_MIN_GAP_MS = 60_000
@@ -556,6 +563,7 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     stateFile: stateFileOf(options.state_file),
     mergeMethod: str('merge_method', 'squash'),
     mergeMode: str('merge_mode', 'auto'),
+    pushMode: parsePushMode(options.push_mode),
     useReviewer: options.reviewer !== false,
     maxWorkers: num('max_workers', 3),
     maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
@@ -1035,7 +1043,7 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
   if (marked.kind === 'refused') return `${id}: refused, it is addressed to ${marked.q.addressee}, not ${by}.`
   if (marked.kind === 'empty') return `${id}: refused, the choice is empty.`
   const { q, answer, isDefault } = marked
-  const deployNote = q.kind === 'deploy' ? await onDeployAnswer($, q, answer) : q.kind === ENV_KIND ? await onEnvAnswer($, q, answer) : ''
+  const deployNote = q.kind === 'deploy' ? await onDeployAnswer($, q, answer) : q.kind === ENV_KIND ? await onEnvAnswer($, q, answer) : q.kind === PUSH_KIND ? await onPushAnswer($, q, answer, by) : ''
   let delivered = true
   let hint = ''
   if (needsMessage(q, isDefault)) {
@@ -1194,6 +1202,204 @@ async function releaseTarget($: EngineInterface, name: string): Promise<string> 
   if (info.mode === 'confirm') return `${name} released.${dropNote} It is a confirm target: the next gate still asks for approval.`
   return `${name} released.${dropNote} ${await ensureQueue($)}`
 }
+
+// ---- the push gate (pushgate.ts) ----
+
+// Push state changes run one after another, like the inbox's.
+let pushChain: Promise<unknown> = Promise.resolve()
+
+// Read push.json, let fn change it, write it back atomically and set the atom. fn returns the new state (the same
+// object when nothing changed) and whatever the caller wants back.
+function withPush<T>($: EngineInterface, fn: (cur: PushState) => { push: PushState; out: T }): Promise<T> {
+  const run = async (): Promise<T> => {
+    const dir = await stateDir($)
+    const cur = dir === undefined ? await read($, pushState) : normalizePush(await readJson($, `${dir}/push.json`))
+    const { push: next, out } = fn(cur)
+    if (next !== cur) {
+      if (dir !== undefined) {
+        await $.process.run(['mkdir', '-p', dir])
+        await writeJsonAtomic($, `${dir}/push.json`, next)
+      }
+      await update($, pushState, () => next)
+    }
+    return out
+  }
+  const result = pushChain.then(run, run)
+  pushChain = result.catch(() => undefined)
+  return result
+}
+
+// The commit a local ref points at, or undefined.
+async function refSha($: EngineInterface, ref: string): Promise<string | undefined> {
+  const r = await $.process.run(['git', 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { timeoutMs: 10_000 }).catch(() => undefined)
+  return r !== undefined && r.exitCode === 0 && r.stdout.trim() !== '' ? r.stdout.trim() : undefined
+}
+
+// The batch's ref is deleted once the batch is pushed, dropped or rebuilt. Best effort: a stray ref is harmless.
+async function dropRef($: EngineInterface, ref: string): Promise<void> {
+  await $.process.run(['git', 'update-ref', '-d', ref], { timeoutMs: 10_000 }).catch(() => undefined)
+}
+
+// A message for the manager that owns a PR: sent when it is alive, else noted for it and sent to main.
+async function tellManager($: EngineInterface, name: string, text: string): Promise<void> {
+  const live = (await $.agent.list()).find(a => a.name === name && (LIVE.has(a.status) || a.status === 'idle'))
+  if (live !== undefined && await $.session.send({ to: { agentId: live.id }, text }).then(() => true, () => false)) return
+  await best($, 'noting a report', async () => void (await appendNote($, name, `- ${await today($)} ${text}`)))
+  toMain($, `${text} (${name} is not running; relay it or start a manager.)`)
+}
+
+// The user's push, send-back or drop returns a PR the way the reviewer's "back" does.
+async function returnPr($: EngineInterface, h: Handover, reason: string): Promise<void> {
+  const next: Handover = { ...h, status: 'returned', reason }
+  await update($, handovers, hs => ({ ...hs, [String(h.pr)]: next }))
+  await best($, 'saving a handover', async () => {
+    await saveHandover($, next)
+    await appendLog($, { event: 'back', owner: next.reportTo, pr: next.pr, branch: next.branch, text: reason })
+  })
+  await closeReturnedEnv($, next)
+  await tellManager($, next.reportTo, `flow: PR #${next.pr} was returned: ${reason}. Decide what to do with it, and hand it over again when it is ready.`)
+}
+
+const closeBatchItem = ($: EngineInterface, qid: string | undefined, answer: string, by: string, at: number) =>
+  withInbox($, cur => ({ inbox: closePushItem(cur, qid, answer, by, at), out: undefined }))
+
+// The reviewer records a checked batch (push_mode confirm): its head is under refs/flow/push/<id>, the PRs become
+// "ready", the user is asked.
+async function recordReady($: EngineInterface, settings: Settings, input: Record<string, unknown>): Promise<string> {
+  if (parsePushMode(settings.pushMode) !== 'confirm') return 'Refused: push_mode is auto, so there is no push gate. Push the batch yourself (step 4).'
+  const prs = Array.isArray(input.prs) ? [...new Set(input.prs.map(Number))].filter(n => Number.isInteger(n) && n > 0) : []
+  if (prs.length === 0) return 'Refused: prs must list the PR numbers of the batch.'
+  const full = (v: unknown) => typeof v === 'string' && /^[0-9a-f]{40}$/i.test(v.trim()) ? v.trim().toLowerCase() : undefined
+  const sha = full(input.sha)
+  const baseSha = full(input.base_sha)
+  if (sha === undefined) return 'Refused: sha must be the full 40-character sha of the batch head (git rev-parse HEAD).'
+  if (baseSha === undefined) return 'Refused: base_sha must be the full 40-character sha of origin/<base> you built the batch on.'
+  const check = typeof input.check === 'string' ? input.check.trim() : ''
+  if (check === '') return 'Refused: check must say, in one line, what the full check gave ("N tests passed" or "none configured").'
+  const version = typeof input.version === 'string' ? input.version.trim().replace(/^v/, '') : undefined
+  const id = batchId(sha)
+  const at = await $.clock.now()
+  const hs = await read($, handovers)
+  for (const n of prs) {
+    const h = hs[String(n)]
+    if (h === undefined) return `Refused: no handover for PR #${n}.`
+    if (!recordable(h.status)) return `Refused: PR #${n} is ${h.status}; a batch holds PRs you took ("take") or that are already ready.`
+  }
+  const have = await refSha($, refOf(id))
+  if (have !== sha) {
+    return `Refused: ${refOf(id)} ${have === undefined ? 'does not exist' : `points at ${have}, not ${sha}`}. Run \`git update-ref ${refOf(id)} HEAD\` in your worktree on the batch head, then call ready again.`
+  }
+  const items = prs.map(n => itemOf(hs[String(n)]!))
+  const batch = newBatch({ sha, baseSha, check, ...(version !== undefined && version !== '' ? { version } : {}), items, now: at })
+  type Decided = { kind: 'same' } | { kind: 'awaits'; id: string } | { kind: 'new'; old: ReadyBatch | undefined }
+  const decided = await withPush<Decided>($, cur => {
+    if (cur.batch?.state === 'ready') {
+      return { push: cur, out: cur.batch.sha === sha ? { kind: 'same' as const } : { kind: 'awaits' as const, id: cur.batch.id } }
+    }
+    return { push: { batch }, out: { kind: 'new' as const, old: cur.batch } }
+  })
+  if (decided.kind === 'same') return `Batch ${id} is already recorded and awaits the user's /flow push. End your run.`
+  if (decided.kind === 'awaits') return `Refused: batch ${decided.id} already awaits the user's /flow push; there is only one ready batch at a time. Leave your PRs alone and end your run.`
+  if (decided.old !== undefined && decided.old.ref !== batch.ref) await dropRef($, decided.old.ref)
+  const q = await withInbox($, cur => {
+    const r = openPushItem(cur, batch, at)
+    return { inbox: r.inbox, out: r.q }
+  })
+  await withPush($, cur => (cur.batch?.id === id ? { push: { batch: { ...cur.batch, qid: q.id } }, out: undefined } : { push: cur, out: undefined }))
+  for (const n of prs) {
+    const h = (await read($, handovers))[String(n)]!
+    const next: Handover = { ...h, status: 'ready' }
+    await update($, handovers, all => ({ ...all, [String(n)]: next }))
+    await best($, 'saving a handover', async () => {
+      await saveHandover($, next)
+      await appendLog($, { event: 'ready', owner: next.reportTo, pr: next.pr, branch: next.branch, text: `batch ${id} awaits /flow push` })
+    })
+  }
+  void $.ui.toast(`Batch ${id} ready to push (${prs.map(n => `#${n}`).join(' ')}): /flow push`)
+  return `Recorded batch ${id}: ${prs.map(n => `#${n}`).join(', ')} are ready and wait for the user's /flow push (inbox ${q.id}). Do not push, delete branches, publish or deploy. End your run now with your report: batch ${id} ready, awaits /flow push.`
+}
+
+// After a PR is done or sent back, a batch with none of its PRs left is finished: its ref goes.
+async function settleBatch($: EngineInterface): Promise<void> {
+  const hs = await read($, handovers)
+  const ended = await withPush<ReadyBatch | undefined>($, cur => {
+    const b = settlePrs(cur.batch, pr => hs[String(pr)]?.status)
+    if (b === cur.batch) return { push: cur, out: undefined }
+    return { push: b === undefined ? {} : { batch: b }, out: b === undefined ? cur.batch : undefined }
+  })
+  if (ended === undefined) return
+  await dropRef($, ended.ref)
+  await closeBatchItem($, ended.qid, 'finished', 'flow', await $.clock.now())
+}
+
+// The user's push, send-back and drop (the command, the tool main calls and the answer to the inbox item all land here).
+type PushAct = { kind: 'push' } | { kind: 'back'; pr: number } | { kind: 'drop' }
+async function pushAct($: EngineInterface, act: PushAct, by: string): Promise<string> {
+  const at = await $.clock.now()
+  type Out = { why: string } | { before: ReadyBatch; after?: ReadyBatch | undefined }
+  const out = await withPush<Out>($, cur => {
+    const s = act.kind === 'push' ? releaseStep(cur.batch, at) : act.kind === 'back' ? sendBackStep(cur.batch, act.pr) : dropStep(cur.batch)
+    if (s.kind === 'refused') return { push: cur, out: { why: s.why } }
+    const before = cur.batch!
+    if (act.kind === 'drop') return { push: {}, out: { before } }
+    return { push: s.batch === undefined ? {} : { batch: s.batch }, out: { before, after: s.batch } }
+  })
+  if ('why' in out) return out.why
+  const { before, after } = out
+  const said = act.kind === 'push' ? 'push' : act.kind === 'drop' ? 'drop' : `send back #${act.pr}`
+  await closeBatchItem($, before.qid, said, by, at)
+  await best($, 'logging the push decision', () => appendLog($, { event: 'push', owner: 'main', text: `${by}: ${said} (batch ${before.id})` }))
+  const hs = await read($, handovers)
+  if (act.kind === 'push') {
+    const queue = await ensureQueue($)
+    return `Batch ${before.id} released (${before.prs.map(n => `#${n}`).join(', ')}). A reviewer pushes it, deletes the merged branches, deploys and marks the PRs done. ${queue}`
+  }
+  if (act.kind === 'back') {
+    const h = hs[String(act.pr)]
+    if (h !== undefined) await returnPr($, h, SENT_BACK_REASON)
+    if (after === undefined) {
+      await dropRef($, before.ref)
+      return `PR #${act.pr} sent back. It was the last PR of batch ${before.id}: the batch is gone.`
+    }
+    const queue = await ensureQueue($)
+    return `PR #${act.pr} sent back. The rest of batch ${before.id} (${after.prs.map(n => `#${n}`).join(', ')}) is rebuilt and re-checked, then you are asked again. ${queue}`
+  }
+  for (const n of before.prs) {
+    const h = hs[String(n)]
+    if (h !== undefined) await returnPr($, h, DROPPED_REASON)
+  }
+  await dropRef($, before.ref)
+  // A dropped batch may be handed over again as it was: its release is not "already cut" any more.
+  const key = [...before.prs].sort((a, b) => a - b).join(',')
+  if (lastRelease?.key === key) {
+    lastRelease = undefined
+    const dir = await stateDir($)
+    if (dir !== undefined) await writeJsonAtomic($, `${dir}/release.json`, {})
+  }
+  return `Batch ${before.id} dropped: ${before.prs.map(n => `#${n}`).join(', ')} went back to their managers, the ref ${before.ref} is deleted.`
+}
+
+// The answer to the push item: "push", "send back #n", "drop"; "not yet" or anything else reopens a fresh item.
+async function onPushAnswer($: EngineInterface, q: Question, answer: string, by: string): Promise<string> {
+  const v = parseVerdict(answer)
+  if (v.kind === 'push') return ` ${await pushAct($, { kind: 'push' }, by)}`
+  if (v.kind === 'back') return ` ${await pushAct($, { kind: 'back', pr: v.pr }, by)}`
+  if (v.kind === 'drop') return ` ${await pushAct($, { kind: 'drop' }, by)}`
+  const at = await $.clock.now()
+  const batch = (await read($, pushState)).batch
+  if (batch === undefined || batch.state !== 'ready' || batch.qid !== q.id) return ''
+  const fresh = await withInbox($, cur => {
+    const r = openPushItem(cur, batch, at)
+    return { inbox: r.inbox, out: r.q }
+  })
+  await withPush($, cur => (cur.batch?.id === batch.id ? { push: { batch: { ...cur.batch, qid: fresh.id } }, out: undefined } : { push: cur, out: undefined }))
+  return v.kind === 'later'
+    ? ` Batch ${batch.id} stays ready; ${fresh.id} asks again.`
+    : ` "${answer}" is not push, send back #<pr>, drop or not yet; batch ${batch.id} stays ready and ${fresh.id} asks again.`
+}
+
+// The lines that tell the user a batch awaits them (status, resume).
+const pushLines = (s: PushState): string[] => (s.batch === undefined ? [] : renderBatch(s.batch))
 
 // mcp__flow__deploy. The gate is the one place that decides whether a target deploys in this batch.
 async function deployTool($: EngineInterface, options: Record<string, unknown>, input: Record<string, unknown>, isMain: boolean, caller: string): Promise<string> {
@@ -1603,6 +1809,7 @@ async function alwaysRule(
   if (q === undefined || q.state !== 'answered' || q.answeredBy !== 'main') return `${id}: no rule made, the answer was not recorded.`
   if (q.kind === 'deploy') return `${id}: no rule made, a deploy approval is the user's call every time.`
   if (q.kind === ENV_KIND) return `${id}: no rule made, an env change is the user's call every time.`
+  if (q.kind === PUSH_KIND) return `${id}: no rule made, pushing a batch is the user's call every time.`
   if (parseChoice(q.options, choice).free) return `${id}: no rule made, a free-text answer cannot be a rule; pick one of the options.`
   const rule = ruleFromQuestion(q, q.answer ?? '', await today($))
   const r = await addRule($, options, rule)
@@ -1683,7 +1890,7 @@ async function readNotes($: EngineInterface, name: string, max = NOTES_MAX): Pro
   }
 }
 
-const STATUSES = new Set(['pending', 'awaiting', 'taken', 'done', 'returned'])
+const STATUSES = new Set(['pending', 'awaiting', 'taken', 'ready', 'done', 'returned'])
 
 const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => typeof x === 'string')
 const validEvidence = (e: unknown): boolean => typeof e === 'object' && e !== null && isStrs((e as Evidence).ran) && typeof (e as Evidence).exercised === 'string' && isStrs((e as Evidence).notVerified)
@@ -2027,16 +2234,21 @@ async function startQueue($: EngineInterface): Promise<string> {
   if (list.some(a => isReviewer(a.type) && LIVE.has(a.status))) {
     return 'The running reviewer picks it up at its next list.'
   }
-  const pending = Object.values(await read($, handovers)).filter(h => h.status === 'pending')
+  // A batch (any state) holds the queue: pending handovers go in after the push run.
+  const batch = (await read($, pushState)).batch
+  const pending = batch !== undefined ? [] : Object.values(await read($, handovers)).filter(h => h.status === 'pending')
+  const pushDue = batch !== undefined && batch.state !== 'ready'
   const dueTargets = Object.entries((await read($, deploys)).targets).filter(([name, t]) => t.due === true && deployInfos.some(i => i.name === name)).map(([name]) => name)
-  if (pending.length === 0 && dueTargets.length === 0) return 'Nothing pending.'
+  if (pending.length === 0 && dueTargets.length === 0 && !pushDue) {
+    return batch === undefined ? 'Nothing pending.' : `Batch ${batch.id} awaits the user's /flow push; new handovers wait behind it.`
+  }
   const n = (await read($, queueRuns)) + 1
   await update($, queueRuns, () => n)
   const started = await $.agent.spawn({
     subagentType: REVIEWER,
     name: `reviewer-${n}`,
     description: 'reviewer',
-    prompt: `Pending handovers: ${pending.length === 0 ? 'none' : pending.map(h => `#${h.pr}`).join(', ')}.${dueTargets.length === 0 ? '' : ` Deploy-only work due: ${dueTargets.join(', ')}.`} Start with mcp__flow__deploy action "list" and mcp__flow__reviewer action "list".`,
+    prompt: `Pending handovers: ${batch !== undefined ? 'wait behind the batch' : pending.length === 0 ? 'none' : pending.map(h => `#${h.pr}`).join(', ')}.${dueTargets.length === 0 ? '' : ` Deploy-only work due: ${dueTargets.join(', ')}.`}${batch === undefined ? '' : batch.state === 'ready' ? ` Batch ${batch.id} awaits the user's push: leave it alone.` : ` ${batch.state === 'pushing' ? 'Push run' : 'Rebuild run'} for batch ${batch.id}: see "Push run" in your instructions.`} Start with mcp__flow__deploy action "list" and mcp__flow__reviewer action "list".`,
   })
   if (started.deny !== undefined) return `Could not start a reviewer: ${started.deny}`
   return `Started reviewer reviewer-${n}.`
@@ -2078,7 +2290,8 @@ async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>,
 function handoverLine(h: Handover): string {
   const tail = h.status === 'done' ? ` ${h.sha ?? ''} ${h.report ?? ''}`
     : h.status === 'returned' ? ` returned: ${h.reason ?? ''}`
-    : h.status === 'awaiting' ? ` awaiting the user's approval: /flow approve ${h.pr}` : ''
+    : h.status === 'awaiting' ? ` awaiting the user's approval: /flow approve ${h.pr}`
+    : h.status === 'ready' ? ' ready in a batch that awaits the user: /flow push' : ''
   return `#${h.pr} ${h.status} (${h.branch} @ ${h.head.slice(0, 8)}, from ${h.reportTo})${tail} — ${h.title} [${evidenceSummary(h.evidence)}]`
 }
 
@@ -2116,7 +2329,8 @@ async function diskItems($: EngineInterface, items: Leftover[], merged: { prs: S
   for (const h of hs) {
     if (finished(h)) continue
     const note = `Handover #${h.pr} is ${h.status}${h.status === 'returned' ? ` (${h.reason ?? 'no reason'})` : ''}, reported to ${h.reportTo}. Verified: ${h.verified} Pending: ${h.pending}` +
-      (h.status === 'awaiting' ? ` It awaits the user's /flow approve ${h.pr}; do not restart work on it.` : '')
+      (h.status === 'awaiting' ? ` It awaits the user's /flow approve ${h.pr}; do not restart work on it.` : '') +
+      (h.status === 'ready' ? ' It is in a batch the reviewer built and checked, which awaits the user\'s /flow push; do not restart work on it.' : '')
     const mate = items.find(i => i.key === h.branch)
     if (mate !== undefined) {
       mate.line += ` | handover ${h.status}`
@@ -3167,6 +3381,14 @@ export const register: Register = (on, options) => {
       queueDue = queueDue || Object.entries(disk.targets).some(([name, t]) => t.due === true && deployInfos.some(i => i.name === name))
       void refreshBehind($)
     })
+    await best($, 'loading the push gate', async () => {
+      const dir = await stateDir($)
+      if (dir === undefined) return
+      const disk = normalizePush(await readJson($, `${dir}/push.json`))
+      await update($, pushState, () => disk)
+      // A released or rebuilding batch left by a session that ended gets its reviewer.
+      queueDue = queueDue || (disk.batch !== undefined && disk.batch.state !== 'ready')
+    })
     await best($, 'loading pre-flight', async () => {
       const dir = await stateDir($)
       if (dir === undefined) return
@@ -3212,8 +3434,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions to answer, /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox|checks|preflight|close|resume|approve <pr>|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions to answer, /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox|checks|preflight|close|resume|approve <pr>|push [back <pr>|drop]|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -3269,6 +3491,7 @@ export const register: Register = (on, options) => {
           dir: { type: 'string', description: 'The reviewer\'s worktree, absolute' },
           prs: { type: 'array', items: { type: 'number' }, description: 'cut: the PR numbers merged in this batch' },
           version: { type: 'string', description: 'publish: the version to publish; default the version of the last cut' },
+          recut: { type: 'boolean', description: 'cut: true when rebuilding a batch the user released after the base moved (push_mode confirm): the same PRs are cut again against the new base' },
         },
         required: ['dir'],
       },
@@ -3458,16 +3681,36 @@ export const register: Register = (on, options) => {
     for (const name of ['reviewer', 'queue']) await $.tool.register({
       name,
       description: (name === 'queue' ? '(The old name of the reviewer tool; use reviewer.) ' : '') + 'The reviewer\'s worklist. action "list": pending and taken handovers in arrival order. ' +
-        '"take" (pr), "done" (pr, sha, report) or "back" (pr, reason) record what the reviewer did. Only the reviewer calls this.',
+        '"take" (pr), "done" (pr, sha, report) or "back" (pr, reason) record what the reviewer did. ' +
+        'With push_mode confirm, "ready" (prs, sha, base_sha, check, version?) records the checked batch under refs/flow/push/<id> for the user\'s /flow push instead of pushing it. Only the reviewer calls this.',
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['list', 'take', 'done', 'back'] },
+          action: { type: 'string', enum: ['list', 'take', 'done', 'back', 'ready'] },
           pr: { type: 'number' },
+          prs: { type: 'array', items: { type: 'number' }, description: 'ready: the PR numbers of the batch' },
+          base_sha: { type: 'string', description: 'ready: the full sha of origin/<base> the batch was built on' },
+          check: { type: 'string', description: 'ready: one line, the full check result' },
+          version: { type: 'string', description: 'ready: the released version, if the batch was released' },
           sha: { type: 'string' },
           report: { type: 'string' },
           reason: { type: 'string' },
           failed_tests: { type: 'array', items: { type: 'string' }, description: 'back: the test files or commands that failed, so main is asked whether workers should run them (guard_tests)' },
+        },
+        required: ['action'],
+      },
+      isDeferred: false,
+    })
+    await $.tool.register({
+      name: 'push',
+      description: 'Main only, on the user\'s word: release the batch the reviewer built, checked and saved because push_mode is confirm. ' +
+        'action "list": the ready batch. "push": release it (a reviewer pushes it, deploys and marks the PRs done). "send-back" (pr): return one PR of the batch; the rest is rebuilt, re-checked and asked again. ' +
+        '"drop": discard the batch and return every PR. Managers, workers and the reviewer are refused. The user can also run /flow push, or answer the push item in /flow inbox.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'push', 'send-back', 'drop'] },
+          pr: { type: 'number', description: 'send-back: the PR number' },
         },
         required: ['action'],
       },
@@ -3672,15 +3915,19 @@ export const register: Register = (on, options) => {
     }
     if (arg === 'resume') {
       const found = await gatherLeftovers($, settings.base, resumed)
-      if (found.error !== undefined && found.items.length === 0) return { text: found.error }
+      // A batch the user has not pushed yet comes first; no manager is started for it.
+      const batchLines = pushLines(await read($, pushState))
+      const waiting = batchLines.length === 0 ? [] : ['Needs you (a checked batch awaits your push; no manager is started for it):', ...batchLines]
+      if (found.error !== undefined && found.items.length === 0) return { text: [...waiting, found.error].join('\n') }
       const lines = (kind: Leftover['kind'], title: string) => {
         const rows = found.items.filter(i => i.kind === kind)
         return rows.length ? [`${title}:`, ...rows.map(i => `  ${i.line}`)] : []
       }
       const again = found.skipped.length ? ['Already resumed in this session:', ...found.skipped.map(i => `  ${i.line}`)] : []
       const checkLines = resumeChecksLines(await read($, checks), installed)
-      if (found.items.length === 0) return { text: [...(checkLines.length ? [] : ['Nothing unfinished.']), ...checkLines, ...again].join('\n') }
+      if (found.items.length === 0) return { text: [...waiting, ...(checkLines.length || waiting.length ? [] : ['Nothing unfinished.']), ...checkLines, ...again].join('\n') }
       const text = [
+        ...waiting,
         ...checkLines,
         ...(found.error !== undefined ? [found.error] : []),
         ...lines('pr', 'Open PRs'), ...lines('branch', 'Branches without a PR'), ...lines('worktree', 'Worktrees with leftover work'), ...again,
@@ -3722,6 +3969,15 @@ export const register: Register = (on, options) => {
       await refresh($)
       return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
     }
+    if (words[0] === 'push') {
+      // Only a person's command releases a ready batch (or main, on the user's word, with the push tool).
+      const usage = 'Usage: /flow push (push the ready batch), /flow push back <pr> (send one PR back), /flow push drop (return them all)'
+      if (words.length === 1) return { text: await pushAct($, { kind: 'push' }, 'user') }
+      if (words[1] === 'drop' && words.length === 2) return { text: await pushAct($, { kind: 'drop' }, 'user') }
+      const n = Number((words[2] ?? '').replace(/^#/, ''))
+      if (words[1] === 'back' && words.length === 3 && Number.isInteger(n) && n > 0) return { text: await pushAct($, { kind: 'back', pr: n }, 'user') }
+      return { text: usage }
+    }
     if (words[0] === 'hold' || words[0] === 'release') {
       // A person's command, the same as the deploy tool is for main.
       const [, name, until] = words
@@ -3732,7 +3988,7 @@ export const register: Register = (on, options) => {
       await refreshBehind($)
       return { text }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -3917,6 +4173,9 @@ export const register: Register = (on, options) => {
     const info = JSON.parse(view.stdout) as { state: string; isDraft: boolean; headRefOid: string; headRefName: string; title: string; body?: string; labels?: { name: string }[] }
     if (info.state !== 'OPEN') return { result: `Refused: PR #${pr} is ${info.state}.` }
     if (info.isDraft) return { result: `Refused: PR #${pr} is a draft. Mark it ready (gh pr ready ${pr}) first.` }
+    if ((await read($, handovers))[String(pr)]?.status === 'ready') {
+      return { result: `Refused: PR #${pr} is in a batch that awaits the user's /flow push. Leave it alone; if the user sends it back you hear so.` }
+    }
     const dest = await resolveReportTo($, input.report_to, e.agentId)
     if ('refuse' in dest) return { result: dest.refuse }
     const envParsed = parseEnvInput(input.env, deployInfos)
@@ -3982,7 +4241,10 @@ export const register: Register = (on, options) => {
       const disk = await readJson($, `${stateD}/release.json`) as { key?: string; version?: string } | undefined
       if (typeof disk?.key === 'string' && typeof disk.version === 'string') last = { key: disk.key, version: disk.version }
     }
-    if (last?.key === key) return { result: `Refused: already released ${last.version} for PRs ${key.replaceAll(',', ', ')}. The release commit is in your worktree; go on to the push.` }
+    // A batch the user released that went stale (the base moved) is built and released again: that re-cut is allowed.
+    const open = (await read($, pushState)).batch
+    const recut = input.recut === true && open !== undefined && open.state !== 'ready'
+    if (last?.key === key && !recut) return { result: `Refused: already released ${last.version} for PRs ${key.replaceAll(',', ', ')}. The release commit is in your worktree; go on to the push.` }
     let files = settings.releaseFiles ?? []
     if (files.length === 0 && await $.fs.exists(`${dir}/package.json`)) files = ['package.json']
     if (files.length === 0) return { result: 'Refused: no version file. Set release_files (repo-relative JSON or TOML files) in .claude/flow.json, or add a package.json at the repo root; a release without a version is meaningless.' }
@@ -4025,7 +4287,10 @@ export const register: Register = (on, options) => {
     const input = e as unknown as Record<string, unknown>
     const action = String(input.action)
     const all = await read($, handovers)
+    // While a batch exists the reviewer sees it, not the pending handovers: they go in after the push run.
+    const batch = (await read($, pushState)).batch
     if (action === 'list') {
+      if (batch !== undefined) return { result: reviewerNote(batch) }
       const open = Object.values(all).filter(h => h.status === 'pending' || h.status === 'taken').sort((a, b) => a.at - b.at)
       if (open.length === 0) return { result: 'No pending handovers.' }
       const d = await read($, deploys)
@@ -4037,9 +4302,13 @@ export const register: Register = (on, options) => {
         ).join('\n'),
       }
     }
+    if (action === 'ready') return { result: await recordReady($, settings, input) }
     const key = String(Number(input.pr))
     const h = all[key]
     if (h === undefined) return { result: `No handover for PR #${key}.` }
+    if (action === 'take' && batch !== undefined && (h.status === 'pending' || batch.state === 'ready')) {
+      return { result: `Held: batch ${batch.id} ${batch.state === 'ready' ? 'awaits the user\'s /flow push' : 'is being pushed or rebuilt'}; PR #${key} waits behind it. Do not take it and do not send it back; end your run when your own work is done.` }
+    }
     if (action === 'take') {
       // Re-check the labels: flow:confirm may have been added after the handover. If gh fails,
       // the stored mode and the setting still decide; never fail open.
@@ -4072,6 +4341,7 @@ export const register: Register = (on, options) => {
       await appendLog($, { event: action as 'take' | 'done' | 'back', owner: next.reportTo, pr: next.pr, branch: next.branch, text })
     })
     if (action === 'back') await closeReturnedEnv($, next)
+    if (action === 'done' || action === 'back') await settleBatch($)
     if (action !== 'take') void $.ui.toast(`PR #${key} ${next.status === 'done' ? `merged ${next.sha ?? ''}` : `returned: ${next.reason ?? ''}`}`)
     if (action === 'done') autoSweep($)
     let verify = ''
@@ -4541,6 +4811,24 @@ export const register: Register = (on, options) => {
     return { result: await deployTool($, options, e as unknown as Record<string, unknown>, isMain, caller) }
   })
 
+  on('tool.call', { tool: 'mcp__flow__push' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    if (e.agentId !== undefined) return { result: 'Refused: only main releases a ready batch, on the user\'s word (or the user, with /flow push). Managers, workers and the reviewer cannot push it.' }
+    const action = String(input.action ?? 'list')
+    if (action === 'list') {
+      const lines = pushLines(await read($, pushState))
+      return { result: lines.length === 0 ? 'Nothing ready to push.' : lines.join('\n') }
+    }
+    if (action === 'push') return { result: await pushAct($, { kind: 'push' }, 'main') }
+    if (action === 'drop') return { result: await pushAct($, { kind: 'drop' }, 'main') }
+    if (action === 'send-back') {
+      const pr = Number(input.pr)
+      if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: send-back needs pr, a PR number of the batch.' }
+      return { result: await pushAct($, { kind: 'back', pr }, 'main') }
+    }
+    return { result: 'Unknown action: use list, push, send-back or drop.' }
+  })
+
   on('tool.call', { tool: 'mcp__flow__status' }, async ($, e) => {
     const asked = Number((e as unknown as Record<string, unknown>).pr)
     if (Number.isInteger(asked) && asked > 0) {
@@ -4575,6 +4863,9 @@ export const register: Register = (on, options) => {
     const plans = Object.entries(await read($, plan)).filter(([, g]) => Object.keys(g).length > 0)
     const slots = slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
     const seeds = e.agentId === undefined ? await offerSeedsOnce($, options) : []
+    const gate = (await read($, pushState)).batch
+    const batchLines = gate?.state === 'ready' ? renderBatch(gate) : []
+    const pushing = gate !== undefined && gate.state !== 'ready' ? renderBatch(gate) : []
     return {
       result: [
         ...inboxHead(await read($, inbox), await $.clock.now()),
@@ -4588,9 +4879,12 @@ export const register: Register = (on, options) => {
           'Needs attention:', ...unhanded.map(u => `  ${unhandedLine(u)}`),
           'A manager reviews it and hands it over, or closes it.',
         ] : []),
-        ...(list.some(h => h.status === 'awaiting') ? [
-          'Needs the user:', ...list.filter(h => h.status === 'awaiting').map(h => `  #${h.pr} awaits approval: /flow approve ${h.pr} — ${h.title}`),
+        ...(list.some(h => h.status === 'awaiting') || batchLines.length > 0 ? [
+          'Needs the user:',
+          ...batchLines.map(l => `  ${l}`),
+          ...list.filter(h => h.status === 'awaiting').map(h => `  #${h.pr} awaits approval: /flow approve ${h.pr} — ${h.title}`),
         ] : []),
+        ...(pushing.length > 0 ? ['Push gate:', ...pushing.map(l => `  ${l}`)] : []),
         ...(queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
         ...(leftover ? [leftover] : []),
         ...(plans.length ? ['Plans:', ...plans.flatMap(([who, g]) => [`${who}:`, ...describe(g).map(l => `  ${l}`)])] : []),
@@ -4726,11 +5020,13 @@ export const register: Register = (on, options) => {
       read($, cursor), read($, folded), currentUnhanded($), read($, leftovers),
     ])
     const leftover = leftoverLine(leftCounts)
-    const openQs = openAll(await read($, inbox)).filter(q => !isFyi(q)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
+    // The push item is drawn as the banner on top, not as a question.
+    const openQs = openAll(await read($, inbox)).filter(q => !isFyi(q) && q.kind !== PUSH_KIND).sort((a, b) => Number(b.blocking) - Number(a.blocking))
+    const gate = (await read($, pushState)).batch
     const askers = askingNames(await read($, inbox))
     const fyiCount = openAll(await read($, inbox)).filter(isFyi).length
     const checksLine = paneChecksLine(await read($, checks), installed)
-    const inboxRows = (openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)) + (fyiCount > 0 ? 1 : 0) + (checksLine === undefined ? 0 : 1)
+    const inboxRows = (openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)) + (fyiCount > 0 ? 1 : 0) + (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
     const deployLines = behindLines(deployInfos, await read($, deploys), await read($, behind)).slice(0, 3)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
@@ -5091,7 +5387,7 @@ export const register: Register = (on, options) => {
     const countOf = (s: Handover['status']) => prs.filter(p => p.status === s).length
     const returned = countOf('returned')
     const awaiting = countOf('awaiting')
-    const queueSummary = (['pending', 'taken', 'done'] as const).map(s => `${countOf(s)} ${s}`).join(' · ')
+    const queueSummary = (['pending', 'taken', 'done'] as const).map(s => `${countOf(s)} ${s}`).join(' · ')  + (countOf('ready') > 0 ? ` · ${countOf('ready')} ready to push` : '')
     const toggleQueue = async () => {
       await acted()
       await update($, folded, f => ({ ...f, [MERGE_QUEUE_KEY]: f[MERGE_QUEUE_KEY] === false }))
@@ -5128,6 +5424,13 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
+        {gate !== undefined && gate.state === 'ready' && (
+          <Text color="warning" bold wrap="truncate-end">⇪ Batch {gate.id} ready to push: {gate.prs.map(n => `#${n}`).join(' ')}{gate.version === undefined ? '' : ` (${gate.version})`} · check: {gate.check}</Text>
+        )}
+        {gate !== undefined && gate.state === 'ready' && <Text color="warning" wrap="truncate-end">  /flow push · /flow push back {'<pr>'} · /flow push drop</Text>}
+        {gate !== undefined && gate.state !== 'ready' && (
+          <Text color="suggestion" wrap="truncate-end">⇪ Batch {gate.id} {gate.state === 'pushing' ? 'released, a reviewer is pushing it' : `is being rebuilt${gate.reason === undefined ? '' : ` (${gate.reason})`}`}: {gate.prs.map(n => `#${n}`).join(' ')}</Text>
+        )}
         <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PRs handed over` : ''} · press one to see it</Text>
         {openQs.slice(0, 5).map(q => (
           <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{q.id} {q.owner}: {q.question}</Text>
@@ -5170,8 +5473,8 @@ export const register: Register = (on, options) => {
           </Box>
         )}
         {queueOpen && prs.slice(0, 5).map(ho => (
-          <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} color={ho.status === 'awaiting' ? 'warning' : undefined} wrap="truncate-end">
-            {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}` : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
+          <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} color={ho.status === 'awaiting' || ho.status === 'ready' ? 'warning' : undefined} wrap="truncate-end">
+            {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}` : ho.status === 'ready' ? 'ready, awaiting your push: /flow push' : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
           </Text>
         ))}
         {deployLines.map(l => <Text key={`deploy-${l}`} dimColor wrap="truncate-end">{'  '}⏸ {l}</Text>)}

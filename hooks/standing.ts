@@ -22,6 +22,7 @@ import type { Inbox, Question } from './inbox'
 //   kinds    the kinds of inbox item it may answer ("ask" for an ordinary question, "deploy" for a deploy
 //            approval, "env" for an env/secret change or a step the user does themselves). Absent: ordinary
 //            questions only. A deploy approval or env item is answered only by a rule that names its kind.
+//            A push item (the ready batch awaiting /flow push) is never answered by a rule.
 // A rule without an id gets a derived one from its file and 1-based position in that file's list:
 // `personal:1`, `repo:2`, `config:1`. Positions count every entry, valid or not, so they stay stable.
 
@@ -126,6 +127,8 @@ export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answ
     // A deploy approval or an env change is the user's call: only a rule that names the kind may answer it.
     const kind = q.kind === undefined || q.kind === 'question' ? 'ask' : q.kind
     if ((kind === 'deploy' || kind === 'env') && rule.kinds?.includes(kind) !== true) continue
+    // Pushing a checked batch is the user's call, whatever the rule says: no rule can name this kind.
+    if (kind === 'push') continue
     if (rule.kinds !== undefined && !rule.kinds.includes(kind)) continue
     if (rule.answer === DEFAULT_WORD) {
       if (q.blocking) continue
@@ -182,7 +185,7 @@ const SUGGEST_AT = 3
 export function suggest(inbox: Inbox, rules: Resolved[]): Suggestion[] {
   const groups = new Map<string, Question[]>()
   for (const q of inbox.items) {
-    if (q.state !== 'answered' || q.answeredBy !== 'main' || q.answer === undefined) continue
+    if (q.state !== 'answered' || q.answeredBy !== 'main' || q.answer === undefined || q.kind === 'push') continue
     const key = q.topic !== undefined && q.topic !== '' ? `topic:${lower(q.topic)}` : `text:${lower(q.question)}`
     groups.set(key, [...(groups.get(key) ?? []), q])
   }

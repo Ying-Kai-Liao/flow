@@ -14,6 +14,8 @@ export type Settings = {
   stateFile: StateFile | undefined
   mergeMethod: string
   mergeMode: string
+  // "confirm": the reviewer stops before the push and the user starts it with /flow push. Absent or "auto": it pushes.
+  pushMode?: string
   useReviewer: boolean
   maxWorkers: number
   testSlots: number
@@ -201,6 +203,23 @@ function releaseFiles(s: Settings): string {
 
 const changelogOf = (s: Settings) => `\`${s.changelogFile || 'CHANGELOG.md'}\``
 
+// push_mode confirm: the reviewer stops after the full check and the release commit; the user starts the push.
+function pushGate(s: Settings): string {
+  return `\n   - Push gate (push_mode is confirm; the user starts the push, you do not): when the check is green${s.release ? ' and the release commit is cut' : ''}, skip steps 4, 5 and 6: do not push, delete a branch, publish, deploy or run an after_deploy check. Save the batch under a local ref instead (local refs are shared by every worktree and survive your worktree): \`SHA=$(git rev-parse HEAD)\`, then \`git update-ref refs/flow/push/\${SHA:0:8} HEAD\`. Then call \`mcp__flow__reviewer\` action "ready" with prs (the numbers of the PRs that are in the batch, not the ones you sent back), sha (the full $SHA), base_sha (the full sha of origin/{{BASE}} you built on), check (one line: the full check result, "N tests passed" or "none configured")${s.release ? ' and version (the released version)' : ''}. Do not call "done": the PRs stay "ready" until the user's push. Then end your run with a report: "batch <id> ready: PRs #…, <check result>${s.release ? ', <version>' : ''}, awaits /flow push". A failed check is not a ready batch: handle it as this step says.`
+}
+
+// The section a push_mode confirm reviewer follows when the user released a batch or sent a PR back.
+function pushRun(s: Settings): string {
+  const cut = s.release ? ' Cut the release again with `mcp__flow__release` passing recut true (the base moved, so the old cut is stale).' : ''
+  return `\n\n## Push run
+
+The user holds the push (push_mode confirm). When \`mcp__flow__reviewer\` action "list" shows a PUSH RUN or a REBUILD RUN, do it first, before any pending PR (the list shows none until the batch is done); after a deploy-only run. A batch that awaits the user ("No pending handovers to take: batch … awaits") is not yours: leave it and start no other batch.
+- PUSH RUN: \`git fetch origin\`. If \`git rev-parse origin/{{BASE}}\` equals the batch's base sha, nothing moved: \`git checkout --detach <ref>\`, check \`git rev-parse HEAD\` equals the batch's sha, and do not merge or run the full check again. Go on at step 4 with this head: push (the same retries and branch-protection rule), delete the merged branches, publish, step 5 deploy, step 6 after_deploy checks, and step 7: "done" for each PR of the batch (they are "ready"; "done" works from there), then your report. Do not call "ready" again.
+- If origin/{{BASE}} moved: the batch is stale, never push it. Rebuild it: step 1 (clean, fresh from origin/{{BASE}}), then step 2 for the batch's PRs in the same order ("take" works on a "ready" PR; a PR whose head moved or that no longer merges is sent back with "back"), then step 3, the full check.${cut} Record it again with the push gate step ("ready" with the new sha and base_sha) and end your run: the user is asked again.
+- REBUILD RUN (the user sent a PR back): the same rebuild, for the PRs the list names only.
+- Then go on with the pending PRs as usual.`
+}
+
 export function fill(text: string, s: Settings): string {
   const mig = s.migrationsDir
   const host = s.sessionHost ?? 'auto'
@@ -227,6 +246,8 @@ export function fill(text: string, s: Settings): string {
     .replaceAll('{{RELEASE_STEP}}', s.release ? `\n   - Release, only when at least one PR of the batch merged and the check passed: call \`mcp__flow__release\` with dir = your worktree (absolute) and prs = the merged PR numbers. It cuts ${changelogOf(s)} and bumps the version, and tells you the commit command: run it (\`git commit -am "Release x.y.z"\`, plus your attribution lines). Call it once per batch: after a rejected push and a fetch and merge, the release commit is already in HEAD, so do not call it again (it refuses with "already released"). Any other refusal goes in your report; push the merges anyway.` : '')
     .replaceAll('{{RELEASE_REPORT}}', s.release ? ` When the batch was released, the line also says "released: <version>", and so does your final report.${s.releaseGithub ? ' With the GitHub Release step it reads "released: <version> (GitHub Release: ok|failed: <why>)".' : ''}` : '')
     .replaceAll('{{RELEASE_PUBLISH}}', s.release && s.releaseGithub ? `\n   - Only after the push succeeded (never after a rejected or failed one) and only when this batch was released: call \`mcp__flow__release\` with action "publish" and dir = your worktree. It tags v<version>, pushes the tag and creates the GitHub Release from the changelog section. If it answers "Not published: ...", put "github release: failed: <why>" in your report; that never sends a PR back or fails the batch. Call it once; a repeat is a no-op.` : '')
+    .replaceAll('{{PUSH_GATE}}', s.pushMode === 'confirm' ? pushGate(s) : '')
+    .replaceAll('{{PUSH_RUN}}', s.pushMode === 'confirm' ? pushRun(s) : '')
     .replaceAll('{{STATE_STEP}}', stateStep(s.stateFile))
     .replaceAll('{{DEPLOY}}', deploySection(s))
     .replaceAll('{{MERGE_METHOD}}', s.mergeMethod)
@@ -402,7 +423,7 @@ The PRs handed to you are in mcp__flow__reviewer: action "list" shows the pendin
 
 ## Deploy-only run
 
-At the start of every run, besides the pending PRs, call \`mcp__flow__deploy\` action "list". A target marked DUE is one the user approved or released: deploy it first, before any batch. This is a deploy-only batch: no merge, and no full check (that sha was checked already). \`git fetch origin\`, then \`git checkout --detach\` the sha in "DUE: deploy <sha>" (for "DUE: deploy the base head": \`origin/{{BASE}}\`). For each DUE target, in the configured order: gate, the target's steps and "deployed", exactly as in the batch's deploy step (see step 5), with that sha; leave the targets that are not DUE alone. Report it to main like "deploy-only: production ✓ at <sha>". Then go on to the pending PRs, if any, and start their batch from a clean \`origin/{{BASE}}\` (step 1).
+At the start of every run, besides the pending PRs, call \`mcp__flow__deploy\` action "list". A target marked DUE is one the user approved or released: deploy it first, before any batch. This is a deploy-only batch: no merge, and no full check (that sha was checked already). \`git fetch origin\`, then \`git checkout --detach\` the sha in "DUE: deploy <sha>" (for "DUE: deploy the base head": \`origin/{{BASE}}\`). For each DUE target, in the configured order: gate, the target's steps and "deployed", exactly as in the batch's deploy step (see step 5), with that sha; leave the targets that are not DUE alone. Report it to main like "deploy-only: production ✓ at <sha>". Then go on to the pending PRs, if any, and start their batch from a clean \`origin/{{BASE}}\` (step 1).{{PUSH_RUN}}
 
 ## A batch
 
@@ -416,7 +437,7 @@ At the start of every run, besides the pending PRs, call \`mcp__flow__deploy\` a
 3. Full check: {{FULL_CHECK}}. Run it once for the batch (run_in_background if it's long). Call \`mcp__flow__test_slot\` action "acquire" (label "full check") before each run (if queued, wait as it tells you, then confirm with one acquire) and "release" after it, also when it fails.
    - A failure from combining PRs (each fine alone): fix it yourself in one small commit on top ("Fix combination of #a and #b: <what>") and run the check again. Anything bigger is a logic conflict: send the later PR back.
    - A real bug in one PR: reset to before its merge (\`git log --first-parent --oneline origin/{{BASE}}..HEAD\`, \`git reset --hard <its merge commit>^1\`), redo the merges after it, send it back with the failing output, check again.
-   - "none configured" means no full check: say so in the report; never improvise one.{{FLAKY_TESTS}}{{RELEASE_STEP}}
+   - "none configured" means no full check: say so in the report; never improvise one.{{FLAKY_TESTS}}{{RELEASE_STEP}}{{PUSH_GATE}}
 4. Push: \`git push origin HEAD:{{BASE}}\`. GitHub marks each PR merged. If rejected as a non-fast-forward, fetch, merge origin/{{BASE}}, check again, push again. A push rejected by branch protection (stderr mentions "protected branch", "GH006" or "Changes must be made through a pull request") is neither a non-fast-forward nor an infrastructure error: do not retry, do not publish, send every PR of the batch back with the reason "push to {{BASE}} refused by branch protection; the reviewer needs push rights (bypass) or the merge must go through a PR", and SendMessage main the same. If the push fails with a server or network error (5xx, timeout, connection reset; not a rejection), retry the same push with backoff (${PUSH_RETRY_BACKOFF}) for at most ${PUSH_RETRY_MINUTES} minutes and put the retry count in the done line ("push retries: <n>"). The same goes for any gh or GitHub API call in the batch. After that bound, stop: send every PR of the batch back with the reason "push to {{BASE}} failed for ${PUSH_RETRY_MINUTES} minutes (infrastructure); PR unchanged, hand it over again", and SendMessage main the same. Then delete each merged branch: \`git push origin --delete <branch>\`.{{RELEASE_PUBLISH}}
 5. Deploy: {{DEPLOY}}
 6. After_deploy checks. Only for PRs whose targets all deployed fine (for a PR whose deploy failed, skip the check and say why). For each such PR whose \`after_deploy\` is not "none", judge from its text:
