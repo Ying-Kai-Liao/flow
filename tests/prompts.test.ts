@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from './support'
 
 import { deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_QUEUE_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, QUEUE_PROMPT, QUEUE_RULE, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'

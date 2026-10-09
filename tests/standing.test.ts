@@ -1,5 +1,6 @@
 import type { AgentInfo } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
 import { addQuestions, EMPTY_INBOX, inboxHead, markAnswered, renderInbox } from '../hooks/inbox'
 import type { AskedQuestion, Inbox, Question } from '../hooks/inbox'

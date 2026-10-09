@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompt reports `BLOCKED: attachment <path> could not be opened`; the dispatch skill passes user files to
   managers as paths.
 
+### Fixed
+
+- The plugin's own test suite no longer fails at random under load: the kit's 5 s per-test limit includes
+  loading the plugin (1-4 s idle), so tests now go through `tests/support.ts`, which sets a 60 s floor.
+  The 20-manager render test's 500 ms wall-clock budget is 2500 ms.
+
 ## [0.3.38] - 2026-10-10
 
 ### Changed

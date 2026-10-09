@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from './support'
 import type { DagNode } from '../types'
 import { graphNodes, layoutGraph, moveFocus } from '../hooks/graph'
 import type { GNode, Layout } from '../hooks/graph'

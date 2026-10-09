@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from './support'
 import { autoRefused, effectiveMode, labelMode, parseMode, takeDecision } from '../hooks/mergemode'
 
 test('merge mode: parseMode falls back to auto', () => {

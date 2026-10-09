@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from './support'
 import { addQuestions, EMPTY_INBOX, markAnswered } from '../hooks/inbox'
 import type { Inbox } from '../hooks/inbox'
 import {

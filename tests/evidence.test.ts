@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from './support'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, parseVerification, verificationSection } from '../hooks/evidence'
 
 const good = '## Verification\nRan:\n- `tsc -p .`: pass\n- `bun test`: pass (42 tests)\nExercised: launched the pane and saw the line\nNot verified:\n- the full check'

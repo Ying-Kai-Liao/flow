@@ -1,5 +1,6 @@
 import type { AgentInfo } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
 
 type Dollar = Parameters<TestBody>[0]
