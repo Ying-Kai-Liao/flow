@@ -16,6 +16,8 @@ export type LedgerEntry = {
   // When the agent was first and last counted (ms); the status block and the 90-day prune use them.
   firstAt?: number
   lastAt?: number
+  // Completed turns (wake-ups); rows from before the counter read as 0.
+  turns?: number
   models: Record<string, Bucket>
 }
 export type Ledger = Record<string, LedgerEntry>

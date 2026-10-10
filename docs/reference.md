@@ -159,6 +159,11 @@ restart. A failure in the ledger never touches the step.
   model not in the table is priced as the newest of its family; one that matches no family
   shows `~$?`. To update, edit the table there; the ledger holds tokens, so history is repriced.
 - **Cache hit %** is cache read over input + cache write + cache read.
+- **Turns:** each completed turn (a wake-up; interrupted ones too, once per turn id) adds 1 to the
+  agent's `turns` in `ledger.json`; rows from before the counter read as 0. Once an agent has
+  turns, its line and the totals end with `, N turns, ~Xk cache write/turn`. That is cache write
+  (5m + 1h) divided by turns: when a wake-up comes after the 5-minute cache expiry the whole context
+  is written again, so a high figure means many cold wake-ups.
 
 ## State on disk
 

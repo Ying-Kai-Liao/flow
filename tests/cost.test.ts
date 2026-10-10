@@ -2,7 +2,7 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { addStep, costBlock, costOf, hitRate, humanTokens, money, normalizeLedger, pruneLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'
+import { addStep, addTurn, costBlock, costOf, hitRate, humanTokens, money, normalizeLedger, pruneLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'
 import type { Ledger } from '../types'
 
 type Dollar = Parameters<TestBody>[0]
