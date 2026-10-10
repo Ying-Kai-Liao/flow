@@ -49,6 +49,7 @@ add login-redirect  after: csv-export
   there is no activity yet), and the meter below with elapsed time and tokens. Only top-level
   cards have a border. Colors follow your light or dark theme (the theme's suggestion, warning,
   success and error colors), and the pane redraws when you switch `/theme`.
+  A running agent shines: a bright stretch sweeps along its name once per second (the pane's tick) and its card border takes the suggestion color; waiting, idle, pending and ended agents stay plain.
   A worker told to hand off shows a `handoff` badge while it wraps up, and "handed off" once it ends with a `HANDOFF:` line.
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
