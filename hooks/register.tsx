@@ -3824,7 +3824,7 @@ export const register: Register = (on, options) => {
         },
         required: ['action'],
       },
-      isDeferred: false,
+      isDeferred: true,
     })
     await $.tool.register({
       name: 'check',
@@ -3896,7 +3896,7 @@ export const register: Register = (on, options) => {
         },
         required: ['action'],
       },
-      isDeferred: false,
+      isDeferred: true,
     })
     await $.tool.register({
       name: 'status',

@@ -410,14 +410,16 @@ ${BRIEF_TEMPLATE}`
 
 // What a worker in another harness reads before the worker rules and its brief. `{{NAME}}` and
 // the rest are filled per session by the session tool.
-export const SESSION_PROMPT = `You are a flow worker running as {{HARNESS}} in a terminal, outside the Claude Code session that runs the flow. Your manager is {{OWNER}}. The flow worker rules follow; where they differ from this part, this part wins:
+export const SESSION_PROMPT = `${WORKER_PROMPT}
+
+# Your session
+
+You are running as {{HARNESS}} in a terminal, outside the Claude Code session that runs the flow. Your manager is {{OWNER}}. Where the worker rules above differ from this part, this part wins:
 - Your name is {{NAME}}. The current directory is your worktree, already on branch \`{{BRANCH}}\`: skip the rename. A "Continue on branch:" line in the brief still applies.
 - You have no flow tools (mcp__flow__*): skip the test slot steps, and leave whole-suite runs that take minutes to the reviewer.
-- Your report is a file, not your last message: write it to \`{{REPORT}}\`, replacing the whole file each time you report, with what the rules below say a final message carries and the same last-line rules (a question ending in "?", "BLOCKED: …", "HANDOFF: …"). The plugin sends it to your manager. Then wait in this terminal.
+- Your report is a file, not your last message: write it to \`{{REPORT}}\`, replacing the whole file each time you report, with what the rules above say a final message carries and the same last-line rules (a question ending in "?", "BLOCKED: …", "HANDOFF: …"). The plugin sends it to your manager. Then wait in this terminal.
 - Your manager's answers and review feedback are typed into this terminal. Act on them, then write the report file again.
 - Nobody tells you when your context runs low. If you notice it, follow the Handoff steps on your own and put the note in the report file.
-
-${WORKER_PROMPT}
 
 # Your brief
 

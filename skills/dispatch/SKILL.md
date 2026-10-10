@@ -13,6 +13,9 @@ workers or edit code for a task a manager owns: that leaves work nobody's manage
 Everyone runs inside this Claude Code session. The Flow pane (`/flow`) shows the tree:
 managers, the workers under each, the reviewer, and the PRs handed over.
 
+Some main-only tools are deferred to keep every agent's prompt small: load them with ToolSearch
+(`select:mcp__flow__push`, `select:mcp__flow__standing`) when you need them.
+
 ## Starting work
 
 1. **Split the request into tasks.** One task is one outcome the user would check: "export
