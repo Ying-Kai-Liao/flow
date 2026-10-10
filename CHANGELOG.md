@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Internal: agent-type constants and the settings mirrors moved from register.tsx to hooks/core.ts (no behavior change)
+### Added
+
+- Manager model routing: a manager whose prompt says `Size: small` runs on the new `manager_model_small` (default `sonnet`); other sizes and no size stay on `manager_model`. A successor (`<name>-2`) runs one size up, and the plugin files a `manager-size` decision the user can overturn.
 
 ## [0.6.19] - 2026-10-11
 

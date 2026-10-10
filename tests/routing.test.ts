@@ -3,7 +3,7 @@ import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
 
-import { backNote, effectiveSize, escalate, floorFrom, generation, isSuccessorName, modelFor, parseSize } from '../hooks/routing'
+import { backNote, effectiveSize, escalate, floorFrom, generation, isSuccessorName, managerModelFor, modelFor, parseSize } from '../hooks/routing'
 import { costBlock } from '../hooks/cost'
 import { isFable, mergeLayers } from '../hooks/settings'
 import type { Ledger, Question } from '../types'
@@ -247,4 +247,47 @@ test('costBlock adds a by-size line only when some entry has a size', () => {
   const scope = { start: 0, live: new Set<string>() }
   expect(costBlock(sized, [], false, scope).join('\n')).toContain('by size: small ~$4.00, unsized ~$4.00')
   expect(costBlock({ b: sized.b! }, [], false, scope).join('\n')).not.toContain('by size')
+})
+
+test('managerModelFor sends only small to the small model', () => {
+  expect(managerModelFor('small', 'sonnet', 'opus')).toBe('sonnet')
+  expect(managerModelFor('normal', 'sonnet', 'opus')).toBe('opus')
+  expect(managerModelFor('large', 'sonnet', 'opus')).toBe('opus')
+})
+
+const mspawn = ($: Dollar, name: string, prompt: string) =>
+  $.agent.spawn({ prompt, description: name, name, subagentType: 'flow:manager' } as never)
+
+test('a manager with Size small runs on manager_model_small; normal, large and none on manager_model', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await mspawn($, 'docs-a', 'Task\nSize: small — docs only')
+  await mspawn($, 'docs-b', 'Size: normal')
+  await mspawn($, 'docs-c', 'Size: large')
+  await mspawn($, 'docs-d', 'Task only')
+  expect(w.spawned.map(s => s.model)).toEqual(['sonnet', 'opus', 'opus', undefined])
+  expect((await ledger(w)).a1!.size).toBe('small')
+  expect(w.logs.join('\n')).toContain('size small -> sonnet')
+})
+
+test('a manager successor runs one size up from its predecessor', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await mspawn($, 'docs-a', 'Size: small — docs')
+  await w.clock.advance(3500)
+  await w.clock.settle()
+  await mspawn($, 'docs-a-2', 'Size: small — docs')
+  expect(w.spawned.map(s => s.model)).toEqual(['sonnet', 'opus'])
+  expect((await ledger(w)).a2!.size).toBe('normal')
+})
+
+test('a small manager files one manager-size decision owned by itself; large files none; a worker is unaffected', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await mspawn($, 'docs-a', 'Size: small — docs only')
+  await mspawn($, 'docs-a', 'Size: small — docs only')
+  await mspawn($, 'big', 'Size: large — refactor')
+  const fyis = items(w)
+  expect(fyis.length).toBe(1)
+  expect(fyis[0]).toMatchObject({ kind: 'fyi', owner: 'docs-a', addressee: 'main', topic: 'manager-size', blocking: false })
+  expect(fyis[0]!.question).toBe('docs-a runs small -> sonnet: docs only')
+  await spawn($, 'csv-fix', 'Size: small')
+  expect(w.spawned.at(-1)!.model).toBe('haiku')
 })
