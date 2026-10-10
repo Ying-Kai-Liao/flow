@@ -7,10 +7,9 @@ import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'clau
 
 import type { Activity, AgentRow, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { grantFile, grantSlots, reapSlots } from './slots'
-import { evidenceText, type Evidence } from './evidence'
-import { noteWork, runLine, serialFastForward, type RunWork } from './mainff'
-import { deleteMergedBranch } from './branchdelete'
-import { NO_FAILS, withFailed, withFlaky, type TestFails } from './testfail'
+import type { Evidence } from './evidence'
+import type { RunWork } from './mainff'
+import { NO_FAILS, type TestFails } from './testfail'
 import { leftoverLine } from './clean'
 import { sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
@@ -23,7 +22,7 @@ import type { CostIo } from './cost-run'
 import { backNote } from './routing'
 import { checkAttachments, CONTINUE_LINE, continuingCount, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
 import type { Routed, SpawnIo } from './spawn'
-import { agentFor, asksQuestion, noticeText, settle, waitsOnReport } from './dag'
+import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
 import {
   answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner,
@@ -58,6 +57,10 @@ import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './p
 import { mergeLayers, renameOptions, settingsOf } from './settings'
 import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
+import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, needLines, normText, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
+import type { Forwarded, RouteIo } from './reviewer-route'
+import { reviewerToolRun, startQueue } from './reviewer-run'
+import type { QueueIo, ReviewerIo } from './reviewer-run'
 import { handoverTool } from './handover-run'
 import type { HandoverIo } from './handover-run'
 import { askTool, answerTool, fyiTool, preflightTool } from './inbox-run'
@@ -88,20 +91,19 @@ import { sessionTool as sessionToolTo, watchSessions as watchSessionsTo } from '
 import type { Caller, Ran, SessionIo } from './session-run'
 import { branchOwners, buildDigest, findWorktree, noteKey } from './state'
 import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
-import { parseMode, takeDecision } from './mergemode'
 import {
   EMPTY_PUSH, normalizePush,
-  PUSH_KIND, reviewerNote,
+  PUSH_KIND,
 } from './pushgate'
 import type { PushState } from './pushgate'
 import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, pushLines, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
 import type { PushAct, PushIo } from './pushgate-run'
 import {
   behindLines, EMPTY_DEPLOYS, ENV_KIND,
-  envSummary, normalizeDeploys,
-  release, itemViewOf,
+  normalizeDeploys,
+  release,
 } from './deploy'
-import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, REVIEWER, TEXT_MAX, WORKER, WORKERS } from './core'
+import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, TEXT_MAX, WORKER, WORKERS } from './core'
 import type { Deploys, Draft, Hold, TargetInfo } from './deploy'
 import {
   closeReturnedEnv as closeReturnedEnvTo, deployTool as deployToolTo, holdTarget as holdTargetTo, onDeployAnswer as onDeployAnswerTo, onEnvAnswer as onEnvAnswerTo,
@@ -152,7 +154,6 @@ const sessions = atom({ plugin: 'flow', key: 'sessions' } as const, {} as Record
 // Scoped to the sending reviewer run (its agent id), so a later run's different outcome is never swallowed.
 // `keys` maps "reviewer|manager|PR numbers" to the needs-a-person / pending-decisions lines forwarded for it,
 // `lines` is, per reviewer id, every line forwarded (normalized). Persisted: plugins reload mid-session.
-type Forwarded = { keys: Record<string, string[]>; lines: Record<string, string[]> }
 const forwarded = atom({ plugin: 'flow', key: 'forwarded' } as const, { keys: {}, lines: {} } as Forwarded)
 const harnessLimits = atom({ plugin: 'flow', key: 'harnessLimits' } as const, [] as Limit[])
 const armed = atom({ plugin: 'flow', key: 'armed' } as const, null as { key: string; at: number } | null)
@@ -1154,143 +1155,25 @@ const flushAgent = ($: EngineInterface, id: string) => flushTo(ioOf($), id)
 const holdForReviewer = ($: EngineInterface, id: string) => holdTo(ioOf($), id)
 const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
 
-// A reviewer's whole final answer plus the main-checkout line when it left it out; undefined for a run
-// that did no batch work.
-function reviewerReport(answer: string, work: RunWork | undefined): string | undefined {
-  const line = runLine(work)
-  const text = answer.trim()
-  if (line === undefined || text === '') return undefined
-  return /main checkout (fast-forwarded|not updated)/.test(text) ? text : `${text}\n${line}`
-}
-
-const normText = (t: string): string => t.replace(/\s+/g, ' ').trim()
-const RELAY_DELAY_MS = 3000
-const FORWARDED_MAX = 400
-const FORWARDED_RIDS = 10
-
-// The host may already hand a woken manager's answer to main as a task notification. Main's transcript
-// shows whether it did; when it cannot be read, say "not there" so the report is relayed, never lost.
-async function mainHasAnswer($: EngineInterface, answer: string): Promise<boolean> {
-  try {
-    const msgs = await $.session.messages()
-    if ('deny' in msgs) return false
-    const snippet = normText(answer).slice(0, 80)
-    return snippet !== '' && msgs.slice(-60).some(m => m.role === 'user' && normText(m.text).includes(snippet))
-  } catch {
-    return false
-  }
-}
-
-// The lines of a report that need main's eye: "needs a person: ..." and "pending decisions: ...",
-// each cut at the next " | " field, so a whole done line and a lone line compare equal.
-const needLines = (text: string): string[] =>
-  [...text.matchAll(/(needs a person:[^|\n]*|pending decisions:[^\n]*)/gi)].map(m => normText(m[1] ?? '')).filter(l => l !== '')
-
-// A needs line's identity for dedupe: for "needs a person" its PR number when it names one, so a reworded
-// repeat for the same PR matches. Any other line (pending decisions) keeps its text, so a pending-decisions
-// line is never swallowed by a needs-a-person line for the same PR. Old persisted entries are plain
-// normalized lines and map the same way.
-const needToken = (line: string): string => {
-  const m = /^needs a person:.*?PR\s*#(\d+)/i.exec(line)
-  return m ? `needs:pr:${m[1]}` : line
-}
-
-// Where a handover's report goes. Absent -> the caller's own name. A name no agent carries is refused,
-// naming the caller; the caller's own worker is corrected to the caller. An ended agent that exists is
-// accepted: the reviewer routing (reviewerSendGuard) handles it.
-async function resolveReportTo($: EngineInterface, given: unknown, callerId: string | undefined): Promise<{ name: string; note?: string } | { refuse: string }> {
-  const rows = await $.agent.list()
-  const me = callerId === undefined ? 'main' : (rows.find(a => a.id === callerId)?.name ?? 'main')
-  const asked = typeof given === 'string' ? given.trim() : ''
-  if (asked === '' || asked === me || asked === 'main') return { name: asked === '' ? me : asked }
-  const hits = rows.filter(a => a.name === asked || isManagerOf(asked, a.name))
-  if (hits.length === 0) {
-    return { refuse: `Refused: report_to "${asked}" matches no agent of this session. Your own name is "${me}"; pass that, or leave report_to out and it defaults to it.` }
-  }
-  if (callerId !== undefined && hits.every(a => a.parentId === callerId && WORKERS.has(a.type))) {
-    return { name: me, note: ` report_to "${asked}" is your own worker, so the report goes to you ("${me}") instead.` }
-  }
-  return { name: asked }
-}
-
-async function managerFinished($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[], report?: string): Promise<boolean> {
-  // A child is live only while running or pending: workers sit 'idle' after their final report. A child
-  // active more recently than the manager may have reported without the manager hearing it yet.
-  const acts = await read($, activity)
-  const mineAt = Math.max(0, ...ids.map(i => acts[i]?.lastAt ?? 0))
-  const kids = rows.filter(a => a.parentId !== undefined && ids.includes(a.parentId))
-  if (kids.some(a => a.status === 'running' || a.status === 'pending' || (acts[a.id]?.lastAt ?? 0) > mineAt)) return false
-  const open = new Set(['pending', 'awaiting', 'taken', 'returned'])
-  if (Object.values(await read($, handovers)).some(h => open.has(h.status) && isManagerOf(name.replace(/-\d+$/, ''), h.reportTo))) return false
-  const plans = await read($, plan)
-  if (Object.values(plans[planOwner(plans, name)] ?? {}).some(n => n.state === 'waiting' || n.state === 'ready' || n.state === 'running')) return false
-  if ((await read($, inbox)).items.some(q => q.state === 'open' && q.blocking && isManagerOf(name.replace(/-\d+$/, ''), q.owner))) return false
-  // Its last answer says it waits for this very report (a follow-up after the merge): wake it.
-  if (report !== undefined) {
-    const stamp = (i: string) => acts[i]?.endedAt ?? acts[i]?.lastAt ?? 0
-    const newest = ids.reduce((best, i) => stamp(i) >= stamp(best) ? i : best, ids[0]!)
-    const answer = acts[newest]?.answer ?? (await read($, seenAgents))[name]?.answer
-    const own = Object.values(await read($, handovers)).filter(h => isManagerOf(name.replace(/-\d+$/, ''), h.reportTo)).map(h => h.pr)
-    if (waitsOnReport(answer, report, own)) return false
-  }
-  return true
-}
-
-// The reviewer's SendMessage to a manager that has ended would resume it just to say "noted", and its
-// final answer would go back to the reviewer. Instead the report is noted for that manager and sent to
-// main. Returns the tool result when it handled the call; undefined passes the call on.
-async function reviewerSendGuard($: EngineInterface, rid: string, to: string, text: string): Promise<string | undefined> {
-  if (to === '' || to === 'main' || to === '*') return undefined
-  const rows = await $.agent.list()
-  const hits = rows.filter(a => a.id === to || a.name === to)
-  if (hits.length > 0 && !hits.some(a => a.type === MANAGER)) return undefined
-  const name = hits[0]?.name ?? to
-  // A manager that ended its turn to wait for a merge is 'completed' or dropped from the roster. With work
-  // left (a plan node, a handover, a live worker, a blocking ask) the report wakes it: the call goes through.
-  if (hits.every(a => a.status === 'completed')) {
-    const seen = hits.length === 0 ? (await read($, seenAgents))[name] : undefined
-    if (seen?.status !== 'failed' && seen?.status !== 'killed') {
-      const ids = hits.length > 0 ? hits.map(a => a.id) : seen?.id !== undefined ? [seen.id] : []
-      // Live workers are left out: a worker's own report resumes its manager, and the old routing sent a
-      // report for an ended manager to main whatever its workers were doing.
-      if (ids.length > 0 && !(await managerFinished($, ids, name, [], text))) return undefined
-    }
-  }
-  const idle = hits.length > 0 && !hits.some(a => a.status !== 'idle' && !ENDED.has(a.status))
-  // A host leaves a manager that finished its work 'idle', not completed. It counts as finished only
-  // when nothing is left for it: no live child, no other open or returned handover, no open plan
-  // node, no open blocking ask. Otherwise the message wakes it as today.
-  if (hits.length > 0 && !hits.every(a => ENDED.has(a.status))) {
-    if (!idle || !(await managerFinished($, hits.map(a => a.id), name, rows, text))) return undefined
-  }
-  // One outcome reaches main once: key on the manager and the PRs the text names (the text itself when
-  // it names none). A repeat forwards only needs-a-person / pending-decisions lines not sent before.
-  const prs = [...new Set([...text.matchAll(/#(\d+)/g)].map(m => m[1]))].sort().join(',')
-  const key = `${rid}|${name}|${prs !== '' ? prs : normText(text)}`
-  const seen = await read($, forwarded)
-  const before = seen.keys[key]
-  const needs = needLines(text)
-  // Needs lines already forwarded for this run and manager, under any PR-set key: a reworded repeat of the
-  // same PR's line is not new.
-  const sentTokens = new Set(Object.entries(seen.keys).filter(([k]) => k.startsWith(`${rid}|${name}|`)).flatMap(([, v]) => v.map(needToken)))
-  const unseen = needs.filter(l => !sentTokens.has(needToken(l)))
-  const fresh = before === undefined && unseen.length === needs.length ? undefined : unseen
-  const status = hits.length > 0 ? 'has finished' : 'matches no agent'
-  if (fresh !== undefined && fresh.length === 0) {
-    return `Not sent: ${name} ${status}. This report was already forwarded to main, with ${name}'s note: do not message ${name} again and do not repeat it to main.`
-  }
-  const body = fresh === undefined ? text : fresh.join('\n')
-  let noted = false
-  if (hits.length > 0) {
-    noted = await appendNote($, name, `- ${await today($)} progress: reviewer report: ${normText(body)}`)
-  }
-  await update($, forwarded, f => ({
-    keys: { ...Object.fromEntries(Object.entries(f.keys).slice(-FORWARDED_MAX)), [key]: [...(f.keys[key] ?? []), ...(fresh ?? needs)] },
-    lines: Object.fromEntries(Object.entries({ ...f.lines, [rid]: [...(f.lines[rid] ?? []), ...body.split('\n').map(normText).filter(l => l !== ''), ...(fresh ?? needs)].slice(-FORWARDED_MAX) }).slice(-FORWARDED_RIDS)),
-  }))
-  toMain($, `Report for ${hits.length > 0 ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the reviewer:\n${body}`)
-  return `Not sent: ${name} ${status}, so messaging it would only wake it. The plugin ${noted ? `noted the report for ${name} and ` : ''}sent ${fresh === undefined ? 'it' : 'the new lines'} to main. Do not message ${name} again, and do not repeat this report to main.`
-}
+const routeIoOf = ($: EngineInterface): RouteIo => ({
+  agents: () => $.agent.list(),
+  activity: () => read($, activity),
+  handovers: () => read($, handovers),
+  plans: () => read($, plan),
+  inbox: () => read($, inbox),
+  seenAgents: () => read($, seenAgents),
+  forwarded: () => read($, forwarded),
+  updateForwarded: fn => update($, forwarded, fn),
+  messages: () => $.session.messages(),
+  planOwner: (plans, name) => planOwner(plans, name),
+  isManagerOf: (owner, name) => isManagerOf(owner, name),
+  appendNote: (name, line) => appendNote($, name, line),
+  today: () => today($),
+  toMain: text => void toMain($, text),
+})
+const resolveReportTo = ($: EngineInterface, given: unknown, callerId: string | undefined) => resolveReportToTo(routeIoOf($), given, callerId)
+const managerFinished = ($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[], report?: string) => managerFinishedTo(routeIoOf($), ids, name, rows, report)
+const mainHasAnswer = ($: EngineInterface, answer: string) => mainHasAnswerTo(routeIoOf($), answer)
 
 // A worker's HANDOFF: write the digest, log it, remember where its worktree is, and warn the owner when the
 // package keeps handing off. Best-effort throughout: a missing digest still leaves the record.
@@ -1352,35 +1235,44 @@ function spawnIoOf($: EngineInterface): SpawnIo {
 // Calls run one after another: handovers arriving back to back must not each see "no queue yet".
 let queueChain: Promise<unknown> = Promise.resolve()
 function ensureQueue($: EngineInterface): Promise<string> {
-  const run = queueChain.then(() => startQueue($))
+  const run = queueChain.then(() => startQueue(queueIoOf($)))
   queueChain = run.catch(() => undefined)
   return run
 }
 
-async function startQueue($: EngineInterface): Promise<string> {
-  const list = await $.agent.list()
-  if (list.some(a => isReviewer(a.type) && LIVE.has(a.status))) {
-    return 'The running reviewer picks it up at its next list.'
-  }
-  // A batch (any state) holds the queue: pending handovers go in after the push run.
-  const batch = (await read($, pushState)).batch
-  const pending = batch !== undefined ? [] : Object.values(await read($, handovers)).filter(h => h.status === 'pending')
-  const pushDue = batch !== undefined && batch.state !== 'ready'
-  const dueTargets = Object.entries((await read($, deploys)).targets).filter(([name, t]) => t.due === true && mirror.deployInfos.some(i => i.name === name)).map(([name]) => name)
-  if (pending.length === 0 && dueTargets.length === 0 && !pushDue) {
-    return batch === undefined ? 'Nothing pending.' : `Batch ${batch.id} awaits the user's /flow push; new handovers wait behind it.`
-  }
-  const n = (await read($, queueRuns)) + 1
-  await update($, queueRuns, () => n)
-  const started = await $.agent.spawn({
-    subagentType: REVIEWER,
-    name: `reviewer-${n}`,
-    description: 'reviewer',
-    prompt: `Pending handovers: ${batch !== undefined ? 'wait behind the batch' : pending.length === 0 ? 'none' : pending.map(h => `#${h.pr}`).join(', ')}.${dueTargets.length === 0 ? '' : ` Deploy-only work due: ${dueTargets.join(', ')}.`}${batch === undefined ? '' : batch.state === 'ready' ? ` Batch ${batch.id} awaits the user's push: leave it alone.` : ` ${batch.state === 'pushing' ? 'Push run' : 'Rebuild run'} for batch ${batch.id}: see "Push run" in your instructions.`} Start with mcp__flow__deploy action "list" and mcp__flow__reviewer action "list".`,
-  })
-  if (started.deny !== undefined) return `Could not start a reviewer: ${started.deny}`
-  return `Started reviewer reviewer-${n}.`
-}
+const reviewerIoOf = ($: EngineInterface): ReviewerIo => ({
+  run: argv => $.process.run(argv),
+  handovers: () => read($, handovers),
+  putHandover: async (pr, h) => { await update($, handovers, hs => ({ ...hs, [pr]: h })) },
+  batch: async () => (await read($, pushState)).batch,
+  deploys: () => read($, deploys),
+  inbox: () => read($, inbox),
+  flaky: async id => (await read($, testFails)).flaky[id],
+  noteRunWork: (id, f) => noteRunWork($, id, f),
+  recordReady: (settings, input) => recordReady($, settings, input),
+  best: (what, fn) => best($, what, fn),
+  saveHandover: h => saveHandover($, h),
+  appendLog: event => appendLog($, event),
+  toast: text => { void $.ui.toast(text) },
+  refresh: () => refresh($),
+  closeReturnedEnv: h => closeReturnedEnv($, h),
+  settleBatch: () => settleBatch($),
+  autoSweep: () => autoSweep($),
+  withCost: (branch, report) => withCost($, branch, report),
+  captureChecks: (h, verifyPaths, live) => captureChecks($, h, verifyPaths, live),
+  suggestGuardTests: (input, pr, queueName, agentId, map) => suggestGuardTests(standingIoOf($), input, pr, queueName, agentId, map),
+  sizeBackNote: branch => sizeBackNote($, branch),
+})
+
+const queueIoOf = ($: EngineInterface): QueueIo => ({
+  agents: () => $.agent.list(),
+  batch: async () => (await read($, pushState)).batch,
+  handovers: () => read($, handovers),
+  deploys: () => read($, deploys),
+  runs: () => read($, queueRuns),
+  setRuns: n => update($, queueRuns, () => n),
+  spawn: input => $.agent.spawn(input),
+})
 
 const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
 
@@ -2063,7 +1955,7 @@ export const register: Register = (on, options) => {
       const text = String(input.message ?? input.text ?? '')
       if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) {
         let handled: string | undefined
-        await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard($, id, to, text) })
+        await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard(routeIoOf($), id, to, text) })
         if (handled !== undefined) return { result: handled }
         if (to === 'main') {
           // Lines the guard already sent main need no second copy; anything new goes through.
@@ -2102,93 +1994,7 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'mcp__flow__release' }, ($, e) => releaseTool(releaseIoOf($), settings, e as unknown as Record<string, unknown>))
 
-  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const action = String(input.action)
-    const all = await read($, handovers)
-    // While a batch exists the reviewer sees it, not the pending handovers: they go in after the push run.
-    const batch = (await read($, pushState)).batch
-    if (action === 'list') {
-      if (batch !== undefined) return { result: reviewerNote(batch) }
-      const open = Object.values(all).filter(h => h.status === 'pending' || h.status === 'taken').sort((a, b) => a.at - b.at)
-      if (open.length === 0) return { result: 'No pending handovers.' }
-      const d = await read($, deploys)
-      const ib = await read($, inbox)
-      const envText = (h: Handover, dd: Deploys, inb: Inbox) => (h.env === undefined || h.env.length === 0 ? '' : ` | env: ${envSummary(h, t => dd.targets[t], itemViewOf(inb))}`)
-      return {
-        result: open.map(h =>
-          `#${h.pr} ${h.status}: "${h.title}" branch ${h.branch} head ${h.head} | report_to: ${h.reportTo} | verified: ${h.verified} | evidence: ${evidenceText(h.evidence)} | pending decisions: ${h.pending} | after deploy: ${h.afterDeploy}${h.release === undefined ? '' : ` | release: ${h.release}`}${envText(h, d, ib)}`,
-        ).join('\n'),
-      }
-    }
-    if (e.agentId !== undefined) await noteRunWork($, e.agentId, w => noteWork(w, action))
-    if (action === 'ready') return { result: await recordReady($, settings, input) }
-    const key = String(Number(input.pr))
-    const h = all[key]
-    if (h === undefined) return { result: `No handover for PR #${key}.` }
-    if (action === 'take' && batch !== undefined && (h.status === 'pending' || batch.state === 'ready')) {
-      return { result: `Held: batch ${batch.id} ${batch.state === 'ready' ? 'awaits the user\'s /flow push' : 'is being pushed or rebuilt'}; PR #${key} waits behind it. Do not take it and do not send it back; end your run when your own work is done.` }
-    }
-    if (action === 'take') {
-      // Re-check the labels: flow:confirm may have been added after the handover. If gh fails,
-      // the stored mode and the setting still decide; never fail open.
-      const view = await $.process.run(['gh', 'pr', 'view', key, '--json', 'labels,headRefOid'])
-      let labels: string[] = []
-      if (view.exitCode === 0) {
-        try { labels = ((JSON.parse(view.stdout) as { labels?: { name: string }[] }).labels ?? []).map(l => l.name) } catch { labels = [] }
-      }
-      if (takeDecision({ labels, stored: h.mode, setting: parseMode(settings.mergeMode), head: h.head, approvedHead: h.approvedHead }) === 'hold') {
-        const held: Handover = { ...h, status: 'awaiting' }
-        await update($, handovers, hs => ({ ...hs, [key]: held }))
-        await best($, 'saving a handover', async () => {
-          await saveHandover($, held)
-          await appendLog($, { event: 'hold', owner: held.reportTo, pr: held.pr, branch: held.branch, text: 'awaits /flow approve' })
-        })
-        void $.ui.toast(`PR #${key} awaits your approval: /flow approve ${key}`)
-        await refresh($)
-        return { result: `Held: PR #${key} awaits the user's approval (/flow approve ${key}). Do not merge it and do not send it back; go on to the next PR.` }
-      }
-    }
-    const next: Handover = action === 'take' ? { ...h, status: 'taken' }
-      : action === 'done' ? { ...h, status: 'done', sha: String(input.sha ?? ''), report: await withCost($, h.branch, withFlaky(String(input.report ?? ''), e.agentId === undefined ? undefined : (await read($, testFails)).flaky[e.agentId])) }
-      : action === 'back' ? { ...h, status: 'returned', reason: withFailed(String(input.reason ?? ''), input.failed_tests) }
-      : h
-    if (next === h) return { result: `Unknown action "${action}".` }
-    await update($, handovers, hs => ({ ...hs, [key]: next }))
-    await best($, 'saving a handover', async () => {
-      await saveHandover($, next)
-      const text = action === 'done' ? next.report : action === 'back' ? next.reason : undefined
-      await appendLog($, { event: action as 'take' | 'done' | 'back', owner: next.reportTo, pr: next.pr, branch: next.branch, text })
-    })
-    if (action === 'back') await closeReturnedEnv($, next)
-    if (action === 'done' || action === 'back') await settleBatch($)
-    if (action !== 'take') void $.ui.toast(`PR #${key} ${next.status === 'done' ? `merged ${next.sha ?? ''}` : `returned: ${next.reason ?? ''}`}`)
-    if (action === 'done') autoSweep($)
-    let verify = ''
-    if (action === 'done') {
-      // The push already happened; the isolated reviewer cannot touch the main checkout, so the plugin does.
-      const line = await serialFastForward(argv => $.process.run(argv), settings.base)
-      if (e.agentId !== undefined) await noteRunWork($, e.agentId, w => ({ ...(w ?? { touched: true, ready: false }), touched: true, line }))
-      await best($, 'logging the main checkout', () => appendLog($, { event: 'main-ff', owner: next.reportTo, pr: next.pr, branch: next.branch, text: line }))
-      verify = ` ${line}: copy this exact line into your final report; never run git against the main checkout yourself.`
-      // Deleting the branch is the plugin's job, after it confirms the merge reached origin/<base>.
-      const gone = await deleteMergedBranch(argv => $.process.run(argv), next.branch, settings.base)
-      await best($, 'logging the branch delete', () => appendLog($, { event: 'branch-delete', owner: next.reportTo, pr: next.pr, branch: next.branch, text: gone }))
-      verify += ` ${gone}.`
-      await best($, 'capturing checks', async () => {
-        const added = await captureChecks($, next, settings.verifyPaths, true)
-        const scripted = added.filter(c => c.verifyCommand !== undefined)
-        verify += scripted.map(c => ` Run \`${c.verifyCommand}\` in your worktree at the merged main now; on exit 0 call mcp__flow__check action pass id ${c.id} with a one-line note of the output tail; on failure call action fail with the failure tail as the note.`).join('')
-        const skipped = added.filter(c => c.note !== undefined && c.verifyCommand === undefined)
-        if (skipped.length) verify += ` Scripted verification is skipped for ${skipped.map(c => c.id).join(', ')} (${SKIP_NOTE.replace('scripted verification skipped: ', '')}); the check stays open for a person.`
-      })
-    }
-    const rows = await refresh($)
-    const filed = action === 'back' ? await suggestGuardTests(standingIoOf($), input, next.pr, rows.find(a => a.id === e.agentId)?.name ?? 'reviewer', e.agentId, settings.guardTests) : ''
-    const size = action === 'back' ? await sizeBackNote($, next.branch) : undefined
-    const sizeLine = size === undefined ? '' : `\nPut this line in your message to ${next.reportTo}: ${size}`
-    return { result: `PR #${key}: ${next.status}.${verify}${filed}${sizeLine}` }
-  })
+  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, ($, e) => reviewerToolRun(reviewerIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId))
 
   on('tool.call', { tool: 'mcp__flow__plan' }, ($, e) => planTool(planIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId))
 
