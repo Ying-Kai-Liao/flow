@@ -7,7 +7,7 @@ export type Plan = Record<string, Graph>
 
 // `children`: how many live agents work under this one (a manager with workers is not finished).
 // `at`: when this agent was last active; `childAt`: the newest activity among its children, live or not.
-export type AgentFact = { name?: string; status: string; answer?: string; children?: number; at?: number; childAt?: number }
+export type AgentFact = { id?: string; name?: string; status: string; answer?: string; children?: number; at?: number; childAt?: number }
 // `owners`: branch -> the manager that started its worker, from the session log; it survives a wrong report_to.
 // `open`: owners whose own plan graph still has waiting, ready or running nodes (settle fills it in).
 export type Facts = { agents: AgentFact[]; handovers: Handover[]; phrases?: string[]; asking?: string[]; owners?: Record<string, string>; open?: string[] }
