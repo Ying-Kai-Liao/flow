@@ -136,12 +136,22 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   with an open blocking question shows as asking in the pane, the toasts and the task graph.
 - You answer from the prompt: `/flow ok` keeps every open FYI, `/flow ok q10 q11` or `/flow ok <owner|topic>`
   keeps those (an ordinary question named by id takes its default), `/flow no q12 <what instead>` overturns
-  an FYI, `/flow answer q3 b` answers any question addressed to main (option letter, number, text or free
-  text). A deploy, push, env or guard item is never answered by `/flow ok`; only `/flow answer` does. All of
+  an FYI, `/flow answer q3 b` answers any open question (option letter, number, text or free
+  text), also one a worker asked its manager: you override the manager, the asker is told "the user answered",
+  and a live manager is told the question is closed. A deploy, push, env or guard item is never answered by `/flow ok`; only `/flow answer` does. All of
   them go through the same path as `mcp__flow__answer`, so delivery, notes and standing-answer suggestions
   are unchanged. Main (the agent) answers with `mcp__flow__answer`: `answers: [{id, choice}]` where choice is the option text, its
   letter or number, or free text; or `defaults: true` (optionally `ids`) to accept the defaults.
-  Only the addressee answers: your main session for managers' questions (tell it "defaults", "1 b,
+  **In the pane**: with anything open, the key row at the bottom shows `i inbox`. The inbox view lists every
+  open question (blocking first; `for <manager>` marks those not addressed to you) and FYI (by owner; three or more
+  of one topic fold into one `topic xN` row, stale ones into an `Older` row) with one highlighted row, its options
+  and `why:`. Keys: `j`/`k` move, `1`-`9` or `a`-`h` pick that option of the highlighted item, `y` takes a
+  question's default or keeps an FYI (or the whole folded group), `w` keeps all open FYIs, `n` overturns the
+  highlighted FYI (with what you typed in the answer field as "what instead"), `r` types a free-text answer
+  (Enter sends), `x` expands or folds a group, `i` goes back. Deploy, env, push and guard items are never
+  answered by `y`, `w` or a group keep: only their own digit or letter, or free text, answers them. Every answer
+  goes through the same path as the `/flow` commands.
+  The addressee answers with `mcp__flow__answer` (you, from the prompt or the pane, may answer anything): your main session for managers' questions (tell it "defaults", "1 b,
   3 defaults" or free text), a manager for its workers'. The answer is messaged to the asker and
   recorded as a decision note. If the asker is gone, the result says undelivered and the main
   session relays it to the successor (`<name>-2`).
@@ -352,7 +362,7 @@ background after each PR the reviewer marks done, and when a reviewer agent ends
 at the base, goes once the reviewer is gone). Never two sweeps at once; errors go to the log. With
 `cleanup` = `off` nothing runs by itself, the tool's `apply` runs dry and says so, and only
 `/flow clean --yes` removes. The pane and `status` show one dim line while there are leftovers,
-e.g. `3 leftover worktrees · 12 branches · 1 needs a look · /flow clean`, from a dry sweep
+e.g. `Cleanup: 3 worktrees and 12 branches can be removed, 1 holds work that isn't merged. /flow clean lists them` (zero counts are left out), from a dry sweep
 refreshed with the PR list (every 5 minutes).
 
 ## Guards

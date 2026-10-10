@@ -224,14 +224,17 @@ test('/flow no overturns an FYI with the words given and tells its owner; a ques
   expect(await cmd($, 'no')).toContain('Usage')
 })
 
-test('/flow answer takes a letter or free text; only what is addressed to main (or an FYI) is answerable', async ($, on) => {
+test('/flow answer takes a letter or free text, also for a question addressed to a manager (the user overrides it)', async ($, on) => {
   const w = world(on)
   await ask($, 'm1', [BLOCK, SOFT])
   await ask($, 'w1', [{ ...BLOCK, question: 'Which delimiter?' }])
   expect(await cmd($, 'answer q1 b')).toContain('q1: tsv')
   expect(await cmd($, 'answer q2 maybe, ask legal')).toContain('q2: maybe, ask legal')
   expect(w.sent.some(s => s.to === 'm1' && s.text.includes('maybe, ask legal'))).toBe(true)
-  expect(await cmd($, 'answer q3 a')).toContain('addressed to csv-export')
+  const over = await cmd($, 'answer q3 a')
+  expect(over).toContain('q3: csv')
+  expect(w.sent.some(s => s.to === 'w1' && s.text.includes('the user answered q3'))).toBe(true)
+  expect(w.sent.some(s => s.to === 'm1' && s.text.includes('the user answered q3, which csv-worker asked you: csv. It is closed'))).toBe(true)
   expect(await cmd($, 'answer q1 a')).toContain('already answered')
   expect(await cmd($, 'answer q8 a')).toContain('no such question')
   expect(await cmd($, 'answer q1')).toContain('Usage')

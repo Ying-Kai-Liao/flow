@@ -323,12 +323,16 @@ export function sweepText(s: Sweep, opts: { applied: boolean; removed?: Sweep['r
 // The pane's and status's one line; undefined when there is nothing to say.
 export function leftoverLine(c: { worktrees: number; branches: number; needsLook: number }): string | undefined {
   if (c.worktrees === 0 && c.branches === 0 && c.needsLook === 0) return undefined
-  const parts = [
-    `${c.worktrees} leftover worktree${c.worktrees === 1 ? '' : 's'}`,
-    `${c.branches} branch${c.branches === 1 ? '' : 'es'}`,
-    ...(c.needsLook ? [`${c.needsLook} need${c.needsLook === 1 ? 's' : ''} a look`] : []),
+  // worktrees and branches are what a sweep would remove; needsLook is what it keeps for a person to decide.
+  const gone = [
+    ...(c.worktrees ? [`${c.worktrees} worktree${c.worktrees === 1 ? '' : 's'}`] : []),
+    ...(c.branches ? [`${c.branches} branch${c.branches === 1 ? '' : 'es'}`] : []),
   ]
-  return `${parts.join(' · ')} · /flow clean`
+  const parts = [
+    ...(gone.length ? [`${gone.join(' and ')} can be removed`] : []),
+    ...(c.needsLook ? [`${c.needsLook} hold${c.needsLook === 1 ? 's' : ''} work that isn't merged`] : []),
+  ]
+  return `Cleanup: ${parts.join(', ')}. /flow clean lists them`
 }
 
 // This session's pids: `start` and its ancestors up to and including the nearest `claude` process,

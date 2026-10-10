@@ -71,7 +71,7 @@ fix X" is enough.
 | `/flow resume` | Picks up unfinished work after a restart. |
 | `/flow clean` | Lists leftover worktrees and branches. Add `--yes` to remove them. |
 
-Questions, approvals and checks also show up in the pane and as notifications.
+Questions, approvals and checks also show up in the pane and as notifications. With anything open, press `i` in the pane to read and answer the inbox there (`j`/`k` move, a digit or letter picks an option, `y` takes the default or keeps an FYI, `w` keeps all FYIs, `n` overturns, `r` types an answer); you may answer any question, a manager's too. The key row sits at the pane's bottom.
 
 ## Settings
 

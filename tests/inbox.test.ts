@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import { test } from './support'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, markAnswered, needsMessage, normalizeInbox,
-  openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, isStaleFyi, mainMayAnswer, needsExplicitAnswer,
+  openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, isStaleFyi, overridesManager, needsExplicitAnswer, paneRows, paneRowText, protectedWhy,
 } from '../hooks/inbox'
 import type { AskedQuestion, Inbox } from '../hooks/inbox'
 
@@ -312,14 +312,15 @@ test('renderInbox: summary first, blocking questions first, long headline clippe
   expect(text).not.toContain('mcp__flow__')
 })
 
-test('renderInbox: push is NEEDS YOU; a question for a manager shows "for" and no answer hint', () => {
+test('renderInbox: push is NEEDS YOU; a question for a manager shows "for" and says answering overrides it', () => {
   const base = addQuestions(EMPTY_INBOX, { name: 'flow', isManager: true }, 'main', [ask('Push?', { blocking: true })], 0).inbox
   const box: Inbox = { ...base, items: [{ ...base.items[0]!, kind: 'push' }] }
   expect(renderInbox(box, 1000)).toContain('q1 BLOCKING NEEDS YOU: PUSH')
   const mine = addQuestions(EMPTY_INBOX, W, 'mgr', [ask('Hm?')], 0).inbox
   const t = renderInbox(mine, 1000)
   expect(t).toContain('for mgr')
-  expect(t).not.toContain('/flow answer')
+  expect(t).toContain('overrides the manager')
+  expect(renderItem(mine, 'q1', 1000)).toContain('answering it overrides mgr')
 })
 
 test('renderInbox: three FYIs of one topic collapse within an owner; two do not; owners stay separate', () => {
@@ -377,15 +378,36 @@ test('expandOk: no words is every open FYI; ids pass; owner and topic expand to 
   expect(expandOk(EMPTY_INBOX, []).lines).toEqual(['No open FYIs to keep.'])
 })
 
-test('predicates: main may answer FYIs and what is addressed to it; deploy, env, push and guard need an explicit answer', () => {
+test('predicates: the user may answer anything, over a manager when it is addressed to one; deploy, env, push and guard need an explicit answer', () => {
   const box = addQuestions(EMPTY_INBOX, W, 'mgr', [ask('x')], 0).inbox
   const q = box.items[0]!
-  expect(mainMayAnswer(q)).toBe(false)
-  expect(mainMayAnswer({ ...q, addressee: 'main' })).toBe(true)
-  expect(mainMayAnswer({ ...q, kind: 'fyi' })).toBe(true)
+  expect(overridesManager(q)).toBe(true)
+  expect(overridesManager({ ...q, addressee: 'main' })).toBe(false)
+  expect(overridesManager({ ...q, kind: 'fyi' })).toBe(false)
   expect(['deploy', 'env', 'push'].map(kind => needsExplicitAnswer({ ...q, kind: kind as 'push' }))).toEqual([true, true, true])
   expect(needsExplicitAnswer({ ...q, guard: { glob: 'a', test: 'b' } })).toBe(true)
   expect(needsExplicitAnswer(q)).toBe(false)
   expect(stillOpen(box)).toContain('Still open: 1 question')
   expect(stillOpen(EMPTY_INBOX)).toBe('Nothing is left open.')
+})
+
+test('paneRows: questions blocking first, then FYIs by owner with 3+ of a topic folded and stale ones in an older row', () => {
+  let box = store([ask('soft'), ask('hard', { blocking: true })])
+  box = fyis(box, 'mgr-a', ['a1', 'a2', 'a3', 'a4'], 'worker-size', 10_440_000)
+  box = fyis(box, 'mgr-b', ['b1', 'b2'], 'worker-size', 10_440_000)
+  box = fyis(box, 'mgr-c', ['c1'], undefined, 0)
+  const rows = paneRows(box, 3 * 3_600_000, { live: ['mgr-a', 'mgr-b'] })
+  expect(rows.map(r => r.key)).toEqual(['q2', 'q1', 'o:mgr-c', 'g:mgr-a:worker-size', 'q7', 'q8'])
+  expect(rows[3]!.ids).toEqual(['q3', 'q4', 'q5', 'q6'])
+  expect(paneRowText(rows[0]!)).toContain('q2 BLOCKING worker-1, for mgr: hard')
+  expect(paneRowText(rows[3]!)).toBe('worker-size x4 (mgr-a): q3 q4 q5 q6')
+  const open = paneRows(box, 3 * 3_600_000, { live: ['mgr-a', 'mgr-b'], open: ['g:mgr-a:worker-size', 'o:mgr-c'] })
+  expect(open.map(r => r.key)).toEqual(['q2', 'q1', 'o:mgr-c', 'q9', 'g:mgr-a:worker-size', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8'])
+})
+
+test('protectedWhy names the explicit way for deploy, env, push and guard items only', () => {
+  const q = store([ask('x')]).items[0]!
+  expect(protectedWhy(q)).toBeUndefined()
+  for (const kind of ['deploy', 'env', 'push'] as const) expect(protectedWhy({ ...q, kind })).toContain('y never answers it')
+  expect(protectedWhy({ ...q, guard: { glob: 'a', test: 'b' } })).toContain('guard test')
 })
