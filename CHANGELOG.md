@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-10-10
+
 ### Added
 
 - Flow pane inbox view (`i`): read every open question and FYI, and answer with keys (`j`/`k`, digits and letters, `y`, `w`, `n`, `r` and the answer field). FYIs fold by topic (`worker-size x7`) and age. Deploy, env, push and guard items are never answered by `y` or `w`.
