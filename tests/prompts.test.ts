@@ -158,3 +158,12 @@ test('the push run continues with the after-batch steps and the untracked clause
   expect(after).toContain('untracked files, an untracked directory say, do not count as dirty')
   expect(after).toContain('status --porcelain --untracked-files=no')
 })
+
+test('the manager prompt routes by the Size line and never tells an agent to pass a [1m] model; the reviewer sends code conflicts to a sub-agent', () => {
+  const s: Settings = { ...base, workerModel: 'sonnet[1m]', workerModelSmall: 'haiku', workerModelNormal: 'sonnet', conflictModel: 'opus' }
+  const m = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', REVIEWER_RULE), s)
+  expect(m).toContain('small -> haiku, normal -> sonnet, large -> sonnet[1m]')
+  expect(m).toContain('"Size: small|normal|large')
+  expect(m).not.toMatch(/model "sonnet\[1m\]"/)
+  expect(fill(REVIEWER_PROMPT, s)).toContain('subagent_type "general-purpose", model "opus"')
+})

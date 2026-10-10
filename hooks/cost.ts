@@ -245,6 +245,12 @@ export function costBlock(ledger: Ledger, prs: { pr: number; branch: string }[],
   if (rev.length > 0) lines.push(`  reviewer total: ${totalText(totalOf(rev))}`)
   const main = entries.filter(e => e.role === 'main')
   if (main.length > 0) lines.push(`  main total: ${totalText(totalOf(main))}`)
+  // Only once model routing has put a size on some entry; the rest is "unsized" (main, managers, the reviewer, older workers).
+  if (entries.some(e => e.size !== undefined)) {
+    const part = (label: string, of: LedgerEntry[]) => of.length === 0 ? [] : [`${label} ${money(totalOf(of).usd, totalOf(of).unknown)}`]
+    const by = [...['small', 'normal', 'large'].flatMap(s => part(s, entries.filter(e => e.size === s))), ...part('unsized', entries.filter(e => e.size === undefined))]
+    lines.push(`  by size: ${by.join(', ')}`)
+  }
   lines.push(`  session total: ${totalText(totalOf(entries))}`)
   const first = Math.min(...counted.map(([, e]) => e.firstAt ?? Infinity))
   lines.push(`  All time${Number.isFinite(first) ? ` (since ${localDate(first)})` : ''}: ${totalText(totalOf(counted.map(([, e]) => e)))}`)

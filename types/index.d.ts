@@ -11,7 +11,7 @@ export type LedgerEntry = {
   // `flow/<worker name>`, or the branch a continuation carries on.
   branch?: string
   spawnModel?: string
-  // A brief size tag (small/normal/large); unset today, a later routing change fills it.
+  // The worker's brief size (small/normal/large) once model routing applied one; unset otherwise.
   size?: string
   // When the agent was first and last counted (ms); the status block and the 90-day prune use them.
   firstAt?: number

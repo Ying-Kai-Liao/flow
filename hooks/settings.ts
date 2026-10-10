@@ -26,6 +26,10 @@ export const KEYS: Record<string, Kind> = {
   context_warn_percent_1m: 'number',
   handoff: 'boolean',
   worker_model: 'string',
+  worker_model_small: 'string',
+  worker_model_normal: 'string',
+  explore_model: 'string',
+  conflict_model: 'string',
   manager_model: 'string',
   reviewer_model: 'string',
   queue_model: 'string',
@@ -68,7 +72,7 @@ export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
 // Sub-agents don't run on Fable: a model setting naming it is refused.
-export const MODEL_KEYS = ['worker_model', 'manager_model', 'reviewer_model', 'queue_model']
+export const MODEL_KEYS = ['worker_model', 'worker_model_small', 'worker_model_normal', 'explore_model', 'conflict_model', 'manager_model', 'reviewer_model', 'queue_model']
 export const isFable = (model: unknown): boolean => typeof model === 'string' && /fable/i.test(model)
 
 export type Loaded = { raw: Record<string, unknown>; files: string[]; warnings: string[] }
@@ -113,7 +117,7 @@ function typeOk(kind: Kind, v: unknown): boolean {
 
 // The role was called the merge queue: its old keys are still read and mapped onto the new ones.
 export const RENAMED: Record<string, string> = { merge_queue: 'reviewer', queue_model: 'reviewer_model' }
-const RENAMED_DEFAULTS: Record<string, unknown> = { reviewer: true, reviewer_model: 'opus' }
+const RENAMED_DEFAULTS: Record<string, unknown> = { reviewer: true, reviewer_model: 'sonnet' }
 // The first settings, built from the raw options before any file is read: old keys mapped, no warning (loading warns).
 export function renameOptions(options: Record<string, unknown>): Record<string, unknown> {
   const out = { ...options }

@@ -6,7 +6,9 @@ import { absolutePath, parseAttachments, rewriteAttachments } from './attachment
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
-import { addStep, costBlock, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
+import { addStep, baseName, costBlock, entriesOfBranch, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
+import { backNote, effectiveSize, floorFrom, generation, isSuccessorName, modelFor, parseSize } from './routing'
+import type { Size, SizeModels } from './routing'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
@@ -572,8 +574,12 @@ function settingsOf(options: Record<string, unknown>, base: string): Settings & 
     maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
     testSlots: Math.max(1, Math.floor(num('test_slots', 1))),
     workerModel: model('worker_model', DEFAULT_WORKER_MODEL),
+    workerModelSmall: model('worker_model_small', 'haiku'),
+    workerModelNormal: model('worker_model_normal', 'sonnet'),
+    exploreModel: model('explore_model', 'haiku'),
+    conflictModel: model('conflict_model', 'opus'),
     managerModel: model('manager_model', 'opus'),
-    reviewerModel: model('reviewer_model', 'opus'),
+    reviewerModel: model('reviewer_model', 'sonnet'),
     language: str('language', 'English'),
     bigFiles: strs('big_files'),
     bigFileLines: num('big_file_lines', 1500),
@@ -1310,6 +1316,16 @@ async function tellManager($: EngineInterface, name: string, text: string): Prom
   toMain($, `${text} (${name} is not running; relay it or start a manager.)`)
 }
 
+// The line a returned PR's message carries when its worker ran below large (routing.ts backNote).
+async function sizeBackNote($: EngineInterface, branch: string): Promise<string | undefined> {
+  try {
+    await loadLedger($)
+    return backNote(entriesOfBranch(await read($, ledger), branch), branch)
+  } catch {
+    return undefined
+  }
+}
+
 // The user's push, send-back or drop returns a PR the way the reviewer's "back" does.
 async function returnPr($: EngineInterface, h: Handover, reason: string): Promise<void> {
   const next: Handover = { ...h, status: 'returned', reason }
@@ -1319,7 +1335,8 @@ async function returnPr($: EngineInterface, h: Handover, reason: string): Promis
     await appendLog($, { event: 'back', owner: next.reportTo, pr: next.pr, branch: next.branch, text: reason })
   })
   await closeReturnedEnv($, next)
-  await tellManager($, next.reportTo, `flow: PR #${next.pr} was returned: ${reason}. Decide what to do with it, and hand it over again when it is ready.`)
+  const size = await sizeBackNote($, next.branch)
+  await tellManager($, next.reportTo, `flow: PR #${next.pr} was returned: ${reason}. Decide what to do with it, and hand it over again when it is ready.${size === undefined ? '' : ` ${size}`}`)
 }
 
 const closeBatchItem = ($: EngineInterface, qid: string | undefined, answer: string, by: string, at: number) =>
@@ -2261,6 +2278,51 @@ async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev: AgentS
   } finally {
     continuing--
   }
+}
+
+// Model routing: a worker brief's `Size:` line picks the model; a successor (`x-2`, or a brief that continues a
+// branch) runs at least one size up from the largest size recorded for its predecessors. No size and no
+// escalation leaves the spawn as the manager wrote it.
+type Routed = { size: Size; reason: string; model: string; escalated: boolean }
+
+async function routeWorker($: EngineInterface, e: AgentSpawnInput, models: SizeModels): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
+  const declared = parseSize(e.prompt)
+  const name = (e as { name?: string }).name ?? e.description
+  const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
+  let floor: Size | undefined
+  if (isSuccessorName(name) || branch !== undefined) {
+    await loadLedger($)
+    const gen = generation(name)
+    const before = Object.values(await read($, ledger)).filter(x => x.role === 'worker' && x.name !== name
+      && ((baseName(x.name) === baseName(name) && generation(x.name) < gen) || (branch !== undefined && x.branch === branch)))
+    floor = floorFrom(before.map(x => x.size))
+  }
+  const size = effectiveSize(declared?.size, floor)
+  if (size === undefined) return { e }
+  const model = modelFor(size, models)
+  return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size } }
+}
+
+// The downgrade FYI: below large the user can overturn the manager's size. Filed by the plugin, owned by the
+// spawning manager and addressed to main like the manager's own FYI; a standing rule can ack or overturn it.
+// An FYI for the same worker is never filed twice.
+async function fileSizeFyi($: EngineInterface, options: Record<string, unknown>, name: string, parentId: string | undefined, routed: Routed): Promise<void> {
+  if (routed.size === 'large' || parentId === undefined) return
+  const parent = (await $.agent.list()).find(a => a.id === parentId)
+  if (parent === undefined || parent.type !== MANAGER || parent.name === undefined) return
+  const owner = parent.name
+  const decision = `${name} runs ${routed.size} -> ${routed.model}${routed.escalated ? ' (one size up after an earlier worker on this package)' : ''}: ${routed.reason === '' ? 'no reason given' : routed.reason}`
+  const at = await $.clock.now()
+  const { rules } = await loadRules($, options)
+  const { added, auto } = await withInbox($, cur => {
+    if (cur.items.some(x => x.owner === owner && isFyi(x) && x.topic === 'worker-size' && x.question.startsWith(`${name} runs `))) {
+      return { inbox: cur, out: { added: [] as Array<{ q: Question }>, auto: new Map() as AutoHits } }
+    }
+    const asked = fyiAsked({ decision, why: 'The plugin routes the worker model by the size on its brief; below large a harder package may need a rerun. Overturn to restart it at the size you choose.', topic: 'worker-size' })
+    const r = autoAnswer(cur, addQuestions(cur, { name: owner, id: parentId, isManager: true }, 'main', [asked], at, 'fyi'), rules, at)
+    return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
+  })
+  await recordAutoAnswers($, added, auto, owner)
 }
 
 const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / reviewer_model)."
@@ -4110,6 +4172,17 @@ export const register: Register = (on, options) => {
       if (checked.prompt !== e.prompt) e = { ...e, prompt: checked.prompt }
     }
     if (await fableDenied($, e)) return { deny: FABLE_DENY }
+    // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
+    let routed: Routed | undefined
+    if (e.subagentType === WORKER) {
+      const r = await routeWorker($, e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel })
+      e = r.e
+      routed = r.routed
+    } else if (e.subagentType === 'Explore' && e.model === undefined && e.parentAgentId !== undefined) {
+      // Read-only exploring by a flow agent runs on the cheap model; main's own and an explicit model stay as they are.
+      const parent = (await $.agent.list()).find(a => a.id === e.parentAgentId)
+      if (parent !== undefined && FLOW_TYPES.has(parent.type)) e = { ...e, model: settings.exploreModel ?? 'haiku' }
+    }
     // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
     // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
     const spawn = e.subagentType === WORKER ? await prepareContinue($, e) : e
@@ -4174,14 +4247,22 @@ export const register: Register = (on, options) => {
           ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }),
           ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
           ...(typeof used === 'string' && { spawnModel: used }),
+          ...(routed !== undefined && { size: routed.size }),
         }, now))
       })
+      if (routed !== undefined) {
+        const r = routed
+        await best($, 'filing a worker-size FYI', () => fileSizeFyi($, options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
+      }
       if (preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
         await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt))
       }
       if (FLOW_TYPES.has(e.subagentType)) {
         await best($, 'logging a spawn', async () => {
-          await appendLog($, { event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerNameOf($, e.parentAgentId) })
+          await appendLog($, {
+            event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerNameOf($, e.parentAgentId),
+            ...(routed !== undefined && { text: `size ${routed.size} -> ${ev.model ?? routed.model}${routed.escalated ? ' (escalated)' : ''}` }),
+          })
         })
       }
     }
@@ -4444,7 +4525,9 @@ export const register: Register = (on, options) => {
     }
     const rows = await refresh($)
     const filed = action === 'back' ? await suggestGuardTests($, input, next.pr, rows.find(a => a.id === e.agentId)?.name ?? 'reviewer', e.agentId, settings.guardTests) : ''
-    return { result: `PR #${key}: ${next.status}.${verify}${filed}` }
+    const size = action === 'back' ? await sizeBackNote($, next.branch) : undefined
+    const sizeLine = size === undefined ? '' : `\nPut this line in your message to ${next.reportTo}: ${size}`
+    return { result: `PR #${key}: ${next.status}.${verify}${filed}${sizeLine}` }
   })
 
   on('tool.call', { tool: 'mcp__flow__plan' }, async ($, e) => {
