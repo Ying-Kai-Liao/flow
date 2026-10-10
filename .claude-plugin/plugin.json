@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.6.9",
+  "version": "0.6.10",
   "description": "Standalone orchestration for software development in Claude Code: managers, workers in their own git worktrees and one reviewer run your tasks in parallel, and only decisions reach you",
   "author": {
     "name": "Ying-Kai Liao"

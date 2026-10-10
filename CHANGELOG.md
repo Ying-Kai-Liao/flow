@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-10-10
+
 ### Fixed
 
 - Main gets each reviewer outcome once: a reworded repeat of a "needs a person: PR #n" line is deduped per reviewer run, manager and PR, the reviewer prompt keeps that line inside the done line only, and the reviewer's per-run work is persisted so its whole final report survives a plugin reload.
