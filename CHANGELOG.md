@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.22] - 2026-10-11
+
+### Changed
+
+- Move standing rules out of register.tsx into hooks/standing-run.ts (#99)
+
 ## [0.6.21] - 2026-10-11
 
 ### Changed
