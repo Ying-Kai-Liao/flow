@@ -43,6 +43,8 @@ import { termWidth } from './table'
 import type { Inbox, Marked, Question } from './inbox'
 import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
 import type { Resolved, Rule } from './standing'
+import { addGuardTest, addRule, alwaysRule, autoAnswer, dropRule, loadRules, offerSeedsOnce, recordAutoAnswers, suggestGuardTests } from './standing-run'
+import type { AutoHits, StandingIo } from './standing-run'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import { shimmerParts } from './shimmer'
 import type { GNode, Seg } from './graph'
@@ -927,7 +929,7 @@ async function answerQuestion($: EngineInterface, wanted: string, choice: string
     }
   }
   if (!(isFyi(q) && isDefault)) await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${noteText(q)}: ${isFyi(q) ? `undone, ${answer}` : answer}"`)
-  const guard = q.guard !== undefined && answer === ADD_OPTION ? ` ${await addGuardTest($, options, q.guard.glob, q.guard.test)}` : ''
+  const guard = q.guard !== undefined && answer === ADD_OPTION ? ` ${await addGuardTest(standingIoOf($), options, q.guard.glob, q.guard.test)}` : ''
   return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.${guard}${deployNote}`
 }
 
@@ -969,7 +971,7 @@ const deployIoOf = ($: EngineInterface): DeployIo => ({
   inbox: () => read($, inbox),
   withInbox: fn => withInbox($, fn),
   ensureQueue: () => ensureQueue($),
-  loadRules: options => loadRules($, options),
+  loadRules: options => loadRules(standingIoOf($), options),
   appendNote: (name, line) => appendNote($, name, line),
   appendLog: event => appendLog($, event),
   today: () => today($),
@@ -1070,202 +1072,24 @@ const settleBatch = ($: EngineInterface): Promise<void> => settleBatchTo(pushIoO
 const pushAct = ($: EngineInterface, act: PushAct, by: string): Promise<string> => pushActTo(pushIoOf($), act, by)
 const onPushAnswer = ($: EngineInterface, q: Question, answer: string, by: string): Promise<string> => onPushAnswerTo(pushIoOf($), q, answer, by)
 
-// Standing answers (standing.ts): the rules of both settings files, read fresh so a rule made a moment ago
-// applies to the next ask. A bad rule is dropped by mergeLayers; the others stand.
-async function loadRules($: EngineInterface, options: Record<string, unknown>): Promise<{ rules: Resolved[]; paths: string[] }> {
-  const paths = await locate($)
-  const layers = await Promise.all(paths.map(async path => ({ path, text: path === '' ? undefined : await $.fs.read(path).then(String, () => undefined) })))
-  const raw = mergeLayers(options, layers).raw.standing_answers
-  return { rules: Array.isArray(raw) ? raw as Resolved[] : [], paths }
-}
-
-type AutoHits = Map<string, { answer: string; rid: string }>
-
-// The standing-answer check shared by ask and pre-flight: a fresh question that a rule matches is marked
-// answered in the same write, so it has an id and history. Returns the inbox, the stored questions as they
-// are now, and which ones a rule answered.
-function autoAnswer(cur: Inbox, r: ReturnType<typeof addQuestions>, rules: Resolved[], at: number, escalate = false) {
-  let next = r.added.some(a => a.fresh) ? r.inbox : cur
-  // An escalate rule holds the question for the user: blocking, flagged, never auto-answered.
-  if (escalate) {
-    for (const { q, fresh } of r.added) {
-      const esc = fresh ? escalation(rules, q) : undefined
-      if (esc !== undefined) next = { ...next, items: next.items.map(x => (x.id === q.id ? { ...x, blocking: true, escalated: esc.rid, addressee: 'main' } : x)) }
-    }
+// The io closures standing-run.ts works through: each one spells its `$.noun.event(...)` call.
+function standingIoOf($: EngineInterface): StandingIo {
+  return {
+    locate: () => locate($),
+    readFile: path => $.fs.read(path).then(String, () => undefined),
+    mkdirp: dir => $.process.run(['mkdir', '-p', dir]),
+    writeJson: (path, obj) => writeJsonAtomic($, path, obj),
+    readJson: path => readJson($, path),
+    stateDir: () => stateDir($),
+    run: argv => $.process.run(argv),
+    now: () => $.clock.now(),
+    today: () => today($),
+    inbox: () => read($, inbox),
+    withInbox: fn => withInbox($, fn),
+    appendNote: (name, line) => appendNote($, name, line),
+    appendLog: event => appendLog($, event),
+    best: (what, fn) => best($, what, fn),
   }
-  const hits: AutoHits = new Map()
-  for (const { q, fresh } of r.added) {
-    const m = fresh ? matchRule(rules, next.items.find(x => x.id === q.id) ?? q) : undefined
-    if (m === undefined) continue
-    const marked = markAnswered(next, q.id, m.answer, AUTO, at, m.rule.rid)
-    if (marked.kind !== 'ok') continue
-    next = marked.inbox
-    hits.set(q.id, { answer: marked.answer, rid: m.rule.rid })
-  }
-  const added = r.added.map(a => ({ ...a, q: next.items.find(x => x.id === a.q.id) ?? a.q }))
-  return { inbox: next, added, hits }
-}
-
-// The decision note and auto-answer log event for each question a rule answered.
-async function recordAutoAnswers($: EngineInterface, added: Array<{ q: Question }>, hits: AutoHits, agent: string): Promise<void> {
-  const date = await today($)
-  for (const { q } of added) {
-    const hit = hits.get(q.id)
-    if (hit === undefined) continue
-    await appendNote($, notesOwner(q), `- ${date} decision: "${q.id} ${q.question}: ${hit.answer}" (standing answer ${hit.rid})`)
-    await best($, 'logging an auto-answer', () => appendLog($, { event: 'auto-answer', owner: noteKey(notesOwner(q)), agent, text: `${q.id} rule ${hit.rid}: ${hit.answer}` }))
-  }
-}
-
-// Rule file changes run one after another: two `always` answers at once must not lose a rule.
-let rulesChain: Promise<unknown> = Promise.resolve()
-function inRulesChain<T>(fn: () => Promise<T>): Promise<T> {
-  const result = rulesChain.then(fn, fn)
-  rulesChain = result.catch(() => undefined)
-  return result
-}
-
-// Read-modify-write one settings file's standing_answers, keeping every other key. fn gets the raw list and
-// returns the new one (undefined: no change). A file that is not a JSON object is never rewritten.
-async function editRuleFile<T>($: EngineInterface, path: string, fn: (list: unknown[]) => Promise<{ list?: unknown[]; out: T }>): Promise<{ out: T } | { error: string }> {
-  let obj: Record<string, unknown> = {}
-  const text = await $.fs.read(path).then(String, () => undefined)
-  if (text !== undefined && text.trim() !== '') {
-    let data: unknown
-    try {
-      data = JSON.parse(text)
-    } catch {
-      return { error: `${path} is not valid JSON; fix it first, flow does not rewrite it.` }
-    }
-    if (typeof data !== 'object' || data === null || Array.isArray(data)) return { error: `${path} is not a JSON object; flow does not rewrite it.` }
-    obj = data as Record<string, unknown>
-  }
-  let list: unknown = obj.standing_answers
-  if (typeof list === 'string') {
-    try { list = JSON.parse(list) } catch { return { error: `${path}: "standing_answers" is not valid JSON; fix it first.` } }
-  }
-  if (list === undefined || list === null) list = []
-  if (!Array.isArray(list)) return { error: `${path}: "standing_answers" is not a list; fix it first.` }
-  const r = await fn(list)
-  if (r.list !== undefined) {
-    await $.process.run(['mkdir', '-p', path.replace(/\/[^/]*$/, '')])
-    if (!await writeJsonAtomic($, path, { ...obj, standing_answers: r.list })) return { error: `could not write ${path}.` }
-  }
-  return { out: r.out }
-}
-
-type RuleAdd = { kind: 'added' | 'exists'; id: string } | { kind: 'error'; msg: string }
-
-// Adds a rule to the personal file with a new short id (s1, s2, ..., unique across both files and the inbox).
-function addRule($: EngineInterface, options: Record<string, unknown>, rule: Rule): Promise<RuleAdd> {
-  return inRulesChain(async (): Promise<RuleAdd> => {
-    const { rules, paths } = await loadRules($, options)
-    const path = paths[1] ?? ''
-    if (path === '') return { kind: 'error', msg: 'rules need a repo for the personal file.' }
-    const dup = rules.find(r => sameRule(r.rule, rule))
-    if (dup !== undefined) return { kind: 'exists', id: dup.rid }
-    const used = [...rules.map(r => r.rid), ...(await read($, inbox)).items.flatMap(q => (q.rule === undefined ? [] : [q.rule]))]
-    const id = nextRuleId(used)
-    const r = await editRuleFile($, path, async list => ({ list: [...list, { id, ...rule }], out: id }))
-    return 'error' in r ? { kind: 'error', msg: r.error } : { kind: 'added', id }
-  })
-}
-
-// Adds a suggested guard mapping to the personal file (never the committed one), keeping every other key and the
-// mapping already there. The text tells main to copy it to .claude/flow.json to share it.
-function addGuardTest($: EngineInterface, options: Record<string, unknown>, glob: string, test: string): Promise<string> {
-  return inRulesChain(async () => {
-    const path = (await locate($))[1] ?? ''
-    if (path === '') return 'No mapping written: guard mappings need a repo for the personal file.'
-    let obj: Record<string, unknown> = {}
-    const text = await $.fs.read(path).then(String, () => undefined)
-    if (text !== undefined && text.trim() !== '') {
-      try { obj = JSON.parse(text) as Record<string, unknown> } catch { return `No mapping written: ${path} is not valid JSON; fix it first, flow does not rewrite it.` }
-      if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return `No mapping written: ${path} is not a JSON object; flow does not rewrite it.`
-    }
-    const had = obj.guard_tests === undefined ? {} : parseGuardTests(obj.guard_tests)
-    if (had === undefined) return `No mapping written: "guard_tests" in ${path} is not an object of globs to test lists; fix it first.`
-    const next = addMapping(had, glob, test)
-    if ((had[glob] ?? []).includes(test)) return `Already in ${path}: ${JSON.stringify({ [glob]: [test] })}.`
-    await $.process.run(['mkdir', '-p', path.replace(/\/[^/]*$/, '')])
-    if (!await writeJsonAtomic($, path, { ...obj, guard_tests: next })) return `No mapping written: could not write ${path}.`
-    return `Added ${JSON.stringify({ [glob]: [test] })} to ${path} (personal, uncommitted). To share it with the team, copy it into .claude/flow.json under "guard_tests" and commit.`
-  })
-}
-
-// A PR sent back for failing tests: for each failed test no guard mapping already requires for the PR's files, one
-// non-blocking question to main suggests a mapping. Best effort: the send-back itself is already recorded.
-async function suggestGuardTests($: EngineInterface, input: Record<string, unknown>, pr: number, queueName: string, agentId: string | undefined, map: GuardMap): Promise<string> {
-  const failed = Array.isArray(input.failed_tests) ? input.failed_tests.filter((t): t is string => typeof t === 'string' && t.trim() !== '') : []
-  if (failed.length === 0) return ''
-  const diff = await $.process.run(['gh', 'pr', 'diff', String(pr), '--name-only']).catch(() => undefined)
-  if (diff === undefined || diff.exitCode !== 0) return ` No guard suggestion: gh pr diff ${pr} failed${diff === undefined ? '' : `: ${diff.stderr.trim().slice(0, 200)}`}.`
-  const files = diff.stdout.split('\n').map(l => l.trim()).filter(Boolean)
-  const sugg = suggestionsFor(files, failed, map)
-  if (sugg.length === 0) return ''
-  const at = await $.clock.now()
-  const filed = await withInbox($, cur => {
-    const open = (g: { glob: string; test: string }) => cur.items.some(x => x.state === 'open' && x.guard?.glob === g.glob && x.guard.test === g.test)
-    const asked = sugg.filter(x => !open(x)).map(x => suggestionQuestion(pr, x))
-    if (asked.length === 0) return { inbox: cur, out: [] as string[] }
-    const r = addQuestions(cur, { name: queueName, id: agentId, isManager: false }, 'main', asked, at)
-    return { inbox: r.inbox, out: r.added.filter(a => a.fresh).map(a => a.q.id) }
-  })
-  return filed.length === 0 ? '' : ` Asked main whether to add a guard mapping (${filed.join(', ')}).`
-}
-
-// Removes a rule from whichever file holds it. A /config rule cannot be removed from here.
-function dropRule($: EngineInterface, options: Record<string, unknown>, rid: string): Promise<string> {
-  return inRulesChain(async () => {
-    const { rules, paths } = await loadRules($, options)
-    const hit = rules.find(r => r.rid === rid)
-    if (hit === undefined) return `${rid}: no such rule. mcp__flow__standing {"action":"list"} shows them.`
-    if (hit.source === 'config') return `${rid}: set in /config, remove it there.`
-    const path = (hit.source === 'repo' ? paths[0] : paths[1]) ?? ''
-    const r = await editRuleFile($, path, async list => {
-      const res = removeRule(list, hit.source, rid)
-      return res.removed ? { list: res.list, out: true } : { out: false }
-    })
-    if ('error' in r) return `${rid}: not removed, ${r.error}`
-    if (!r.out) return `${rid}: not found in ${path}.`
-    return `${rid}: removed from ${path}${hit.source === 'repo' ? ' (a committed file: the change shows in git status)' : ''}.`
-  })
-}
-
-// The suggested starting rules, for main's first status call when no rule exists anywhere. The flag is
-// written before returning; two calls at once may both show it, none may miss it.
-async function offerSeedsOnce($: EngineInterface, options: Record<string, unknown>): Promise<string[]> {
-  const dir = await stateDir($)
-  if (dir === undefined) return []
-  const flag = `${dir}/seeds-offered.json`
-  if (await readJson($, flag) !== undefined) return []
-  const { rules } = await loadRules($, options)
-  const offer = rules.length === 0 ? seedsToOffer(rules) : []
-  if (offer.length === 0) return []
-  await $.process.run(['mkdir', '-p', dir])
-  await writeJsonAtomic($, flag, { offeredAt: await $.clock.now() })
-  return renderSeeds(offer)
-}
-
-// An `always` answer: after answering, the answer becomes a rule in the personal file. Only main makes rules.
-async function alwaysRule(
-  $: EngineInterface, options: Record<string, unknown>, id: string, choice: string, isMain: boolean, before: Question | undefined,
-): Promise<string> {
-  if (!isMain) return `${id}: no rule made, only main makes standing answers (the answer itself stands).`
-  if (before === undefined) return `${id}: no rule made, no such question.`
-  if (before.state !== 'open') return `${id}: no rule made, it was already answered.`
-  const q = (await read($, inbox)).items.find(x => x.id === id)
-  if (q === undefined || q.state !== 'answered' || q.answeredBy !== 'main') return `${id}: no rule made, the answer was not recorded.`
-  if (q.kind === 'deploy') return `${id}: no rule made, a deploy approval is the user's call every time.`
-  if (q.kind === ENV_KIND) return `${id}: no rule made, an env change is the user's call every time.`
-  if (q.kind === PUSH_KIND) return `${id}: no rule made, pushing a batch is the user's call every time.`
-  if (parseChoice(q.options, choice).free) return `${id}: no rule made, a free-text answer cannot be a rule; pick one of the options.`
-  const rule = ruleFromQuestion(q, q.answer ?? '', await today($))
-  const r = await addRule($, options, rule)
-  if (r.kind === 'error') return `${id}: answered, but no rule made: ${r.msg}`
-  const what = rule.topic !== undefined ? `topic ${rule.topic}` : 'this exact question'
-  if (r.kind === 'exists') return `${id}: rule ${r.id} already says "${rule.answer}" for ${what}; no duplicate added.`
-  return `${id}: rule ${r.id} added: ${what} -> "${rule.answer}"${rule.blocking ? ' (also blocking)' : ''}. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.`
 }
 
 
@@ -1752,7 +1576,7 @@ async function fileSizeFyi($: EngineInterface, options: Record<string, unknown>,
   const owner = parent.name
   const decision = `${name} runs ${routed.size} -> ${routed.model}${routed.escalated ? ' (one size up after an earlier worker on this package)' : ''}: ${routed.reason === '' ? 'no reason given' : routed.reason}`
   const at = await $.clock.now()
-  const { rules } = await loadRules($, options)
+  const { rules } = await loadRules(standingIoOf($), options)
   const { added, auto } = await withInbox($, cur => {
     if (cur.items.some(x => x.owner === owner && isFyi(x) && x.topic === 'worker-size' && x.question.startsWith(`${name} runs `))) {
       return { inbox: cur, out: { added: [] as Array<{ q: Question }>, auto: new Map() as AutoHits } }
@@ -1761,7 +1585,7 @@ async function fileSizeFyi($: EngineInterface, options: Record<string, unknown>,
     const r = autoAnswer(cur, addQuestions(cur, { name: owner, id: parentId, isManager: true }, 'main', [asked], at, 'fyi'), rules, at)
     return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
   })
-  await recordAutoAnswers($, added, auto, owner)
+  await recordAutoAnswers(standingIoOf($), added, auto, owner)
 }
 
 const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / reviewer_model)."
@@ -3241,7 +3065,7 @@ export const register: Register = (on, options) => {
       })
     }
     const rows = await refresh($)
-    const filed = action === 'back' ? await suggestGuardTests($, input, next.pr, rows.find(a => a.id === e.agentId)?.name ?? 'reviewer', e.agentId, settings.guardTests) : ''
+    const filed = action === 'back' ? await suggestGuardTests(standingIoOf($), input, next.pr, rows.find(a => a.id === e.agentId)?.name ?? 'reviewer', e.agentId, settings.guardTests) : ''
     const size = action === 'back' ? await sizeBackNote($, next.branch) : undefined
     const sizeLine = size === undefined ? '' : `\nPut this line in your message to ${next.reportTo}: ${size}`
     return { result: `PR #${key}: ${next.status}.${verify}${filed}${sizeLine}` }
@@ -3415,12 +3239,12 @@ export const register: Register = (on, options) => {
     const at = await $.clock.now()
     // Standing answers hook: rules are read fresh. A fresh question that one matches is stored, then marked
     // answered in the same write (so it has an id and history); the result line tells the asker.
-    const { rules } = await loadRules($, options)
+    const { rules } = await loadRules(standingIoOf($), options)
     const { added, auto } = await withInbox($, cur => {
       const r = autoAnswer(cur, addQuestions(cur, { name, id: e.agentId, isManager: me?.type === MANAGER }, addressee, parsed.questions, at), rules, at, true)
       return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
     })
-    await recordAutoAnswers($, added, auto, name)
+    await recordAutoAnswers(standingIoOf($), added, auto, name)
     const date = await today($)
     for (const { q, fresh } of added) {
       const owner = notesOwner(q)
@@ -3482,7 +3306,7 @@ export const register: Register = (on, options) => {
     const at = await $.clock.now()
     // Same standing-answer check as ask: a fresh question a rule matches is answered at once, so it is not
     // open, never gates the manager and stays out of the round.
-    const { rules } = await loadRules($, options)
+    const { rules } = await loadRules(standingIoOf($), options)
     // A filing is often sent again whole, and an answered question no longer dedupes in addQuestions: one
     // already answered for this manager (by a rule or by main) is reported again, not stored again, so it
     // neither re-gates the manager nor asks the user twice.
@@ -3494,7 +3318,7 @@ export const register: Register = (on, options) => {
       const r = autoAnswer(cur, addQuestions(cur, { name, id: e.agentId, isManager: true }, 'main', fresh, at), rules, at)
       return { inbox: r.inbox, out: { added: r.added, auto: r.hits, earlier } }
     })
-    await recordAutoAnswers($, added, auto, name)
+    await recordAutoAnswers(standingIoOf($), added, auto, name)
     const kept = added.filter(a => !auto.has(a.q.id))
     const ids = { asked: kept.map(a => a.q.id), blocking: kept.filter(a => a.q.blocking).map(a => a.q.id) }
     const answered = [...earlier, ...added.filter(a => auto.has(a.q.id)).map(a => `${a.q.id} by standing answer ${auto.get(a.q.id)!.rid}: ${auto.get(a.q.id)!.answer}`)]
@@ -3541,7 +3365,7 @@ export const register: Register = (on, options) => {
     for (const [id, choice] of todo) {
       const before = always.has(id) ? findItem(await read($, inbox), id) : undefined
       lines.push(await answerQuestion($, id, choice, by, options))
-      if (always.has(id) && choice !== null && before !== undefined && !isFyi(before)) lines.push(await alwaysRule($, options, id, choice, e.agentId === undefined, before))
+      if (always.has(id) && choice !== null && before !== undefined && !isFyi(before)) lines.push(await alwaysRule(standingIoOf($), options, id, choice, e.agentId === undefined, before))
     }
     return { result: lines.join('\n') }
   })
@@ -3551,7 +3375,7 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) return { result: 'Refused: only main makes or removes standing answers. Ask main in the chat, or answer with the question\'s default.' }
     const action = String(input.action ?? 'list')
     if (action === 'list') {
-      const { rules } = await loadRules($, options)
+      const { rules } = await loadRules(standingIoOf($), options)
       const box = await read($, inbox)
       return { result: renderRules(rules, box, suggest(box, rules), seedsToOffer(rules)) }
     }
@@ -3563,7 +3387,7 @@ export const register: Register = (on, options) => {
       const out: string[] = []
       for (const id of want) {
         const seed = SEEDS.find(s => s.id === id)!
-        const r = await addRule($, options, { ...seed.rule, note: `seed ${id}, added ${date}` })
+        const r = await addRule(standingIoOf($), options, { ...seed.rule, note: `seed ${id}, added ${date}` })
         out.push(r.kind === 'error' ? `${id}: not added: ${r.msg}`
           : r.kind === 'exists' ? `${id}: already there as rule ${r.id}; nothing added.`
             : `${id}: rule ${r.id} added to the personal file. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.`)
@@ -3576,7 +3400,7 @@ export const register: Register = (on, options) => {
         note: `added ${await today($)} by hand`,
       })
       if ('error' in v) return { result: `Refused: ${v.error}.` }
-      const r = await addRule($, options, v.rule)
+      const r = await addRule(standingIoOf($), options, v.rule)
       if (r.kind === 'error') return { result: `Not added: ${r.msg}` }
       if (r.kind === 'exists') return { result: `Rule ${r.id} already says that; nothing added.` }
       return { result: `Rule ${r.id} added to the personal file. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.` }
@@ -3584,7 +3408,7 @@ export const register: Register = (on, options) => {
     if (action === 'remove') {
       const id = String(input.id ?? '').trim()
       if (id === '') return { result: 'Refused: remove needs the rule id (see action "list").' }
-      return { result: await dropRule($, options, id) }
+      return { result: await dropRule(standingIoOf($), options, id) }
     }
     return { result: 'Unknown action: use list, add or remove.' }
   })
@@ -3768,7 +3592,7 @@ export const register: Register = (on, options) => {
     const { shown, hidden } = cappedHandovers(list)
     const plans = scope === 'worker' ? [] : Object.entries(await read($, plan)).filter(([who, g]) => Object.keys(g).length > 0 && (scope === 'all' || baseName(who) === myBase))
     const slots = scope === 'worker' ? '' : slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
-    const seeds = e.agentId === undefined ? await offerSeedsOnce($, options) : []
+    const seeds = e.agentId === undefined ? await offerSeedsOnce(standingIoOf($), options) : []
     const gate = scope === 'all' ? (await read($, pushState)).batch : undefined
     const batchLines = gate?.state === 'ready' ? renderBatch(gate) : []
     const pushing = gate !== undefined && gate.state !== 'ready' ? renderBatch(gate) : []
