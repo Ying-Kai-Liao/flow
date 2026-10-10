@@ -170,6 +170,14 @@ test('a -2 successor of a small worker runs normal, then -3 runs large; unsized 
   expect(w.spawned.at(-1)!.model).toBe('opus')
 })
 
+test('a -2 worker with no Continue line (the first never pushed a branch) escalates by name alone', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await spawn($, 'csv-fix', 'Size: small')
+  await spawn($, 'csv-fix-2', 'Your name: csv-fix-2\nSize: small\n# t')
+  expect(w.spawned.map(s => s.model)).toEqual(['haiku', 'sonnet'])
+  expect((await ledger(w)).a2!.branch).toBe('flow/csv-fix-2')
+})
+
 test('a declared Size on a successor is raised to the floor, never lowered', { options: OPTS }, async ($, on) => {
   const w = world(on)
   await spawn($, 'csv-fix', 'Size: normal')
