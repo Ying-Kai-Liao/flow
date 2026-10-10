@@ -10,25 +10,25 @@
     "test_command": {
       "type": "string",
       "title": "Test command",
-      "description": "What a worker runs to check its package, e.g. npm test. Empty: the tests covering the changed files.",
+      "description": "Core: What a worker runs to check its package, e.g. npm test. Empty: the tests covering the changed files.",
       "default": ""
     },
     "full_check_command": {
       "type": "string",
       "title": "Full check",
-      "description": "What the reviewer runs once per batch before pushing, e.g. npm run check. Empty: no full check (the reviewer says so).",
+      "description": "Core: What the reviewer runs once per batch before pushing, e.g. npm run check. Empty: no full check (the reviewer says so).",
       "default": ""
     },
     "deploy_command": {
       "type": "string",
       "title": "Deploy command",
-      "description": "What the reviewer runs after pushing. Empty: no deploy.",
+      "description": "Core: What the reviewer runs after pushing. Empty: no deploy.",
       "default": ""
     },
     "merge_method": {
       "type": "string",
       "title": "Merge method without a reviewer",
-      "description": "gh pr merge method managers use when the reviewer is off.",
+      "description": "Advanced: gh pr merge method managers use when the reviewer is off.",
       "default": "squash",
       "options": [
         "squash",
@@ -39,7 +39,7 @@
     "merge_mode": {
       "type": "string",
       "title": "Merge mode",
-      "description": "auto: the reviewer merges approved PRs. confirm: it waits for you to run /flow approve <pr>. A flow:confirm or flow:auto label on a PR overrides this.",
+      "description": "Core: auto: the reviewer merges approved PRs. confirm: it waits for you to run /flow approve <pr>. A flow:confirm or flow:auto label on a PR overrides this.",
       "default": "auto",
       "options": [
         "auto",
@@ -49,7 +49,7 @@
     "push_mode": {
       "type": "string",
       "title": "Push mode",
-      "description": "auto: the reviewer pushes a batch once its full check is green. confirm: it builds and checks the batch, saves it and stops; you start the push with /flow push.",
+      "description": "Core: auto: the reviewer pushes a batch once its full check is green. confirm: it builds and checks the batch, saves it and stops; you start the push with /flow push.",
       "default": "auto",
       "options": [
         "auto",
@@ -59,186 +59,186 @@
     "reviewer": {
       "type": "boolean",
       "title": "Reviewer",
-      "description": "On: managers hand PRs to one reviewer, which merges, runs the full check and deploys. Off: managers merge themselves.",
+      "description": "Advanced: On: managers hand PRs to one reviewer, which merges, runs the full check and deploys. Off: managers merge themselves.",
       "default": true
     },
     "max_managers": {
       "type": "number",
       "title": "Managers at once",
-      "description": "How many managers the main session runs at a time.",
+      "description": "Advanced: How many managers the main session runs at a time.",
       "default": 20
     },
     "max_workers": {
       "type": "number",
       "title": "Workers per manager",
-      "description": "How many workers one manager runs at a time.",
+      "description": "Core: How many workers one manager runs at a time.",
       "default": 3
     },
     "test_slots": {
       "type": "number",
       "title": "Test slots",
-      "description": "How many heavy test runs (a whole suite, the full check) may run at once across all agents of the session. Minimum 1.",
+      "description": "Advanced: How many heavy test runs (a whole suite, the full check) may run at once across all agents of the session. Minimum 1.",
       "default": 1
     },
     "context_warn_percent": {
       "type": "number",
       "title": "Context warning",
-      "description": "The Flow pane marks this percent of the context window on each agent's meter, and the meter turns yellow at or past it (1 to 100). Applies to windows under 1M.",
+      "description": "Advanced: The Flow pane marks this percent of the context window on each agent's meter, and the meter turns yellow at or past it (1 to 100). Applies to windows under 1M.",
       "default": 40
     },
     "context_warn_percent_1m": {
       "type": "number",
       "title": "Context warning, 1M window",
-      "description": "The same as the context warning, for agents on a 1M window (a [1m] model). The 200k percent never applies to them (1 to 100).",
+      "description": "Advanced: The same as the context warning, for agents on a 1M window (a [1m] model). The 200k percent never applies to them (1 to 100).",
       "default": 35
     },
     "context_warn_tokens": {
       "type": "number",
       "title": "Context limit in tokens",
-      "description": "An optional cap over both percents: hand off at this many tokens, or at the percent of the window when that is lower (0 = off, percent only). Also places the meter marker.",
+      "description": "Advanced: An optional cap over both percents: hand off at this many tokens, or at the percent of the window when that is lower (0 = off, percent only). Also places the meter marker.",
       "default": 0
     },
     "handoff": {
       "type": "boolean",
       "title": "Handoff",
-      "description": "On: a worker or manager that reaches the context warning percent is told to commit, push and write a handoff note, and its parent continues on a fresh agent. Off: the meter only shows.",
+      "description": "Advanced: On: a worker or manager that reaches the context warning percent is told to commit, push and write a handoff note, and its parent continues on a fresh agent. Off: the meter only shows.",
       "default": true
     },
     "main_checkout_guard": {
       "type": "boolean",
       "title": "Main-checkout guard",
-      "description": "On: Edit, Write and obvious shell writes (redirects, sed -i, git commit and friends) aimed at the repo's main checkout are refused, for every flow agent and the main session. Worktrees and .git/ stay writable.",
+      "description": "Advanced: On: Edit, Write and obvious shell writes (redirects, sed -i, git commit and friends) aimed at the repo's main checkout are refused, for every flow agent and the main session. Worktrees and .git/ stay writable.",
       "default": true
     },
     "main_checkout_allow": {
       "type": "string",
       "title": "Main checkout: still writable",
-      "description": "Comma-separated paths relative to the repo root that stay writable in the main checkout; one ending in / covers a directory.",
+      "description": "Advanced: Comma-separated paths relative to the repo root that stay writable in the main checkout; one ending in / covers a directory.",
       "default": ".claude/"
     },
     "max_continues": {
       "type": "number",
       "title": "Max continues",
-      "description": "After a branch has handed off this many times, the owning manager is told the package is too big and should be split. It only warns.",
+      "description": "Advanced: After a branch has handed off this many times, the owning manager is told the package is too big and should be split. It only warns.",
       "default": 2
     },
     "worker_model": {
       "type": "string",
       "title": "Worker model",
-      "description": "Model alias for workers.",
+      "description": "Core: Model alias for workers.",
       "default": "sonnet[1m]",
       "options": ["sonnet[1m]", "sonnet", "opus[1m]", "opus", "haiku"]
     },
     "worker_model_small": {
       "type": "string",
       "title": "Worker model, small briefs",
-      "description": "Model alias for workers whose brief says `Size: small`. Normal maps to worker_model_normal, large to worker_model; a brief without a Size line uses worker_model.",
+      "description": "Advanced: Model alias for workers whose brief says `Size: small`. Normal maps to worker_model_normal, large to worker_model; a brief without a Size line uses worker_model.",
       "default": "haiku",
       "options": ["haiku", "sonnet", "sonnet[1m]", "opus", "opus[1m]"]
     },
     "worker_model_normal": {
       "type": "string",
       "title": "Worker model, normal briefs",
-      "description": "Model alias for workers whose brief says `Size: normal`.",
+      "description": "Advanced: Model alias for workers whose brief says `Size: normal`.",
       "default": "sonnet",
       "options": ["sonnet", "sonnet[1m]", "haiku", "opus", "opus[1m]"]
     },
     "explore_model": {
       "type": "string",
       "title": "Explore model",
-      "description": "Model alias for read-only Explore sub-agents started by flow agents (not by the main session) when they name no model.",
+      "description": "Advanced: Model alias for read-only Explore sub-agents started by flow agents (not by the main session) when they name no model.",
       "default": "haiku",
       "options": ["haiku", "sonnet", "opus"]
     },
     "conflict_model": {
       "type": "string",
       "title": "Conflict model",
-      "description": "Model alias for the sub-agent the reviewer starts to resolve a merge conflict in code files or a combination failure.",
+      "description": "Advanced: Model alias for the sub-agent the reviewer starts to resolve a merge conflict in code files or a combination failure.",
       "default": "opus",
       "options": ["opus", "sonnet", "haiku"]
     },
     "manager_model": {
       "type": "string",
       "title": "Manager model",
-      "description": "Model alias for managers. Set explicitly so it does not follow the main session's model.",
+      "description": "Core: Model alias for managers. Set explicitly so it does not follow the main session's model.",
       "default": "opus",
       "options": ["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"]
     },
     "reviewer_model": {
       "type": "string",
       "title": "Reviewer model",
-      "description": "Model alias for the reviewer. Set explicitly so it does not follow the main session's model.",
+      "description": "Advanced: Model alias for the reviewer. Set explicitly so it does not follow the main session's model.",
       "default": "sonnet",
       "options": ["sonnet", "sonnet[1m]", "opus", "opus[1m]", "haiku"]
     },
     "language": {
       "type": "string",
       "title": "Language",
-      "description": "The language agents write PRs, briefs and reports in.",
+      "description": "Advanced: The language agents write PRs, briefs and reports in.",
       "default": "English"
     },
     "preflight": {
       "type": "string",
       "title": "Pre-flight",
-      "description": "on: a manager files a pre-flight (acceptance criteria, what already shipped, dependencies, questions) before it may start workers, and you get one combined round of the questions. off: managers start workers at once. A task whose prompt has the line `Pre-flight: skip` is exempt.",
+      "description": "Advanced: on: a manager files a pre-flight (acceptance criteria, what already shipped, dependencies, questions) before it may start workers, and you get one combined round of the questions. off: managers start workers at once. A task whose prompt has the line `Pre-flight: skip` is exempt.",
       "default": "on",
       "options": ["on", "off"]
     },
     "preflight_wait": {
       "type": "number",
       "title": "Pre-flight wait (minutes)",
-      "description": "How long a round waits for managers that have not filed before it goes to you without them.",
+      "description": "Advanced: How long a round waits for managers that have not filed before it goes to you without them.",
       "default": 10
     },
     "release": {
       "type": "string",
       "title": "Release at merge",
-      "description": "on: workers add changelog lines under `## [Unreleased]` and never change the version; the reviewer, once per batch after merging, moves them into a new version section, bumps the version files (patch by default; minor or major when a PR asks with the handover `release` field or a flow:minor / flow:major label) and commits \"Release x.y.z\". off: nothing changes.",
+      "description": "Core: on: workers add changelog lines under `## [Unreleased]` and never change the version; the reviewer, once per batch after merging, moves them into a new version section, bumps the version files (patch by default; minor or major when a PR asks with the handover `release` field or a flow:minor / flow:major label) and commits \"Release x.y.z\". off: nothing changes.",
       "default": "off",
       "options": ["on", "off"]
     },
     "changelog_file": {
       "type": "string",
       "title": "Changelog file",
-      "description": "The changelog (Keep a Changelog style) the release cuts.",
+      "description": "Advanced: The changelog (Keep a Changelog style) the release cuts.",
       "default": "CHANGELOG.md"
     },
     "cleanup": {
       "type": "string",
       "title": "Cleanup",
-      "description": "auto: after each PR the reviewer merges, and when the reviewer ends, remove worktrees and local branches of finished work that are clean and on the base or in a merged PR. off: only /flow clean. Uncommitted, unpushed, locked and live work is never removed.",
+      "description": "Advanced: auto: after each PR the reviewer merges, and when the reviewer ends, remove worktrees and local branches of finished work that are clean and on the base or in a merged PR. off: only /flow clean. Uncommitted, unpushed, locked and live work is never removed.",
       "default": "auto",
       "options": ["auto", "off"]
     },
     "worker_harness": {
       "type": "string",
       "title": "Worker harness",
-      "description": "What managers start workers with: agent (a flow:worker in this session), or a harness run in a terminal: claude, codex, gemini, opencode, or a name from the harnesses setting. Managers can still pick another one per worker.",
+      "description": "Advanced: What managers start workers with: agent (a flow:worker in this session), or a harness run in a terminal: claude, codex, gemini, opencode, or a name from the harnesses setting. Managers can still pick another one per worker.",
       "default": "agent"
     },
     "session_host": {
       "type": "string",
       "title": "Session host",
-      "description": "Where workers in other harnesses run: auto (Orca when it is running, else tmux), orca or tmux.",
+      "description": "Advanced: Where workers in other harnesses run: auto (Orca when it is running, else tmux), orca or tmux.",
       "default": "auto",
       "options": ["auto", "orca", "tmux"]
     },
     "harnesses": {
       "type": "string",
       "title": "Harnesses",
-      "description": "JSON object of harness name to a start command line, or to {start, resume?, program?, quota?, digest?}, over the built-ins, e.g. {\"aider\": {\"start\": \"aider --yes-always --message-file {prompt_file}\", \"resume\": \"aider --restore-chat-history\"}}. {prompt} is the prompt as one shell word, {prompt_file} its path; quota is a shell command printing a percent left; digest is codex-rollout or claude-transcript; \"\" removes a built-in.",
+      "description": "Advanced: JSON object of harness name to a start command line, or to {start, resume?, program?, quota?, digest?}, over the built-ins, e.g. {\"aider\": {\"start\": \"aider --yes-always --message-file {prompt_file}\", \"resume\": \"aider --restore-chat-history\"}}. {prompt} is the prompt as one shell word, {prompt_file} its path; quota is a shell command printing a percent left; digest is codex-rollout or claude-transcript; \"\" removes a built-in.",
       "default": ""
     },
     "min_quota": {
       "type": "number",
       "title": "Minimum harness quota",
-      "description": "A session worker whose harness reports its quota (codex built in, or a harness with a quota command) is refused, and the manager starts an agent worker instead, when less than this percent is left. 0: never refused.",
+      "description": "Advanced: A session worker whose harness reports its quota (codex built in, or a harness with a quota command) is refused, and the manager starts an agent worker instead, when less than this percent is left. 0: never refused.",
       "default": 10
     },
     "base_branch": {
       "type": "string",
       "title": "Base branch",
-      "description": "Branch PRs target and the reviewer pushes to. Empty: the remote's default branch.",
+      "description": "Advanced: Branch PRs target and the reviewer pushes to. Empty: the remote's default branch.",
       "default": ""
     }
   }

@@ -107,6 +107,8 @@ with defaults, is in the [reference](docs/reference.md).
 - [Reference](docs/reference.md): every setting, the tools agents use, and the files flow keeps.
 - Workers can also run in other coding tools, such as Codex. See
   [Workers in other harnesses](docs/how-it-works.md#workers-in-other-harnesses).
+- Workers run as in-session agents by default, so neither Orca nor tmux is needed. See
+  [Without Orca](docs/reference.md#without-orca).
 
 ## Limits
 
