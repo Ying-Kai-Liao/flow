@@ -4,7 +4,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import { fill, SESSION_PROMPT, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
-import { cappedHandovers } from '../hooks/register'
+import { cappedHandovers } from '../hooks/status-run'
 import type { Handover } from '../types'
 
 type Dollar = Parameters<TestBody>[0]
