@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Internal: agent-type constants and the settings mirrors moved from register.tsx to hooks/core.ts (no behavior change)
+### Changed
+
+- Internal: standing-answer and guard-test rule handling moved out of register.tsx into hooks/standing-run.ts; no behavior change.
 
 ## [0.6.19] - 2026-10-11
 
