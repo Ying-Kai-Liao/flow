@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { deliver, flushAgent, resetDelivery, HOLD_CAP_MS, WINDOW_MS, type DeliverIo } from '../hooks/deliver'
+import { deliver, flushAgent, holdForReviewer, resetDelivery, HOLD_CAP_MS, REVIEWER_HOLD_MS, WINDOW_MS, type DeliverIo } from '../hooks/deliver'
 
 // A fake world: agent statuses, the sends, the main-session fallbacks and a clock moved by hand.
 function world() {
@@ -9,9 +9,17 @@ function world() {
   const main: string[] = []
   let now = 0
   const timers: { at: number; fn: () => void }[] = []
+  const state = { refuse: false, rosterDown: false }
   const io: DeliverIo = {
-    status: async id => status.get(id),
-    send: async (id, text) => void sent.push({ to: id, text }),
+    status: async id => {
+      if (state.rosterDown) throw new Error('roster unavailable')
+      return status.get(id)
+    },
+    send: async (id, text) => {
+      if (state.refuse) throw new Error('refused')
+      sent.push({ to: id, text })
+    },
+    name: async id => (id === 'm1' ? 'mgr-name' : undefined),
     after: (ms, fn) => void timers.push({ at: now + ms, fn }),
   }
   const advance = async (ms: number) => {
@@ -20,10 +28,10 @@ function world() {
       if (t.at <= now) t.fn()
       else timers.push(t)
     }
-    await new Promise(r => setTimeout(r, 0))
+    for (let i = 0; i < 50; i++) await Promise.resolve()
   }
   resetDelivery(t => void main.push(t))
-  return { io, status, sent, main, advance }
+  return { io, status, sent, main, advance, state }
 }
 
 test('a running agent gets the message at once', async () => {
@@ -100,4 +108,44 @@ test('queued text falls back when the agent ends before the window closes', asyn
   await w.advance(WINDOW_MS)
   expect(w.sent).toEqual([])
   expect(w.main.length).toBe(1)
+})
+
+test('a refused send reaches onGone, else main with the agent name', async () => {
+  const w = world()
+  w.status.set('m1', 'running')
+  w.state.refuse = true
+  const fell: string[] = []
+  expect(await deliver(w.io, 'm1', 'x', { onGone: t => void fell.push(t) })).toBe(false)
+  expect(fell).toEqual(['x'])
+  expect(await deliver(w.io, 'm1', 'y')).toBe(false)
+  expect(w.main).toEqual(['y (mgr-name ended before this was delivered.)'])
+})
+
+test('an unreadable roster sends now instead of treating the agent as ended', async () => {
+  const w = world()
+  w.state.rosterDown = true
+  expect(await deliver(w.io, 'm1', 'now')).toBe(true)
+  expect(w.sent).toEqual([{ to: 'm1', text: 'now' }])
+  expect(w.main).toEqual([])
+})
+
+test('a queue held for a reviewer goes out on the next turn, not at the window', async () => {
+  const w = world()
+  await deliver(w.io, 'm1', 'plan notice')
+  holdForReviewer(w.io, 'm1')
+  await w.advance(WINDOW_MS * 2)
+  expect(w.sent).toEqual([])
+  w.status.set('m1', 'running')
+  await flushAgent(w.io, 'm1')
+  expect(w.sent).toEqual([{ to: 'm1', text: 'plan notice' }])
+})
+
+test('a queue held for a reviewer is sent by the safety timer when the message never lands', async () => {
+  const w = world()
+  await deliver(w.io, 'm1', 'plan notice')
+  holdForReviewer(w.io, 'm1')
+  await w.advance(REVIEWER_HOLD_MS - 1)
+  expect(w.sent).toEqual([])
+  await w.advance(1)
+  expect(w.sent).toEqual([{ to: 'm1', text: 'plan notice' }])
 })

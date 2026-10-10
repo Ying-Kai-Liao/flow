@@ -6,7 +6,7 @@ import { absolutePath, parseAttachments, rewriteAttachments } from './attachment
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
-import { deliver as deliverTo, flushAgent as flushTo, resetDelivery, type DeliverIo, type DeliverOptions } from './deliver'
+import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo, resetDelivery, ENDED, LIVE, type DeliverIo, type DeliverOptions } from './deliver'
 import { addStep, costBlock, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
@@ -83,9 +83,7 @@ const REVIEWER = 'flow:reviewer'
 // The reviewer's old agent type: a reviewer started by an older version still runs under it.
 const QUEUE = 'flow:queue'
 const isReviewer = (type: string): boolean => type === REVIEWER || type === QUEUE
-const ENDED = new Set(['completed', 'failed', 'killed'])
 const LIVE_STATUS = new Set(['running', 'pending'])
-const LIVE = new Set(['pending', 'running', 'waiting'])
 // Display order: what may need a person first, finished agents last.
 const ORDER = ['waiting', 'idle', 'running', 'pending', 'failed', 'killed', 'completed']
 const GLYPH: Record<string, string> = {
@@ -305,7 +303,7 @@ async function signalSlots($: EngineInterface, granted: SlotEntry[], left: strin
     const f = grantFile(g.key)
     if (f) await sh($, 'mkdir -p "$(dirname "$1")" && : > "$1"', f)
     if (g.key !== 'main') {
-      await deliver($, g.key, `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`).catch(() => undefined)
+      await deliver($, g.key, `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`, { onGone: () => undefined }).catch(() => undefined)
     }
   }
 }
@@ -1111,12 +1109,12 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
     delivered = false
     const alive = (a: AgentInfo | undefined): a is AgentInfo => a !== undefined && (LIVE.has(a.status) || a.status === 'idle')
     if (alive(asker)) {
-      delivered = await deliver($, asker.id, answerMessage(q, answer, by, isDefault), { urgent: q.blocking === true }).catch(() => false)
+      delivered = await deliver($, asker.id, answerMessage(q, answer, by, isDefault), { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
     } else if (isFyi(q) && q.addressee !== 'main') {
       // A finished owner cannot act on an overturn: its manager (the notes owner) gets it, naming the owner.
       const mgr = (await $.agent.list()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && alive(a))
       if (mgr !== undefined) {
-        delivered = await deliver($, mgr.id, `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s FYI; ${q.owner} is no longer running, so act on it yourself or with a new worker.)`, { urgent: q.blocking === true }).catch(() => false)
+        delivered = await deliver($, mgr.id, `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s FYI; ${q.owner} is no longer running, so act on it yourself or with a new worker.)`, { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
       }
     }
     if (!delivered) hint = `; ${q.owner} is gone: main should relay it to ${noteKey(q.owner)}-2`
@@ -2008,11 +2006,22 @@ const wokenByOthers = new Set<string>()
 // `$` stays in this file: deliver.ts gets the three calls it needs.
 const ioOf = ($: EngineInterface): DeliverIo => ({
   status: async id => (await $.agent.list()).find(a => a.id === id)?.status,
-  send: async (id, text) => void (await $.session.send({ to: { agentId: id }, text })),
+  send: async (id, text) => {
+    const r = await $.session.send({ to: { agentId: id }, text })
+    // A refused send is not a delivery: deliver() runs the fallback. The reason is kept for the caller that logs it.
+    if (r?.isDelivered === false) {
+      refusals.set(id, r.reason ?? 'unknown')
+      throw new Error(r.reason ?? 'not delivered')
+    }
+    refusals.delete(id)
+  },
   after: (ms, fn) => void $.clock.after(ms, fn),
+  name: async id => (await $.agent.list()).find(a => a.id === id)?.name,
 })
+const refusals = new Map<string, string>()
 const deliver = ($: EngineInterface, id: string, text: string, opts?: DeliverOptions) => deliverTo(ioOf($), id, text, opts)
 const flushAgent = ($: EngineInterface, id: string) => flushTo(ioOf($), id)
+const holdForReviewer = ($: EngineInterface, id: string) => holdTo(ioOf($), id)
 const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
 
 const normText = (t: string): string => t.replace(/\s+/g, ' ').trim()
@@ -2781,8 +2790,9 @@ function resumeInstructions(items: Leftover[], limit: number, notes: Map<string,
 // The wrap-up as a message, for an agent idle or waiting between turns. A refused send is logged, not retried.
 async function sendWrapUp($: EngineInterface, me: { id: string; type: string; name?: string }, percent: number, limit: string): Promise<void> {
   const text = wrapUpText(ROLE[me.type] ?? 'worker', percent, limit)
-  const sent = await deliver($, me.id, text, { urgent: true }).catch(() => false)
-  if (!sent) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered`)
+  // A wrap-up for an agent that is gone is only logged, not sent on to main.
+  const sent = await deliver($, me.id, text, { urgent: true, onGone: () => undefined }).catch(() => false)
+  if (!sent) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered: ${refusals.get(me.id) ?? 'unknown'}`)
 }
 
 // An agent past the threshold reads the wrap-up after a tool result: on its first tool call
@@ -4237,8 +4247,9 @@ export const register: Register = (on, options) => {
       await best($, 'marking a wake-up', async () => {
         const target = (await $.agent.list()).find(a => a.id === to || a.name === to)
         if (target === undefined || target.type !== MANAGER) return
-        // The reviewer's message wakes the manager anyway: what waited for it goes out with it.
-        if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) await flushAgent($, target.id)
+        // The reviewer's message starts the manager's turn: what waited for it rides that turn (turn.step
+        // flushes it) instead of waking the manager a second time just before. A timer covers a message that never lands.
+        if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) holdForReviewer($, target.id)
         if (id === undefined) wokenByOthers.delete(target.id)
         else if (target.status !== 'running') wokenByOthers.add(target.id)
       })
