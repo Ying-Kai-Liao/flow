@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Move the reviewer tool handler, the reviewer report routing and the reviewer start out of register.tsx (pure refactor)
+
 ## [0.6.27] - 2026-10-11
 
 ### Changed
