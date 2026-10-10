@@ -16,7 +16,9 @@ import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
 import { gatherLeftovers as gatherLeftoversTo, resumeInstructions } from './resume'
 import type { Gathered, Leftover, OwnerNotes, ResumeIo } from './resume'
 import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo, resetDelivery, ENDED, LIVE, type DeliverIo, type DeliverOptions } from './deliver'
-import { addStep, addTurn, baseName, costBlock, entriesOfBranch, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
+import { addStep, addTurn, baseName, entriesOfBranch, prCost, reportSuffix, setIdentity } from './cost'
+import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
+import type { CostIo } from './cost-run'
 import { backNote, effectiveSize, floorFrom, generation, isSuccessorName, modelFor, parseSize } from './routing'
 import type { Size, SizeModels } from './routing'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
@@ -53,6 +55,8 @@ import { isFable, mergeLayers, renameOptions, settingsOf } from './settings'
 import type { WarnSettings } from './settings'
 import { bumpVersion, changelogSection, cutChangelog, highestBump, isBump, labelBump, localDate, readVersion, setVersion } from './release'
 import type { Bump } from './release'
+import { releaseTool } from './release-run'
+import type { ReleaseIo } from './release-run'
 import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
@@ -459,70 +463,21 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
 // The last batch the release tool cut, so a retried push does not release twice.
 let lastRelease: { key: string; version: string } | undefined
 
-// Tag the release commit, push the tag and create the GitHub Release. Every step is idempotent and retried, and
-// a failure is a returned line, never a throw: the release commit is already pushed and the batch stays done.
-const PUBLISH_ATTEMPTS = 4
-async function publishRelease($: EngineInterface, settings: Settings, dir: string, wanted: string | undefined): Promise<string> {
-  if (!settings.release) return 'Refused: the release setting is off, so nothing is published.'
-  if (!settings.releaseGithub) return 'Refused: the release_github setting is off, so nothing is published.'
-  if (!dir.startsWith('/')) return 'Refused: dir must be the absolute path of your worktree.'
-  let version = wanted
-  if (version === undefined) {
-    let last = lastRelease
-    if (last === undefined) {
-      const stateD = await stateDir($)
-      const disk = stateD === undefined ? undefined : await readJson($, `${stateD}/release.json`) as { key?: string; version?: string } | undefined
-      if (typeof disk?.version === 'string') last = { key: String(disk.key ?? ''), version: disk.version }
-    }
-    version = last?.version
-  }
-  if (version === undefined) return 'Refused: no version to publish; pass version or cut a release first.'
-  const tag = `v${version}`
-  const git = (...a: string[]) => $.process.run(['git', '-C', dir, ...a])
-  const tail = (r: { stderr: string; stdout: string }) => (r.stderr.trim() || r.stdout.trim()).split('\n').slice(-3).join(' ').slice(0, 300)
-  const run = async (step: string, argv: string[]): Promise<{ ok: true } | { ok: false; line: string }> => {
-    let last = ''
-    for (let i = 0; i < PUBLISH_ATTEMPTS; i++) {
-      if (i > 0) await $.clock.sleep(2000 * 2 ** (i - 1))
-      try {
-        const r = await $.process.run(argv, { cwd: dir })
-        if (r.exitCode === 0) return { ok: true }
-        last = tail(r)
-      } catch (err) { last = err instanceof Error ? err.message : String(err) }
-    }
-    return { ok: false, line: `Not published: ${step} failed: ${last}. The release commit is pushed; report this, the batch stays done.` }
-  }
-  try {
-    // The release commit may sit below a merge commit (a rejected push is fetched, merged and pushed again).
-    const log = await git('log', '--first-parent', '-n', '50', '--format=%H %s')
-    if (log.exitCode !== 0) return `Not published: could not read the log of ${dir}: ${tail(log)}. The release commit is pushed; report this, the batch stays done.`
-    const sha = log.stdout.split('\n').find(l => l.slice(41) === `Release ${version}`)?.slice(0, 40)
-    if (sha === undefined) return `Refused: no commit "Release ${version}" in the last 50 first-parent commits of ${dir}. Publish only after the release commit is in HEAD.`
-    const anc = await git('merge-base', '--is-ancestor', sha, 'HEAD')
-    if (anc.exitCode !== 0) return `Refused: the commit "Release ${version}" is not an ancestor of HEAD in ${dir}.`
-    const existing = await git('rev-parse', '--verify', '--quiet', `refs/tags/${tag}^{commit}`)
-    if (existing.exitCode === 0 && existing.stdout.trim() !== sha) return `Not published: tag ${tag} already exists at ${existing.stdout.trim().slice(0, 8)}, not at the release commit ${sha.slice(0, 8)}; it was not moved. The release commit is pushed; report this, the batch stays done.`
-    if (existing.exitCode !== 0) {
-      const t = await git('tag', '-a', tag, '-m', `Release ${version}`, sha)
-      if (t.exitCode !== 0) return `Not published: tagging failed: ${tail(t)}. The release commit is pushed; report this, the batch stays done.`
-    }
-    const pushed = await run('pushing the tag', ['git', '-C', dir, 'push', 'origin', tag])
-    if (!pushed.ok) return pushed.line
-    const view = await $.process.run(['gh', 'release', 'view', tag], { cwd: dir })
-    if (view.exitCode === 0) return `Published ${tag}: tag pushed, GitHub Release already existed.`
-    const logName = settings.changelogFile || 'CHANGELOG.md'
-    const section = await $.fs.exists(`${dir}/${logName}`) ? changelogSection(await $.fs.read(`${dir}/${logName}`), version) : undefined
-    const stateD = await stateDir($)
-    const notes = `${stateD ?? '/tmp'}/release-notes-${tag}.md`
-    await $.fs.write(notes, section !== undefined && section !== '' ? section + '\n' : `Release ${version}\n`)
-    const made = await run('gh release create', ['gh', 'release', 'create', tag, '--title', tag, '--notes-file', notes, '--verify-tag'])
-    if (!made.ok) return made.line
-    const url = await $.process.run(['gh', 'release', 'view', tag, '--json', 'url', '--jq', '.url'], { cwd: dir })
-    return `Published ${tag}: tag pushed, GitHub Release created${url.exitCode === 0 && url.stdout.trim() !== '' ? ' ' + url.stdout.trim() : ''}.${section === undefined || section === '' ? ` The changelog has no ${version} section, so the notes are "Release ${version}".` : ''}`
-  } catch (err) {
-    return `Not published: ${err instanceof Error ? err.message : String(err)}. The release commit is pushed; report this, the batch stays done.`
-  }
-}
+const releaseIoOf = ($: EngineInterface): ReleaseIo => ({
+  exec: (argv, cwd) => cwd === undefined ? $.process.run(argv) : $.process.run(argv, { cwd }),
+  sleep: ms => $.clock.sleep(ms),
+  now: () => $.clock.now(),
+  exists: path => $.fs.exists(path),
+  read: path => $.fs.read(path),
+  write: async (path, text) => { await $.fs.write(path, text) },
+  stateDir: () => stateDir($),
+  readJson: path => readJson($, path),
+  writeJsonAtomic: (path, obj) => writeJsonAtomic($, path, obj),
+  getLast: () => lastRelease,
+  setLast: last => { lastRelease = last },
+  handovers: () => read($, handovers),
+  batch: async () => (await read($, pushState)).batch,
+})
 
 // Managers whose end already freed a slot (and woke main), so a poll does not wake it twice.
 const freedSeen = new Set<string>()
@@ -734,65 +689,24 @@ async function readJson($: EngineInterface, path: string): Promise<unknown> {
 }
 
 // --- Cost ledger ---
-// Loaded from disk once, before the first change, so what this run counts is added to the history.
-let ledgerLoad: Promise<void> | undefined
-let ledgerSaveDue = false
-
-function loadLedger($: EngineInterface): Promise<void> {
-  ledgerLoad ??= (async () => {
-    try {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeLedger(await readJson($, `${dir}/ledger.json`))
-      const now = await $.clock.now()
-      await update($, ledger, cur => pruneLedger(mergeLedgers(disk, cur), now))
-    } catch {
-      // No history: count from here.
-    }
-  })()
-  return ledgerLoad
-}
-
-async function saveLedger($: EngineInterface): Promise<void> {
-  try {
-    const dir = await stateDir($)
-    if (dir === undefined) return
-    await $.process.run(['mkdir', '-p', dir])
-    await writeJsonAtomic($, `${dir}/ledger.json`, pruneLedger(await read($, ledger), await $.clock.now()))
-  } catch {
-    // The meter is best-effort.
-  }
-}
-
-// Every step changes the ledger; the file is written at most every few seconds.
-async function changeLedger($: EngineInterface, fn: (l: Ledger, now: number) => Ledger): Promise<void> {
-  await loadLedger($)
-  const now = await $.clock.now()
-  await update($, ledger, l => fn(l, now))
-  if (ledgerSaveDue) return
-  ledgerSaveDue = true
-  $.clock.after(3000, () => { ledgerSaveDue = false; void saveLedger($) })
-}
-
-// Main's entry is per session: the ledger outlives the session, and its steps must not merge with an earlier one's.
-async function mainKey($: EngineInterface): Promise<string> {
-  const u = await $.session.usage().then(x => x, () => undefined)
-  return `main@${u?.startedAt ?? 0}`
-}
-
-// The cost block of status, or nothing before the first counted step.
-async function costLines($: EngineInterface, prs: { pr: number; branch: string }[], keep?: (e: Ledger[string]) => boolean): Promise<string[]> {
-  try {
-    await loadLedger($)
-    const start = (await $.session.usage().then(x => x, () => undefined))?.startedAt ?? 0
-    const live = new Set((await read($, roster)).map(a => a.id))
-    const all = await read($, ledger)
-    const led = keep === undefined ? all : Object.fromEntries(Object.entries(all).filter(([, e]) => keep(e)))
-    return costBlock(led, prs, Object.keys(await read($, sessions)).length > 0, { start, live })
-  } catch {
-    return []
-  }
-}
+const costIoOf = ($: EngineInterface): CostIo => ({
+  stateDir: () => stateDir($),
+  readJson: path => readJson($, path),
+  writeJsonAtomic: (path, obj) => writeJsonAtomic($, path, obj),
+  mkdirp: async dir => { await $.process.run(['mkdir', '-p', dir]) },
+  now: () => $.clock.now(),
+  after: (ms, fn) => { $.clock.after(ms, fn) },
+  ledger: () => read($, ledger),
+  updateLedger: async fn => { await update($, ledger, fn) },
+  startedAt: async () => (await $.session.usage().then(x => x, () => undefined))?.startedAt,
+  liveIds: async () => (await read($, roster)).map(a => a.id),
+  hasSessions: async () => Object.keys(await read($, sessions)).length > 0,
+})
+const loadLedger = ($: EngineInterface): Promise<void> => loadLedgerTo(costIoOf($))
+const changeLedger = ($: EngineInterface, fn: (l: Ledger, now: number) => Ledger): Promise<void> => changeLedgerTo(costIoOf($), fn)
+const mainKey = ($: EngineInterface): Promise<string> => mainKeyTo(costIoOf($))
+const costLines = ($: EngineInterface, prs: { pr: number; branch: string }[], keep?: (e: Ledger[string]) => boolean): Promise<string[]> =>
+  costLinesTo(costIoOf($), prs, keep)
 
 // Inbox changes run one after another: two answers at once must not each start from the same file.
 let inboxChain: Promise<unknown> = Promise.resolve()
@@ -2390,15 +2304,7 @@ async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>,
 }
 
 // The reviewer's report with the PR's workers' cost appended, once.
-async function withCost($: EngineInterface, branch: string, report: string): Promise<string> {
-  if (report.includes('| cost:')) return report
-  try {
-    await loadLedger($)
-    return `${report}${reportSuffix(prCost(await read($, ledger), branch))}`
-  } catch {
-    return report
-  }
-}
+const withCost = ($: EngineInterface, branch: string, report: string): Promise<string> => withCostTo(costIoOf($), branch, report)
 
 // How many finished handovers status lists; the rest only count, `pr:<n>` gives any one in full.
 const FINISHED_SHOWN = 5
@@ -3708,62 +3614,7 @@ export const register: Register = (on, options) => {
     return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The reviewer reports back to ${h.reportTo} by message.${dest.note ?? ''}${labelNote}${envNote}` }
   })
 
-  on('tool.call', { tool: 'mcp__flow__release' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    if (!settings.release) return { result: 'Refused: the release setting is off, so nothing is released. Skip the release step.' }
-    const dir = String(input.dir ?? '').replace(/\/+$/, '')
-    if (input.action === 'publish') return { result: await publishRelease($, settings, dir, typeof input.version === 'string' ? input.version.replace(/^v/, '') : undefined) }
-    const prs = Array.isArray(input.prs) ? input.prs.map(Number).filter(n => Number.isInteger(n) && n > 0) : []
-    if (!dir.startsWith('/')) return { result: 'Refused: dir must be the absolute path of your worktree.' }
-    if (prs.length === 0) return { result: 'Refused: prs must list the PR numbers merged in this batch.' }
-    const key = [...new Set(prs)].sort((a, b) => a - b).join(',')
-    const stateD = await stateDir($)
-    let last = lastRelease
-    if (last === undefined && stateD !== undefined) {
-      const disk = await readJson($, `${stateD}/release.json`) as { key?: string; version?: string } | undefined
-      if (typeof disk?.key === 'string' && typeof disk.version === 'string') last = { key: disk.key, version: disk.version }
-    }
-    // A batch the user released that went stale (the base moved) is built and released again: that re-cut is allowed.
-    const open = (await read($, pushState)).batch
-    const recut = input.recut === true && open !== undefined && open.state !== 'ready'
-    if (last?.key === key && !recut) return { result: `Refused: already released ${last.version} for PRs ${key.replaceAll(',', ', ')}. The release commit is in your worktree; go on to the push.` }
-    let files = settings.releaseFiles ?? []
-    if (files.length === 0 && await $.fs.exists(`${dir}/package.json`)) files = ['package.json']
-    if (files.length === 0) return { result: 'Refused: no version file. Set release_files (repo-relative JSON or TOML files) in .claude/flow.json, or add a package.json at the repo root; a release without a version is meaningless.' }
-    const logName = settings.changelogFile || 'CHANGELOG.md'
-    if (!(await $.fs.exists(`${dir}/${logName}`))) return { result: `Refused: the changelog ${logName} does not exist in ${dir}; create it or set changelog_file.` }
-    const all = await read($, handovers)
-    const asked: (Bump | undefined)[] = []
-    const titles: string[] = []
-    let ghNote = ''
-    for (const pr of prs) {
-      const h = all[String(pr)]
-      asked.push(h?.release)
-      titles.push(`- ${h?.title ?? 'PR'} (#${pr})`)
-      const v = await $.process.run(['gh', 'pr', 'view', String(pr), '--json', 'labels'])
-      let names: string[] | undefined
-      if (v.exitCode === 0) {
-        try { names = ((JSON.parse(v.stdout) as { labels?: { name: string }[] }).labels ?? []).map(l => l.name) } catch { names = undefined }
-      }
-      if (names === undefined) ghNote = ' gh could not read some PR labels; those PRs counted by their handover release field only.'
-      else asked.push(labelBump(names))
-    }
-    const kind = highestBump(asked)
-    try {
-      const texts = await Promise.all(files.map(f => $.fs.read(`${dir}/${f}`)))
-      const next = bumpVersion(readVersion(texts[0]!, files[0]!), kind)
-      const date = localDate(await $.clock.now())
-      const log = cutChangelog(await $.fs.read(`${dir}/${logName}`), next, date, titles)
-      const updated = files.map((f, i) => setVersion(texts[i]!, f, next))
-      for (const [i, f] of files.entries()) await $.fs.write(`${dir}/${f}`, updated[i]!)
-      await $.fs.write(`${dir}/${logName}`, log)
-      lastRelease = { key, version: next }
-      if (stateD !== undefined) await writeJsonAtomic($, `${stateD}/release.json`, lastRelease)
-      return { result: `Released ${next} (${kind} bump from ${readVersion(texts[0]!, files[0]!)}). Changed: ${[...files, logName].join(', ')}.${ghNote} Now run: git -C ${dir} commit -am "Release ${next}" (add your attribution lines), then push as usual.` }
-    } catch (err) {
-      return { result: `Refused: ${err instanceof Error ? err.message : String(err)}` }
-    }
-  })
+  on('tool.call', { tool: 'mcp__flow__release' }, ($, e) => releaseTool(releaseIoOf($), settings, e as unknown as Record<string, unknown>))
 
   for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
