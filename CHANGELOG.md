@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/flow ok`, `/flow no <id> [what instead]` and `/flow answer <id> <choice>` answer inbox items from the prompt; `/flow ok` never answers deploy, push, env or guard items.
+- `/flow inbox all` and `/flow inbox <id>`.
+
+### Changed
+
+- Fewer wake-ups: messages to an idle agent that arrive within 8 seconds go out as one; urgent ones (blocking answers, push-gate send-backs, max-continues, wrap-up) go at once; a non-blocking ask waits for the manager's next turn (10 minutes at most). See "Message delivery" in `docs/reference.md`.
+- `/flow inbox` is a skimmable view: a summary line, questions (blocking first, NEEDS YOU for deploy/push/env), FYIs grouped by owner with repeated topics and stale items collapsed, and person commands instead of tool-call hints.
+
 ## [0.6.7] - 2026-10-10
 
 ### Added
@@ -34,17 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `reviewer_model` now defaults to `sonnet` (was `opus`).
-### Changed
-
-- Fewer wake-ups: messages to an idle agent that arrive within 8 seconds go out as one; urgent ones (blocking answers, push-gate send-backs, max-continues, wrap-up) go at once; a non-blocking ask waits for the manager's next turn (10 minutes at most). See "Message delivery" in `docs/reference.md`.
-### Added
-
-- `/flow ok`, `/flow no <id> [what instead]` and `/flow answer <id> <choice>` answer inbox items from the prompt; `/flow ok` never answers deploy, push, env or guard items.
-- `/flow inbox all` and `/flow inbox <id>`.
-
-### Changed
-
-- `/flow inbox` is a skimmable view: a summary line, questions (blocking first, NEEDS YOU for deploy/push/env), FYIs grouped by owner with repeated topics and stale items collapsed, and person commands instead of tool-call hints.
 
 ## [0.6.4] - 2026-10-10
 
