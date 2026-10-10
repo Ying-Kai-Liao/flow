@@ -13,15 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Internal: the release tool and cost ledger moved from register.tsx into hooks/release-run.ts and hooks/cost-run.ts (no behavior change)
 - Internal: the push gate and deploy gate logic moved out of `register.tsx` into `hooks/pushgate-run.ts` and `hooks/deploy-run.ts`; no behavior change.
+### Changed
+
+- Moved the pure meter and label helpers out of `hooks/register.tsx` into `hooks/meter.ts` (no behavior change).
 
 ## [0.6.20] - 2026-10-11
 
 ### Changed
 
 - Internal: agent-type constants and the settings mirrors moved from register.tsx to hooks/core.ts (no behavior change)
-### Changed
-
-- Moved the pure meter and label helpers out of `hooks/register.tsx` into `hooks/meter.ts` (no behavior change).
 
 ## [0.6.19] - 2026-10-11
 
