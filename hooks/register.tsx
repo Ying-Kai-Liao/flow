@@ -6,13 +6,12 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
 import type { Activity, AgentRow, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
-import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
 import { grantFile, grantSlots, heldBy, reapSlots, slotLine, span, CLAIM_MS, LEASE_MS, WAIT_DEFAULT_S, WAIT_MAX_S } from './slots'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { noteWork, runLine, serialFastForward, type RunWork } from './mainff'
 import { deleteMergedBranch } from './branchdelete'
 import { NO_FAILS, noteRelease, withFailed, withFlaky, type TestFails } from './testfail'
-import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
+import { ancestorPids, ancestryQueries, containedCandidates, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import { sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
 import { gatherLeftovers as gatherLeftoversTo, resumeInstructions } from './resume'
@@ -21,8 +20,9 @@ import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo,
 import { addStep, addTurn, baseName, entriesOfBranch, prCost, reportSuffix, setIdentity } from './cost'
 import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
 import type { CostIo } from './cost-run'
-import { backNote, effectiveSize, floorFrom, generation, isSuccessorName, managerDecision, managerModelFor, MANAGER_FYI_WHY, modelFor, parseSize } from './routing'
-import type { Size, SizeModels } from './routing'
+import { backNote } from './routing'
+import { checkAttachments, CONTINUE_LINE, continuingCount, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
+import type { Routed, SpawnIo } from './spawn'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle, waitsOnReport } from './dag'
@@ -59,7 +59,7 @@ import {
 } from './prompts'
 import type { Settings } from './prompts'
 import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
-import { isFable, mergeLayers, renameOptions, settingsOf } from './settings'
+import { mergeLayers, renameOptions, settingsOf } from './settings'
 import { isBump } from './release'
 import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
@@ -90,7 +90,7 @@ import {
   envSummary, normalizeDeploys, parseEnvInput,
   release, itemViewOf,
 } from './deploy'
-import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, QUEUE, REVIEWER, TEXT_MAX, WORKER, WORKERS } from './core'
+import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, REVIEWER, TEXT_MAX, WORKER, WORKERS } from './core'
 import type { Deploys, Draft, Hold, TargetInfo } from './deploy'
 import {
   closeReturnedEnv as closeReturnedEnvTo, deployTool as deployToolTo, holdTarget as holdTargetTo, onDeployAnswer as onDeployAnswerTo, onEnvAnswer as onEnvAnswerTo,
@@ -1203,226 +1203,25 @@ async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, o
   }
 }
 
-const FLOW_TYPES = new Set(['flow:manager', 'flow:worker', CONTINUE, REVIEWER, QUEUE])
 
-const DIGEST_MAX = 4000
-const CONTINUE_LINE = /^Continue on branch:\s*(flow\/\S+)\s*$/m
-
-const gitOut = async ($: EngineInterface, argv: string[]): Promise<string | undefined> => {
-  const r = await $.process.run(['git', ...argv])
-  return r.exitCode === 0 ? r.stdout.trim() : undefined
-}
-
-// The brief's attachments, checked: each must be a readable file. Returns the prompt with the paths made
-// absolute, or the denial naming every bad path. A prompt without the section is returned as it was.
-async function checkAttachments($: EngineInterface, prompt: string): Promise<{ prompt: string } | { deny: string }> {
-  const items = parseAttachments(prompt)
-  if (items.length === 0) return { prompt }
-  const cwd = (await $.session.cwd().catch(() => undefined)) ?? ''
-  const home = items.some(i => i.path.startsWith('~'))
-    ? (await $.process.run(['sh', '-c', 'printf %s "$HOME"'])).stdout.trim()
-    : ''
-  const ok = async (flag: string, path: string) => (await $.process.run(['test', flag, path])).exitCode === 0
-  const bad: string[] = []
-  const seen = new Set<string>()
-  for (const { path } of items) {
-    const abs = absolutePath(path, cwd, home)
-    if (seen.has(abs)) continue
-    seen.add(abs)
-    if (await ok('-d', abs)) bad.push(`${abs} (a directory: list the files in it)`)
-    else if (!(await ok('-f', abs))) bad.push(`${abs} (does not exist)`)
-    else if (!(await ok('-r', abs))) bad.push(`${abs} (not readable)`)
-  }
-  if (bad.length > 0) {
-    return { deny: `flow: the brief's Attachments must be readable files. Fix or drop:\n${bad.map(b => `- ${b}`).join('\n')}` }
-  }
-  return { prompt: rewriteAttachments(prompt, items, p => absolutePath(p, cwd, home)) }
-}
-
-// A continuing worker's spawn: add the previous worker's digest, then either run it in the old worktree
-// (rewritten to flow:continue with that cwd) or in a new one, removing the old one when that is safe.
-// Best-effort: anything that fails leaves the spawn as the manager wrote it.
-async function prepareContinue($: EngineInterface, e: AgentSpawnInput): Promise<AgentSpawnInput> {
-  const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
-  if (branch === undefined) return e
-  const name = (e as { name?: string }).name ?? e.description
-  try {
-    const owner = await ownerNameOf($, e.parentAgentId)
-    let rec = (await read($, handoffs))[branch]
-    if (rec === undefined) {
-      const ev = (await readLog($)).filter(l => l.event === 'handoff' && l.branch === branch).pop()
-      if (ev !== undefined) {
-        const wl = await gitOut($, ['worktree', 'list', '--porcelain'])
-        const wt = wl === undefined ? undefined : findWorktree(wl, '', branch)
-        rec = {
-          branch, agent: ev.agent ?? '', agentId: '', owner: ev.owner, at: 0, count: 1,
-          ...(ev.text && { digestPath: ev.text }), ...(wt && { worktree: wt.path }),
-        }
-      }
-    }
-    // No handoff on record: a manual continuation, spawned as written.
-    if (rec === undefined) return e
-    const old = rec
-    let prompt = e.prompt
-    if (old.digestPath) {
-      const digest = await $.fs.read(old.digestPath).catch(() => undefined)
-      if (digest) prompt += `\n\n## Transcript digest of the previous worker (${old.digestPath})\n\n${digest.slice(0, DIGEST_MAX)}`
-    }
-    let where = 'new worktree'
-    let out: AgentSpawnInput = e
-    const path = old.worktree
-    if (path !== undefined && (await $.process.run(['test', '-d', path])).exitCode === 0) {
-      const live = (await $.agent.list()).some(a =>
-        (old.agentId !== '' ? a.id === old.agentId : a.name === old.agent) && isLive(a.status))
-      const status = await gitOut($, ['-C', path, 'status', '--porcelain'])
-      const clean = status !== undefined && dirtyFiles(status).length === 0
-      await $.process.run(['git', 'fetch', 'origin', branch])
-      const pushed = await gitOut($, ['rev-parse', `origin/${branch}`])
-      const head = clean ? await gitOut($, ['-C', path, 'rev-parse', 'HEAD']) : undefined
-      let won = false
-      if (clean && !live && pushed !== undefined && head === pushed) {
-        // Claimed in the same update, so a second spawn for the branch does not get the worktree too.
-        await update($, handoffs, hs => {
-          const r = hs[branch] ?? old
-          if (r.takenBy !== undefined) return hs
-          won = true
-          return { ...hs, [branch]: { ...r, takenBy: name } }
-        })
-      }
-      if (won && pushed !== undefined) {
-        where = `same worktree ${path}`
-        prompt += `\n\nYou continue in the same worktree ${path}, on ${branch} at ${pushed.slice(0, 7)}: skip the branch checkout, check \`git status\` is clean, and go on.`
-        out = { ...e, subagentType: CONTINUE, cwd: path }
-      } else {
-        // Clean and fully pushed (at the head or behind it) and nobody uses it: the successor needs the branch free.
-        const behind = clean && pushed !== undefined
-          && (await $.process.run(['git', '-C', path, 'merge-base', '--is-ancestor', 'HEAD', `origin/${branch}`])).exitCode === 0
-        const removable = behind && !live && old.takenBy === undefined
-        if (!(removable && (await gitOut($, ['worktree', 'remove', path])) !== undefined)) {
-          prompt += `\n\nThe previous worker's worktree ${path} is kept, and ${branch} may be checked out there: if \`git checkout -B\` fails, work on a local branch and push \`HEAD:${branch}\`.`
-        }
-      }
-    }
-    await appendLog($, { event: 'continue', agent: name, owner, branch, text: where })
-    return { ...out, prompt }
-  } catch (err) {
-    await warn($, 'preparing a continuation', err)
-    return e
+// Everything the spawn routing in spawn.ts needs from the engine and the plugin's state.
+function spawnIoOf($: EngineInterface): SpawnIo {
+  return {
+    run: argv => $.process.run(argv),
+    cwd: () => $.session.cwd(),
+    agents: () => $.agent.list(),
+    readFile: path => $.fs.read(path),
+    handoffs: () => read($, handoffs),
+    updateHandoffs: fn => update($, handoffs, fn),
+    ownerName: id => ownerNameOf($, id),
+    readLog: () => readLog($),
+    appendLog: event => appendLog($, event),
+    warn: (what, err) => warn($, what, err),
+    loadLedger: () => loadLedger($),
+    ledger: () => read($, ledger),
+    standing: standingIoOf($),
   }
 }
-
-// How many rewritten flow:continue spawns are in the host's hands: the agent.offer hook offers the type then.
-let continuing = 0
-// Dispatches a spawn; a flow:continue one counts while it runs and a refusal comes back as a deny.
-async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev: AgentSpawnInput): Promise<R | { deny: string }> {
-  if (ev.subagentType !== CONTINUE) return next(ev)
-  continuing++
-  try {
-    return await next(ev)
-  } catch (err) {
-    return { deny: String((err as Error).message) }
-  } finally {
-    continuing--
-  }
-}
-
-// Model routing: a worker brief's `Size:` line picks the model; a successor (`x-2`, or a brief that continues a
-// branch) runs at least one size up from the largest size recorded for its predecessors. No size and no
-// escalation leaves the spawn as the manager wrote it.
-type Routed = { size: Size; reason: string; model: string; escalated: boolean }
-
-async function routeWorker($: EngineInterface, e: AgentSpawnInput, models: SizeModels): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
-  const declared = parseSize(e.prompt)
-  const name = (e as { name?: string }).name ?? e.description
-  const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
-  let floor: Size | undefined
-  if (isSuccessorName(name) || branch !== undefined) {
-    await loadLedger($)
-    const gen = generation(name)
-    const before = Object.values(await read($, ledger)).filter(x => x.role === 'worker' && x.name !== name
-      && ((baseName(x.name) === baseName(name) && generation(x.name) < gen) || (branch !== undefined && x.branch === branch)))
-    floor = floorFrom(before.map(x => x.size))
-  }
-  const size = effectiveSize(declared?.size, floor)
-  if (size === undefined) return { e }
-  const model = modelFor(size, models)
-  return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size } }
-}
-
-// The downgrade decision: below large the user can undo the manager's size. Filed by the plugin, owned by the
-// spawning manager and addressed to main like the manager's own decisions; a standing rule can keep or undo it.
-// A decision for the same worker is never filed twice.
-async function fileSizeFyi($: EngineInterface, options: Record<string, unknown>, name: string, parentId: string | undefined, routed: Routed): Promise<void> {
-  if (routed.size === 'large' || parentId === undefined) return
-  const parent = (await $.agent.list()).find(a => a.id === parentId)
-  if (parent === undefined || parent.type !== MANAGER || parent.name === undefined) return
-  const owner = parent.name
-  const decision = `${name} runs ${routed.size} -> ${routed.model}${routed.escalated ? ' (one size up after an earlier worker on this package)' : ''}: ${routed.reason === '' ? 'no reason given' : routed.reason}`
-  const at = await $.clock.now()
-  const { rules } = await loadRules(standingIoOf($), options)
-  const { added, auto } = await withInbox($, cur => {
-    if (cur.items.some(x => x.owner === owner && isFyi(x) && x.topic === 'worker-size' && x.question.startsWith(`${name} runs `))) {
-      return { inbox: cur, out: { added: [] as Array<{ q: Question }>, auto: new Map() as AutoHits } }
-    }
-    const asked = fyiAsked({ decision, why: 'The plugin routes the worker model by the size on its brief; below large a harder package may need a rerun. Undo it to restart the worker at the size you choose.', topic: 'worker-size' })
-    const r = autoAnswer(cur, addQuestions(cur, { name: owner, id: parentId, isManager: true }, 'main', [asked], at, 'fyi'), rules, at)
-    return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
-  })
-  await recordAutoAnswers(standingIoOf($), added, auto, owner)
-}
-
-// A manager's model by the Size line main put on its prompt; a successor (`x-2`) runs one size up from the largest
-// size recorded for its predecessors. No size and no floor leaves the spawn alone.
-async function routeManager($: EngineInterface, e: AgentSpawnInput, small: string, base: string): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
-  const declared = parseSize(e.prompt)
-  const name = (e as { name?: string }).name ?? e.description
-  let floor: Size | undefined
-  if (isSuccessorName(name)) {
-    await loadLedger($)
-    const gen = generation(name)
-    const before = Object.values(await read($, ledger)).filter(x => x.role === 'manager' && baseName(x.name) === baseName(name) && generation(x.name) < gen)
-    floor = floorFrom(before.map(x => x.size))
-  }
-  const size = effectiveSize(declared?.size, floor)
-  if (size === undefined) return { e }
-  const model = managerModelFor(size, small, base)
-  return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size } }
-}
-
-// The manager's own downgrade decision: owned by the manager (so an overturn messages it), addressed to main.
-// Filed once per manager name.
-async function fileManagerSizeFyi($: EngineInterface, options: Record<string, unknown>, name: string, id: string, routed: Routed): Promise<void> {
-  if (routed.size === 'large') return
-  const at = await $.clock.now()
-  const { rules } = await loadRules(standingIoOf($), options)
-  const { added, auto } = await withInbox($, cur => {
-    if (cur.items.some(x => x.owner === name && isFyi(x) && x.topic === 'manager-size' && x.question.startsWith(`${name} runs `))) {
-      return { inbox: cur, out: { added: [] as Array<{ q: Question }>, auto: new Map() as AutoHits } }
-    }
-    const asked = fyiAsked({ decision: managerDecision(name, routed.size, routed.model, routed.reason, routed.escalated), why: MANAGER_FYI_WHY.replace('<name>', name), topic: 'manager-size' })
-    const r = autoAnswer(cur, addQuestions(cur, { name, id, isManager: true }, 'main', [asked], at, 'fyi'), rules, at)
-    return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
-  })
-  await recordAutoAnswers(standingIoOf($), added, auto, name)
-}
-
-const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / reviewer_model)."
-
-// Fable is refused for a flow agent and for anything a flow agent starts.
-async function fableDenied($: EngineInterface, e: { model?: string; subagentType: string; parentAgentId?: string }): Promise<boolean> {
-  if (!isFable(e.model)) return false
-  if (FLOW_TYPES.has(e.subagentType)) return true
-  if (e.parentAgentId === undefined) return false
-  const parent = (await $.agent.list()).find(a => a.id === e.parentAgentId)
-  return parent !== undefined && FLOW_TYPES.has(parent.type)
-}
-
-// A refusal of a long-context model: a deny, or an error that names the model or its context.
-function refusedLong(r: unknown): boolean {
-  const text = r instanceof Error ? r.message : typeof r === 'object' && r !== null && 'deny' in r ? String((r as { deny: unknown }).deny) : ''
-  return /model|1m|context/i.test(text)
-}
-const withoutLong = (model: string): string => model.replace('[1m]', '')
 
 // Starts a reviewer unless one is live. The reviewer drains every pending handover, then ends;
 // the next handover, or a reviewer that ended with work left, starts a fresh one.
@@ -2161,7 +1960,7 @@ export const register: Register = (on, options) => {
 
   // The plugin starts flow:continue itself; the model is never offered it. It is offered only while
   // the spawn hook below dispatches its own rewrite, since the host checks the offer for a rewrite too.
-  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: continuing > 0 }))
+  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: continuingCount() > 0 }))
 
   on('agent.spawn', async ($, input, next) => {
     let e = input
@@ -2184,19 +1983,19 @@ export const register: Register = (on, options) => {
     // Attachments: every listed file must exist, and a relative path becomes absolute here, since the
     // worker runs in another worktree. Before the continue rewrite and the retries, which carry this prompt.
     if (e.subagentType === WORKER || e.subagentType === CONTINUE || e.subagentType === MANAGER) {
-      const checked = await checkAttachments($, e.prompt)
+      const checked = await checkAttachments(spawnIoOf($), e.prompt)
       if ('deny' in checked) return { deny: checked.deny }
       if (checked.prompt !== e.prompt) e = { ...e, prompt: checked.prompt }
     }
-    if (await fableDenied($, e)) return { deny: FABLE_DENY }
+    if (await fableDenied(spawnIoOf($), e)) return { deny: FABLE_DENY }
     // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
     let routed: Routed | undefined
     if (e.subagentType === WORKER) {
-      const r = await routeWorker($, e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel })
+      const r = await routeWorker(spawnIoOf($), e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel })
       e = r.e
       routed = r.routed
     } else if (e.subagentType === MANAGER) {
-      const r = await routeManager($, e, settings.managerModelSmall ?? 'sonnet', settings.managerModel)
+      const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModel)
       e = r.e
       routed = r.routed
     } else if (e.subagentType === 'Explore' && e.model === undefined && e.parentAgentId !== undefined) {
@@ -2206,7 +2005,7 @@ export const register: Register = (on, options) => {
     }
     // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
     // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
-    const spawn = e.subagentType === WORKER ? await prepareContinue($, e) : e
+    const spawn = e.subagentType === WORKER ? await prepareContinue(spawnIoOf($), e) : e
     const role = ROLE[spawn.subagentType]
     const wanted = role === undefined ? undefined : (spawn.model ?? (settings as Record<string, unknown>)[`${role}Model`])
     const long = typeof wanted === 'string' && wanted.includes('[1m]') ? wanted : undefined
@@ -2273,8 +2072,8 @@ export const register: Register = (on, options) => {
       })
       if (routed !== undefined) {
         const r = routed
-        if (e.subagentType === MANAGER) await best($, 'filing a manager-size decision', () => fileManagerSizeFyi($, options, (e as { name?: string }).name ?? e.description, id, r))
-        else await best($, 'filing a worker-size decision', () => fileSizeFyi($, options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
+        if (e.subagentType === MANAGER) await best($, 'filing a manager-size decision', () => fileManagerSizeFyi(spawnIoOf($), options, (e as { name?: string }).name ?? e.description, id, r))
+        else await best($, 'filing a worker-size decision', () => fileSizeFyi(spawnIoOf($), options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
       }
       if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
         await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt))

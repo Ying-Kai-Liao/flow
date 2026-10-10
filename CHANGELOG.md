@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Internal: tool specs moved out of `hooks/register.tsx` into `hooks/tools.ts`; no behavior change.
+- Internal: moved spawn routing (attachment check, continue rewrite, worker and manager model routing, size decisions, Fable refusal) into `hooks/spawn.ts` (no behavior change).
 
 ## [0.6.24] - 2026-10-11
 
