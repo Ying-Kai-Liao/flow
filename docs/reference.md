@@ -98,6 +98,19 @@ An unknown key, bad JSON or a wrong type is a warning (shown as a toast) and the
 
 The files are checked every few seconds by modification time. New settings apply to agents started afterwards; running agents keep their prompts.
 
+## Without Orca
+
+Orca is an optional place to run session workers; flow does not need it. Nothing here changes setting names or defaults.
+
+- **The default path needs neither Orca nor tmux.** With `worker_harness` at `agent`, managers start `flow:worker` agents inside the Claude session. No terminal host is involved.
+- **Session workers** (a `worker_harness` such as `codex`) run in a terminal, picked by `session_host`. `auto` uses Orca only when `orca status` exits 0 and reports `runtimeReachable: true`; otherwise it uses tmux when `tmux -V` works; otherwise it refuses to start with `Neither Orca (orca status) nor tmux is available to run a session in.`
+- **Pure tmux:** set `session_host` to `tmux`. The Orca probe is then skipped. If tmux is missing the start is refused with `tmux is not installed.` (With `orca` set and Orca not running: `Orca is not reachable (orca status). Open Orca, or use host "tmux".`)
+- **What the tmux path does:** it makes the worktree with plain git (`git worktree add -b flow/<name> <repo>/.claude/worktrees/<name> origin/<base>`), then starts the harness in a detached session named `flow-<name>` (`tmux new-session -d`). `stop` runs `tmux kill-session`; `remove_worktree` runs `git worktree remove` only when the tree is clean and pushed; `restart` uses `respawn-pane -k`. If tmux itself fails to start, the worktree stays and the message says so. Cleanup and worktree handling elsewhere use plain git.
+- **A missing `orca` binary is harmless.** A command that cannot start counts as a failed probe (exit 127), so `auto` falls back to tmux.
+- **Quota** applies only to harness specs with a `quota` field (only the built-in `codex` has one, `codex-logs`, read from `~/.codex/sessions`). A stale or unreadable log never blocks a start.
+
+Settings that matter on this path: `worker_harness`, `session_host`, `harnesses`, `min_quota`. See Workers in other harnesses in [How flow works](how-it-works.md).
+
 ## Tools the agents use
 
 - `status`: what the session is doing, scoped by the caller. Main, the reviewer and unknown callers see every agent, handover and cost line. A manager sees its own subtree, its own handovers and its own cost lines. A worker sees itself and its manager, with no cost, plans or handovers. Finished handovers are capped to the newest 5 (open ones, `returned` included, always show) with `+N earlier finished PRs (mcp__flow__status pr:<n> for one)`; finished lines are clipped to 220 characters, and `pr:<n>` gives the full handover line, its owner and log lines.
