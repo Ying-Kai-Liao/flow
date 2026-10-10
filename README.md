@@ -82,8 +82,7 @@ flow works with no setup. Most people set a few things in `.claude/flow.json` at
   "test_command": "pnpm test",
   "full_check_command": "pnpm check",
   "deploy_targets": [{ "name": "staging", "deploy": ["./deploy.sh staging"] }],
-  "merge_mode": "confirm",
-  "max_workers": 3
+  "merge_mode": "confirm"
 }
 ```
 
@@ -91,10 +90,10 @@ flow works with no setup. Most people set a few things in `.claude/flow.json` at
 - `full_check_command`: what the reviewer runs once before it pushes a batch of merges.
 - `deploy_targets`: where the reviewer deploys, in order. Give a target `"mode": "confirm"` to make production wait for your OK. Leave it out and nothing deploys.
 - `merge_mode`: `auto` merges handed-over PRs; `confirm` waits for your `/flow approve`.
-- `worker_model`, `worker_model_small`, `worker_model_normal`, `manager_model`, `reviewer_model`, `conflict_model`, `explore_model`, `max_managers`, `max_workers`: models and limits.
 
-Anything you leave out is skipped and reported. flow never guesses a command. The full list, with
-defaults, is in the [reference](docs/reference.md).
+Seven settings are core: the four above plus `base_branch`, `reviewer` and `release`. Everything else (models, limits, harnesses, guards) is advanced and safe at its default. Workers run as agents in your Claude session by default, so neither Orca nor tmux is required; see [Without Orca](docs/reference.md#without-orca). The full list, grouped by tier, is in the [reference](docs/reference.md).
+
+Anything you leave out is skipped and reported. flow never guesses a command.
 
 ## Learn more
 

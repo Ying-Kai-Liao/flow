@@ -6,20 +6,30 @@ Settings, tools, the test lock, guard tests, state on disk and how to develop th
 
 Most options are under `/config` → flow:. Every option can also be set in a settings file (`.claude/flow.json`, or the personal `.git/flow/config.json`, see Settings per repo); the ones marked "file only" have no `/config` field.
 
+Every setting has a tier. The seven **core** settings are the ones most repos set; everything else is **advanced** and safe at its default.
+
+### Core settings
+
 | Option | Default | Set in | Used by |
 |---|---|---|---|
 | `test_command` | tests covering the changed files | `/config`, file | workers |
 | `full_check_command` | none (the reviewer says so) | `/config`, file | the reviewer, once per batch |
-| `deploy_command` | none (no deploy) | `/config`, file | the reviewer, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
 | `deploy_targets` | none | file only | the reviewer: ordered deploy targets, each with an optional `mode` of `auto` (default) or `confirm` (see Deploying). A JSON array or a JSON string; wins over `deploy_command` |
-| `state_file` | none | file only | the reviewer: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
-| `reviewer` | on | `/config`, file | off: managers merge themselves with `merge_method` |
-| `merge_method` | `squash` | `/config`, file | managers, when there is no reviewer |
 | `merge_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` holds every handed-over PR until you run `/flow approve <n>` (see Merge mode) |
+| `base_branch` | the remote's default branch | `/config`, file | everyone |
+| `reviewer` | on | `/config`, file | off: managers merge themselves with `merge_method` |
+| `release` | `off` | `/config`, file | `on`: release at merge, the reviewer bumps the version once per batch (see Releases) |
+
+### Advanced settings
+
+| Option | Default | Set in | Used by |
+|---|---|---|---|
+| `deploy_command` | none (no deploy) | `/config`, file | the reviewer, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
+| `state_file` | none | file only | the reviewer: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
+| `merge_method` | `squash` | `/config`, file | managers, when there is no reviewer |
 | `push_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` makes the reviewer stop after the full check and the release, and waits for your `/flow push` (see Push gate) |
 | `preflight` | `on` | `/config`, file | `off`: managers are not gated and no round is sent (see Pre-flight) |
 | `preflight_wait` | 10 | `/config`, file | minutes the main session waits for managers to file before sending the round |
-| `release` | `off` | `/config`, file | `on`: release at merge, the reviewer bumps the version once per batch (see Releases) |
 | `release_files` | none (`package.json` at the repo root when there is one) | file only | repo-relative JSON or TOML files whose version the release bumps, a list; the first one gives the current version |
 | `release_github` | `off` | `/config`, file | `on` (with `release` on): after the release push the reviewer tags `v<x.y.z>`, pushes the tag and creates a GitHub Release from the changelog section; needs `gh` authenticated with repo write |
 | `changelog_file` | `CHANGELOG.md` | `/config`, file | the changelog the release cuts and workers add their lines to |
@@ -49,7 +59,6 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
 | `context_warn_tokens` | 0 | `/config`, file | an optional cap in tokens over both percents; the lower applies. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
 | `handoff` | on | `/config`, file | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
-| `base_branch` | the remote's default branch | `/config`, file | everyone |
 | `main_checkout_guard` | on | `/config`, file | every agent and the main session: writes to the main checkout are refused (see Guards) |
 | `cleanup` | `auto` | `/config`, file | `auto`: the plugin removes finished, clean worktrees and branches after each merge and when the reviewer ends (see Cleanup). `off`: only `/flow clean --yes` |
 | `worker_harness` | `agent` | `/config`, file | managers: `agent` starts `flow:worker` agents; a harness name (`codex`, …) starts every worker in a terminal instead (see Workers in other harnesses) |
@@ -87,6 +96,19 @@ Precedence, lowest first: built-in defaults, `/config`, `.claude/flow.json`, the
 An unknown key, bad JSON or a wrong type is a warning (shown as a toast) and the layer below applies for that key or file.
 
 The files are checked every few seconds by modification time. New settings apply to agents started afterwards; running agents keep their prompts.
+
+## Without Orca
+
+Orca is an optional place to run session workers; flow does not need it. Nothing here changes setting names or defaults.
+
+- **The default path needs neither Orca nor tmux.** With `worker_harness` at `agent`, managers start `flow:worker` agents inside the Claude session. No terminal host is involved.
+- **Session workers** (a `worker_harness` such as `codex`) run in a terminal, picked by `session_host`. `auto` uses Orca only when `orca status` exits 0 and reports `runtimeReachable: true`; otherwise it uses tmux when `tmux -V` works; otherwise it refuses to start with `Neither Orca (orca status) nor tmux is available to run a session in.`
+- **Pure tmux:** set `session_host` to `tmux`. The Orca probe is then skipped. If tmux is missing the start is refused with `tmux is not installed.` (With `orca` set and Orca not running: `Orca is not reachable (orca status). Open Orca, or use host "tmux".`)
+- **What the tmux path does:** it makes the worktree with plain git (`git worktree add -b flow/<name> <repo>/.claude/worktrees/<name> origin/<base>`), then starts the harness in a detached session named `flow-<name>` (`tmux new-session -d`). `stop` runs `tmux kill-session`; `remove_worktree` runs `git worktree remove` only when the tree is clean and pushed; `restart` uses `respawn-pane -k`. If tmux itself fails to start, the worktree stays and the message says so. Cleanup and worktree handling elsewhere use plain git.
+- **A missing `orca` binary is harmless.** A command that cannot start counts as a failed probe (exit 127), so `auto` falls back to tmux.
+- **Quota** applies only to harness specs with a `quota` field (only the built-in `codex` has one, `codex-logs`, read from `~/.codex/sessions`). A stale or unreadable log never blocks a start.
+
+Settings that matter on this path: `worker_harness`, `session_host`, `harnesses`, `min_quota`. See Workers in other harnesses in [How flow works](how-it-works.md).
 
 ## Tools the agents use
 

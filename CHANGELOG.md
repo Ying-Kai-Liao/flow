@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: every setting now has a core or advanced tier (reference, README and the `/config` descriptions), and a new "Without Orca" section explains the plain-tmux path.
+
 ## [0.6.14] - 2026-10-11
 
 ### Added
