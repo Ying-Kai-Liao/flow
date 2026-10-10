@@ -2024,7 +2024,10 @@ async function ownerNameOf($: EngineInterface, id: string | undefined): Promise<
 const wokenByOthers = new Set<string>()
 
 // What each reviewer run did with the queue (agent id), for the main-checkout line of its report.
-const reviewerWork = new Map<string, RunWork>()
+// Persisted (like `forwarded`): a plugin reload mid-run must not lose the work, or the final report is cut.
+const reviewerWork = atom({ plugin: 'flow', key: 'reviewerWork' } as const, {} as Record<string, RunWork>)
+const noteRunWork = ($: EngineInterface, id: string, f: (w: RunWork | undefined) => RunWork) =>
+  update($, reviewerWork, m => ({ ...Object.fromEntries(Object.entries(m).slice(-FORWARDED_RIDS)), [id]: f(m[id]) }))
 
 // `$` stays in this file: deliver.ts gets the three calls it needs.
 const ioOf = ($: EngineInterface): DeliverIo => ({
@@ -2078,6 +2081,13 @@ async function mainHasAnswer($: EngineInterface, answer: string): Promise<boolea
 // each cut at the next " | " field, so a whole done line and a lone line compare equal.
 const needLines = (text: string): string[] =>
   [...text.matchAll(/(needs a person:[^|\n]*|pending decisions:[^\n]*)/gi)].map(m => normText(m[1] ?? '')).filter(l => l !== '')
+
+// A needs line's identity for dedupe: its PR number when it names one, so a reworded repeat for the
+// same PR matches; otherwise its text. Old persisted entries are plain text and map the same way.
+const needToken = (line: string): string => {
+  const m = /PR\s*#(\d+)/i.exec(line)
+  return m ? `pr:${m[1]}` : line
+}
 
 // Where a handover's report goes. Absent -> the caller's own name. A name no agent carries is refused,
 // naming the caller; the caller's own worker is corrected to the caller. An ended agent that exists is
@@ -2135,7 +2145,11 @@ async function reviewerSendGuard($: EngineInterface, rid: string, to: string, te
   const seen = await read($, forwarded)
   const before = seen.keys[key]
   const needs = needLines(text)
-  const fresh = before === undefined ? undefined : needs.filter(l => !before.includes(l))
+  // Needs lines already forwarded for this run and manager, under any PR-set key: a reworded repeat of the
+  // same PR's line is not new.
+  const sentTokens = new Set(Object.entries(seen.keys).filter(([k]) => k.startsWith(`${rid}|${name}|`)).flatMap(([, v]) => v.map(needToken)))
+  const unseen = needs.filter(l => !sentTokens.has(needToken(l)))
+  const fresh = before === undefined && unseen.length === needs.length ? undefined : unseen
   const status = hits.length > 0 ? 'has finished' : 'matches no agent'
   if (fresh !== undefined && fresh.length === 0) {
     return `Not sent: ${name} ${status}. This report was already forwarded to main, with ${name}'s note: do not message ${name} again and do not repeat it to main.`
@@ -4551,7 +4565,7 @@ export const register: Register = (on, options) => {
         ).join('\n'),
       }
     }
-    if (e.agentId !== undefined) reviewerWork.set(e.agentId, noteWork(reviewerWork.get(e.agentId), action))
+    if (e.agentId !== undefined) await noteRunWork($, e.agentId, w => noteWork(w, action))
     if (action === 'ready') return { result: await recordReady($, settings, input) }
     const key = String(Number(input.pr))
     const h = all[key]
@@ -4598,7 +4612,7 @@ export const register: Register = (on, options) => {
     if (action === 'done') {
       // The push already happened; the isolated reviewer cannot touch the main checkout, so the plugin does.
       const line = await serialFastForward(argv => $.process.run(argv), settings.base)
-      if (e.agentId !== undefined) reviewerWork.set(e.agentId, { ...(reviewerWork.get(e.agentId) ?? { touched: true, ready: false }), touched: true, line })
+      if (e.agentId !== undefined) await noteRunWork($, e.agentId, w => ({ ...(w ?? { touched: true, ready: false }), touched: true, line }))
       await best($, 'logging the main checkout', () => appendLog($, { event: 'main-ff', owner: next.reportTo, pr: next.pr, branch: next.branch, text: line }))
       verify = ` ${line}: copy this exact line into your final report; never run git against the main checkout yourself.`
       await best($, 'capturing checks', async () => {
@@ -5279,18 +5293,19 @@ export const register: Register = (on, options) => {
       // A queue that ended while PRs were still pending: start a fresh one for them.
       const rows = await refresh($)
       const me = rows.find(a => a.id === id)
+      const runWork = me !== undefined && isReviewer(me.type) ? (await read($, reviewerWork))[id] : undefined
       if (me !== undefined && FLOW_TYPES.has(me.type)) {
         await best($, 'logging a report', async () => {
           const last = e.answer.trim().split('\n').pop() ?? ''
-          const full = isReviewer(me.type) ? reviewerReport(e.answer, reviewerWork.get(id)) : undefined
+          const full = isReviewer(me.type) ? reviewerReport(e.answer, runWork) : undefined
           await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: full ?? last }, full === undefined ? TEXT_MAX : 4000)
         })
       }
       // No host notification reaches main for a reviewer the plugin spawned: relay its whole report,
       // only for runs that did batch work.
       if (me !== undefined && isReviewer(me.type)) {
-        const work = reviewerWork.get(id)
-        reviewerWork.delete(id)
+        const work = runWork
+        await update($, reviewerWork, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id)))
         const full = reviewerReport(e.answer, work)
         if (full !== undefined) {
           $.clock.after(RELAY_DELAY_MS, () => void (async () => {
