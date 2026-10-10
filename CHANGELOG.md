@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.19] - 2026-10-11
+
+### Changed
+
+- Move cleanup sweep and resume leftovers out of register.tsx (#95)
+- Move terminal sessions out of register.tsx into hooks/session-run.ts (#96)
+
 ## [0.6.18] - 2026-10-11
 
 ### Changed
