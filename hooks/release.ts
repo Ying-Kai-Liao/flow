@@ -33,6 +33,14 @@ export function labelBump(labels: string[]): Bump | undefined {
   return undefined
 }
 
+// YYYY-MM-DD of an instant in an IANA zone (default: this machine's local zone), so a release cut in the
+// evening is dated by the user's calendar, not UTC's.
+export function localDate(ms: number, timeZone?: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(ms))
+  const get = (t: string) => parts.find(p => p.type === t)!.value
+  return `${get('year')}-${get('month')}-${get('day')}`
+}
+
 const isHeading = (line: string) => /^## \[/.test(line)
 const isUnreleased = (line: string) => /^## \[unreleased\]/i.test(line)
 const isRef = (line: string) => /^\[[^\]]+\]:\s/.test(line)

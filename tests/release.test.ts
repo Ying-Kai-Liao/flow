@@ -3,7 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import { fill, MANAGER_PROMPT, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
-import { bumpVersion, changelogSection, cutChangelog, highestBump, labelBump, readVersion, setVersion } from '../hooks/release'
+import { bumpVersion, changelogSection, cutChangelog, highestBump, labelBump, localDate, readVersion, setVersion } from '../hooks/release'
 import { KEYS, mergeLayers } from '../hooks/settings'
 
 type Dollar = Parameters<TestBody>[0]
@@ -154,7 +154,7 @@ let clock: ReturnType<typeof mock.clock>
 type Proc = (argv: readonly string[]) => { value: { exitCode: number; stdout: string; stderr: string; isStdoutTruncated: boolean; isStderrTruncated: boolean } } | undefined
 
 function world(on: On, labels: Record<number, string[] | 'fail'> = {}, proc?: Proc) {
-  clock = mock.clock(on, { now: Date.UTC(2026, 9, 10) })
+  clock = mock.clock(on, { now: Date.UTC(2026, 9, 10, 12) })
   const files = new Map<string, string>([
     ['/q/CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n\n- A line.\n\n## [0.3.31] - 2026-10-09\n\n- Old.\n'],
     ['/q/plugin.json', '{\n  "name": "x",\n  "version": "0.3.31"\n}\n'],
@@ -375,4 +375,11 @@ test('prompts: the publish step needs release and release_github; the branch pro
     expect(p).toContain('GH006')
     expect(p).toContain('refused by branch protection')
   }
+})
+
+test('localDate dates the instant in the given zone, not UTC', () => {
+  expect(localDate(Date.parse('2026-10-09T18:00:00Z'), 'Asia/Taipei')).toBe('2026-10-10')
+  expect(localDate(Date.parse('2026-10-10T03:00:00Z'), 'America/Los_Angeles')).toBe('2026-10-09')
+  expect(localDate(Date.parse('2026-10-10T12:00:00Z'), 'Asia/Taipei')).toBe('2026-10-10')
+  expect(localDate(Date.parse('2026-10-10T12:00:00Z'), 'UTC')).toBe('2026-10-10')
 })

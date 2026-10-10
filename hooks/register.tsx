@@ -34,7 +34,7 @@ import {
 import type { Settings } from './prompts'
 import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
 import { isFable, mergeLayers, renameOptions } from './settings'
-import { bumpVersion, changelogSection, cutChangelog, highestBump, isBump, labelBump, readVersion, setVersion } from './release'
+import { bumpVersion, changelogSection, cutChangelog, highestBump, isBump, labelBump, localDate, readVersion, setVersion } from './release'
 import type { Bump } from './release'
 import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
@@ -4270,7 +4270,7 @@ export const register: Register = (on, options) => {
     try {
       const texts = await Promise.all(files.map(f => $.fs.read(`${dir}/${f}`)))
       const next = bumpVersion(readVersion(texts[0]!, files[0]!), kind)
-      const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
+      const date = localDate(await $.clock.now())
       const log = cutChangelog(await $.fs.read(`${dir}/${logName}`), next, date, titles)
       const updated = files.map((f, i) => setVersion(texts[i]!, f, next))
       for (const [i, f] of files.entries()) await $.fs.write(`${dir}/${f}`, updated[i]!)

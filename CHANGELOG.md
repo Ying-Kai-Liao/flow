@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Release cut dates the new CHANGELOG section with the machine's local date instead of UTC.
+
 ## [0.6.1] - 2026-10-09
 
 ### Changed
