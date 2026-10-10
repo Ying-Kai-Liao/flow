@@ -348,7 +348,8 @@ export function killRefusal(command: string, depth = 0): string | undefined {
 export type WriteTarget = { path: string; git?: true }
 
 // git subcommands that change the working tree or the checked-out branch. `pull` stays
-// allowed: fast-forwarding the main checkout to its base is how it stays current.
+// allowed: fast-forwarding the main checkout to its base is how it stays current. The plugin
+// does that itself after a reviewer batch (hooks/mainff.ts), outside these guards.
 const GIT_WRITES = new Set(['commit', 'merge', 'rebase', 'cherry-pick', 'revert', 'am', 'apply',
   'reset', 'restore', 'checkout', 'switch', 'stash'])
 const GIT_STASH_READS = new Set(['list', 'show'])

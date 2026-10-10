@@ -20,6 +20,7 @@ function world(on: On) {
   const files = new Map<string, string>()
   const prompts: string[] = []
   const mainMsgs: { role: string; text: string }[] = []
+  const gitCalls: string[][] = []
   on('agent.list', () => ({ value: agents }))
   on('agent.spawn', () => ({ model: 'sonnet', agentId: 'q1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -38,10 +39,17 @@ function world(on: On) {
   })
   on('process.run', (_, e) => {
     if (e.argv[0] === 'git' && e.argv[1] === 'rev-parse') return ok('/r/.git\n')
+    if (e.argv[0] === 'git' && e.argv[1] === 'worktree') return ok('worktree /main\nHEAD abc\nbranch refs/heads/main\n')
+    if (e.argv[0] === 'git' && e.argv[1] === '-C') {
+      gitCalls.push(e.argv)
+      if (e.argv.includes('--short')) return ok('abc1234\n')
+      if (e.argv.includes('--show-current')) return ok('main\n')
+      return ok()
+    }
     if (e.argv[0] === 'gh') return ok(JSON.stringify(PR))
     return ok()
   })
-  return { agents, files, prompts, mainMsgs, flush: async () => { await clock.advance(1); await clock.settle() }, flushLong: async () => { await clock.advance(5000); await clock.settle() } }
+  return { agents, files, prompts, mainMsgs, gitCalls, flush: async () => { await clock.advance(1); await clock.settle() }, flushLong: async () => { await clock.advance(5000); await clock.settle() } }
 }
 
 const handover = ($: Dollar, agentId: string | undefined, extra: Record<string, unknown> = {}) =>
@@ -263,4 +271,49 @@ test('the same manager and PR from two different reviewer runs is forwarded both
   await w.flush()
   expect(w.prompts.length).toBe(2)
   expect(w.prompts[1]).toContain('PR #7 merged')
+})
+
+const queue = ($: Dollar, extra: Record<string, unknown>) => $.tool.call({ tool: 'mcp__flow__queue', agentId: 'q1', ...extra } as never).then(r => String(r.result))
+const finalReport = 'PR #7 merged abc1234. full check: 3 passed\nafter_deploy: none\npending decisions: none'
+
+test('"done" fast-forwards the main checkout, returns the line and logs a main-ff event', async ($, on) => {
+  const w = world(on)
+  await handover($, 'm1')
+  await queue($, { action: 'take', pr: 7 })
+  const r = await queue($, { action: 'done', pr: 7, sha: 'abc1234', report: 'merged' })
+  expect(r).toContain('main checkout fast-forwarded to abc1234')
+  expect(w.gitCalls.some(c => c.includes('pull') && c.includes('--ff-only'))).toBe(true)
+  const log = [...w.files.entries()].filter(([k]) => k.startsWith(DIR) && k.endsWith('.jsonl')).map(([, v]) => v).join('\n')
+  expect(log).toContain('"event":"main-ff"')
+})
+
+test('a reviewer that did batch work has its whole final report relayed to main once, with the line', async ($, on) => {
+  const w = world(on)
+  await handover($, 'm1')
+  await queue($, { action: 'take', pr: 7 })
+  await queue($, { action: 'done', pr: 7, sha: 'abc1234', report: 'merged' })
+  await w.flush()
+  const before = w.prompts.length
+  await $.turn.complete({ turnId: 't', agentId: 'q1', answer: finalReport } as never)
+  await w.flushLong()
+  const relayed = w.prompts.slice(before).filter(p => p.includes('Report from reviewer merge-queue-1'))
+  expect(relayed.length).toBe(1)
+  expect(relayed[0]).toContain('pending decisions: none')
+  expect(relayed[0]).toContain('main checkout fast-forwarded to abc1234')
+})
+
+test('a reviewer run with no batch work relays nothing', async ($, on) => {
+  const w = world(on)
+  await $.turn.complete({ turnId: 't', agentId: 'q1', answer: 'No pending handovers.' } as never)
+  await w.flushLong()
+  expect(w.prompts.some(p => p.includes('Report from reviewer'))).toBe(false)
+})
+
+test('the per-PR "Report for" relay is not doubled by the full report relay', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  await send($, 'q1', 'csv-export', 'PR #7 merged')
+  await $.turn.complete({ turnId: 't', agentId: 'q1', answer: 'Nothing else.' } as never)
+  await w.flushLong()
+  expect(w.prompts.filter(p => p.includes('Report for csv-export')).length).toBe(1)
 })
