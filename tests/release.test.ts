@@ -279,7 +279,7 @@ const fail = (stderr: string) => ({ value: { exitCode: 1, stdout: '', stderr, is
 const PUB = { release: 'on', release_files: ['plugin.json'], release_github: 'on' }
 const publish = ($: Dollar, extra: Record<string, unknown> = {}) => $.tool.call({ tool: 'mcp__flow__release', action: 'publish', dir: '/q', ...extra } as never).then(r => String(r.result))
 
-function gitgh(opts: { merge?: boolean; tagAt?: string; releaseExists?: boolean; createFails?: boolean; subject?: string } = {}) {
+function gitgh(opts: { merge?: boolean; tagAt?: string; releaseExists?: boolean; createFails?: boolean; subject?: string; fetchFails?: boolean; notOnBase?: boolean } = {}) {
   const calls: (readonly string[])[] = []
   const proc: Proc = a => {
     if (a[0] !== 'git' && a[0] !== 'gh') return undefined
@@ -288,7 +288,8 @@ function gitgh(opts: { merge?: boolean; tagAt?: string; releaseExists?: boolean;
     calls.push(a)
     const sha = 'a'.repeat(40)
     if (a[0] === 'git' && a[3] === 'log') return ok((opts.merge ? `${'f'.repeat(40)} Merge origin/main\n` : '') + `${sha} ${opts.subject ?? 'Release 0.3.32'}\n`)
-    if (a[0] === 'git' && a[3] === 'merge-base') return ok()
+    if (a[0] === 'git' && a[3] === 'fetch') return opts.fetchFails ? fail('fatal: unable to access') : ok()
+    if (a[0] === 'git' && a[3] === 'merge-base') return a[6] === 'origin/main' && opts.notOnBase ? fail('') : ok()
     if (a[0] === 'git' && a[3] === 'rev-parse') return opts.tagAt === undefined ? fail('') : ok(opts.tagAt + '\n')
     if (a[0] === 'gh' && a[2] === 'view') return a.includes('--json') ? ok('https://github.com/o/r/releases/tag/v0.3.32\n') : opts.releaseExists ? ok() : fail('not found')
     if (a[0] === 'gh' && a[2] === 'create' && opts.createFails) return fail('HTTP 502')
@@ -335,6 +336,38 @@ test('publish: gh release create failing every attempt gives a Not published lin
   expect(r).toContain('Not published: gh release create failed: HTTP 502')
   expect(r).toContain('the batch stays done')
   expect(g.calls.filter(c => c[2] === 'create').length).toBe(4)
+})
+
+test('publish: the release commit is fetched and checked on origin/main before the tag', { options: PUB }, async ($, on) => {
+  const g = gitgh()
+  world(on, {}, g.proc)
+  expect(await publish($, { version: '0.3.32' })).toContain('Published v0.3.32')
+  const at = (pred: (c: readonly string[]) => boolean) => g.calls.findIndex(pred)
+  const fetchAt = at(c => c[3] === 'fetch' && c[4] === 'origin' && c[5] === 'main')
+  const ancestorAt = at(c => c[3] === 'merge-base' && c[5] === 'a'.repeat(40) && c[6] === 'origin/main')
+  const tagAt = at(c => c[3] === 'tag')
+  expect(fetchAt).toBeGreaterThanOrEqual(0)
+  expect(ancestorAt).toBeGreaterThan(fetchAt)
+  expect(tagAt).toBeGreaterThan(ancestorAt)
+})
+
+test('publish: a failed fetch of origin/main is Not published, with no tag, push or gh call', { options: PUB }, async ($, on) => {
+  const g = gitgh({ fetchFails: true })
+  world(on, {}, g.proc)
+  const r = await publish($, { version: '0.3.32' })
+  expect(r).toContain('Not published: could not fetch origin/main')
+  expect(g.calls.some(c => c[3] === 'tag' || c[3] === 'push')).toBe(false)
+  expect(g.calls.some(c => c[0] === 'gh')).toBe(false)
+})
+
+test('publish: a release commit not on origin/main is Not published, with no tag', { options: PUB }, async ($, on) => {
+  const g = gitgh({ notOnBase: true })
+  world(on, {}, g.proc)
+  const r = await publish($, { version: '0.3.32' })
+  expect(r).toContain(`Not published: the release commit ${'a'.repeat(8)} is not on origin/main; no tag was made.`)
+  expect(r).toContain('Push the release commit first')
+  expect(r).not.toContain('is pushed')
+  expect(g.calls.some(c => c[3] === 'tag' || c[3] === 'push' || c[0] === 'gh')).toBe(false)
 })
 
 test('publish: finds the release commit below a merge commit at HEAD', { options: PUB }, async ($, on) => {

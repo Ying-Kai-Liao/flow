@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The release publish step fetches origin/main and refuses to tag a release commit that is not on it, so a tag is never pushed for a commit that did not reach origin.
+
 ## [0.6.24] - 2026-10-11
 
 ### Changed
