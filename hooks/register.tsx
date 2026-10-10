@@ -10,6 +10,8 @@ import { absolutePath, parseAttachments, rewriteAttachments } from './attachment
 import { grantFile, grantSlots, heldBy, reapSlots, slotLine, span, CLAIM_MS, LEASE_MS, WAIT_DEFAULT_S, WAIT_MAX_S } from './slots'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { noteWork, runLine, serialFastForward, type RunWork } from './mainff'
+import { deleteMergedBranch } from './branchdelete'
+import { NO_FAILS, noteRelease, withFailed, withFlaky, type TestFails } from './testfail'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import { sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
@@ -54,7 +56,7 @@ import type { WarnSettings } from './settings'
 import { bumpVersion, changelogSection, cutChangelog, highestBump, isBump, labelBump, localDate, readVersion, setVersion } from './release'
 import type { Bump } from './release'
 import {
-  allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
+  allowed, allowList, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
 import {
@@ -1334,7 +1336,7 @@ async function recordReady($: EngineInterface, settings: Settings, input: Record
     })
   }
   void $.ui.toast(`Batch ${id} ready to push (${prs.map(n => `#${n}`).join(' ')}): /flow push`)
-  return `Recorded batch ${id}: ${prs.map(n => `#${n}`).join(', ')} are ready and wait for the user's /flow push (inbox ${q.id}). Do not push, delete branches, publish or deploy. End your run now with your report: batch ${id} ready, awaits /flow push.`
+  return `Recorded batch ${id}: ${prs.map(n => `#${n}`).join(', ')} are ready and wait for the user's /flow push (inbox ${q.id}). Do not push, publish or deploy. End your run now with your report: batch ${id} ready, awaits /flow push.`
 }
 
 // After a PR is done or sent back, a batch with none of its PRs left is finished: its ref goes.
@@ -1370,7 +1372,7 @@ async function pushAct($: EngineInterface, act: PushAct, by: string): Promise<st
   const hs = await read($, handovers)
   if (act.kind === 'push') {
     const queue = await ensureQueue($)
-    return `Batch ${before.id} released (${before.prs.map(n => `#${n}`).join(', ')}). A reviewer pushes it, deletes the merged branches, deploys and marks the PRs done. ${queue}`
+    return `Batch ${before.id} released (${before.prs.map(n => `#${n}`).join(', ')}). A reviewer pushes it, deploys and marks the PRs done (the plugin deletes the merged branches then). ${queue}`
   }
   if (act.kind === 'back') {
     const h = hs[String(act.pr)]
@@ -1962,6 +1964,8 @@ const wokenByOthers = new Set<string>()
 // What each reviewer run did with the queue (agent id), for the main-checkout line of its report.
 // Persisted (like `forwarded`): a plugin reload mid-run must not lose the work, or the final report is cut.
 const reviewerWork = atom({ plugin: 'flow', key: 'reviewerWork' } as const, {} as Record<string, RunWork>)
+// Failing tests per agent and test_slot label, and the flaky ones a run saw (see testfail.ts).
+const testFails = atom({ plugin: 'flow', key: 'testFails' } as const, NO_FAILS as TestFails)
 const noteRunWork = ($: EngineInterface, id: string, f: (w: RunWork | undefined) => RunWork) =>
   update($, reviewerWork, m => ({ ...Object.fromEntries(Object.entries(m).slice(-FORWARDED_RIDS)), [id]: f(m[id]) }))
 
@@ -3114,6 +3118,7 @@ export const register: Register = (on, options) => {
       name,
       description: (name === 'queue' ? '(The old name of the reviewer tool; use reviewer.) ' : '') + 'The reviewer\'s worklist. action "list": pending and taken handovers in arrival order. ' +
         '"take" (pr), "done" (pr, sha, report) or "back" (pr, reason) record what the reviewer did. ' +
+        '"done" also deletes the PR\'s merged branch on the remote (the plugin does it, after confirming the merge is in origin/<base>) and appends "| flaky: <test>" to the report for tests that failed then passed under test_slot. ' +
         'With push_mode confirm, "ready" (prs, sha, base_sha, check, version?) records the checked batch under refs/flow/push/<id> for the user\'s /flow push instead of pushing it. Only the reviewer calls this.',
       inputSchema: {
         type: 'object',
@@ -3127,7 +3132,7 @@ export const register: Register = (on, options) => {
           sha: { type: 'string' },
           report: { type: 'string' },
           reason: { type: 'string' },
-          failed_tests: { type: 'array', items: { type: 'string' }, description: 'back: the test files or commands that failed, so main is asked whether workers should run them (guard_tests)' },
+          failed_tests: { type: 'array', items: { type: 'string' }, description: 'back: the exact names of the failing tests (and their files or commands); they go into the logged reason as "| failed: …" and main is asked whether workers should run them (guard_tests)' },
         },
         required: ['action'],
       },
@@ -3237,12 +3242,14 @@ export const register: Register = (on, options) => {
       name: 'test_slot',
       description: 'A lock on heavy test runs, so only test_slots of them run at once across all worktrees of this session. ' +
         'action "acquire" before a whole suite or any run over about a minute (waits a few seconds; if it says queued, wait as the answer tells you (grant file or grant message), then call acquire once to confirm), ' +
-        '"release" when the run is over or failed, "status" to see holders and waiters.',
+        '"release" when the run is over or failed (with result "pass" or "fail" and, on fail, failed_tests: the exact names of the failing tests from the output; a pass after a fail with the same label is reported as flaky), "status" to see holders and waiters.',
       inputSchema: {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['acquire', 'release', 'status'] },
           label: { type: 'string', description: 'What you will run, e.g. "full suite"' },
+          result: { type: 'string', enum: ['pass', 'fail'], description: 'release: how the run ended' },
+          failed_tests: { type: 'array', items: { type: 'string' }, description: 'release with result fail: the exact names of the failing tests' },
           wait_s: { type: 'number', description: `Seconds to wait for a slot before answering queued (default ${WAIT_DEFAULT_S}, at most ${WAIT_MAX_S})` },
         },
         required: ['action'],
@@ -3617,6 +3624,9 @@ export const register: Register = (on, options) => {
     if (e.tool === 'Bash') {
       const why = killRefusal(e.command)
       if (why !== undefined) return { deny: why }
+      // Merged branches are deleted by the plugin on the reviewer's "done"; a subagent never deletes a remote ref.
+      const del = id === undefined ? undefined : remoteDeleteRefusal(e.command)
+      if (del !== undefined) return { deny: del }
     }
     let me: AgentInfo | undefined
     const whoAmI = async () => (me ??= (await $.agent.list()).find(a => a.id === id))
@@ -3844,8 +3854,8 @@ export const register: Register = (on, options) => {
       }
     }
     const next: Handover = action === 'take' ? { ...h, status: 'taken' }
-      : action === 'done' ? { ...h, status: 'done', sha: String(input.sha ?? ''), report: await withCost($, h.branch, String(input.report ?? '')) }
-      : action === 'back' ? { ...h, status: 'returned', reason: String(input.reason ?? '') }
+      : action === 'done' ? { ...h, status: 'done', sha: String(input.sha ?? ''), report: await withCost($, h.branch, withFlaky(String(input.report ?? ''), e.agentId === undefined ? undefined : (await read($, testFails)).flaky[e.agentId])) }
+      : action === 'back' ? { ...h, status: 'returned', reason: withFailed(String(input.reason ?? ''), input.failed_tests) }
       : h
     if (next === h) return { result: `Unknown action "${action}".` }
     await update($, handovers, hs => ({ ...hs, [key]: next }))
@@ -3865,6 +3875,10 @@ export const register: Register = (on, options) => {
       if (e.agentId !== undefined) await noteRunWork($, e.agentId, w => ({ ...(w ?? { touched: true, ready: false }), touched: true, line }))
       await best($, 'logging the main checkout', () => appendLog($, { event: 'main-ff', owner: next.reportTo, pr: next.pr, branch: next.branch, text: line }))
       verify = ` ${line}: copy this exact line into your final report; never run git against the main checkout yourself.`
+      // Deleting the branch is the plugin's job, after it confirms the merge reached origin/<base>.
+      const gone = await deleteMergedBranch(argv => $.process.run(argv), next.branch, settings.base)
+      await best($, 'logging the branch delete', () => appendLog($, { event: 'branch-delete', owner: next.reportTo, pr: next.pr, branch: next.branch, text: gone }))
+      verify += ` ${gone}.`
       await best($, 'capturing checks', async () => {
         const added = await captureChecks($, next, settings.verifyPaths, true)
         const scripted = added.filter(c => c.verifyCommand !== undefined)
@@ -3971,7 +3985,15 @@ export const register: Register = (on, options) => {
         freed = st.holders.some(h => h.key === key)
         return freed ? { ...st, holders: st.holders.filter(h => h.key !== key) } : st
       })
-      return { result: freed ? 'Released your test slot.' : 'You held no test slot; nothing to release.' }
+      let noted = ''
+      await best($, 'recording a test result', async () => {
+        const n = noteRelease(await read($, testFails), key, label, input.result, input.failed_tests)
+        if (n.event === undefined) return
+        await update($, testFails, () => n.state)
+        await appendLog($, { event: n.event.kind, owner: name, agent: name, text: n.event.text })
+        noted = ` ${n.answer}`
+      })
+      return { result: `${freed ? 'Released your test slot.' : 'You held no test slot; nothing to release.'}${noted}` }
     }
     if (action !== 'acquire') return { result: `Unknown action "${action}".` }
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The plugin deletes a merged PR branch itself when the reviewer calls "done", only once the branch is in origin/<base> (with a lease), and refuses `git push` deletes from subagents; failing test names given to `test_slot` release and `back` are logged, and a fail-then-pass is reported as `flaky: <test>`.
+
 ## [0.6.19] - 2026-10-11
 
 ### Changed

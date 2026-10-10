@@ -163,7 +163,7 @@ test('the reviewer prompt has the push gate and the push run only with push_mode
   expect(confirm).toContain('Push gate (push_mode is confirm')
   expect(confirm).toContain('git update-ref refs/flow/push/${SHA:0:8} HEAD')
   expect(confirm).toContain('action "ready" with prs')
-  expect(confirm).toContain('do not push, delete a branch, publish, deploy')
+  expect(confirm).toContain('do not push, publish, deploy')
   expect(confirm).toContain('## Push run')
   expect(confirm).toContain('PUSH RUN')
   expect(confirm).toContain('REBUILD RUN')
