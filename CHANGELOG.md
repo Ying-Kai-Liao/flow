@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-10-10
+
 ### Added
 
 - `/flow ok`, `/flow no <id> [what instead]` and `/flow answer <id> <choice>` answer inbox items from the prompt; `/flow ok` never answers deploy, push, env or guard items.
