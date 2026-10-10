@@ -99,7 +99,7 @@ export function stepTokens(usage: unknown): Tokens | undefined {
   return { input: num(u.input_tokens), write5m, write1h, read: num(u.cache_read_input_tokens), output: num(u.output_tokens) }
 }
 
-export type Identity = Partial<Omit<LedgerEntry, 'models' | 'firstAt' | 'lastAt'>>
+export type Identity = Partial<Omit<LedgerEntry, 'models' | 'firstAt' | 'lastAt' | 'turns'>>
 
 const definedOnly = <T extends object>(o: T): Partial<T> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>
 
@@ -115,6 +115,14 @@ export function addStep(ledger: Ledger, key: string, model: string, usage: unkno
   const long = over !== undefined && prompt(t) > over
   const next: Bucket = { ...add(b, t), ...(long || b.long ? { long: add(b.long ?? ZERO, long ? t : ZERO) } : {}) }
   return { ...ledger, [key]: { ...entry, models: { ...entry.models, [model]: next } } }
+}
+
+// The ledger with one completed turn counted. An agent with no row yet gets an empty one (no models,
+// so the cost block hides it until a step arrives and its tokens are counted).
+export function addTurn(ledger: Ledger, key: string, now: number): Ledger {
+  const isMain = key.startsWith('main@')
+  const cur: LedgerEntry = ledger[key] ?? { role: isMain ? 'main' : 'other', name: isMain ? 'main' : key, models: {} }
+  return { ...ledger, [key]: { ...cur, turns: (cur.turns ?? 0) + 1, firstAt: cur.firstAt ?? now, lastAt: now } }
 }
 
 // Identity recorded at spawn (or filled from the roster): sets the fields, keeps the tokens.
@@ -149,6 +157,7 @@ export function mergeLedgers(a: Ledger, b: Ledger): Ledger {
     }
     out[k] = {
       ...e, ...o, models,
+      ...((o.turns ?? 0) + (e.turns ?? 0) > 0 ? { turns: (o.turns ?? 0) + (e.turns ?? 0) } : {}),
       ...(o.firstAt !== undefined || e.firstAt !== undefined ? { firstAt: Math.min(o.firstAt ?? Infinity, e.firstAt ?? Infinity) } : {}),
       ...(o.lastAt !== undefined || e.lastAt !== undefined ? { lastAt: Math.max(o.lastAt ?? 0, e.lastAt ?? 0) } : {}),
     }
@@ -165,13 +174,15 @@ export function pruneLedger(ledger: Ledger, now: number): Ledger {
 
 // --- Totals ---
 
-export type Total = { tokens: Tokens; usd: number; unknown: boolean }
+export type Total = { tokens: Tokens; usd: number; unknown: boolean; turns: number }
 
 export function totalOf(entries: LedgerEntry[]): Total {
   let usd = 0
   let unknown = false
+  let turns = 0
   const parts: Tokens[] = []
   for (const e of entries) {
+    turns += e.turns ?? 0
     for (const [m, b] of Object.entries(e.models)) {
       parts.push(b)
       const c = costOf(m, b)
@@ -179,7 +190,7 @@ export function totalOf(entries: LedgerEntry[]): Total {
       else usd += c
     }
   }
-  return { tokens: sum(parts), usd, unknown }
+  return { tokens: sum(parts), usd, unknown, turns }
 }
 
 // A name without its successor suffix: `csv-export-2` is a successor of `csv-export`.
@@ -206,7 +217,11 @@ const percent = (t: Tokens): string => {
 const tokenText = (t: Tokens): string =>
   `${humanTokens(t.input)} in / ${humanTokens(t.write5m + t.write1h)} cache write / ${humanTokens(t.read)} cache read / ${humanTokens(t.output)} out, hit ${percent(t)}`
 
-export const totalText = (t: Total): string => `${money(t.usd, t.unknown)} (tokens ${tokenText(t.tokens)})`
+// Turns and cache write per turn (the cost of each wake-up) show only once a turn was counted.
+const turnText = (t: Total): string =>
+  t.turns > 0 ? `, ${t.turns} turns, ~${humanTokens((t.tokens.write5m + t.tokens.write1h) / t.turns)} cache write/turn` : ''
+
+export const totalText = (t: Total): string => `${money(t.usd, t.unknown)} (tokens ${tokenText(t.tokens)}${turnText(t)})`
 
 // Appended to a reviewer's done report: the PR's workers' cost. Empty when they spent nothing.
 export function reportSuffix(t: Total): string {

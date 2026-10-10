@@ -6,7 +6,7 @@ import { absolutePath, parseAttachments, rewriteAttachments } from './attachment
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
-import { addStep, baseName, costBlock, entriesOfBranch, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
+import { addStep, addTurn, baseName, costBlock, entriesOfBranch, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
 import { backNote, effectiveSize, floorFrom, generation, isSuccessorName, modelFor, parseSize } from './routing'
 import type { Size, SizeModels } from './routing'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
@@ -5144,8 +5144,22 @@ export const register: Register = (on, options) => {
     return r
   })
 
+  // Every completed turn (interrupted or errored too: it still wrote the cache) counts once per agent.
+  const countedTurns = new Set<string>()
   on('turn.complete', async ($, e, next) => {
     const id = e.agentId
+    try {
+      const turnId = (e as { turnId?: string }).turnId
+      const key = id ?? await mainKey($)
+      const once = turnId === undefined || !countedTurns.has(`${key}:${turnId}`)
+      if (turnId !== undefined) countedTurns.add(`${key}:${turnId}`)
+      if (once) {
+        await loadLedger($)
+        await changeLedger($, (l, now) => addTurn(l, key, now))
+      }
+    } catch {
+      // The ledger is best-effort: the turn passes untouched.
+    }
     if (id !== undefined) {
       const t = await $.clock.now()
       await update($, activity, acts => {
