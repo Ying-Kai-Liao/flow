@@ -160,8 +160,8 @@ The `Size:` line wins over an explicit `model` parameter. Without one nothing ch
 
 Every agent step adds its tokens (input, cache write 5m and 1h, cache read, output) to a ledger
 keyed by agent, then by the model the API reports. Main's steps count under `main`. Each entry
-keeps the agent's name, role, manager, branch, size and spawn model (so cost can be split by model and size), so the ledger keeps an agent the
-roster forgot. It is saved to `ledger.json` at most every few seconds and loaded again after a
+keeps the agent's name, role, manager, branch, size and spawn model, so the ledger keeps an agent the
+roster forgot and cost can be split by model and size. It is saved to `ledger.json` at most every few seconds and loaded again after a
 restart. A failure in the ledger never touches the step.
 
 - **Where it shows:** `mcp__flow__status` and `/flow status` print "Cost (estimates at API list
