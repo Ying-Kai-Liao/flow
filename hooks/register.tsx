@@ -52,17 +52,11 @@ import {
 import type { Settings } from './prompts'
 import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
 import { isFable, mergeLayers, renameOptions, settingsOf } from './settings'
-import type { WarnSettings } from './settings'
-<<<<<<< HEAD
 import { isBump } from './release'
 import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
-=======
-import { CARD_ROWS, elapsed, tokensDown, DANGER_PERCENT, DEFAULT_WINDOW, LARGE_WINDOW, METER_CELLS, cells, labelOf, limitLabel, limitTokens, meterColor, modelKey, thresholdOf, tokensLabel, warnPercent, windowOf, windowPercent, wrapUpText } from './meter'
+import { CARD_ROWS, elapsed, tokensDown, LARGE_WINDOW, METER_CELLS, cells, labelOf, limitLabel, limitTokens, meterColor, thresholdOf, warnPercent, windowOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
-import { bumpVersion, changelogSection, cutChangelog, highestBump, isBump, labelBump, localDate, readVersion, setVersion } from './release'
-import type { Bump } from './release'
->>>>>>> 4f376cf (Move pure meter and label helpers out of register.tsx into hooks/meter.ts (no behavior change))
 import {
   allowed, allowList, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
