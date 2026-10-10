@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: moved the handover, plan, test_slot, migrations and status tool handlers and the `/flow` command out of `hooks/register.tsx` into `hooks/handover-run.ts`, `plan-run.ts`, `slots-run.ts`, `migrations-run.ts`, `status-run.ts` and `command.ts` (no behavior change).
+
 ## [0.6.24] - 2026-10-11
 
 ### Changed

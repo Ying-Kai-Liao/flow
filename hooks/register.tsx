@@ -7,38 +7,37 @@ import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'clau
 
 import type { Activity, AgentRow, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
-import { grantFile, grantSlots, heldBy, reapSlots, slotLine, span, CLAIM_MS, LEASE_MS, WAIT_DEFAULT_S, WAIT_MAX_S } from './slots'
-import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
+import { grantFile, grantSlots, reapSlots, WAIT_DEFAULT_S, WAIT_MAX_S } from './slots'
+import { evidenceText, type Evidence } from './evidence'
 import { noteWork, runLine, serialFastForward, type RunWork } from './mainff'
 import { deleteMergedBranch } from './branchdelete'
-import { NO_FAILS, noteRelease, withFailed, withFlaky, type TestFails } from './testfail'
+import { NO_FAILS, withFailed, withFlaky, type TestFails } from './testfail'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import { sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
-import { gatherLeftovers as gatherLeftoversTo, resumeInstructions } from './resume'
-import type { Gathered, Leftover, OwnerNotes, ResumeIo } from './resume'
+import { gatherLeftovers as gatherLeftoversTo } from './resume'
+import type { Gathered, Leftover, ResumeIo } from './resume'
 import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo, resetDelivery, ENDED, LIVE, type DeliverIo, type DeliverOptions } from './deliver'
-import { addStep, addTurn, baseName, entriesOfBranch, prCost, reportSuffix, setIdentity } from './cost'
+import { addStep, addTurn, baseName, entriesOfBranch, setIdentity } from './cost'
 import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
 import type { CostIo } from './cost-run'
 import { backNote, effectiveSize, floorFrom, generation, isSuccessorName, managerDecision, managerModelFor, MANAGER_FYI_WHY, modelFor, parseSize } from './routing'
 import type { Size, SizeModels } from './routing'
-import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
-import type { PrInput } from './migrations'
-import { addNodes, agentFor, asksQuestion, describe, noticeText, settle, waitsOnReport } from './dag'
-import type { AgentFact, Facts, Graph, Notice, Plan } from './dag'
+import { render } from './migrations'
+import { agentFor, asksQuestion, noticeText, settle, waitsOnReport } from './dag'
+import type { AgentFact, Facts, Notice, Plan } from './dag'
 import {
-  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, renderItem, expandOk, findItem, stillOpen, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk,
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, isFyi, parseFyi, openAll, findItem, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk,
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
-  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, FILE_HELP, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
-  recordFiling, recordSpawn, renderFollowUp, renderRound, renderStatus,
+  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, FILE_HELP, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling,
+  recordFiling, recordSpawn, renderFollowUp, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
 import {
-  addChecks, anyMatch, CHECKS_USAGE, closeChecks, dueForPrompt, EMPTY_CHECKS, inboxChecksSection, markStarted, normalizeChecks, paneChecksLine, parseNeeds, renderCheckDetail, renderChecksForAgents, renderChecksTable,
-  resumeChecksLines, SKIP_NOTE, versionInSteps,
+  addChecks, anyMatch, closeChecks, dueForPrompt, EMPTY_CHECKS, markStarted, normalizeChecks, paneChecksLine, parseNeeds, renderChecksForAgents, renderChecksTable,
+  SKIP_NOTE, versionInSteps,
 } from './checks'
 import type { Check, Checks } from './checks'
 import { termWidth } from './table'
@@ -51,7 +50,7 @@ import { graphNodes, layoutGraph, moveFocus } from './graph'
 import { shimmerParts } from './shimmer'
 import { card as cardTo, limitLine as limitLineTo, meter as meterTo } from './pane-view'
 import type { Usage } from './pane-view'
-import { COLOR, describeCall, foldDefault, GLYPH, handoffOf, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, summarizeCall, treeItems, viewOf } from './pane'
+import { COLOR, describeCall, foldDefault, GLYPH, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, summarizeCall, treeItems, viewOf } from './pane'
 import type { GNode, Seg } from './graph'
 import {
   fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT,
@@ -59,9 +58,20 @@ import {
 import type { Settings } from './prompts'
 import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
 import { isFable, mergeLayers, renameOptions, settingsOf } from './settings'
-import { isBump } from './release'
 import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
+import { handoverTool } from './handover-run'
+import type { HandoverIo } from './handover-run'
+import { planTool } from './plan-run'
+import type { PlanIo } from './plan-run'
+import { testSlotTool } from './slots-run'
+import type { SlotsIo } from './slots-run'
+import { migrationsTool } from './migrations-run'
+import type { MigrationsIo } from './migrations-run'
+import { statusTool } from './status-run'
+import type { StatusIo, Unhanded } from './status-run'
+import { flowCommand } from './command'
+import type { CommandIo } from './command'
 import { CARD_ROWS, elapsed, tokensDown, LARGE_WINDOW, METER_CELLS, cells, labelOf, limitLabel, limitTokens, meterColor, thresholdOf, warnPercent, windowOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
 import {
@@ -74,19 +84,19 @@ import {
 import type { HarnessSpec, Limit } from './sessions'
 import { sessionTool as sessionToolTo, watchSessions as watchSessionsTo } from './session-run'
 import type { Caller, Ran, SessionIo } from './session-run'
-import { branchOwners, buildDigest, findWorktree, noteKey, ownerFor } from './state'
+import { branchOwners, buildDigest, findWorktree, noteKey } from './state'
 import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
-import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
+import { parseMode, takeDecision } from './mergemode'
 import {
   EMPTY_PUSH, normalizePush,
-  PUSH_KIND, renderBatch, reviewerNote,
+  PUSH_KIND, reviewerNote,
 } from './pushgate'
 import type { PushState } from './pushgate'
 import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, pushLines, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
 import type { PushAct, PushIo } from './pushgate-run'
 import {
   behindLines, EMPTY_DEPLOYS, ENV_KIND,
-  envSummary, normalizeDeploys, parseEnvInput,
+  envSummary, normalizeDeploys,
   release, itemViewOf,
 } from './deploy'
 import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, QUEUE, REVIEWER, TEXT_MAX, WORKER, WORKERS } from './core'
@@ -153,12 +163,10 @@ const behind = atom({ plugin: 'flow', key: 'behind' } as const, {} as Record<str
 const pushState = atom({ plugin: 'flow', key: 'push' } as const, EMPTY_PUSH as PushState)
 
 const PR_POLL_MS = 5 * 60_000
-const PR_MIN_GAP_MS = 60_000
 // A worker that just ended: its manager is probably reviewing the PR.
 const GRACE_MS = 20 * 60_000
 const infosOf = (s: Parameters<typeof targetsOf>[0]): TargetInfo[] => targetsOf(s).map(t => ({ name: t.name, mode: t.mode, ...(t.envCommand !== undefined ? { envCommand: t.envCommand } : {}) }))
 
-export type Unhanded = { pr: number; title: string; branch: string; note: string }
 
 // Open flow/* PRs that nobody handed to the reviewer and nobody is working on any more.
 // A draft is a WIP handoff, a pending/taken/done handover is in hand, a returned one needs a
@@ -185,8 +193,6 @@ export function unhandedPrs(
   }
   return out
 }
-
-const unhandedLine = (u: Unhanded): string => `#${u.pr} ${u.title} (${u.branch}) — ${u.note}`
 
 async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
   if (!mirror.queueOn) return []
@@ -265,6 +271,104 @@ const releaseIoOf = ($: EngineInterface): ReleaseIo => ({
   setLast: last => { lastRelease = last },
   handovers: () => read($, handovers),
   batch: async () => (await read($, pushState)).batch,
+})
+
+const handoverIoOf = ($: EngineInterface, options: Record<string, unknown>): HandoverIo => ({
+  run: argv => $.process.run(argv),
+  now: () => $.clock.now(),
+  handovers: () => read($, handovers),
+  putHandover: async (pr, h) => { await update($, handovers, hs => ({ ...hs, [pr]: h })) },
+  resolveReportTo: (given, callerId) => resolveReportTo($, given, callerId),
+  openEnv: (h, drafts, prev, at) => openHandoverEnv($, options, h, drafts, prev, at),
+  best: (what, fn) => best($, what, fn),
+  saveHandover: h => saveHandover($, h),
+  appendLog: event => appendLog($, event),
+  toast: text => { void $.ui.toast(text) },
+  refresh: () => refresh($),
+  ensureQueue: () => ensureQueue($),
+})
+
+const planIoOf = ($: EngineInterface): PlanIo => ({
+  refresh: () => refresh($),
+  plans: () => read($, plan),
+  planOwner: (plans, name) => planOwner(plans, name),
+  limitsLine: (rows, workers) => limitsLine(rows, workers),
+  syncPlans: (rows, edit, quietOwner) => syncPlans($, rows, edit, quietOwner),
+})
+
+const slotsIoOf = ($: EngineInterface): SlotsIo => ({
+  refresh: () => refresh($),
+  now: () => $.clock.now(),
+  sleep: ms => $.clock.sleep(ms),
+  slots: () => read($, testSlots),
+  settleSlots: (rows, t, pre, me) => settleSlots($, rows, t, pre, me),
+  best: (what, fn) => best($, what, fn),
+  testFails: () => read($, testFails),
+  setTestFails: async state => { await update($, testFails, () => state) },
+  appendLog: event => appendLog($, event),
+  slotDir: () => slotDir,
+})
+
+const migrationsIoOf = ($: EngineInterface): MigrationsIo => ({
+  runCmd: argv => runCmd($, argv),
+})
+
+const statusIoOf = ($: EngineInterface, options: Record<string, unknown>): StatusIo => ({
+  now: () => $.clock.now(),
+  handovers: () => read($, handovers),
+  readLog: () => readLog($),
+  prCache: () => read($, prCache),
+  fetchPrs: () => fetchPrs($),
+  refresh: () => refresh($),
+  activity: () => read($, activity),
+  unhanded: () => currentUnhanded($),
+  leftovers: () => read($, leftovers),
+  costLines: (prs, keep) => costLines($, prs, keep),
+  ledger: () => read($, ledger),
+  preflight: () => read($, preflight),
+  inbox: () => read($, inbox),
+  plans: () => read($, plan),
+  slots: () => read($, testSlots),
+  offerSeeds: () => offerSeedsOnce(standingIoOf($), options),
+  pushState: () => read($, pushState),
+  deploys: () => read($, deploys),
+  behind: () => read($, behind),
+  limitsLine: (rows, workers) => limitsLine(rows, workers),
+  stateDir: () => stateDir($),
+})
+
+const commandIoOf = ($: EngineInterface): CommandIo => ({
+  now: () => $.clock.now(),
+  inbox: () => read($, inbox),
+  checks: () => read($, checks),
+  answerQuestion: (wanted, choice, by, options, user) => answerQuestion($, wanted, choice, by, options, user),
+  withChecks: fn => withChecks($, fn),
+  costLines: prs => costLines($, prs),
+  handovers: () => read($, handovers),
+  preflight: () => read($, preflight),
+  roster: () => read($, roster),
+  endedManagers: rows => endedManagers(rows),
+  panes: async () => [...(await $.ui.panes())],
+  close: () => $.ui.close({ id: PANE }),
+  open: () => $.ui.open({ id: PANE, title: 'Flow', focus: true }),
+  gatherLeftovers: (base, resumed) => gatherLeftovers($, base, resumed),
+  pushState: () => read($, pushState),
+  after: (ms, fn) => { $.clock.after(ms, fn) },
+  submit: text => $.prompt.submit({ text }),
+  notesPath: owner => notesPath($, owner),
+  readNotes: owner => readNotes($, owner),
+  sweep: (base, apply, dryHint) => sweep($, base, apply, dryHint),
+  putHandover: async (pr, h) => { await update($, handovers, hs => ({ ...hs, [pr]: h })) },
+  best: (what, fn) => best($, what, fn),
+  saveHandover: h => saveHandover($, h),
+  appendLog: event => appendLog($, event),
+  toast: text => { void $.ui.toast(text) },
+  ensureQueue: () => ensureQueue($),
+  refresh: () => refresh($),
+  pushAct: (act, by) => pushAct($, act, by),
+  holdTarget: (name, until, by, reason) => holdTarget($, name, until, by, reason),
+  releaseTarget: name => releaseTarget($, name),
+  refreshBehind: () => refreshBehind($),
 })
 
 // Managers whose end already freed a slot (and woke main), so a poll does not wake it twice.
@@ -1494,28 +1598,6 @@ async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>,
 // The reviewer's report with the PR's workers' cost appended, once.
 const withCost = ($: EngineInterface, branch: string, report: string): Promise<string> => withCostTo(costIoOf($), branch, report)
 
-// How many finished handovers status lists; the rest only count, `pr:<n>` gives any one in full.
-const FINISHED_SHOWN = 5
-const FINISHED_REPORT_MAX = 120
-
-// Open handovers in order, then the newest finished ones, and how many finished were left out.
-export function cappedHandovers(list: Handover[]): { shown: Handover[]; hidden: number } {
-  const finished = list.filter(h => h.status === 'done').sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
-  const keep = new Set(finished.slice(0, FINISHED_SHOWN))
-  return { shown: list.filter(h => h.status !== 'done' || keep.has(h)), hidden: Math.max(0, finished.length - FINISHED_SHOWN) }
-}
-
-const clipLine = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
-
-// reportMax clips only the reviewer's report, so the title and evidence of a finished line stay.
-function handoverLine(h: Handover, reportMax?: number): string {
-  const tail = h.status === 'done' ? ` ${h.sha ?? ''} ${reportMax === undefined ? h.report ?? '' : clipLine(h.report ?? '', reportMax)}`
-    : h.status === 'returned' ? ` returned: ${h.reason ?? ''}`
-    : h.status === 'awaiting' ? ` awaiting the user's approval: /flow approve ${h.pr}`
-    : h.status === 'ready' ? ' ready in a batch that awaits the user: /flow push' : ''
-  return `#${h.pr} ${h.status} (${h.branch} @ ${h.head.slice(0, 8)}, from ${h.reportTo})${tail} — ${h.title} [${evidenceSummary(h.evidence)}]`
-}
-
 // --- Cleanup: leftover worktrees and local branches of finished work ---------------------------
 
 const cleanIoOf = ($: EngineInterface): CleanIo => ({
@@ -2375,166 +2457,7 @@ export const register: Register = (on, options) => {
 
   // A closed pane stays closed: only this command and a newly started agent (openPane) open it,
   // never the roster poll, so `/flow close` holds while agents keep running.
-  on('command.run', { command: 'flow' }, async ($, e) => {
-    // A plugin's $.command.run may leave args out.
-    const arg = (e.args ?? '').trim()
-    if (arg === 'inbox' || arg.startsWith('inbox ')) {
-      const w = arg.split(/\s+/).slice(1)
-      const box = await read($, inbox)
-      const now = await $.clock.now()
-      if (w.length === 1 && /^[qd]\d+$/i.test(w[0]!)) return { text: renderItem(box, w[0]!, now) }
-      // `all` is the older spelling of `decisions`: both list every decision.
-      if (w.length > 1 || (w.length === 1 && w[0] !== 'all' && w[0] !== 'decisions')) return { text: 'Usage: /flow inbox, /flow inbox decisions (every decision), /flow inbox <id> (one item in full)' }
-      const sec = inboxChecksSection(await read($, checks), installed)
-      return { text: [renderInbox(box, now, { all: w.length === 1, width: termWidth() }), ...sec].join('\n') }
-    }
-    if (/^(ok|no|answer)(\s|$)/.test(arg)) {
-      const [verb = ''] = arg.split(/\s+/)
-      const rest = arg.slice(verb.length).trim()
-      const lines: string[] = []
-      if (verb === 'ok') {
-        const { ids, lines: refused } = expandOk(await read($, inbox), rest === '' ? [] : rest.split(/\s+/))
-        lines.push(...refused)
-        for (const id of ids) lines.push(await answerQuestion($, id, null, 'main', options, true))
-      } else if (verb === 'no') {
-        const m = /^(\S+)(?:\s+([\s\S]+))?$/.exec(rest)
-        const q = m === null ? undefined : findItem(await read($, inbox), m[1]!)
-        if (m === null) return { text: 'Usage: /flow no <id> [what to do instead]' }
-        if (q !== undefined && !isFyi(q)) lines.push(`${q.id}: not a decision; answer a question with /flow answer ${q.id} <choice>.`)
-        else lines.push(await answerQuestion($, m[1]!.toLowerCase(), m[2] ?? OVERTURN, 'main', options, true))
-      } else {
-        const m = /^(\S+)\s+([\s\S]+)$/.exec(rest)
-        if (m === null) return { text: 'Usage: /flow answer <id> <option letter, number or your own words>' }
-        lines.push(await answerQuestion($, m[1]!.toLowerCase(), m[2]!, 'main', options, true))
-      }
-      lines.push(stillOpen(await read($, inbox)))
-      return { text: lines.join('\n') }
-    }
-    if (arg === 'checks' || arg.startsWith('checks ')) {
-      const w = arg.split(/\s+/).slice(1)
-      // Ids are matched in any case; only the id words are lowercased, the reason or note keeps its own.
-      for (let n = ['pass', 'fail', 'skip'].includes(w[0] ?? '') ? 1 : 0; /^c\d+$/i.test(w[n] ?? ''); n++) w[n] = w[n]!.toLowerCase()
-      const t = await $.clock.now()
-      if (w.length === 0) return { text: renderChecksTable(await read($, checks), installed, termWidth(), t) }
-      if (w.length === 1 && !['pass', 'fail', 'skip'].includes(w[0]!)) return { text: renderCheckDetail(await read($, checks), w[0]!, installed, t) }
-      if (w[0] === 'pass' && w.length > 1) {
-        return { text: await withChecks($, cur => {
-          const r = closeChecks(cur, w.slice(1), 'pass', 'user', undefined, t)
-          return 'error' in r ? { checks: cur, out: `Not closed: ${r.error}` } : { checks: r.checks, out: r.text }
-        }) }
-      }
-      if (w[0] === 'fail' && w.length > 1) {
-        return { text: await withChecks($, cur => {
-          const r = closeChecks(cur, [w[1]!], 'fail', 'user', w.slice(2).join(' '), t)
-          return 'error' in r ? { checks: cur, out: `Not closed: ${r.error}` } : { checks: r.checks, out: `${w[1]} failed; main starts a manager on the follow-up (/flow resume lists it).` }
-        }) }
-      }
-      if (w[0] === 'skip' && w.length > 1) {
-        // Leading ids share one reason: the words after the last id-shaped word.
-        let n = 1
-        while (/^c\d+$/.test(w[n] ?? '')) n++
-        return { text: await withChecks($, cur => {
-          const r = closeChecks(cur, w.slice(1, n), 'skip', 'user', w.slice(n).join(' '), t)
-          return 'error' in r ? { checks: cur, out: `Not closed: ${r.error}` } : { checks: r.checks, out: r.text }
-        }) }
-      }
-      return { text: CHECKS_USAGE }
-    }
-    if (arg === 'status') {
-      const lines = await costLines($, Object.values(await read($, handovers)))
-      return { text: lines.length > 0 ? lines.join('\n') : 'No agent steps counted yet.' }
-    }
-    if (arg === 'preflight') {
-      return { text: renderStatus(await read($, preflight), await read($, inbox), endedManagers(await read($, roster)), await $.clock.now(), mirror.preflightWaitMs) }
-    }
-    if (arg === 'close') {
-      if (!(await $.ui.panes()).some(p => p.id === PANE)) return { text: 'The Flow pane is not open.' }
-      try {
-        await $.ui.close({ id: PANE })
-      } catch (err) {
-        return { text: `The Flow pane stayed open: ${err instanceof Error ? err.message : String(err)}` }
-      }
-      return { text: 'Flow pane closed.' }
-    }
-    if (arg === 'resume') {
-      const found = await gatherLeftovers($, settings.base, resumed)
-      // A batch the user has not pushed yet comes first; no manager is started for it.
-      const batchLines = pushLines(await read($, pushState))
-      const waiting = batchLines.length === 0 ? [] : ['Needs you (a checked batch awaits your push; no manager is started for it):', ...batchLines]
-      if (found.error !== undefined && found.items.length === 0) return { text: [...waiting, found.error].join('\n') }
-      const lines = (kind: Leftover['kind'], title: string) => {
-        const rows = found.items.filter(i => i.kind === kind)
-        return rows.length ? [`${title}:`, ...rows.map(i => `  ${i.line}`)] : []
-      }
-      const again = found.skipped.length ? ['Already resumed in this session:', ...found.skipped.map(i => `  ${i.line}`)] : []
-      const checkLines = resumeChecksLines(await read($, checks), installed)
-      if (found.items.length === 0) return { text: [...waiting, ...(checkLines.length || waiting.length ? [] : ['Nothing unfinished.']), ...checkLines, ...again].join('\n') }
-      const text = [
-        ...waiting,
-        ...checkLines,
-        ...(found.error !== undefined ? [found.error] : []),
-        ...lines('pr', 'Open PRs'), ...lines('branch', 'Branches without a PR'), ...lines('worktree', 'Worktrees with leftover work'), ...again,
-      ].join('\n')
-      for (const i of found.items) resumed.add(i.key)
-      // The instructions ride as hidden `context`. A command's context alone starts no turn and the
-      // host refuses `prompt.submit` from inside a command.run hook, so a short prompt is submitted
-      // once the command has returned, to make the main session act on it.
-      $.clock.after(0, () => {
-        void $.prompt.submit({ text: 'Carry out the /flow resume instructions: start the managers.' }).catch(() => undefined)
-      })
-      const notes = new Map<string, OwnerNotes>()
-      for (const o of new Set(found.items.map(i => i.owner))) {
-        const path = o === undefined ? undefined : await notesPath($, o)
-        if (o !== undefined && path !== undefined) notes.set(o, { path, text: await readNotes($, o) })
-      }
-      return { text, context: [resumeInstructions(found.items, settings.maxManagers, notes)] }
-    }
-    const words = arg.split(/\s+/)
-    if (words[0] === 'clean' && words.slice(1).every(w => w === '--yes')) {
-      // A person's command: --yes removes whatever the cleanup setting says.
-      return { text: await sweep($, settings.base, words.length > 1, 'Run /flow clean --yes to remove them.') }
-    }
-    if (words[0] === 'approve') {
-      // Only a person's command approves; no tool does.
-      const n = Number(words[1])
-      if (words.length !== 2 || !Number.isInteger(n) || n <= 0) return { text: 'Usage: /flow approve <pr>' }
-      const h = (await read($, handovers))[String(n)]
-      if (h === undefined) return { text: `No handover for PR #${n}.` }
-      if (h.status !== 'awaiting') return { text: `PR #${n} is ${h.status}, not awaiting approval.` }
-      const next: Handover = { ...h, status: 'pending', approvedHead: h.head }
-      await update($, handovers, hs => ({ ...hs, [String(n)]: next }))
-      await best($, 'saving a handover', async () => {
-        await saveHandover($, next)
-        await appendLog($, { event: 'approve', owner: next.reportTo, pr: n, branch: next.branch, text: next.title })
-      })
-      void $.ui.toast(`PR #${n} approved at ${h.head.slice(0, 8)}`)
-      const queue = await ensureQueue($)
-      await refresh($)
-      return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
-    }
-    if (words[0] === 'push') {
-      // Only a person's command releases a ready batch (or main, on the user's word, with the push tool).
-      const usage = 'Usage: /flow push (push the ready batch), /flow push back <pr> (send one PR back), /flow push drop (return them all)'
-      if (words.length === 1) return { text: await pushAct($, { kind: 'push' }, 'user') }
-      if (words[1] === 'drop' && words.length === 2) return { text: await pushAct($, { kind: 'drop' }, 'user') }
-      const n = Number((words[2] ?? '').replace(/^#/, ''))
-      if (words[1] === 'back' && words.length === 3 && Number.isInteger(n) && n > 0) return { text: await pushAct($, { kind: 'back', pr: n }, 'user') }
-      return { text: usage }
-    }
-    if (words[0] === 'hold' || words[0] === 'release') {
-      // A person's command, the same as the deploy tool is for main.
-      const [, name, until] = words
-      if (name === undefined || words.length > (words[0] === 'hold' ? 3 : 2) || (until !== undefined && until !== 'batch' && until !== 'released')) {
-        return { text: words[0] === 'hold' ? 'Usage: /flow hold <target> [batch|released] (default released)' : 'Usage: /flow release <target>' }
-      }
-      const text = words[0] === 'hold' ? await holdTarget($, name, until === 'batch' ? 'batch' : 'released', 'user', undefined) : await releaseTarget($, name)
-      await refreshBehind($)
-      return { text }
-    }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and the decisions agents made, /flow ok keeps decisions, /flow no <id> undoes one, /flow answer <id> <choice> answers a question, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
-    await $.ui.open({ id: PANE, title: 'Flow', focus: true })
-    return { text: 'Flow pane opened.' }
-  })
+  on('command.run', { command: 'flow' }, ($, e) => flowCommand(commandIoOf($), settings, installed, resumed, options, e.args))
 
   // Hands the request to the main session's model, which runs it with the dispatch skill. A
   // command can't submit a prompt itself (it would wait on its own turn), so a timer queues it
@@ -2743,75 +2666,7 @@ export const register: Register = (on, options) => {
     return wrapUpReminder($, e, await next(e), settings, mainModel, mainWindow)
   }).catch(($, e, next) => next(e))
 
-  on('tool.call', { tool: 'mcp__flow__handover' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const pr = Number(input.pr)
-    if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: pr must be a PR number.' }
-    if (!settings.useReviewer) {
-      return { result: `Refused: this repo has no reviewer (the plugin's reviewer option is off). Merge it yourself: full check, then gh pr merge ${pr} --${settings.mergeMethod} --delete-branch.` }
-    }
-    const setMode = parseMode(settings.mergeMode)
-    const asked = input.mode === 'confirm' || input.mode === 'auto' ? input.mode : undefined
-    if (autoRefused(asked, setMode)) {
-      return { result: 'Refused: the merge_mode setting is confirm, so a manager cannot mark a PR auto. Only the user lowers it, by adding the flow:auto label to the PR by hand.' }
-    }
-    const view = await $.process.run(['gh', 'pr', 'view', String(pr), '--json', 'state,isDraft,headRefOid,headRefName,title,body,labels'])
-    if (view.exitCode !== 0) return { result: `Refused: gh pr view ${pr} failed: ${view.stderr.trim().slice(0, 300)}` }
-    const info = JSON.parse(view.stdout) as { state: string; isDraft: boolean; headRefOid: string; headRefName: string; title: string; body?: string; labels?: { name: string }[] }
-    if (info.state !== 'OPEN') return { result: `Refused: PR #${pr} is ${info.state}.` }
-    if (info.isDraft) return { result: `Refused: PR #${pr} is a draft. Mark it ready (gh pr ready ${pr}) first.` }
-    if ((await read($, handovers))[String(pr)]?.status === 'ready') {
-      return { result: `Refused: PR #${pr} is in a batch that awaits the user's /flow push. Leave it alone; if the user sends it back you hear so.` }
-    }
-    const dest = await resolveReportTo($, input.report_to, e.agentId)
-    if ('refuse' in dest) return { result: dest.refuse }
-    const envParsed = parseEnvInput(input.env, mirror.deployInfos)
-    if ('error' in envParsed) return { result: `Refused: ${envParsed.error}` }
-    // Guard tests: from the PR's changed files (`gh pr diff` has no file-count cap). Never fail open, never block for good.
-    let guard: ReturnType<typeof guardTestsFor> = []
-    if (Object.keys(settings.guardTests).length > 0) {
-      const diff = await $.process.run(['gh', 'pr', 'diff', String(pr), '--name-only'])
-      if (diff.exitCode !== 0) return { result: `Refused: gh pr diff ${pr} --name-only failed, so the guard tests cannot be checked: ${diff.stderr.trim().slice(0, 300)}` }
-      guard = guardTestsFor(diff.stdout.split('\n').map(l => l.trim()).filter(Boolean), settings.guardTests)
-    }
-    const checked = checkEvidence(info.body ?? '', [...settings.workerChecks, ...settings.alwaysTests], guard)
-    if ('problems' in checked) return { result: evidenceRefusal(pr, checked.problems) }
-    const t = await $.clock.now()
-    const h: Handover = {
-      pr, title: info.title, head: info.headRefOid, branch: info.headRefName,
-      reportTo: dest.name, verified: String(input.verified ?? ''),
-      pending: String(input.pending ?? 'none'), afterDeploy: String(input.after_deploy ?? 'none'),
-      ...(typeof input.verify_command === 'string' && input.verify_command.trim() !== '' ? { verifyCommand: input.verify_command.trim() } : {}),
-      evidence: checked.evidence, status: 'pending', at: t, ...(asked !== undefined ? { mode: asked } : {}),
-      ...(isBump(input.release) ? { release: input.release } : {}),
-    }
-    // A labelling failure is reported, not fatal: the stored mode still gates the reviewer.
-    let labelNote = ''
-    const labels = (info.labels ?? []).map(l => l.name)
-    if (asked !== undefined) {
-      const spec = labelSpec(asked)
-      const made = await $.process.run(['gh', 'label', 'create', spec.name, '--force', '--color', spec.color, '--description', spec.description])
-      const added = made.exitCode === 0 ? await $.process.run(['gh', 'pr', 'edit', String(pr), '--add-label', spec.name]) : made
-      if (added.exitCode === 0) labels.push(spec.name)
-      else labelNote = ` Could not add the ${spec.name} label (${added.stderr.trim().slice(0, 200)}); the mode is stored anyway.`
-    }
-    const hold = effectiveMode(labels, h.mode, setMode) === 'confirm'
-    if (hold) h.status = 'awaiting'
-    const envNote = await openHandoverEnv($, options, h, envParsed.drafts, (await read($, handovers))[String(pr)]?.env ?? [], t)
-    await update($, handovers, hs => ({ ...hs, [String(pr)]: h }))
-    await best($, 'saving a handover', async () => {
-      await saveHandover($, h)
-      await appendLog($, { event: 'handover', owner: h.reportTo, pr, branch: h.branch, text: h.title })
-    })
-    if (hold) {
-      void $.ui.toast(`PR #${pr} awaits your approval: /flow approve ${pr}`)
-      await refresh($)
-      return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}, but it awaits the user's approval: the reviewer will not merge it until the user runs /flow approve ${pr}. Tell the user so in your report.${labelNote}${envNote}` }
-    }
-    const queue = await ensureQueue($)
-    await refresh($)
-    return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The reviewer reports back to ${h.reportTo} by message.${dest.note ?? ''}${labelNote}${envNote}` }
-  })
+  on('tool.call', { tool: 'mcp__flow__handover' }, ($, e) => handoverTool(handoverIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId))
 
   on('tool.call', { tool: 'mcp__flow__release' }, ($, e) => releaseTool(releaseIoOf($), settings, e as unknown as Record<string, unknown>))
 
@@ -2903,144 +2758,9 @@ export const register: Register = (on, options) => {
     return { result: `PR #${key}: ${next.status}.${verify}${filed}${sizeLine}` }
   })
 
-  on('tool.call', { tool: 'mcp__flow__plan' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const rows = await refresh($)
-    const me = e.agentId === undefined ? undefined : rows.find(a => a.id === e.agentId)
-    const plans = await read($, plan)
-    const owner = e.agentId === undefined ? 'main' : planOwner(plans, me?.name)
-    const view = (p: Plan, who: string) => {
-      const graph = p[who] ?? {}
-      const lines = Object.keys(graph).length ? describe(graph) : ['No plan.']
-      const ready = Object.values(graph).filter(n => n.state === 'ready').map(n => n.id)
-      return [
-        ...lines,
-        ready.length ? `Ready now: ${ready.join(', ')}.` : 'Nothing is ready now.',
-        ...(who === 'main' ? [limitsLine(rows, settings.maxWorkers)] : []),
-      ].join('\n')
-    }
-    const action = String(input.action)
-    if (action === 'list') {
-      const who = owner === 'main' && typeof input.owner === 'string' && input.owner !== '' ? input.owner : owner
-      return { result: view(await syncPlans($, rows).then(() => read($, plan)), who) }
-    }
-    const id = String(input.id ?? '')
-    const change = async (edit: (g: Graph) => Graph | string) => {
-      let refused: string | undefined
-      const after = await syncPlans($, rows, p => {
-        const r = edit(p[owner] ?? {})
-        if (typeof r === 'string') {
-          refused = r
-          return p
-        }
-        return { ...p, [owner]: r }
-      }, owner)
-      return refused !== undefined ? `Refused: ${refused}` : view(after, owner)
-    }
-    if (action === 'add') {
-      const nodes = Array.isArray(input.nodes) ? input.nodes as Array<Record<string, unknown>> : []
-      if (nodes.length === 0) return { result: 'Refused: add needs nodes: [{id, title, after?, until?}].' }
-      const r = await change(g => {
-        const added = addNodes(g, nodes.map(n => ({
-          id: String(n.id ?? ''),
-          title: typeof n.title === 'string' ? n.title : undefined,
-          after: Array.isArray(n.after) ? n.after.map(String) : undefined,
-          until: n.until === 'reported' ? 'reported' : 'merged',
-        })))
-        return 'error' in added ? added.error : added.graph
-      })
-      return { result: r }
-    }
-    const node = (plans[owner] ?? {})[id]
-    if (!node) return { result: `Refused: no node "${id}" in ${owner === 'main' ? 'main' : owner}'s plan.` }
-    if (action === 'done') {
-      return { result: await change(g => ({ ...g, [id]: { ...g[id]!, manual: 'done', info: typeof input.note === 'string' && input.note !== '' ? input.note : undefined } })) }
-    }
-    if (action === 'block') {
-      return { result: await change(g => ({ ...g, [id]: { ...g[id]!, manual: 'blocked', info: String(input.reason ?? 'blocked by hand') } })) }
-    }
-    if (action === 'remove') {
-      return {
-        result: await change(g => {
-          const n = g[id]
-          if (!n) return `no node "${id}"`
-          if (n.state !== 'waiting' && n.state !== 'ready') return `${id} is ${n.state}; only waiting or ready nodes can be removed`
-          const dependents = Object.values(g).filter(o => o.after.includes(id)).map(o => o.id)
-          if (dependents.length) return `${dependents.join(', ')} still wait${dependents.length === 1 ? 's' : ''} on ${id}`
-          const { [id]: _gone, ...rest } = g
-          return rest
-        }),
-      }
-    }
-    return { result: `Unknown action "${action}".` }
-  })
+  on('tool.call', { tool: 'mcp__flow__plan' }, ($, e) => planTool(planIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId))
 
-  on('tool.call', { tool: 'mcp__flow__test_slot' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const action = String(input.action)
-    const key = typeof input.agentId === 'string' ? input.agentId : 'main'
-    const rows = await refresh($)
-    const name = key === 'main' ? 'main' : labelOf(rows.find(a => a.id === key) ?? { id: key, description: '', type: '', status: '' })
-    const label = typeof input.label === 'string' && input.label.trim() !== '' ? input.label.trim().slice(0, 60) : 'tests'
-    const limit = settings.testSlots
-    const t = await $.clock.now()
-
-    if (action === 'status') {
-      return { result: slotLine(await read($, testSlots), limit, t) || `Test slots: 0/${limit} held, nobody waiting.` }
-    }
-    if (action === 'release') {
-      let freed = false
-      await settleSlots($, rows, t, st => {
-        freed = st.holders.some(h => h.key === key)
-        return freed ? { ...st, holders: st.holders.filter(h => h.key !== key) } : st
-      })
-      let noted = ''
-      await best($, 'recording a test result', async () => {
-        const n = noteRelease(await read($, testFails), key, label, input.result, input.failed_tests)
-        if (n.event === undefined) return
-        await update($, testFails, () => n.state)
-        await appendLog($, { event: n.event.kind, owner: name, agent: name, text: n.event.text })
-        noted = ` ${n.answer}`
-      })
-      return { result: `${freed ? 'Released your test slot.' : 'You held no test slot; nothing to release.'}${noted}` }
-    }
-    if (action !== 'acquire') return { result: `Unknown action "${action}".` }
-
-    // Check and take inside one update(), so two callers never both get the last slot. A holder
-    // whose grant is still unclaimed confirms it here.
-    const attempt = async (): Promise<string | undefined> => {
-      let already: SlotEntry | undefined
-      const at = await $.clock.now()
-      await settleSlots($, rows, at, st => {
-        already = st.holders.find(h => h.key === key)
-        if (already || st.waiters.some(w => w.key === key)) return st
-        return { ...st, waiters: [...st.waiters, { key, name, label, since: at }] }
-      }, key)
-      if (already?.claimed === true) {
-        return `You already hold a test slot (${already.label}, ${span(at - already.since)}). Release it when your run is over.`
-      }
-      const st = await read($, testSlots)
-      if (!st.holders.some(h => h.key === key)) return undefined
-      return `Test slot granted (${st.holders.length}/${limit}). Run, then release it, also if the run fails. It frees by itself after ${span(LEASE_MS)}.`
-    }
-
-    const wait = Math.min(WAIT_MAX_S, Math.max(0, Number.isFinite(Number(input.wait_s)) ? Number(input.wait_s) : WAIT_DEFAULT_S))
-    const first = await attempt()
-    if (first !== undefined) return { result: first }
-    // The hook's budget bounds this wait; the waiter keeps its place in line between calls.
-    for (let waited = 0; waited < wait; waited++) {
-      await $.clock.sleep(1000)
-      await refresh($)
-      const got = await attempt()
-      if (got !== undefined) return { result: got }
-    }
-    const st = await read($, testSlots)
-    const pos = st.waiters.findIndex(w => w.key === key) + 1
-    const f = grantFile(slotDir, key)
-    return {
-      result: `No slot after ${wait} s; queued, position ${pos}. Held by ${st.holders.map(h => heldBy(h, t)).join(', ') || 'nobody'}. You keep your place and are granted the slot when it is your turn (it is offered for ${span(CLAIM_MS)}). Don't poll acquire. ${f ? `Wait with Bash (timeout 600000, or run_in_background and continue when notified): until [ -e '${f}' ]; do sleep 3; done . Or do other work; a "your test slot is granted" message arrives.` : 'Do other work; a "your test slot is granted" message arrives.'} Then call acquire once to confirm, run, and release.`,
-    }
-  })
+  on('tool.call', { tool: 'mcp__flow__test_slot' }, ($, e) => testSlotTool(slotsIoOf($), settings, e as unknown as Record<string, unknown>))
 
   on('tool.call', { tool: 'mcp__flow__guard_tests' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
@@ -3304,52 +3024,7 @@ export const register: Register = (on, options) => {
     return { result: await sweep($, settings.base, apply) }
   })
 
-  on('tool.call', { tool: 'mcp__flow__migrations' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const dir = cleanDir(settings.migrationsDir)
-    if (dir === '') return { result: UNSET_TEXT }
-    const ref = typeof input.ref === 'string' && input.ref.trim() !== '' ? input.ref.trim() : 'HEAD'
-    const prs = Array.isArray(input.prs) ? input.prs.filter((n): n is number => Number.isInteger(n)) : []
-    const base = settings.base
-    const git = (...argv: string[]) => runCmd($, ['git', ...argv])
-    const lines = async (...argv: string[]) => {
-      const r = await git(...argv)
-      return r.exitCode === 0 ? r.stdout.split('\n').filter(l => l !== '') : []
-    }
-    const fetched = await git('fetch', 'origin', base)
-    if (fetched.exitCode !== 0) return { result: `Cannot read the base: git fetch origin ${base} failed: ${fetched.stderr.trim().split('\n')[0]?.slice(0, 200) ?? ''}` }
-    const baseRef = `origin/${base}`
-    // A dir missing on the base or at ref (a new repo) lists nothing: numbering starts from the PR's own.
-    const baseFiles = await lines('ls-tree', '-r', '--name-only', baseRef, '--', dir)
-    const refFiles = await lines('ls-tree', '-r', '--name-only', ref, '--', dir)
-
-    const heads = new Map<number, string>()
-    const inputs: PrInput[] = []
-    for (const pr of prs) {
-      const fail = (error: string) => inputs.push({ pr, added: [], error })
-      const view = await runCmd($, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid'])
-      const head = view.exitCode === 0 ? (JSON.parse(view.stdout || '{}') as { headRefOid?: string }).headRefOid : undefined
-      if (head === undefined || head === '') { fail(`gh pr view failed: ${view.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no head'}`); continue }
-      const pull = await git('fetch', 'origin', `pull/${pr}/head`)
-      if (pull.exitCode !== 0) { fail(`head ${head.slice(0, 9)} not fetchable: ${pull.stderr.trim().split('\n')[0]?.slice(0, 200) ?? ''}`); continue }
-      heads.set(pr, head)
-      inputs.push({ pr, added: await lines('diff', '--name-only', '--diff-filter=A', `${baseRef}...${head}`, '--', dir) })
-    }
-
-    const report = analyze({ dir, baseFiles, refFiles, prs: inputs })
-    // Only a flagged migration needs the PR's own files read for mentions of its old number.
-    for (const p of report.prs) {
-      const head = heads.get(p.pr)
-      if (head === undefined || p.migrations.every(m => m.status === 'ok')) continue
-      const files: Array<{ path: string; text: string }> = []
-      for (const path of (await lines('diff', '--name-only', '--diff-filter=AM', `${baseRef}...${head}`)).slice(0, 300)) {
-        const shown = await git('show', `${head}:${path}`)
-        if (shown.exitCode === 0) files.push({ path, text: shown.stdout })
-      }
-      for (const m of p.migrations) if (m.status !== 'ok') m.refs = findRefs(m, files)
-    }
-    return { result: render(report) }
-  })
+  on('tool.call', { tool: 'mcp__flow__migrations' }, ($, e) => migrationsTool(migrationsIoOf($), settings, e as unknown as Record<string, unknown>))
 
   on('tool.call', { tool: 'mcp__flow__session' }, async ($, e) => {
     const id = e.agentId
@@ -3381,94 +3056,7 @@ export const register: Register = (on, options) => {
     return { result: 'Unknown action: use list, push, send-back or drop.' }
   })
 
-  on('tool.call', { tool: 'mcp__flow__status' }, async ($, e) => {
-    const asked = Number((e as unknown as Record<string, unknown>).pr)
-    if (Number.isInteger(asked) && asked > 0) {
-      const h = (await read($, handovers))[String(asked)]
-      const events = await readLog($)
-      const owner = ownerFor(events, { pr: asked, branch: h?.branch }) ?? h?.reportTo ?? 'unknown'
-      const mine = events.filter(l => l.pr === asked || (h !== undefined && l.branch === h.branch))
-      return {
-        result: [...(h === undefined ? [] : [handoverLine(h)]), `Owner of PR #${asked}: ${owner}`, ...mine.map(l => `${l.ts} ${l.event}${l.agent ? ` ${l.agent}` : ''}${l.text ? `: ${l.text}` : ''}`)].join('\n'),
-      }
-    }
-    if (mirror.queueOn && (await $.clock.now()) - (await read($, prCache)).fetchedAt > PR_MIN_GAP_MS) await fetchPrs($)
-    const [allRows, acts, allHs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
-    // What the caller needs, so the result it keeps in its context stays small: a manager sees its own
-    // subtree and PRs, a worker itself and its manager. Main, the reviewer (it works the whole queue) and
-    // an unknown caller see everything.
-    const me = e.agentId === undefined ? undefined : allRows.find(r => r.id === e.agentId)
-    const scope: 'all' | 'manager' | 'worker' = me === undefined ? 'all' : me.type === MANAGER ? 'manager' : WORKERS.has(me.type) ? 'worker' : 'all'
-    const mine = new Set<string>(me === undefined ? [] : [me.id])
-    // A successor (x-2) has no parent link to x's workers: seed with every manager of the same base name.
-    if (scope === 'manager') for (const r of allRows) if (r.type === MANAGER && r.name !== undefined && baseName(r.name) === baseName(me?.name ?? '')) mine.add(r.id)
-    if (scope === 'manager') for (let grew = true; grew;) { grew = false; for (const r of allRows) if (r.parentId !== undefined && mine.has(r.parentId) && !mine.has(r.id)) { mine.add(r.id); grew = true } }
-    if (scope === 'worker' && me?.parentId !== undefined) mine.add(me.parentId)
-    const rows = scope === 'all' ? allRows : allRows.filter(r => mine.has(r.id))
-    const myBase = baseName(me?.name ?? '')
-    const hs = scope === 'all' ? allHs : scope === 'manager' ? Object.fromEntries(Object.entries(allHs).filter(([, h]) => baseName(h.reportTo) === myBase)) : {}
-    const [unhanded, cache] = scope === 'all' ? [await currentUnhanded($), await read($, prCache)] : [[], await read($, prCache)]
-    const leftover = scope === 'all' ? leftoverLine(await read($, leftovers)) : ''
-    const costs = scope === 'worker' ? [] : await costLines($, Object.values(hs), scope === 'manager'
-      ? en => (en.role === 'manager' ? baseName(en.name) : en.role === 'worker' && en.manager !== undefined ? baseName(en.manager) : undefined) === myBase
-      : undefined)
-    const led = await read($, ledger)
-    const lines: string[] = []
-    const byParent = new Map<string | undefined, AgentRow[]>()
-    for (const a of rows) byParent.set(a.parentId, [...(byParent.get(a.parentId) ?? []), a])
-    const ids = new Set(rows.map(a => a.id))
-    const pre = await read($, preflight)
-    const inb = await read($, inbox)
-    const walk = (a: AgentRow, depth: number) => {
-      const phase = a.type === MANAGER && a.name !== undefined ? phaseOf(pre, inb, a.name) : undefined
-      const answer = (acts[a.id]?.answer ?? '').trim().split('\n').pop() ?? ''
-      const h = handoffOf(a, acts[a.id])
-      const hand = h === undefined ? '' : h.kind === 'done' ? ` | ${handoffText(h)}` : ` | handoff: wrapping up${h.percent === undefined ? '' : ` (${h.percent}%)`}`
-      lines.push(`${'  '.repeat(depth)}- ${ROLE[a.type] ?? a.type} ${labelOf(a)}: ${a.status}${hand}${phase ? ` | pre-flight: ${phase}` : ''}${answer ? ` | last: ${answer.slice(0, 160)}` : ''}`)
-      for (const c of byParent.get(a.id) ?? []) walk(c, depth + 1)
-    }
-    for (const a of rows.filter(r => r.parentId === undefined || !ids.has(r.parentId))) walk(a, 0)
-    const list = Object.values(hs).sort((a, b) => a.at - b.at)
-    const { shown, hidden } = cappedHandovers(list)
-    const plans = scope === 'worker' ? [] : Object.entries(await read($, plan)).filter(([who, g]) => Object.keys(g).length > 0 && (scope === 'all' || baseName(who) === myBase))
-    const slots = scope === 'worker' ? '' : slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
-    const seeds = e.agentId === undefined ? await offerSeedsOnce(standingIoOf($), options) : []
-    const gate = scope === 'all' ? (await read($, pushState)).batch : undefined
-    const batchLines = gate?.state === 'ready' ? renderBatch(gate) : []
-    const pushing = gate !== undefined && gate.state !== 'ready' ? renderBatch(gate) : []
-    return {
-      result: [
-        ...(scope === 'all' ? [
-          ...inboxHead(await read($, inbox), await $.clock.now()),
-          ...seeds,
-          ...behindLines(mirror.deployInfos, await read($, deploys), await read($, behind)).map(l => `Deploy: ${l}`),
-        ] : []),
-        ...(scope === 'worker' ? [] : [limitsLine(allRows, settings.maxWorkers)]),
-        ...(slots ? [slots] : []),
-        rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
-        ...(scope === 'worker' ? [] : [
-          list.length ? 'Handed-over PRs:' : 'No PRs handed over.',
-          ...shown.map(h => `${handoverLine(h, FINISHED_REPORT_MAX)}${h.report?.includes('| cost:') ? '' : reportSuffix(prCost(led, h.branch))}`),
-          ...(hidden > 0 ? [`+${hidden} earlier finished PRs (mcp__flow__status pr:<n> for one)`] : []),
-        ]),
-        ...(unhanded.length ? [
-          'Needs attention:', ...unhanded.map(u => `  ${unhandedLine(u)}`),
-          'A manager reviews it and hands it over, or closes it.',
-        ] : []),
-        ...(list.some(h => h.status === 'awaiting') || batchLines.length > 0 ? [
-          'Needs the user:',
-          ...batchLines.map(l => `  ${l}`),
-          ...list.filter(h => h.status === 'awaiting').map(h => `  #${h.pr} awaits approval: /flow approve ${h.pr} — ${h.title}`),
-        ] : []),
-        ...(pushing.length > 0 ? ['Push gate:', ...pushing.map(l => `  ${l}`)] : []),
-        ...(scope === 'all' && mirror.queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
-        ...(leftover ? [leftover] : []),
-        ...(plans.length ? ['Plans:', ...plans.flatMap(([who, g]) => [`${who}:`, ...describe(g).map(l => `  ${l}`)])] : []),
-        ...costs,
-        ...(scope === 'all' ? [`State: ${await stateDir($) ?? 'none (not a git repo)'}`] : []),
-      ].join('\n'),
-    }
-  })
+  on('tool.call', { tool: 'mcp__flow__status' }, ($, e) => statusTool(statusIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId))
   // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
   // Re-armed when usage drops back below the threshold (after a /compact).
   const mainWarn = { warned: false }
