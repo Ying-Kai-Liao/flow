@@ -225,32 +225,172 @@ export const recentAuto = (inbox: Inbox | undefined, now: number): Question[] =>
   (inbox?.items ?? []).filter(q => q.state === 'answered' && q.rule !== undefined && now - (q.answeredAt ?? 0) <= DAY)
     .sort((a, b) => (b.answeredAt ?? 0) - (a.answeredAt ?? 0)).slice(0, 10)
 
-// /flow inbox: the open questions grouped by owner, blocking first, ready to answer.
-export function renderInbox(inbox: Inbox | undefined, now: number): string {
+// --- The person's view (/flow inbox) and the commands behind it (/flow ok, no, answer). ---
+// Everything that decides what is grouped, collapsed or refused is a pure function here, so the Flow pane can reuse it.
+
+// Main (the user) may answer an FYI of anyone and whatever is addressed to main.
+export const mainMayAnswer = (q: Question): boolean => isFyi(q) || isAddressee(q, 'main')
+
+// Deploy, env and push items and a guard_tests suggestion change something outside the chat: a bulk
+// `/flow ok` never answers them; the person names the choice with `/flow answer`.
+export const needsExplicitAnswer = (q: Question): boolean => q.kind === 'deploy' || q.kind === 'env' || q.kind === 'push' || q.guard !== undefined
+
+export const STALE_MS = 2 * 3_600_000
+
+// An FYI is stale when it is older than 2 h or its owner is not a live agent. live undefined: age alone decides.
+export function isStaleFyi(q: Question, now: number, live?: string[]): boolean {
+  if (now - q.askedAt > STALE_MS) return true
+  return live !== undefined && !live.some(n => n === q.owner || noteKey(n) === noteKey(q.owner))
+}
+
+// One line's worth of text: whitespace folded, cut at max with "...".
+export function clip(text: string, max = 100): string {
+  const t = text.replace(/\s+/g, ' ').trim()
+  return t.length <= max ? t : `${t.slice(0, Math.max(0, max - 3)).trimEnd()}...`
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+// "2 questions (1 blocking), 9 FYIs." for what is open.
+function summary(inbox: Inbox | undefined): string {
+  const qs = questionsOf(inbox)
+  const f = fyisOf(inbox).length
+  const blocking = qs.filter(q => q.blocking).length
+  const parts = [
+    ...(qs.length > 0 ? [`${plural(qs.length, 'question')}${blocking > 0 ? ` (${blocking} blocking)` : ''}`] : []),
+    ...(f > 0 ? [plural(f, 'FYI')] : []),
+  ]
+  return parts.length === 0 ? 'Nothing open.' : `${parts.join(', ')}.`
+}
+
+// What is left after a command: one line.
+export const stillOpen = (inbox: Inbox | undefined): string => {
+  const s = summary(inbox)
+  return s === 'Nothing open.' ? 'Nothing is left open.' : `Still open: ${s} (/flow inbox lists them)`
+}
+
+// The words after `/flow ok`: which ids to keep or take the default of, and the lines for words that name nothing to answer.
+// No words: every open FYI. A qN is passed on as it is (the answer step reports unknown or answered ids), except an item that
+// needs an explicit answer. Any other word is an owner or a topic and expands to that owner's or topic's open FYIs.
+export function expandOk(inbox: Inbox | undefined, words: string[]): { ids: string[]; lines: string[] } {
+  const box = inbox ?? EMPTY_INBOX
+  const ids: string[] = []
+  const lines: string[] = []
+  const add = (id: string) => { if (!ids.includes(id)) ids.push(id) }
+  if (words.length === 0) {
+    for (const q of fyisOf(box)) add(q.id)
+    if (ids.length === 0) lines.push('No open FYIs to keep.')
+    return { ids, lines }
+  }
+  for (const w of words) {
+    if (/^q\d+$/i.test(w)) {
+      const q = box.items.find(x => x.id === w.toLowerCase())
+      if (q !== undefined && q.state === 'open' && needsExplicitAnswer(q)) lines.push(`${q.id}: answer it explicitly: /flow answer ${q.id} <choice>`)
+      else add(w.toLowerCase())
+      continue
+    }
+    const key = noteKey(w)
+    const hits = fyisOf(box).filter(q => noteKey(q.owner) === key || (q.topic !== undefined && q.topic.toLowerCase() === w.toLowerCase()))
+    if (hits.length === 0) lines.push(`${w}: no open FYIs for that owner or topic.`)
+    for (const q of hits) add(q.id)
+  }
+  return { ids, lines }
+}
+
+const tagsOf = (q: Question): string => [
+  q.blocking ? 'BLOCKING' : '',
+  q.kind === 'deploy' ? 'NEEDS YOU: DEPLOY APPROVAL' : q.kind === 'push' ? 'NEEDS YOU: PUSH' : q.kind === 'env' ? `NEEDS YOU:${envLabel(q)}` : q.guard !== undefined ? 'NEEDS YOU: GUARD TEST' : '',
+  q.escalated !== undefined ? `ESCALATED (rule ${q.escalated}), for main` : '',
+  q.topic && !isFyi(q) ? `[${q.topic}]` : '',
+].filter(x => x !== '').join(' ')
+
+const optionLines = (q: Question, pad: string): string[] =>
+  q.options.map((opt, i) => `${pad}${String.fromCharCode(97 + i)}) ${opt}${opt === q.default ? ' (default)' : ''}`)
+
+function questionLines(q: Question, now: number): string[] {
+  const tags = tagsOf(q)
+  const who = isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`
+  const lines = [`  ${q.id}${tags === '' ? '' : ` ${tags}`} (${who}, ${age(now - q.askedAt)}): ${q.guard !== undefined ? q.question : clip(q.question)}`]
+  lines.push(...optionLines(q, '      '))
+  if (q.context) lines.push(`      why: ${clip(q.context, 140)}`)
+  return lines
+}
+
+function fyiLines(q: Question, now: number): string[] {
+  const lines = [`    ${q.id}${q.topic ? ` [${q.topic}]` : ''} (${age(now - q.askedAt)}): ${clip(q.question)}`]
+  if (q.context) lines.push(`        why: ${clip(q.context, 140)}`)
+  return lines
+}
+
+// One owner's fresh FYIs: three or more of one topic collapse into one line.
+function ownerFyis(items: Question[], now: number): string[] {
+  const byTopic = new Map<string, Question[]>()
+  for (const q of items) if (q.topic) byTopic.set(q.topic, [...(byTopic.get(q.topic) ?? []), q])
+  const collapsed = new Set([...byTopic].filter(([, g]) => g.length >= 3).map(([t]) => t))
+  const done = new Set<string>()
+  const lines: string[] = []
+  for (const q of items) {
+    if (q.topic === undefined || !collapsed.has(q.topic)) { lines.push(...fyiLines(q, now)); continue }
+    if (done.has(q.topic)) continue
+    done.add(q.topic)
+    const g = byTopic.get(q.topic)!
+    lines.push(`    ${q.topic} x${g.length} (${g.map(x => x.id).join(' ')}): ${g.map(x => clip(x.question, 60)).join('; ')}`)
+    lines.push(`        keep them all: /flow ok ${q.topic}`)
+  }
+  return lines
+}
+
+// /flow inbox: a summary line, the questions (blocking first), the FYIs by owner, then what a standing answer did.
+// opts.live: the names of the agents still running (for stale FYIs); opts.all: show stale FYIs in full.
+export function renderInbox(inbox: Inbox | undefined, now: number, opts: { live?: string[]; all?: boolean } = {}): string {
   const open = ordered(questionsOf(inbox))
   const fyis = fyisOf(inbox)
-  const fyiLines = fyis.length === 0 ? [] : [
-    `FYI (decided, say if wrong; ack all with mcp__flow__answer defaults true, overturn with a choice): ${fyis.length}`,
-    ...fyis.map(q => `  ${q.id} ${q.owner} (${age(now - q.askedAt)}): ${q.question}${q.context ? ` - why: ${q.context}` : ''}`),
-  ]
   const auto = recentAuto(inbox, now)
   const autoLines = auto.length === 0 ? [] : [
-    `Auto-answered (last 24 h, ${auto.length} shown; revoke with mcp__flow__standing remove <id>):`,
-    ...auto.map(q => `  ${q.id} ${q.owner}: ${q.question} -> ${q.answer ?? ''} (rule ${q.rule ?? '?'})`),
+    '',
+    `Auto-answered (last 24 h, ${auto.length} shown; to revoke a rule, ask main to remove it):`,
+    ...auto.map(q => `  ${q.id} ${q.owner}: ${clip(q.question)} -> ${clip(q.answer ?? '', 60)} (rule ${q.rule ?? '?'})`),
   ]
-  if (open.length === 0) return ['No open questions.', ...fyiLines, ...autoLines].join('\n')
-  const owners = [...new Set(open.map(q => q.owner))]
-  const blocking = open.filter(q => q.blocking).length
-  const lines = [`Open questions: ${open.length}${blocking ? ` (${blocking} blocking)` : ''}. Answer with mcp__flow__answer: answers [{id, choice}] (option text, letter or number), or defaults true for the recommended ones.`]
-  for (const o of owners) {
-    lines.push(`${o}:`)
-    for (const q of open.filter(x => x.owner === o)) {
-      lines.push(`  ${q.id} ${q.blocking ? 'BLOCKING' : 'non-blocking'}${q.kind === 'deploy' ? ' DEPLOY APPROVAL' : q.kind === 'push' ? ' PUSH' : q.kind === 'env' ? envLabel(q) : ''}${q.escalated !== undefined ? ` ESCALATED (rule ${q.escalated}), for main` : ''}${q.topic ? ` [${q.topic}]` : ''} (${age(now - q.askedAt)}, for ${q.addressee}): ${q.question}`)
-      q.options.forEach((opt, i) => lines.push(`      ${String.fromCharCode(97 + i)}) ${opt}${opt === q.default ? '  (default)' : ''}`))
-      if (q.context) lines.push(`      context: ${q.context}`)
-    }
+  if (open.length === 0 && fyis.length === 0) return ['No open questions.', ...autoLines].join('\n')
+  const lines = [summary(inbox)]
+  if (open.length > 0) {
+    lines.push('', 'Questions')
+    for (const q of open) lines.push(...questionLines(q, now))
+    if (open.some(mainMayAnswer)) lines.push('  Answer: /flow answer <id> <letter or your own words>. Take the default: /flow ok <id> (not for NEEDS YOU items).')
   }
-  return [...lines, ...fyiLines, ...autoLines].join('\n')
+  if (fyis.length > 0) {
+    lines.push('', 'FYIs (decided by agents; say if one is wrong)')
+    for (const o of [...new Set(fyis.map(q => q.owner))]) {
+      const mine = fyis.filter(q => q.owner === o)
+      const stale = opts.all === true ? [] : mine.filter(q => isStaleFyi(q, now, opts.live))
+      const fresh = mine.filter(q => !stale.includes(q))
+      lines.push(`  ${o}:`)
+      lines.push(...ownerFyis(fresh, now))
+      if (stale.length > 0) lines.push(`    Older: ${plural(stale.length, 'FYI')} (${stale.map(q => q.id).join(' ')}), shown by /flow inbox all`)
+    }
+    lines.push('  Keep all: /flow ok. Keep some: /flow ok q10 q11 or /flow ok <owner or topic>. Overturn: /flow no q12 <what instead>.')
+  }
+  return [...lines, ...autoLines].join('\n')
+}
+
+// /flow inbox <id>: one item in full, answered or not.
+export function renderItem(inbox: Inbox | undefined, id: string, now: number): string {
+  const q = (inbox ?? EMPTY_INBOX).items.find(x => x.id === id.toLowerCase())
+  if (q === undefined) return `${id}: no such question.`
+  const kind = isFyi(q) ? 'FYI' : q.kind === 'deploy' ? 'deploy approval' : q.kind === 'push' ? 'push' : q.kind === 'env' ? 'env change' : 'question'
+  const tags = tagsOf(q)
+  const lines = [
+    `${q.id} ${kind}${tags === '' ? '' : ` ${tags}`}${isFyi(q) && q.topic ? ` [${q.topic}]` : ''} (from ${q.owner}, for ${q.addressee}, ${age(now - q.askedAt)} ago)`,
+    q.question,
+    ...(q.context ? ['', `why: ${q.context}`] : []),
+    '',
+    ...optionLines(q, '  '),
+  ]
+  if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${q.answeredBy ?? '?'})`)
+  else if (mainMayAnswer(q)) {
+    lines.push('', isFyi(q) ? `Keep: /flow ok ${q.id}. Overturn: /flow no ${q.id} <what instead>.` : `Answer: /flow answer ${q.id} <letter or your own words>${needsExplicitAnswer(q) ? '' : `, or /flow ok ${q.id} for the default`}.`)
+  } else lines.push('', `It is addressed to ${q.addressee}; main cannot answer it.`)
+  return lines.join('\n')
 }
 
 // The head of mcp__flow__status: a count and one line per open question, blocking first.

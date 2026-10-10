@@ -12,7 +12,7 @@ import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Graph, Notice, Plan } from './dag'
 import {
-  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, markAnswered, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, renderItem, expandOk, stillOpen, markAnswered, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
 } from './inbox'
 import {
   closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, FILE_HELP, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
@@ -3507,8 +3507,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions to answer, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox|checks|status|preflight|close|resume|approve <pr>|push [back <pr>|drop]|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and FYIs (/flow inbox all adds the older FYIs, /flow inbox <id> shows one in full), /flow ok keeps every open FYI (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] overturns an FYI, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox [all|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|resume|approve <pr>|push [back <pr>|drop]|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -3952,9 +3952,37 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'flow' }, async ($, e) => {
     // A plugin's $.command.run may leave args out.
     const arg = (e.args ?? '').trim()
-    if (arg === 'inbox') {
+    if (arg === 'inbox' || arg.startsWith('inbox ')) {
+      const w = arg.split(/\s+/).slice(1)
+      const box = await read($, inbox)
+      const now = await $.clock.now()
+      if (w.length === 1 && /^q\d+$/i.test(w[0]!)) return { text: renderItem(box, w[0]!, now) }
+      if (w.length > 1 || (w.length === 1 && w[0] !== 'all')) return { text: 'Usage: /flow inbox, /flow inbox all (also the older FYIs), /flow inbox <id> (one item in full)' }
+      const live = (await $.agent.list()).filter(a => a.name !== undefined && (LIVE.has(a.status) || a.status === 'idle')).map(a => a.name!)
       const sec = inboxChecksSection(await read($, checks), installed)
-      return { text: [renderInbox(await read($, inbox), await $.clock.now()), ...sec].join('\n') }
+      return { text: [renderInbox(box, now, { live, all: w.length === 1 }), ...sec].join('\n') }
+    }
+    if (/^(ok|no|answer)(\s|$)/.test(arg)) {
+      const [verb = ''] = arg.split(/\s+/)
+      const rest = arg.slice(verb.length).trim()
+      const lines: string[] = []
+      if (verb === 'ok') {
+        const { ids, lines: refused } = expandOk(await read($, inbox), rest === '' ? [] : rest.split(/\s+/))
+        lines.push(...refused)
+        for (const id of ids) lines.push(await answerQuestion($, id, null, 'main', options))
+      } else if (verb === 'no') {
+        const m = /^(\S+)(?:\s+([\s\S]+))?$/.exec(rest)
+        const q = m === null ? undefined : (await read($, inbox)).items.find(x => x.id === m[1]!.toLowerCase())
+        if (m === null) return { text: 'Usage: /flow no <id> [what to do instead]' }
+        if (q !== undefined && !isFyi(q)) lines.push(`${q.id}: not an FYI; answer a question with /flow answer ${q.id} <choice>.`)
+        else lines.push(await answerQuestion($, m[1]!.toLowerCase(), m[2] ?? OVERTURN, 'main', options))
+      } else {
+        const m = /^(\S+)\s+([\s\S]+)$/.exec(rest)
+        if (m === null) return { text: 'Usage: /flow answer <id> <option letter, number or your own words>' }
+        lines.push(await answerQuestion($, m[1]!.toLowerCase(), m[2]!, 'main', options))
+      }
+      lines.push(stillOpen(await read($, inbox)))
+      return { text: lines.join('\n') }
     }
     if (arg === 'checks' || arg.startsWith('checks ')) {
       const w = arg.split(/\s+/).slice(1)
@@ -4065,7 +4093,7 @@ export const register: Register = (on, options) => {
       await refreshBehind($)
       return { text }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and FYIs, /flow ok keeps FYIs, /flow no <id> overturns one, /flow answer <id> <choice> answers a question, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })

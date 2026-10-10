@@ -60,7 +60,10 @@ fix X" is enough.
 | Command | What it does |
 |---|---|
 | `/flow` | Opens the pane: managers, workers, and what needs you first. |
-| `/flow inbox` | Lists the questions waiting for your answer. |
+| `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the FYIs by owner (older ones collapsed; `/flow inbox all` shows them, `/flow inbox q12` one item in full) and what standing answers did. |
+| `/flow ok [q10 q11 \| owner \| topic]` | Keeps FYIs (no words: every open FYI) or takes the default of an ordinary question. Never answers a deploy, push, env or guard item. |
+| `/flow no q12 [what instead]` | Overturns an FYI; the agent is told what to do instead. |
+| `/flow answer q3 <choice>` | Answers any question addressed to main (option letter, number, text, or your own words), deploy, push and env items included. |
 | `/flow checks` | Lists the after-deploy checks that only a person can do. |
 | `/flow approve <n>` | Approves PR `n` when it is waiting for you. |
 | `/flow push` | Pushes the batch the reviewer built and checked, when `push_mode` is `confirm`. `/flow push back <pr>` returns one PR, `/flow push drop` all of them. |

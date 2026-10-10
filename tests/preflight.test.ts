@@ -121,7 +121,7 @@ test('renderRound: counts line, per-manager facts, numbered questions, closing i
   expect(text).toContain('depends on: a (schema)')
   expect(text).toContain('- c: still in recon')
   expect(text).toContain('q1 BLOCKING')
-  expect(text).toContain('q2 non-blocking')
+  expect(text).toContain('q2 (b, 0 min): b Q?')
   expect(lines[lines.length - 1]).toContain('mcp__flow__answer')
 })
 

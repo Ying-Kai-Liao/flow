@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import { test } from './support'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, markAnswered, needsMessage, normalizeInbox,
-  openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox,
+  openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, isStaleFyi, mainMayAnswer, needsExplicitAnswer,
 } from '../hooks/inbox'
 import type { AskedQuestion, Inbox } from '../hooks/inbox'
 
@@ -170,21 +170,22 @@ test('answerMessage carries the question and the answer', () => {
   expect(answerMessage(loose!, 'Yes', 'mgr', true)).toContain('nothing changes')
 })
 
-test('renderInbox: empty text, grouped by owner with blocking first and the default marked', () => {
+test('renderInbox: empty text, blocking first and the default marked', () => {
   expect(renderInbox(undefined, 0)).toBe('No open questions.')
   expect(renderInbox(EMPTY_INBOX, 0)).toBe('No open questions.')
   let inbox = store([ask('loose one', { options: ['A', 'B'], default: 'B' })], W, 'mgr', EMPTY_INBOX, 0)
   inbox = store([ask('other owner', { blocking: true })], { name: 'worker-2', id: 'a2', isManager: false }, 'mgr', inbox, 90_000)
   inbox = store([ask('must know', { blocking: true, context: 'because' })], W, 'mgr', inbox, 60_000)
   const text = renderInbox(inbox, 120_000)
-  expect(text).toContain('Open questions: 3 (2 blocking)')
+  expect(text.startsWith('3 questions (2 blocking).')).toBe(true)
   expect(text.indexOf('must know')).toBeLessThan(text.indexOf('loose one'))
-  expect(text.indexOf('worker-1:')).toBeLessThan(text.indexOf('worker-2:'))
-  expect(text).toContain('b) B  (default)')
-  expect(text).not.toContain('a) A  (default)')
-  expect(text).toContain('context: because')
+  expect(text.indexOf('other owner')).toBeLessThan(text.indexOf('loose one'))
+  expect(text).toContain('b) B (default)')
+  expect(text).not.toContain('a) A (default)')
+  expect(text).toContain('why: because')
   expect(text).toContain('q3 BLOCKING')
-  expect(text).toContain('q1 non-blocking')
+  expect(text).toContain('q1 (worker-1, for mgr, 2 min): loose one')
+  expect(text).not.toContain('mcp__flow__')
 })
 
 test('inboxHead: nothing when empty, else a count and a line each, blocking first', () => {
@@ -241,15 +242,16 @@ test('renderInbox puts FYIs in their own section after the questions; inboxHead 
   const base = store([ask('Which db?')])
   const box = fyiOf('Use 30 s', W, 'mgr', base)
   const text = renderInbox(box, 2000)
-  expect(text.indexOf('Open questions: 1')).toBeLessThan(text.indexOf('FYI (decided'))
-  expect(text).toContain('q2 worker-1')
-  expect(text).toContain('Use 30 s - why: safer')
+  expect(text.indexOf('Questions')).toBeLessThan(text.indexOf('FYIs (decided'))
+  expect(text).toContain('1 question, 1 FYI.')
+  expect(text).toContain('q2 (0 min): Use 30 s')
+  expect(text).toContain('why: safer')
   const head = inboxHead(box, 2000)
   expect(head.filter(l => l.includes('FYI')).length).toBe(1)
   expect(head.some(l => l.includes('q2'))).toBe(false)
   const only = renderInbox(fyiOf('Use 30 s'), 2000)
-  expect(only.startsWith('No open questions.')).toBe(true)
-  expect(only).toContain('FYI (decided')
+  expect(only.startsWith('1 FYI.')).toBe(true)
+  expect(only).toContain('FYIs (decided')
 })
 
 test('askingNames ignores FYIs', () => {
@@ -276,4 +278,114 @@ test('main may answer any FYI but not another addressee\'s question', () => {
   expect(markAnswered(box, 'q2', null, 'main', 5000).kind).toBe('ok')
   expect(markAnswered(box, 'q1', null, 'main', 5000).kind).toBe('refused')
   expect(markAnswered(box, 'q2', null, 'other-mgr', 5000).kind).toBe('refused')
+})
+
+// ---- the person's view ----
+
+const H = 3_600_000
+const fyis = (box: Inbox, owner: string, texts: string[], topic?: string, now = 0, addressee = 'main'): Inbox =>
+  addQuestions(box, { name: owner, id: owner, isManager: true }, addressee,
+    texts.map(t => fyiAsked({ decision: t, why: `because ${t}`, ...(topic ? { topic } : {}) })), now, 'fyi').inbox
+
+test('clip folds whitespace and cuts with an ellipsis', () => {
+  expect(clip('a   b\nc')).toBe('a b c')
+  const c = clip('x'.repeat(300))
+  expect(c.length).toBe(100)
+  expect(c.endsWith('...')).toBe(true)
+})
+
+test('renderInbox: summary first, blocking questions first, long headline clipped, options and why on their own lines', () => {
+  let box = addQuestions(EMPTY_INBOX, { name: 'mgr-a', isManager: true }, 'main', [ask('soft one')], 0).inbox
+  box = addQuestions(box, { name: 'mgr-b', isManager: true }, 'main', [ask('L'.repeat(300), { blocking: true, context: 'because', options: ['Yes', 'No'] })], 60_000).inbox
+  box = fyis(box, 'mgr-a', ['kept'], undefined, 0)
+  const text = renderInbox(box, 120_000)
+  expect(text.split('\n')[0]).toBe('2 questions (1 blocking), 1 FYI.')
+  expect(text.indexOf('q2 BLOCKING')).toBeLessThan(text.indexOf('q1 '))
+  expect(text).toContain(`${'L'.repeat(97)}...`)
+  expect(text).not.toContain('L'.repeat(98))
+  expect(text).toContain('      a) Yes (default)')
+  expect(text).toContain('      why: because')
+  expect(text.indexOf('Questions')).toBeLessThan(text.indexOf('FYIs'))
+  expect(text).toContain('/flow ok q10 q11')
+  expect(text).toContain('/flow no q12 <what instead>')
+  expect(text).toContain('/flow answer <id>')
+  expect(text).not.toContain('mcp__flow__')
+})
+
+test('renderInbox: push is NEEDS YOU; a question for a manager shows "for" and no answer hint', () => {
+  const base = addQuestions(EMPTY_INBOX, { name: 'flow', isManager: true }, 'main', [ask('Push?', { blocking: true })], 0).inbox
+  const box: Inbox = { ...base, items: [{ ...base.items[0]!, kind: 'push' }] }
+  expect(renderInbox(box, 1000)).toContain('q1 BLOCKING NEEDS YOU: PUSH')
+  const mine = addQuestions(EMPTY_INBOX, W, 'mgr', [ask('Hm?')], 0).inbox
+  const t = renderInbox(mine, 1000)
+  expect(t).toContain('for mgr')
+  expect(t).not.toContain('/flow answer')
+})
+
+test('renderInbox: three FYIs of one topic collapse within an owner; two do not; owners stay separate', () => {
+  let box = fyis(EMPTY_INBOX, 'mgr-a', ['a1 text', 'a2 text', 'a3 text'], 'worker-size', 0)
+  box = fyis(box, 'mgr-b', ['b1 text', 'b2 text'], 'worker-size', 0)
+  const text = renderInbox(box, 1000)
+  expect(text).toContain('worker-size x3 (q1 q2 q3): a1 text; a2 text; a3 text')
+  expect(text).toContain('/flow ok worker-size')
+  expect(text).toContain('q4 [worker-size] (0 min): b1 text')
+  expect(text.indexOf('mgr-a:')).toBeLessThan(text.indexOf('mgr-b:'))
+})
+
+test('renderInbox: FYIs older than 2 h or of an owner that is not live collapse per owner unless all', () => {
+  let box = fyis(EMPTY_INBOX, 'mgr-a', ['old one', 'old two'], undefined, 0)
+  box = fyis(box, 'mgr-a', ['fresh'], undefined, 3 * H)
+  box = fyis(box, 'mgr-gone', ['fresh but gone'], undefined, 3 * H)
+  const now = 3 * H + 60_000
+  const text = renderInbox(box, now, { live: ['mgr-a'] })
+  expect(text).toContain('Older: 2 FYIs (q1 q2)')
+  expect(text).toContain('Older: 1 FYI (q4)')
+  expect(text).toContain('q3 (1 min): fresh')
+  expect(text).not.toContain('old one')
+  const all = renderInbox(box, now, { live: ['mgr-a'], all: true })
+  expect(all).toContain('old one')
+  expect(all).toContain('fresh but gone')
+  expect(all).not.toContain('Older:')
+  // without a live list only age counts; a manager's continuation counts as live
+  expect(renderInbox(box, now)).toContain('fresh but gone')
+  expect(isStaleFyi(box.items[2]!, now, ['mgr-a-2'])).toBe(false)
+  expect(isStaleFyi(box.items[3]!, now, ['mgr-a-2'])).toBe(true)
+})
+
+test('renderItem prints one item in full; unknown ids and answered items are said plainly', () => {
+  const box = addQuestions(EMPTY_INBOX, { name: 'mgr-a', isManager: true }, 'main', [ask('L'.repeat(300), { context: 'C'.repeat(300) })], 0).inbox
+  const full = renderItem(box, 'q1', 1000)
+  expect(full).toContain('L'.repeat(300))
+  expect(full).toContain('C'.repeat(300))
+  expect(full).toContain('/flow answer q1')
+  expect(renderItem(box, 'q9', 0)).toBe('q9: no such question.')
+  const m = markAnswered(box, 'q1', 'b', 'main', 5)
+  expect(m.kind === 'ok' && renderItem(m.inbox, 'q1', 1000)).toContain('Answered: No (by main)')
+})
+
+test('expandOk: no words is every open FYI; ids pass; owner and topic expand to FYIs; protected items are refused', () => {
+  let box = fyis(EMPTY_INBOX, 'mgr-a', ['one', 'two'], 'naming', 0)
+  box = fyis(box, 'mgr-b', ['three'], undefined, 0)
+  box = addQuestions(box, { name: 'mgr-b', isManager: true }, 'main', [ask('Q?')], 0).inbox
+  const withPush: Inbox = { ...box, items: [...box.items, { ...box.items[3]!, id: 'q9', kind: 'push' }] }
+  expect(expandOk(withPush, []).ids).toEqual(['q1', 'q2', 'q3'])
+  expect(expandOk(withPush, ['q4', 'q4', 'Q4']).ids).toEqual(['q4'])
+  expect(expandOk(withPush, ['naming']).ids).toEqual(['q1', 'q2'])
+  expect(expandOk(withPush, ['mgr-b']).ids).toEqual(['q3'])
+  expect(expandOk(withPush, ['q9'])).toEqual({ ids: [], lines: ['q9: answer it explicitly: /flow answer q9 <choice>'] })
+  expect(expandOk(withPush, ['nope']).lines[0]).toContain('no open FYIs')
+  expect(expandOk(EMPTY_INBOX, []).lines).toEqual(['No open FYIs to keep.'])
+})
+
+test('predicates: main may answer FYIs and what is addressed to it; deploy, env, push and guard need an explicit answer', () => {
+  const box = addQuestions(EMPTY_INBOX, W, 'mgr', [ask('x')], 0).inbox
+  const q = box.items[0]!
+  expect(mainMayAnswer(q)).toBe(false)
+  expect(mainMayAnswer({ ...q, addressee: 'main' })).toBe(true)
+  expect(mainMayAnswer({ ...q, kind: 'fyi' })).toBe(true)
+  expect(['deploy', 'env', 'push'].map(kind => needsExplicitAnswer({ ...q, kind: kind as 'push' }))).toEqual([true, true, true])
+  expect(needsExplicitAnswer({ ...q, guard: { glob: 'a', test: 'b' } })).toBe(true)
+  expect(needsExplicitAnswer(q)).toBe(false)
+  expect(stillOpen(box)).toContain('Still open: 1 question')
+  expect(stillOpen(EMPTY_INBOX)).toBe('Nothing is left open.')
 })

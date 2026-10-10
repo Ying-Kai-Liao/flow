@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/flow ok`, `/flow no <id> [what instead]` and `/flow answer <id> <choice>` answer inbox items from the prompt; `/flow ok` never answers deploy, push, env or guard items.
+- `/flow inbox all` and `/flow inbox <id>`.
+
+### Changed
+
+- `/flow inbox` is a skimmable view: a summary line, questions (blocking first, NEEDS YOU for deploy/push/env), FYIs grouped by owner with repeated topics and stale items collapsed, and person commands instead of tool-call hints.
+
 ## [0.6.4] - 2026-10-10
 
 ### Fixed
