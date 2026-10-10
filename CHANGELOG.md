@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-10-10
+
 ### Added
 
 - Model routing: a worker brief's `Size: small | normal | large` line picks the worker's model at spawn (settings `worker_model_small` haiku, `worker_model_normal` sonnet, large = `worker_model`); the Size line wins over a model param, and a brief without one is spawned as before. The ledger records the size, `status` shows cost by size, and a worker below large gets a non-blocking `worker-size` FYI (overturnable, answerable by a standing rule).
