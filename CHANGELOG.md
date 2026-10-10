@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Internal: test slots (pure parts) and `settingsOf` moved out of `register.tsx` into `hooks/slots.ts` and `hooks/settings.ts`; no behavior change.
 - Docs: the `/config` descriptions now start with the setting's Core or Advanced tier, matching the reference, and the reference has a "Without Orca" section for running with plain tmux or in-session agents only.
+### Changed
+
+- Internal: the cleanup sweep moved out of register.tsx into hooks/clean.ts and the resume leftovers into hooks/resume.ts; no behavior change.
 
 ## [0.6.17] - 2026-10-11
 

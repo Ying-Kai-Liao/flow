@@ -11,7 +11,10 @@ import { grantFile, grantSlots, heldBy, reapSlots, slotLine, span, CLAIM_MS, LEA
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { noteWork, runLine, serialFastForward, type RunWork } from './mainff'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
-import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
+import { sweep as sweepTo } from './clean'
+import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
+import { gatherLeftovers as gatherLeftoversTo, resumeInstructions } from './resume'
+import type { Gathered, Leftover, OwnerNotes, ResumeIo } from './resume'
 import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo, resetDelivery, ENDED, LIVE, type DeliverIo, type DeliverOptions } from './deliver'
 import { addStep, addTurn, baseName, costBlock, entriesOfBranch, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
 import { backNote, effectiveSize, floorFrom, generation, isSuccessorName, modelFor, parseSize } from './routing'
@@ -2457,365 +2460,33 @@ function handoverLine(h: Handover, reportMax?: number): string {
   return `#${h.pr} ${h.status} (${h.branch} @ ${h.head.slice(0, 8)}, from ${h.reportTo})${tail} — ${h.title} [${evidenceSummary(h.evidence)}]`
 }
 
-const OWNED = new Set([...LIVE, 'idle'])
-
-const resumeHead = (limit: number): string => [
-  'The user ran /flow resume. Unfinished flow work was found (below). Start flow managers for it with the Agent tool, without asking:',
-  '- One flow:manager per task, named resume-<slug>, run_in_background true, at most ' + limit + ' at a time; start the rest as each finishes. Items whose branch names share a manager prefix (flow/csv-export-endpoint and flow/csv-export-button) are one task.',
-  '- Each manager\'s prompt carries, for every item of its task: the branch, the PR number and URL, the PR description (including any ## Handoff section), and for a worktree its path. It carries the work on from there and must not redo work already merged into the base branch.',
-].join('\n')
-
-// Unfinished flow work left behind by an earlier session, as `/flow resume` lists it.
-type Leftover = { key: string; branch?: string; kind: 'pr' | 'branch' | 'worktree'; line: string; detail: string; owner?: string }
-
-// `error` with items means GitHub was unavailable and the items come from the state dir alone.
-type Gathered = { items: Leftover[]; skipped: Leftover[]; error?: string }
-
-// Handovers on disk that are not finished, as resume items. A handover whose PR GitHub shows as
-// merged counts as done: it is marked so in the atom and not restarted.
-async function diskItems($: EngineInterface, items: Leftover[], merged: { prs: Set<number>; branches: Set<string> } | undefined): Promise<void> {
-  const all = await loadHandovers($)
-  const events = await readLog($)
-  const hs = Object.values(all)
-  if (hs.length === 0) return
-  const finished = (h: Handover) => h.status === 'done' || (merged !== undefined && (merged.prs.has(h.pr) || merged.branches.has(h.branch)))
-  await best($, 'restoring handovers', async () => {
-    for (const h of hs) {
-      if (h.status !== 'done' && finished(h)) {
-        all[String(h.pr)] = { ...h, status: 'done' }
-        await saveHandover($, all[String(h.pr)] as Handover)
-      }
-    }
-    await update($, handovers, cur => ({ ...all, ...cur }))
-  })
-  for (const h of hs) {
-    if (finished(h)) continue
-    const note = `Handover #${h.pr} is ${h.status}${h.status === 'returned' ? ` (${h.reason ?? 'no reason'})` : ''}, reported to ${h.reportTo}. Verified: ${h.verified} Pending: ${h.pending}` +
-      (h.status === 'awaiting' ? ` It awaits the user's /flow approve ${h.pr}; do not restart work on it.` : '') +
-      (h.status === 'ready' ? ' It is in a batch the reviewer built and checked, which awaits the user\'s /flow push; do not restart work on it.' : '')
-    const mate = items.find(i => i.key === h.branch)
-    if (mate !== undefined) {
-      mate.line += ` | handover ${h.status}`
-      mate.detail += `\n${note}`
-    } else {
-      items.push({ key: h.branch, branch: h.branch, kind: 'pr', line: `#${h.pr} ${h.branch}: handover ${h.status} — ${h.title}`, detail: `Branch ${h.branch}, PR #${h.pr}, title "${h.title}".\n${note}` })
-    }
-    const at = items.find(i => i.key === h.branch)
-    if (at !== undefined) at.owner = ownerFor(events, { pr: h.pr, branch: h.branch }) ?? h.reportTo
-  }
-  for (const i of items) {
-    if (i.owner === undefined && i.branch !== undefined) i.owner = ownerFor(events, { branch: i.branch })
-  }
-}
-
-// Finds what a restart leaves behind: flow/* PRs and pushed branches, and worktrees with
-// uncommitted or unpushed work. Any git or gh failure becomes one line, never a throw.
-async function gatherLeftovers($: EngineInterface, base: string, resumed: Set<string>): Promise<Gathered> {
-  const run = async (argv: string[]) => {
-    try {
-      return await $.process.run(argv, { timeoutMs: 60_000 })
-    } catch (err) {
-      return { exitCode: 1, stdout: '', stderr: err instanceof Error ? err.message : String(err) }
-    }
-  }
-  const fail = async (what: string, r: { stderr: string }): Promise<Gathered> => {
-    const items: Leftover[] = []
-    await diskItems($, items, undefined)
-    return {
-      items: items.filter(i => !resumed.has(i.key)), skipped: items.filter(i => resumed.has(i.key)),
-      error: `Cannot look for unfinished work: ${what} failed: ${r.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no output'}${items.length ? '. GitHub was unavailable: these come from the state dir only.' : ''}`,
-    }
-  }
-
-  const fetched = await run(['git', 'fetch', 'origin', '--prune'])
-  if (fetched.exitCode !== 0) return await fail('git fetch origin', fetched)
-  const open = await run(['gh', 'pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,isDraft,url,body', '--limit', '100'])
-  if (open.exitCode !== 0) return await fail('gh pr list', open)
-  const all = await run(['gh', 'pr', 'list', '--state', 'all', '--json', 'number,headRefName,headRefOid,state', '--limit', '200'])
-  if (all.exitCode !== 0) return await fail('gh pr list', all)
-  const refs = await run(['git', 'for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin/flow/'])
-  if (refs.exitCode !== 0) return await fail('git for-each-ref', refs)
-
-  type Pr = { number: number; title: string; headRefName: string; isDraft: boolean; url: string; body: string }
-  const prs = (JSON.parse(open.stdout || '[]') as Pr[]).filter(p => p.headRefName.startsWith('flow/'))
-  const ended = (JSON.parse(all.stdout || '[]') as { number?: number; headRefName: string; headRefOid?: string; state: string }[])
-    .filter(p => p.state !== 'OPEN')
-  const closed = new Set(ended.map(p => p.headRefName))
-  // A squash-merged branch is deleted on the remote, so its worktree looks unpushed: match by head too.
-  const endedHeads = new Set(ended.map(p => p.headRefOid).filter(Boolean))
-  const withPr = new Set(prs.map(p => p.headRefName))
-  const branches = refs.stdout.split('\n').map(l => l.trim().replace(/^origin\//, ''))
-    .filter(b => b.startsWith('flow/') && !withPr.has(b) && !closed.has(b))
-
-  // A live agent named like the branch owns it.
-  const liveAgents = (await $.agent.list()).filter(a => OWNED.has(a.status))
-  const owners = new Set(liveAgents.filter(a => a.name !== undefined).map(a => `flow/${a.name}`))
-  for (const s of Object.values(await read($, sessions))) if (s.status === 'running' || s.status === 'reported') owners.add(s.branch)
-  // A worktree path ends in agent-<agentId>: that covers a worker that has not renamed its branch, and the reviewer.
-  const liveIds = new Set(liveAgents.map(a => `agent-${a.id}`))
-
-  const items: Leftover[] = []
-  for (const p of prs) {
-    items.push({
-      key: p.headRefName, kind: 'pr',
-      line: `#${p.number} ${p.headRefName}${p.isDraft ? ' (draft)' : ''}: ${p.title} ${p.url}`,
-      detail: `Branch ${p.headRefName}, PR #${p.number} ${p.url}${p.isDraft ? ' (draft)' : ''}, title "${p.title}".\nPR description:\n${p.body.trim() || '(empty)'}`,
-    })
-  }
-  for (const b of branches) {
-    items.push({ key: b, kind: 'branch', line: `${b} (pushed, no PR)`, detail: `Branch ${b}, pushed, no PR yet.` })
-  }
-
-  const wt = await run(['git', 'worktree', 'list', '--porcelain'])
-  if (wt.exitCode === 0) {
-    for (const { path, branch } of parsePorcelain(wt.stdout)) {
-      if (!path.includes('/.claude/worktrees/')) continue
-      if (liveIds.has(path.split('/').pop() ?? '') || (branch !== undefined && closed.has(branch))) continue
-      const dirty = (await run(['git', '-C', path, 'status', '--porcelain'])).stdout.trim() !== ''
-      if (branch === undefined && !dirty) continue
-      let unpushed = ''
-      if (!dirty) {
-        const up = await run(['git', '-C', path, 'rev-parse', '--abbrev-ref', '@{u}'])
-        unpushed = (await run(up.exitCode === 0
-          ? ['git', '-C', path, 'log', '--oneline', '@{u}..']
-          : ['git', '-C', path, 'log', '--oneline', `origin/${base}..HEAD`])).stdout.trim()
-      }
-      if (!dirty && unpushed === '') continue
-      const head = (await run(['git', '-C', path, 'rev-parse', 'HEAD'])).stdout.trim()
-      if (endedHeads.has(head)) continue
-      if (!dirty && (await run(['git', '-C', path, 'branch', '-r', '--contains', 'HEAD'])).stdout.trim() !== '') continue
-      const what = dirty ? 'uncommitted changes' : `${unpushed.split('\n').length} unpushed commit(s)`
-      const mate = branch === undefined ? undefined : items.find(i => i.key === branch)
-      if (mate !== undefined) {
-        mate.line += ` | worktree ${path} (${what})`
-        mate.detail += `\nIts worktree: ${path} (${what}).`
-        continue
-      }
-      items.push({
-        key: path, branch, kind: 'worktree', line: `${path} on ${branch ?? 'detached HEAD'}: ${what}`,
-        detail: `Worktree ${path}, branch ${branch ?? 'detached HEAD'}: ${what}.`,
-      })
-    }
-  }
-
-  await diskItems($, items, {
-    prs: new Set(ended.filter(p => p.state === 'MERGED' && p.number !== undefined).map(p => p.number as number)),
-    branches: new Set(ended.filter(p => p.state === 'MERGED').map(p => p.headRefName)),
-  })
-
-  const live = (i: Leftover) => owners.has(i.branch ?? i.key)
-  return {
-    items: items.filter(i => !live(i) && !resumed.has(i.key)),
-    skipped: items.filter(i => !live(i) && resumed.has(i.key)),
-  }
-}
-
 // --- Cleanup: leftover worktrees and local branches of finished work ---------------------------
 
-type CleanGathered = { inputs?: CleanInputs; notes: string[]; error?: string }
-
-// Everything selectCleanup needs, read once: one fetch, one gh call, then local git.
-async function gatherClean($: EngineInterface, base: string): Promise<CleanGathered> {
-  const run = async (argv: string[]) => {
-    try {
-      return await $.process.run(argv, { timeoutMs: 60_000 })
-    } catch (err) {
-      return { exitCode: 1, stdout: '', stderr: err instanceof Error ? err.message : String(err) }
-    }
-  }
-  const first = (r: { stderr: string }) => r.stderr.trim().split('\n')[0]?.slice(0, 200) || 'no output'
-  const notes: string[] = []
-  const fetched = await run(['git', 'fetch', 'origin', '--prune'])
-  if (fetched.exitCode !== 0) notes.push(`git fetch origin failed (${first(fetched)}): judged against the refs as they were.`)
-  const wl = await run(['git', 'worktree', 'list', '--porcelain'])
-  if (wl.exitCode !== 0) return { notes, error: `git worktree list failed: ${first(wl)}` }
-  const worktrees = parsePorcelain(wl.stdout)
-  const main = worktrees[0]?.path
-  if (main === undefined) return { notes, error: 'git worktree list gave no checkout.' }
-  const refs = async (prefix: string) => {
-    const r = await run(['git', 'for-each-ref', '--format=%(refname:short) %(objectname)', prefix])
-    const out: Record<string, string> = {}
-    for (const l of r.stdout.split('\n')) {
-      const [name, sha] = l.trim().split(' ')
-      if (name && sha) out[name] = sha
-    }
-    return out
-  }
-  const branches = await refs('refs/heads')
-  const remote: Record<string, string> = {}
-  for (const [name, sha] of Object.entries(await refs('refs/remotes/origin'))) {
-    if (name.startsWith('origin/') && name !== 'origin/HEAD') remote[name.slice('origin/'.length)] = sha
-  }
-  if (remote[base] === undefined) return { notes, error: `origin/${base} not found: nothing is judged without the base.` }
-  const onBase = new Set((await run(['git', 'for-each-ref', '--merged', `origin/${base}`, '--format=%(objectname)', 'refs/heads'])).stdout
-    .split('\n').map(l => l.trim()).filter(Boolean))
-  const status: Record<string, string> = {}
-  const deadPids = new Set<number>()
-  for (const w of worktrees.slice(1)) {
-    if (w.prunable) continue
-    const st = await run(['git', '-C', w.path, 'status', '--porcelain'])
-    if (st.exitCode === 0) status[w.path] = st.stdout
-    if (w.head !== undefined && !onBase.has(w.head)
-      && (await run(['git', 'merge-base', '--is-ancestor', w.head, `origin/${base}`])).exitCode === 0) onBase.add(w.head)
-    const pid = /\bpid (\d+)\b/.exec(w.locked ?? '')?.[1]
-    if (pid !== undefined && (await run(['ps', '-p', pid])).exitCode !== 0) deadPids.add(Number(pid))
-  }
-  let prs: PrRow[] | undefined
-  const gh = await run(['gh', 'pr', 'list', '--state', 'all', '--limit', '300', '--json', 'number,headRefName,headRefOid,state'])
-  try {
-    if (gh.exitCode !== 0) throw new Error(first(gh))
-    const parsed = JSON.parse(gh.stdout || '[]') as unknown
-    if (!Array.isArray(parsed)) throw new Error('unexpected gh output')
-    prs = parsed as PrRow[]
-  } catch (err) {
-    notes.push(`gh pr list failed (${err instanceof Error ? err.message : String(err)}): squash-merged work is not recognised, only what is on origin/${base}.`)
-  }
-  // A successor continuing in a handed-off worktree runs there; one not spawned yet may still claim it.
-  const hs = Object.values(await read($, handoffs))
-  const continued = (await readLog($)).filter(l => l.event === 'continue')
-  const cwdOf = new Map(hs.filter(h => h.takenBy !== undefined && h.worktree !== undefined).map(h => [h.takenBy!, h.worktree!]))
-  const waiting = waitingPaths(hs, continued, prs)
-  const roster = (await $.agent.list()).map(a => ({
-    id: a.id, live: isLive(a.status), ...(a.name !== undefined && { name: a.name }),
-    ...(a.name !== undefined && cwdOf.has(a.name) && { cwd: cwdOf.get(a.name) }),
-  }))
-  // The main session may itself run in a linked worktree: never pull the floor from under it.
-  const here = await $.session.cwd().catch(() => undefined)
-  if (here) roster.push({ id: 'main', live: true, name: 'the main session', cwd: here })
-  // A worker in another harness lives in its worktree until it is stopped or its terminal is gone.
-  for (const s of Object.values(await read($, sessions))) {
-    roster.push({ id: sessionKey(s.name), live: s.status === 'running' || s.status === 'reported', name: s.name, cwd: s.worktree })
-  }
-  const partial: Omit<CleanInputs, 'ancestry'> = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting }
-  // Content equivalence for tips a merged PR of the branch family may have replaced (a rebase
-  // leaves the old commits behind): contained when every file they changed since the merge base
-  // has the very same tree entry on origin/<base>. Anything odd (quoted names, many files) is not.
-  const contained: Record<string, string[]> = {}
-  for (const sha of containedCandidates(partial)) {
-    const mb = (await run(['git', 'merge-base', sha, `origin/${base}`])).stdout.trim()
-    const diff = await run(['git', 'diff', '--name-only', '--no-renames', mb, sha])
-    const files = diff.stdout.split('\n').filter(Boolean)
-    if (!mb || diff.exitCode !== 0 || files.length > 200 || files.some(f => f.startsWith('"'))) continue
-    let same = true
-    for (const f of files) {
-      const [a, b] = await Promise.all([sha, `origin/${base}`].map(r => run(['git', 'ls-tree', r, '--', f])))
-      if (a!.exitCode !== 0 || b!.exitCode !== 0 || a!.stdout.trim() !== b!.stdout.trim()) { same = false; break }
-    }
-    if (!same) continue
-    const log = await run(['git', 'log', '--format=%h %s', `origin/${base}..${sha}`])
-    if (log.exitCode === 0) contained[sha] = log.stdout.split('\n').filter(Boolean)
-  }
-  partial.contained = contained
-  // The lock names the Claude process; the plugin's runner may sit below it, so the chain up to the
-  // nearest claude process counts as this session. Works with an empty roster (after a reload): an agent absent
-  // from it is judged by its lock's age. An unreadable chain means no lock is broken.
-  const own = await ancestorPids(Number((await run(['sh', '-c', 'echo $PPID'])).stdout.trim()), async pid => {
-    const r = await run(['ps', '-o', 'ppid=,comm=', '-p', String(pid)])
-    const m = /^\s*(\d+)\s+(.*)$/.exec(r.stdout.trim())
-    return r.exitCode === 0 && m ? { ppid: Number(m[1]), comm: m[2]! } : undefined
-  })
-  if (own.size > 0) {
-    partial.ownPids = own
-    // A fresh agent's worktree is locked before the roster lists it; only an old lock is judged.
-    // Unknown age (no admin dir, no lock file) counts as young.
-    const oldLocks = new Set<string>()
-    for (const w of worktrees.slice(1)) {
-      const lp = Number(/\bpid (\d+)\b/.exec(w.locked ?? '')?.[1] ?? NaN)
-      if (!own.has(lp)) continue
-      const dir = await run(['git', '-C', w.path, 'rev-parse', '--absolute-git-dir'])
-      if (dir.exitCode !== 0) continue
-      const old = await run(['find', `${dir.stdout.trim()}/locked`, '-mmin', '+10'])
-      if (old.exitCode === 0 && old.stdout.trim() !== '') oldLocks.add(w.path)
-    }
-    partial.oldLocks = oldLocks
-  }
-  const ancestry = new Set<string>()
-  for (const q of ancestryQueries(partial)) {
-    const [a, b] = q.split(' ')
-    if ((await run(['git', 'merge-base', '--is-ancestor', a!, b!])).exitCode === 0) ancestry.add(q)
-  }
-  return { inputs: { ...partial, ancestry }, notes }
-}
-
-// One sweep at a time: the reviewer's `done`, a reviewer ending and /flow clean may meet.
-let sweepChain: Promise<unknown> = Promise.resolve()
-function exclusive<T>(fn: () => Promise<T>): Promise<T> {
-  const run = sweepChain.then(fn, fn)
-  sweepChain = run.catch(() => undefined)
-  return run
-}
-
-const leftoverCounts = (s: Sweep, failed: Kept[] = [], applied = false): Leftovers => ({
-  worktrees: applied ? 0 : s.remove.worktrees.length,
-  branches: applied ? 0 : s.remove.branches.length,
-  needsLook: s.keep.filter(k => k.needsLook).length + failed.length,
+const cleanIoOf = ($: EngineInterface): CleanIo => ({
+  exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
+  agents: () => $.agent.list(),
+  cwd: () => $.session.cwd(),
+  handoffs: async () => Object.values(await read($, handoffs)),
+  sessions: async () => Object.values(await read($, sessions)),
+  log: () => readLog($),
+  append: event => appendLog($, event),
+  setLeftovers: async counts => { await update($, leftovers, () => counts) },
 })
 
-// A sweep: the listing, and with apply the removal of what selectCleanup marked safe. A removal
-// that fails is kept with git's message; nothing is forced. `started` runs once it holds the lock.
-async function sweep($: EngineInterface, base: string, apply: boolean, dryHint?: string, started?: () => void): Promise<string> {
-  return exclusive(async () => {
-    started?.()
-    const g = await gatherClean($, base)
-    if (g.inputs === undefined) return [...g.notes, g.error ?? 'Cleanup failed.'].join('\n')
-    const s = selectCleanup(g.inputs)
-    const note = g.notes.join('\n') || undefined
-    if (!apply) {
-      await update($, leftovers, () => leftoverCounts(s))
-      return sweepText(s, { applied: false, ...(note && { note }), ...(dryHint && { dryHint }) })
-    }
-    const git = async (argv: string[]) => {
-      try {
-        return await $.process.run(['git', ...argv], { timeoutMs: 60_000 })
-      } catch (err) {
-        return { exitCode: 1, stdout: '', stderr: err instanceof Error ? err.message : String(err) }
-      }
-    }
-    const failed: Kept[] = []
-    const removed: Sweep['remove'] = { worktrees: [], branches: [] }
-    const stuck = new Set<string>()
-    const byPath = new Map(g.inputs.worktrees.map(w => [w.path, w]))
-    for (const path of s.remove.worktrees) {
-      const w = byPath.get(path)
-      // A missing directory: prune drops the entry.
-      if (w?.prunable) { removed.worktrees.push(path); continue }
-      if (s.unlock.includes(path)) await git(['worktree', 'unlock', path])
-      // Untracked type links block a plain remove: unlink the links themselves (never followed). A real directory under that name is somebody's files: left for git to refuse.
-      for (const l of s.links[path] ?? []) {
-        const at = `${path}/${l}`
-        // `test -L` then `rm` (no trailing slash, no -r): removes the link, never its target.
-        const isLink = await $.process.run(['test', '-L', at], { timeoutMs: 10_000 }).then(r => r.exitCode === 0, () => false)
-        if (isLink) await $.process.run(['rm', '-f', '--', at], { timeoutMs: 10_000 }).catch(() => undefined)
-      }
-      const r = await git(['worktree', 'remove', path])
-      if (r.exitCode === 0) removed.worktrees.push(path)
-      else {
-        failed.push({ kind: 'worktree', name: path, reason: `kept: ${r.stderr.trim().split('\n')[0] || 'git worktree remove failed'}`, needsLook: true })
-        if (w?.branch !== undefined) stuck.add(w.branch)
-      }
-    }
-    await git(['worktree', 'prune'])
-    for (const b of s.remove.branches) {
-      if (stuck.has(b)) {
-        failed.push({ kind: 'branch', name: b, reason: 'its worktree could not be removed', needsLook: true })
-        continue
-      }
-      const r = await git(['branch', '-D', b])
-      if (r.exitCode === 0) removed.branches.push(b)
-      else failed.push({ kind: 'branch', name: b, reason: `kept: ${r.stderr.trim().split('\n')[0] || 'git branch -D failed'}`, needsLook: true })
-    }
-    await update($, leftovers, () => leftoverCounts(s, failed, true))
-    if (removed.worktrees.length || removed.branches.length) {
-      await appendLog($, {
-        event: 'clean', owner: 'main',
-        text: `removed ${[...removed.worktrees.map(p => `worktree ${p.split('/').pop()}`), ...removed.branches.map(b => `branch ${b}`)].join(', ')}`
-          + s.dropped.filter(d => (d.kind === 'worktree' ? removed.worktrees : removed.branches).includes(d.name))
-            .map(d => `; dropped unpushed in ${d.kind} ${d.name.split('/').pop()}: ${d.commits.join(' | ')}`).join(''),
-      })
-    }
-    return sweepText(s, { applied: true, removed, failed, ...(note && { note }) })
-  })
-}
+const resumeIoOf = ($: EngineInterface): ResumeIo => ({
+  exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
+  agents: () => $.agent.list(),
+  sessions: async () => Object.values(await read($, sessions)),
+  log: () => readLog($),
+  loadHandovers: () => loadHandovers($),
+  saveHandover: h => saveHandover($, h),
+  best: (what, fn) => best($, what, fn),
+  mergeHandovers: async all => { await update($, handovers, cur => ({ ...all, ...cur })) },
+})
+
+const sweep = ($: EngineInterface, base: string, apply: boolean, dryHint?: string, started?: () => void): Promise<string> =>
+  sweepTo(cleanIoOf($), base, apply, dryHint, started)
+const gatherLeftovers = ($: EngineInterface, base: string, resumed: Set<string>): Promise<Gathered> => gatherLeftoversTo(resumeIoOf($), base, resumed)
 
 // The automatic sweep (cleanup "auto"): in the background, at most one waiting behind a running
 // sweep, failures to the log only.
@@ -2830,34 +2501,6 @@ function autoSweep($: EngineInterface): void {
 // The dry sweep behind the pane's leftover line, on the PR list's cadence.
 function refreshLeftovers($: EngineInterface): void {
   void sweep($, cleanupBase, false).catch(err => warn($, 'looking for leftovers', err))
-}
-
-type OwnerNotes = { path: string; text: string }
-
-function resumeInstructions(items: Leftover[], limit: number, notes: Map<string, OwnerNotes> = new Map()): string {
-  const owners = [...new Set(items.map(i => i.owner).filter((o): o is string => o !== undefined))]
-  // Recorded owners: the state on disk says who ran each item and what the user told them.
-  const grouped = owners.length === 0 ? [] : [
-    '',
-    'Flow state on disk names the manager that owned each item. Items of one owner go to ONE manager. Its prompt tells it to read its notes first (mcp__flow__note with manager = the owner name below and no text), and carries the notes quoted here. A manager with notes but no item below is not restarted.',
-    ...owners.flatMap(o => {
-      const n = notes.get(o)
-      return [
-        '',
-        `Owner ${o}:`,
-        ...items.filter(i => i.owner === o).map(i => `- ${i.detail.replaceAll('\n', '\n  ')}`),
-        n?.text ? `Notes (${n.path}):\n${n.text}` : 'Notes: none.',
-      ]
-    }),
-    ...(items.some(i => i.owner === undefined) ? ['', 'No recorded owner:', ...items.filter(i => i.owner === undefined).map(i => `- ${i.detail.replaceAll('\n', '\n  ')}`)] : []),
-  ]
-  if (grouped.length) return [resumeHead(limit), ...grouped].join('\n')
-  return [
-    resumeHead(limit),
-    '',
-    'Found:',
-    ...items.map(i => `- ${i.detail.replaceAll('\n', '\n  ')}`),
-  ].join('\n')
 }
 
 // The wrap-up as a message, for an agent idle or waiting between turns. A refused send is logged, not retried.
