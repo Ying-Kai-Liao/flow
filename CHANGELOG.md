@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: the cleanup sweep moved out of register.tsx into hooks/clean.ts and the resume leftovers into hooks/resume.ts; no behavior change.
+
 ## [0.6.17] - 2026-10-11
 
 ### Changed
