@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: the push gate and deploy gate logic moved out of `register.tsx` into `hooks/pushgate-run.ts` and `hooks/deploy-run.ts`; no behavior change.
+
 ## [0.6.20] - 2026-10-11
 
 ### Changed
