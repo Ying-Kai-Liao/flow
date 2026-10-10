@@ -112,6 +112,7 @@ A message to an idle agent starts a turn, and once the 5-minute prompt cache has
 - A non-blocking ask is held: it does not wake the manager, and goes out with the next message, on the agent's next turn, or after 10 minutes at the latest. `/flow inbox` still shows it.
 - A reviewer's message to a manager holds that manager's queue for the turn the message starts, so both arrive in one turn; a 60 second timer sends the queue if the message never lands.
 - If the agent has ended, queued texts go to the message's fallback, else to main.
+- A send the host refuses to an agent that has not ended (for example one waiting between turns) is put back in the queue as held and goes out on its next turn; if it is refused again at the 10 minute cap, it falls back with a "could not be delivered" note.
 
 The queue is in memory: a plugin reload loses it.
 

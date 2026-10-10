@@ -35,7 +35,8 @@ export type DeliverOptions = {
 }
 
 type Item = { text: string; held: boolean; onGone?: DeliverOptions['onGone'] }
-type Queue = { items: Item[]; windowMs: number; generation: number }
+// refused: a send of this queue was refused while the agent was not ended; the next cap flush is final.
+type Queue = { items: Item[]; windowMs: number; generation: number; refused?: boolean }
 
 const queues = new Map<string, Queue>()
 let generation = 0
@@ -56,22 +57,51 @@ const statusOf = (io: DeliverIo, id: string): Promise<string | undefined> => io.
 const sendNow = (io: DeliverIo, id: string, text: string): Promise<boolean> =>
   io.send(id, text).then(() => true, () => false)
 
-// The agent is gone: each item goes to its own fallback, else to main with the target named.
-async function gone(io: DeliverIo, id: string, items: Item[]): Promise<void> {
+// The agent is gone, or kept refusing: each item goes to its own fallback, else to main with the target named.
+async function gone(io: DeliverIo, id: string, items: Item[], why: 'ended' | 'refused' = 'ended'): Promise<void> {
   const name = (await io.name?.(id).catch(() => undefined)) ?? id
   for (const i of items) {
     if (i.onGone !== undefined) await i.onGone(i.text)
-    else toMain(`${i.text} (${name} ended before this was delivered.)`)
+    else toMain(why === 'ended' ? `${i.text} (${name} ended before this was delivered.)` : `${i.text} (This could not be delivered to ${name}: it kept refusing the message.)`)
   }
 }
 
+// Put refused items back, ahead of anything queued since, as held: they go out on the agent's next
+// turn or delivery, and at the cap timer at the latest.
+function requeue(io: DeliverIo, id: string, items: Item[]): void {
+  const q = queues.get(id) ?? { items: [], windowMs: 0, generation: 0 }
+  queues.set(id, q)
+  const seen = new Set<string>()
+  q.items = [...items, ...q.items].filter(i => !seen.has(i.text) && seen.add(i.text))
+  for (const i of q.items) i.held = true
+  q.refused = true
+  arm(io, id, q, HOLD_CAP_MS)
+}
+
+// Send items as one message. A refusal by an agent that has not ended is not a gone agent (the host
+// refuses one waiting between turns): the items are re-queued, or fall back when this was the final
+// try. True when sent or re-queued; false when the items went to their fallbacks.
+async function sendItems(io: DeliverIo, id: string, items: Item[], final = false): Promise<boolean> {
+  if (await sendNow(io, id, joined(items))) return true
+  const status = await statusOf(io, id)
+  if (status === undefined || ENDED.has(status)) await gone(io, id, items)
+  else if (final) await gone(io, id, items, 'refused')
+  else {
+    requeue(io, id, items)
+    return true
+  }
+  return false
+}
+
 // Send everything queued for an agent as one message. A no-op when nothing is queued.
-export async function flushAgent(io: DeliverIo, id: string): Promise<void> {
+// The cap timer passes capTimer: a queue that was refused before and is refused again falls back.
+export async function flushAgent(io: DeliverIo, id: string, capTimer = false): Promise<void> {
   const q = queues.get(id)
   if (q === undefined || q.items.length === 0) return
   queues.delete(id)
   const status = await statusOf(io, id)
-  if (status === undefined || ENDED.has(status) || !(await sendNow(io, id, joined(q.items)))) await gone(io, id, q.items)
+  if (status === undefined || ENDED.has(status)) await gone(io, id, q.items)
+  else await sendItems(io, id, q.items, capTimer && q.refused === true)
 }
 
 // Arm the flush timer: the window when something is not held, else the cap. A shorter deadline
@@ -81,10 +111,12 @@ function arm(io: DeliverIo, id: string, q: Queue, ms: number): void {
   q.generation = g
   q.windowMs = ms
   io.after(ms, () => {
-    if (queues.get(id)?.generation === g) void flushAgent(io, id)
+    if (queues.get(id)?.generation === g) void flushAgent(io, id, true)
   })
 }
 
+// True when the text was sent or is queued, also re-queued after a refusal (it goes out later); false when the
+// agent is gone. A caller that must know about a refusal reads it from its io (see sendWrapUp).
 export async function deliver(io: DeliverIo, id: string, text: string, opts: DeliverOptions = {}): Promise<boolean> {
   const status = await statusOf(io, id)
   if (status === undefined || ENDED.has(status)) {
@@ -99,9 +131,7 @@ export async function deliver(io: DeliverIo, id: string, text: string, opts: Del
   if (status !== 'idle' || opts.urgent === true) {
     // Running (or urgent): the agent takes everything queued for it now, with this text last.
     queues.delete(id)
-    const sent = await sendNow(io, id, joined([...(q?.items ?? []), item]))
-    if (!sent) await gone(io, id, [...(q?.items ?? []), item])
-    return sent
+    return sendItems(io, id, [...(q?.items ?? []), item])
   }
   const queue: Queue = q ?? { items: [], windowMs: 0, generation: 0 }
   queues.set(id, queue)

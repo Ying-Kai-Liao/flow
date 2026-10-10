@@ -110,15 +110,64 @@ test('queued text falls back when the agent ends before the window closes', asyn
   expect(w.main.length).toBe(1)
 })
 
-test('a refused send reaches onGone, else main with the agent name', async () => {
+test('a refused send to an agent that has ended reaches onGone, else main with the agent name', async () => {
   const w = world()
   w.status.set('m1', 'running')
   w.state.refuse = true
   const fell: string[] = []
+  // The agent ends while the send is refused: the status re-check after the failure sees it.
+  const send = w.io.send
+  w.io.send = async (id, text) => {
+    w.status.set('m1', 'killed')
+    return send(id, text)
+  }
   expect(await deliver(w.io, 'm1', 'x', { onGone: t => void fell.push(t) })).toBe(false)
   expect(fell).toEqual(['x'])
   expect(await deliver(w.io, 'm1', 'y')).toBe(false)
   expect(w.main).toEqual(['y (mgr-name ended before this was delivered.)'])
+})
+
+test('a refused send to a live agent is re-queued and delivered on its next turn', async () => {
+  const w = world()
+  w.status.set('m1', 'waiting')
+  w.state.refuse = true
+  const fell: string[] = []
+  expect(await deliver(w.io, 'm1', 'a', { onGone: t => void fell.push(t) })).toBe(true)
+  expect(await deliver(w.io, 'm1', 'b')).toBe(true)
+  expect(w.main).toEqual([])
+  expect(fell).toEqual([])
+  w.state.refuse = false
+  w.status.set('m1', 'running')
+  await flushAgent(w.io, 'm1')
+  expect(w.sent).toEqual([{ to: 'm1', text: 'a\n\nb' }])
+  expect(w.main).toEqual([])
+})
+
+test('a refused urgent send is re-queued, and kept onGone still applies', async () => {
+  const w = world()
+  w.state.refuse = true
+  const fell: string[] = []
+  expect(await deliver(w.io, 'm1', 'answer', { urgent: true, onGone: t => void fell.push(t) })).toBe(true)
+  expect(w.main).toEqual([])
+  w.state.refuse = false
+  w.status.set('m1', 'running')
+  await flushAgent(w.io, 'm1')
+  expect(w.sent).toEqual([{ to: 'm1', text: 'answer' }])
+  expect(fell).toEqual([])
+})
+
+test('refused again at the cap falls back saying it could not be delivered', async () => {
+  const w = world()
+  w.status.set('m1', 'waiting')
+  w.state.refuse = true
+  await deliver(w.io, 'm1', 'x')
+  await w.advance(HOLD_CAP_MS - 1)
+  expect(w.main).toEqual([])
+  await w.advance(1)
+  expect(w.sent).toEqual([])
+  expect(w.main.length).toBe(1)
+  expect(w.main[0]).toContain('could not be delivered')
+  expect(w.main[0]).not.toContain('ended')
 })
 
 test('an unreadable roster sends now instead of treating the agent as ended', async () => {

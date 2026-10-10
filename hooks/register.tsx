@@ -2792,7 +2792,8 @@ async function sendWrapUp($: EngineInterface, me: { id: string; type: string; na
   const text = wrapUpText(ROLE[me.type] ?? 'worker', percent, limit)
   // A wrap-up for an agent that is gone is only logged, not sent on to main.
   const sent = await deliver($, me.id, text, { urgent: true, onGone: () => undefined }).catch(() => false)
-  if (!sent) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered: ${refusals.get(me.id) ?? 'unknown'}`)
+  // A refused send is re-queued by deliver() and reads as sent there; the refusal is recorded by the io.
+  if (!sent || refusals.has(me.id)) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered: ${refusals.get(me.id) ?? 'unknown'}`)
 }
 
 // An agent past the threshold reads the wrap-up after a tool result: on its first tool call
