@@ -25,10 +25,11 @@ import {
 } from './preflight'
 import type { Preflight } from './preflight'
 import {
-  addChecks, anyMatch, closeChecks, dueForPrompt, EMPTY_CHECKS, inboxChecksSection, markStarted, normalizeChecks, paneChecksLine, parseNeeds, renderChecks,
+  addChecks, anyMatch, CHECKS_USAGE, closeChecks, dueForPrompt, EMPTY_CHECKS, inboxChecksSection, markStarted, normalizeChecks, paneChecksLine, parseNeeds, renderCheckDetail, renderChecksForAgents, renderChecksTable,
   resumeChecksLines, SKIP_NOTE, versionInSteps,
 } from './checks'
 import type { Check, Checks } from './checks'
+import { termWidth } from './table'
 import type { Inbox, Marked, Question } from './inbox'
 import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
 import type { Resolved, Rule } from './standing'
@@ -3644,8 +3645,9 @@ export const register: Register = (on, options) => {
       const due = dueForPrompt(await read($, checks), installed)
       if (due.length === 0) return
       await withChecks($, cur => ({ checks: { ...cur, promptedVersion: installed }, out: undefined }))
-      const text = `Flow ${installed} is installed. These after-deploy checks need a person and can be done now; tell the user, do not start managers for them:\n` +
-        due.map(c => `${c.id} PR #${c.pr} ${c.title}: ${c.steps}`).join('\n') + '\nThe user closes them with /flow checks pass <id...> or /flow checks fail <id> <note>; or you do with mcp__flow__check.'
+      const text = `Flow ${installed} is installed. ${due.length} after-deploy check${due.length === 1 ? '' : 's'} can be done now; tell the user, do not start managers for them:\n` +
+        renderChecksTable({ next: 0, items: due }, installed, termWidth(), await $.clock.now(), false) +
+        '\nThe user closes them with /flow checks pass <id...>, fail <id> <what you saw> or skip <id...> <why>; /flow checks <id> shows the steps.'
       $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
     })
     await best($, 'loading deploy gates', async () => {
@@ -3923,14 +3925,15 @@ export const register: Register = (on, options) => {
       name: 'check',
       description: 'Main only (the reviewer may close checks that carry a verify command). Person checks: the after-deploy checks that need a person, kept across restarts. ' +
         'action "list": the open checks grouped by the plugin version they need, and the open follow-ups. "pass": id or ids. "fail": id and a note (required); it creates a follow-up for you to start a manager on. ' +
+        '"skip": id or ids and a note (required): the check no longer applies (superseded, cannot be run); no follow-up, main only. ' +
         '"started": id of a failed check and manager (the follow-up has a manager now).',
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['list', 'pass', 'fail', 'started'] },
+          action: { type: 'string', enum: ['list', 'pass', 'fail', 'skip', 'started'] },
           id: { type: 'string' },
           ids: { type: 'array', items: { type: 'string' } },
-          note: { type: 'string', description: 'fail: what went wrong (required). pass: optional one-line output tail.' },
+          note: { type: 'string', description: 'fail: what went wrong (required). skip: why (required). pass: optional one-line output tail.' },
           manager: { type: 'string', description: 'started: the manager that took the follow-up' },
         },
         required: ['action'],
@@ -4189,8 +4192,11 @@ export const register: Register = (on, options) => {
     }
     if (arg === 'checks' || arg.startsWith('checks ')) {
       const w = arg.split(/\s+/).slice(1)
-      if (w.length === 0) return { text: renderChecks(await read($, checks), installed) }
+      // Ids are matched in any case; only the id words are lowercased, the reason or note keeps its own.
+      for (let n = ['pass', 'fail', 'skip'].includes(w[0] ?? '') ? 1 : 0; /^c\d+$/i.test(w[n] ?? ''); n++) w[n] = w[n]!.toLowerCase()
       const t = await $.clock.now()
+      if (w.length === 0) return { text: renderChecksTable(await read($, checks), installed, termWidth(), t) }
+      if (w.length === 1 && !['pass', 'fail', 'skip'].includes(w[0]!)) return { text: renderCheckDetail(await read($, checks), w[0]!, installed, t) }
       if (w[0] === 'pass' && w.length > 1) {
         return { text: await withChecks($, cur => {
           const r = closeChecks(cur, w.slice(1), 'pass', 'user', undefined, t)
@@ -4203,7 +4209,16 @@ export const register: Register = (on, options) => {
           return 'error' in r ? { checks: cur, out: `Not closed: ${r.error}` } : { checks: r.checks, out: `${w[1]} failed; main starts a manager on the follow-up (/flow resume lists it).` }
         }) }
       }
-      return { text: 'Usage: /flow checks, /flow checks pass <id...>, /flow checks fail <id> <note>' }
+      if (w[0] === 'skip' && w.length > 1) {
+        // Leading ids share one reason: the words after the last id-shaped word.
+        let n = 1
+        while (/^c\d+$/.test(w[n] ?? '')) n++
+        return { text: await withChecks($, cur => {
+          const r = closeChecks(cur, w.slice(1, n), 'skip', 'user', w.slice(n).join(' '), t)
+          return 'error' in r ? { checks: cur, out: `Not closed: ${r.error}` } : { checks: r.checks, out: r.text }
+        }) }
+      }
+      return { text: CHECKS_USAGE }
     }
     if (arg === 'status') {
       const lines = await costLines($, Object.values(await read($, handovers)))
@@ -5059,9 +5074,9 @@ export const register: Register = (on, options) => {
     const isMain = e.agentId === undefined
     if (!isMain && !(me && isReviewer(me.type))) return { result: 'Refused: only main closes person checks. Tell main in your report.' }
     const action = String(input.action ?? 'list')
-    if (action === 'list') return { result: renderChecks(await read($, checks), installed) }
+    if (action === 'list') return { result: renderChecksForAgents(await read($, checks), installed) }
     const t = await $.clock.now()
-    if (action === 'pass' || action === 'fail') {
+    if (action === 'pass' || action === 'fail' || action === 'skip') {
       const ids = Array.isArray(input.ids) ? input.ids.map(String) : typeof input.id === 'string' ? [input.id] : []
       const by = isMain ? 'main' : (me?.name ?? 'reviewer')
       const note = typeof input.note === 'string' ? input.note : undefined
@@ -5077,7 +5092,7 @@ export const register: Register = (on, options) => {
         return 'error' in r ? { checks: cur, out: `Refused: ${r.error}` } : { checks: r.checks, out: r.text }
       }) }
     }
-    return { result: 'Unknown action: use list, pass, fail or started.' }
+    return { result: 'Unknown action: use list, pass, fail, skip or started.' }
   })
 
   on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {

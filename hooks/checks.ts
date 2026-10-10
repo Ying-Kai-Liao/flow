@@ -4,6 +4,8 @@
 // decision inbox's questions (inbox.ts), shown alongside them.
 
 import type { Check, Checks, FollowUp } from '../types'
+import { renderTable, truncate } from './table'
+import type { Column, Row } from './table'
 
 export type { Check, Checks, FollowUp }
 
@@ -120,13 +122,13 @@ const followUpLine = (c: Check) => `  ${c.id} PR #${c.pr} ${c.title}: failed (${
 
 const FOLLOW = 'Open follow-ups from failed checks:'
 
-// /flow checks and mcp__flow__check list.
-export function renderChecks(c: Checks, installed: string | undefined): string {
+// mcp__flow__check list and the agent-facing text: every step in full, and how main closes a check.
+export function renderChecksForAgents(c: Checks, installed: string | undefined): string {
   const open = openChecks(c)
   const fu = openFollowUps(c)
   if (open.length === 0 && fu.length === 0) return 'No open checks.'
   return [
-    ...(open.length ? [`Open checks: ${open.length}. Close with mcp__flow__check (pass / fail) or /flow checks pass <id...> | fail <id> <note>.`, ...groupLines(groupOpen(c, installed), installed)] : ['No open checks.']),
+    ...(open.length ? [`Open checks: ${open.length}. Close with mcp__flow__check (pass / fail / skip) or /flow checks pass <id...> | fail <id> <note> | skip <id...> <why>.`, ...groupLines(groupOpen(c, installed), installed)] : ['No open checks.']),
     ...(fu.length ? [FOLLOW, ...fu.map(followUpLine)] : []),
   ].join('\n')
 }
@@ -177,15 +179,80 @@ export function dueForPrompt(c: Checks, installed: string | undefined): Check[] 
   return openChecks(c).filter(x => x.version !== undefined && compareVersions(x.version, installed) <= 0)
 }
 
+export const CHECKS_USAGE = 'Usage: /flow checks, /flow checks <id>, /flow checks pass <id...>, /flow checks fail <id> <what you saw>, /flow checks skip <id> <why>'
+
+// A short age: minutes, hours or days.
+const ago = (ms: number): string => {
+  const m = Math.max(0, Math.round(ms / 60_000))
+  return m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`
+}
+
+const byId = (a: Check, b: Check) => Number(a.id.slice(1)) - Number(b.id.slice(1))
+
+const COLS: Column[] = [
+  { header: 'id' }, { header: 'PR' }, { header: 'title', flex: true },
+  { header: 'needs', max: 14, drop: 2 }, { header: 'age', max: 4, drop: 1 },
+]
+
+const titleOf = (c: Check) => c.title === '' ? `PR #${c.pr}` : c.title
+
+// The person view of /flow checks: one table, one row per open check, grouped by what it needs, then the open
+// follow-ups of failed checks. Full steps are in the detail view, so rows never wrap.
+export function renderChecksTable(c: Checks, installed: string | undefined, width: number, now: number, footer = true): string {
+  const open = openChecks(c)
+  const fu = openFollowUps(c)
+  if (open.length === 0 && fu.length === 0) return 'No open checks.'
+  const g = groupOpen(c, installed)
+  const row = (x: Check, needs: string): string[] => [x.id, `#${x.pr}`, titleOf(x), needs, ago(now - x.createdAt)]
+  const rows: Row[] = []
+  const tryNow = [...g.ready, ...g.none].sort(byId)
+  if (tryNow.length) rows.push('Try now', ...tryNow.map(x => row(x, 'ready')))
+  for (const x of g.install) rows.push(`Needs install of ${x.version}`, ...x.items.map(i => row(i, `install ${x.version}`)))
+  if (g.unknown.length) rows.push('Version unknown', ...g.unknown.map(x => row(x, '?')))
+  if (fu.length) rows.push('Failed, follow-up open', ...fu.map(x => [x.id, `#${x.pr}`, `failed: ${x.note ?? ''} · ${titleOf(x)}`, '', ago(now - (x.closedAt ?? x.createdAt))]))
+  const out = [`Checks: ${open.length} open${fu.length ? `, ${fu.length} failed with a follow-up` : ''}`, '', ...renderTable(COLS, rows, width)]
+  if (footer) {
+    const first = (open[0] ?? fu[0])!.id
+    const ready = tryNow.map(x => x.id)
+    // Only failed checks left: pass, fail and skip on them are refused, so show the detail command alone.
+    const parts = open.length === 0 ? [`Details: /flow checks ${first}`] : [
+      `Pass: /flow checks pass ${(ready.length ? ready.slice(0, 2) : [first]).join(' ')}`, `Fail: /flow checks fail ${first} <what you saw>`,
+      `Skip: /flow checks skip ${first} <why>`, `Details: /flow checks ${first}`,
+    ]
+    const one = parts.join(' · ')
+    out.push('', ...(one.length <= width ? [one] : parts.map(x => truncate(x, width))))
+  }
+  return out.join('\n')
+}
+
+// One check in full, for /flow checks <id>.
+export function renderCheckDetail(c: Checks, id: string, installed: string | undefined, now: number): string {
+  const x = c.items.find(i => i.id === id)
+  if (x === undefined) return `${id}: no such check.`
+  const state = x.state === 'failed' && x.followUp ? `failed (follow-up ${x.followUp.state === 'started' ? `started by ${x.followUp.manager ?? '?'}` : 'open'})` : x.state
+  const needs = x.version === undefined ? 'no version' : x.version + (installed === undefined ? '' : compareVersions(x.version, installed) <= 0 ? ' (installed)' : ' (not installed yet)')
+  const lines = [
+    `${x.id}: PR #${x.pr}${x.title ? ` ${x.title}` : ''}`,
+    `State: ${state}`, `Version: ${needs}`, `Age: ${ago(now - x.createdAt)}`, `Steps: ${x.steps}`,
+    ...(x.verifyCommand ? [`Verify command: ${x.verifyCommand}`] : []),
+    ...(x.note ? [`Note: ${x.note}`] : []),
+    ...(x.closedAt !== undefined ? [`Closed: ${x.state} by ${x.closedBy ?? '?'}, ${ago(now - x.closedAt)} ago`] : []),
+  ]
+  if (x.state === 'open') lines.push(`Pass: /flow checks pass ${x.id}`, `Fail: /flow checks fail ${x.id} <what you saw>`, `Skip: /flow checks skip ${x.id} <why>`)
+  return lines.join('\n')
+}
+
 export type CloseResult = { checks: Checks; text: string; failed?: Check[] }
 
 // Closes checks as passed or failed. A closed or unknown id is refused with its state, and nothing is closed
 // when any id is refused. `scriptedOnly` (the reviewer) may close only checks that carry a command.
 export function closeChecks(
-  cur: Checks, ids: string[], how: 'pass' | 'fail', by: string, note: string | undefined, now: number, scriptedOnly = false,
+  cur: Checks, ids: string[], how: 'pass' | 'fail' | 'skip', by: string, note: string | undefined, now: number, scriptedOnly = false,
 ): CloseResult | { error: string } {
   if (ids.length === 0) return { error: 'needs an id (see action "list").' }
   if (how === 'fail' && (note === undefined || note.trim() === '')) return { error: 'a failed check needs a note: what went wrong.' }
+  if (how === 'skip' && (note === undefined || note.trim() === '')) return { error: 'a skipped check needs a reason: why it no longer applies.' }
+  if (how === 'skip' && scriptedOnly) return { error: 'only main skips a check.' }
   if (how === 'fail' && ids.length > 1) return { error: 'fail one check at a time, each with its own note.' }
   const bad: string[] = []
   for (const id of ids) {
@@ -196,12 +263,14 @@ export function closeChecks(
   }
   if (bad.length) return { error: bad.join('; ') + '.' }
   const hit = new Set(ids)
-  const items = cur.items.map(c => !hit.has(c.id) ? c : how === 'pass'
+  const items = cur.items.map(c => !hit.has(c.id) ? c : how === 'skip'
+    ? { ...c, state: 'skipped' as const, closedAt: now, closedBy: by, note: note!.trim() }
+    : how === 'pass'
     ? { ...c, state: 'passed' as const, closedAt: now, closedBy: by, ...(note?.trim() ? { note: note.trim() } : {}) }
     : { ...c, state: 'failed' as const, closedAt: now, closedBy: by, note: note!.trim(), followUp: { state: 'open' as const } })
   const checks = { ...cur, items }
   const closed = items.filter(c => hit.has(c.id))
-  return how === 'pass'
+  return how === 'skip' ? { checks, text: `Skipped: ${ids.join(', ')}.` } : how === 'pass'
     ? { checks, text: `Passed: ${ids.join(', ')}.` }
     : { checks, failed: closed, text: `${ids[0]} failed. Start a manager on the follow-up: PR #${closed[0]!.pr} (${closed[0]!.title}), steps: ${closed[0]!.steps}. Note: ${closed[0]!.note}. Then call mcp__flow__check {"action":"started","id":"${ids[0]}","manager":"<name>"}.` }
 }
@@ -224,7 +293,7 @@ export function normalizeChecks(raw: unknown): Checks {
   for (const x of Array.isArray(r?.items) ? r.items : []) {
     const o = x as Record<string, unknown> | null
     if (typeof o !== 'object' || o === null || typeof o.id !== 'string' || typeof o.pr !== 'number' || typeof o.steps !== 'string') continue
-    if (o.state !== 'open' && o.state !== 'passed' && o.state !== 'failed') continue
+    if (o.state !== 'open' && o.state !== 'passed' && o.state !== 'failed' && o.state !== 'skipped') continue
     const fu = o.followUp as { state?: unknown; manager?: unknown } | undefined
     items.push({
       id: o.id, kind: 'check', pr: o.pr, title: str(o.title) ?? '', steps: o.steps,

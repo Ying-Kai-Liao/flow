@@ -274,7 +274,7 @@ export type Check = {
   // A command the reviewer runs instead of the user (from the handover's verify_command).
   verifyCommand?: string
   createdAt: number
-  state: 'open' | 'passed' | 'failed'
+  state: 'open' | 'passed' | 'failed' | 'skipped'
   closedAt?: number
   closedBy?: string
   // Required for a failed check; on an open check, why scripted verification was skipped.

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/flow checks` is a compact table: one row per open check (id, PR, title cut to the terminal width, what it needs, age), grouped as Try now, Needs install of X and Version unknown, with failed checks that have an open follow-up in their own section and a footer of person commands. A narrow terminal drops age, then needs.
+- `/flow checks <id>` shows one check in full; `/flow checks skip <id...> <why>` (and `mcp__flow__check` action `skip`, main only) closes checks that no longer apply, with a required reason and no follow-up.
+- A shared text table helper (`hooks/table.ts`) for person views.
+
+### Changed
+
+- The post-update prompt for main names the number of checks now due and shows them as the table, not every step.
+
 ## [0.6.13] - 2026-10-10
 
 ### Fixed

@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import {
   addChecks, anyMatch, closeChecks, compareVersions, dueForPrompt, EMPTY_CHECKS, groupOpen, inboxChecksSection, markStarted, normalizeChecks, paneChecksLine,
-  parseNeeds, renderChecks, versionInSteps,
+  parseNeeds, renderCheckDetail, renderChecksForAgents, renderChecksTable, versionInSteps,
 } from '../hooks/checks'
 import type { Checks } from '../hooks/checks'
 
@@ -47,7 +47,7 @@ test('groups: newer than installed per version ascending, ready, no version, unk
   const u = groupOpen(seed(), undefined)
   expect(u.unknown.length).toBe(3)
   expect(u.install.length).toBe(0)
-  const text = renderChecks(seed(), '0.3.30')
+  const text = renderChecksForAgents(seed(), '0.3.30')
   expect(text).toContain('Needs install of 0.3.31 and a restart:')
   expect(text).toContain('Ready on the installed version 0.3.30:')
   expect(text).toContain('No version:')
@@ -69,7 +69,7 @@ test('closing: pass, fail needs a note and makes a follow-up, closed ones are re
   if (!('checks' in f)) throw new Error('expected a close')
   expect(f.text).toContain('Start a manager on the follow-up')
   expect(f.checks.items[2]!.followUp).toEqual({ state: 'open' })
-  expect(renderChecks(f.checks, '0.3.30')).toContain('Open follow-ups from failed checks:')
+  expect(renderChecksForAgents(f.checks, '0.3.30')).toContain('Open follow-ups from failed checks:')
   expect('error' in closeChecks(f.checks, ['c3'], 'pass', 'main', undefined, 6)).toBe(true)
   expect((closeChecks(f.checks, ['c3'], 'pass', 'main', undefined, 6) as { error: string }).error).toContain('already failed')
   expect('error' in closeChecks(c, ['c9'], 'pass', 'main', undefined, 6)).toBe(true)
@@ -82,7 +82,7 @@ test('closing: pass, fail needs a note and makes a follow-up, closed ones are re
 
 test('the queue may close only checks with a verify command', () => {
   const c = addChecks(EMPTY_CHECKS, 1, 't', 'x', [{ steps: 'a', verifyCommand: 'npm run smoke' }, { steps: 'b' }], 1).checks
-  expect(renderChecks(c, undefined)).toContain('(scripted: npm run smoke)')
+  expect(renderChecksForAgents(c, undefined)).toContain('(scripted: npm run smoke)')
   expect('checks' in closeChecks(c, ['c1'], 'pass', 'flow-queue', 'ok', 2, true)).toBe(true)
   expect((closeChecks(c, ['c2'], 'pass', 'flow-queue', 'ok', 2, true) as { error: string }).error).toContain('only main')
 })
@@ -111,4 +111,66 @@ test('normalizeChecks drops bad items, keeps known fields and continues the ids'
   expect(r.next).toBe(5)
   expect(r.promptedVersion).toBe('1.0.0')
   expect(normalizeChecks('garbage')).toEqual({ next: 1, items: [] })
+})
+
+test('the table has one row per open check in groups, never wraps, and drops age then needs when narrow', () => {
+  const long = addChecks(seed(), 79, 'Less re-sent text: scoped status, stable-first session prompt, deferred tools', 'a', [{ steps: 'x '.repeat(200), version: '0.3.31' }], 1000).checks
+  const now = 1000 + 3 * 86_400_000
+  for (const width of [100, 50, 40]) {
+    const t = renderChecksTable(long, '0.3.30', width, now)
+    for (const l of t.split('\n')) expect(l.length).toBeLessThanOrEqual(width)
+    expect(t).not.toContain('mcp__')
+    expect(t.indexOf('Try now')).toBeGreaterThan(-1)
+    expect(t.indexOf('Try now')).toBeLessThan(t.indexOf('Needs install of 0.3.31'))
+    for (const id of ['c1', 'c2', 'c3', 'c4', 'c5']) expect(t).toContain(id)
+  }
+  const wide = renderChecksTable(long, '0.3.30', 100, now)
+  expect(wide).toMatch(/c5\s+#79\s+Less re-sent text.*…\s+install 0.3.31\s+3d/)
+  // Too long for one line at 100: one command per line; at a wide terminal they share a line.
+  expect(wide).toContain('Pass: /flow checks pass c2 c3\nFail: /flow checks fail c1 <what you saw>\nSkip: /flow checks skip c1 <why>\nDetails: /flow checks c1')
+  expect(renderChecksTable(long, '0.3.30', 140, now)).toContain('Pass: /flow checks pass c2 c3 · Fail: /flow checks fail c1 <what you saw> · Skip: /flow checks skip c1 <why> · Details: /flow checks c1')
+  expect(renderChecksTable(long, undefined, 100, now)).toContain('Version unknown')
+  expect(renderChecksTable(EMPTY_CHECKS, '1.0.0', 100, 1)).toBe('No open checks.')
+})
+
+test('failed checks with an open follow-up get their own section; an empty title shows PR only', () => {
+  const c = addChecks(EMPTY_CHECKS, 5, '', 'a', [{ steps: 'a' }, { steps: 'b' }], 1).checks
+  const f0 = closeChecks(c, ['c2'], 'fail', 'user', 'blank page', 5)
+  if (!('checks' in f0)) throw new Error('expected a close')
+  const f = closeChecks(f0.checks, ['c1'], 'pass', 'user', undefined, 5)
+  if (!('checks' in f)) throw new Error('expected a close')
+  const t = renderChecksTable(f.checks, '1.0.0', 80, 100)
+  expect(t).toContain('Failed, follow-up open')
+  expect(t).toMatch(/c2\s+#5\s+failed: blank page · PR #5/)
+  expect(t).not.toContain('start a manager')
+  expect(t).toMatch(/\nDetails: \/flow checks c2$/)
+  expect(t).not.toContain('Pass:')
+  expect(t).toMatch(/^id\s+PR\s+title/m)
+})
+
+test('detail view shows everything for one check, and unknown ids say so', () => {
+  const c = addChecks(EMPTY_CHECKS, 7, 'T', 'a', [{ steps: 'step one then two', version: '0.3.31', verifyCommand: 'npm run smoke' }], 1).checks
+  const d = renderCheckDetail(c, 'c1', '0.3.30', 60_000)
+  expect(d).toContain('c1: PR #7 T')
+  expect(d).toContain('Version: 0.3.31 (not installed yet)')
+  expect(d).toContain('Steps: step one then two')
+  expect(d).toContain('Verify command: npm run smoke')
+  expect(d).toContain('Skip: /flow checks skip c1 <why>')
+  expect(renderCheckDetail(c, 'c8', undefined, 1)).toBe('c8: no such check.')
+})
+
+test('skip closes without a follow-up, needs a reason, refuses closed ids and survives a reload', () => {
+  const c = seed()
+  expect(closeChecks(c, ['c1'], 'skip', 'user', ' ', 5)).toEqual({ error: 'a skipped check needs a reason: why it no longer applies.' })
+  const s = closeChecks(c, ['c1', 'c2'], 'skip', 'user', 'superseded', 5)
+  if (!('checks' in s)) throw new Error('expected a close')
+  expect(s.text).toBe('Skipped: c1, c2.')
+  expect(s.failed).toBeUndefined()
+  expect(s.checks.items[0]).toMatchObject({ state: 'skipped', note: 'superseded', closedBy: 'user' })
+  expect(s.checks.items[0]!.followUp).toBeUndefined()
+  expect((closeChecks(s.checks, ['c1'], 'skip', 'user', 'again', 6) as { error: string }).error).toContain('already skipped')
+  expect('error' in closeChecks(c, ['c1', 'c9'], 'skip', 'user', 'x', 5)).toBe(true)
+  expect('error' in closeChecks(c, ['c1'], 'skip', 'q', 'x', 5, true)).toBe(true)
+  expect(normalizeChecks(JSON.parse(JSON.stringify(s.checks))).items[0]!.state).toBe('skipped')
+  expect(addChecks(s.checks, 37, 'Title 37', 'abc', [{ steps: 'install 0.3.31, restart, look at the pane' }], 9).added).toEqual([])
 })
