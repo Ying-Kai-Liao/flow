@@ -319,3 +319,40 @@ test('the per-PR "Report for" relay is not doubled by the full report relay', as
   await w.flushLong()
   expect(w.prompts.filter(p => p.includes('Report for csv-export')).length).toBe(1)
 })
+
+test('a done line, then a reworded lone needs-a-person line for the same PR, reaches main once', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  await send($, 'q1', 'csv-export', `PR #7 merged at abc1234 | ${REPORT.replace('after_deploy: none', 'after_deploy: needs a person: PR #7: look at the pane')}`)
+  const second = await send($, 'q1', 'csv-export', 'needs a person: PR #7: after reload, look at the pane in the browser')
+  expect(second).toContain('already forwarded')
+  // Another PR's line still goes through.
+  expect(await send($, 'q1', 'csv-export', 'needs a person: PR #8: look')).toContain('Not sent')
+  await w.flush()
+  expect(w.prompts.filter(p => p.includes('Report for csv-export')).length).toBe(2)
+  expect(w.prompts.filter(p => p.includes('PR #7: after reload')).length).toBe(0)
+})
+
+test('the whole multi-paragraph final report is logged and relayed from persisted run work', async ($, on) => {
+  const w = world(on)
+  await handover($, 'm1')
+  await queue($, { action: 'take', pr: 7 })
+  await queue($, { action: 'done', pr: 7, sha: 'abc1234', report: 'merged' })
+  await w.flush()
+  const answer = 'Merged PR #7.\n\nDeploy: none.\n\nNo more pending handovers.'
+  await $.turn.complete({ turnId: 't', agentId: 'q1', answer } as never)
+  await w.flushLong()
+  expect(w.logs.some(l => l.includes('"event":"report"') && l.includes('Deploy: none.'))).toBe(true)
+  expect(w.prompts.some(p => p.includes('Report from reviewer') && p.includes('Deploy: none.'))).toBe(true)
+})
+
+test('a pending-decisions line for a PR is not swallowed by an earlier needs-a-person line for it', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  await send($, 'q1', 'csv-export', 'needs a person: PR #7: look at the pane')
+  const second = await send($, 'q1', 'csv-export', 'pending decisions: PR #7: pick a name')
+  expect(second).not.toContain('already forwarded')
+  await w.flush()
+  expect(w.prompts.filter(p => p.includes('Report for csv-export')).length).toBe(2)
+  expect(w.prompts.some(p => /pending decisions: PR #7: pick a name/i.test(p))).toBe(true)
+})

@@ -399,6 +399,8 @@ declare module 'claude-code' {
       // Tokens spent per agent and model, mirrored from <state dir>/ledger.json (hooks/cost.ts).
       ledger: Ledger
       queueRuns: number
+      // Per reviewer run (agent id), what it did with the queue; persisted so a reload keeps the final report whole.
+      reviewerWork: Record<string, { touched: boolean; ready: boolean; line?: string }>
       prCache: PrCache
       // Deploy gates, mirrored from <state dir>/deploys.json, and how many commits each target is behind the base.
       deploys: Deploys
