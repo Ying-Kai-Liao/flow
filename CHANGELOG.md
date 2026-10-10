@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The plugin now fast-forwards the main checkout after the reviewer's "done" (a worktree-isolated reviewer cannot), and relays the reviewer's whole final report to main instead of only its last line.
+
 ## [0.6.4] - 2026-10-10
 
 ### Fixed
