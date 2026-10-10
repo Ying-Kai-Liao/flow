@@ -4166,7 +4166,7 @@ export const register: Register = (on, options) => {
       // `all` is the older spelling of `decisions`: both list every decision.
       if (w.length > 1 || (w.length === 1 && w[0] !== 'all' && w[0] !== 'decisions')) return { text: 'Usage: /flow inbox, /flow inbox decisions (every decision), /flow inbox <id> (one item in full)' }
       const sec = inboxChecksSection(await read($, checks), installed)
-      return { text: [renderInbox(box, now, { all: w.length === 1 }), ...sec].join('\n') }
+      return { text: [renderInbox(box, now, { all: w.length === 1, width: termWidth() }), ...sec].join('\n') }
     }
     if (/^(ok|no|answer)(\s|$)/.test(arg)) {
       const [verb = ''] = arg.split(/\s+/)

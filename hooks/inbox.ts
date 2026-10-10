@@ -1,5 +1,5 @@
 import { noteKey } from './state'
-import { renderTable } from './table'
+import { renderTable, termWidth } from './table'
 import type { Inbox, Question } from '../types'
 
 export type { Inbox, Question }
@@ -355,16 +355,14 @@ export function protectedWhy(q: Question): string | undefined {
 export const DECISIONS_SHOWN = 15
 
 // The decisions as one flat table, newest first: id, from, headline, age. The full text and the why are in /flow inbox <id>.
-export function decisionRows(decisions: Question[], now: number, all: boolean, width = 100): string[] {
+export function decisionRows(decisions: Question[], now: number, all: boolean, width = termWidth()): string[] {
   const newest = [...decisions].reverse()
-  const shown = all ? newest : newest.slice(0, DECISIONS_SHOWN)
-  const table = renderTable(
+  return renderTable(
     [{ header: 'id' }, { header: 'from', max: 16, drop: 1 }, { header: 'decision', flex: true, min: 20 }, { header: 'age', align: 'right' }],
-    shown.map(q => [q.id, q.owner, q.question, age(now - q.askedAt)]),
+    newest.map(q => [q.id, q.owner, q.question, age(now - q.askedAt)]),
     width,
-    { indent: 2 },
+    { limit: all ? undefined : DECISIONS_SHOWN, more: m => `+${m} more: /flow inbox decisions` },
   )
-  return newest.length > shown.length ? [...table, `  +${newest.length - shown.length} more: /flow inbox decisions`] : table
 }
 
 // /flow inbox: a summary line, the questions (blocking first), the decisions as a flat table, then what a standing answer did.

@@ -371,7 +371,7 @@ test('renderInbox: decisions are one flat table, newest first, nothing grouped o
   const text = renderInbox(box, 6 * H)
   const lines = text.split('\n')
   const at = lines.findIndex(l => l.includes('Decisions agents made'))
-  expect(lines[at + 1]).toMatch(/^ +id +from +decision +age$/)
+  expect(lines[at + 1]).toMatch(/^id +from +decision +age$/)
   expect(lines.slice(at + 2, at + 7).map(l => l.trim().split(/\s+/)[0])).toEqual(['d5', 'd4', 'd3', 'd2', 'd1'])
   expect(text).toMatch(/d5 +mgr-b +b2 text +1 h/)
   expect(text).toMatch(/d1 +mgr-a +a1 text +6 h/)
@@ -382,14 +382,14 @@ test('renderInbox: a long list shows the newest 15 and a +M more line; all (deci
   let box = EMPTY_INBOX
   for (let i = 1; i <= 20; i++) box = fyis(box, 'mgr-a', [`decision number ${i} ${'x'.repeat(200)}`], undefined, i * 1000)
   const text = renderInbox(box, 60_000, { width: 80 })
-  const rows = text.split('\n').filter(l => /^ +d\d+ /.test(l))
+  const rows = text.split('\n').filter(l => /^d\d+ /.test(l))
   expect(rows.length).toBe(DECISIONS_SHOWN)
   expect(rows[0]).toContain('d20')
-  expect(text).toContain('  +5 more: /flow inbox decisions')
+  expect(text).toContain('+5 more: /flow inbox decisions')
   for (const l of text.split('\n')) expect(l.length).toBeLessThanOrEqual(130)
   for (const l of rows) { expect(l.length).toBeLessThanOrEqual(80); expect(l).toContain('…') }
   const all = renderInbox(box, 60_000, { all: true, width: 80 })
-  expect(all.split('\n').filter(l => /^ +d\d+ /.test(l)).length).toBe(20)
+  expect(all.split('\n').filter(l => /^d\d+ /.test(l)).length).toBe(20)
   expect(all).not.toContain('more:')
 })
 
