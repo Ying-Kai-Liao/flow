@@ -205,7 +205,7 @@ export type Session = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string
