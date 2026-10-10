@@ -26,25 +26,23 @@ import type { Routed, SpawnIo } from './spawn'
 import { agentFor, asksQuestion, noticeText, settle, waitsOnReport } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
 import {
-  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, isFyi, parseFyi, openAll, findItem, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk,
+  answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner,
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
-  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, FILE_HELP, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling,
-  recordFiling, recordSpawn, renderFollowUp, renderRound,
+  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, isSkip, markDelivered, normalizePreflight,
+  recordSpawn, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
 import {
-  addChecks, anyMatch, closeChecks, dueForPrompt, EMPTY_CHECKS, markStarted, normalizeChecks, paneChecksLine, parseNeeds, renderChecksForAgents, renderChecksTable,
+  addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, paneChecksLine, parseNeeds, renderChecksTable,
   SKIP_NOTE, versionInSteps,
 } from './checks'
 import type { Check, Checks } from './checks'
 import { termWidth } from './table'
 import type { Inbox, Marked, Question } from './inbox'
-import { AUTO, renderRules, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
-import type { Resolved, Rule } from './standing'
-import { addGuardTest, addRule, alwaysRule, autoAnswer, dropRule, loadRules, offerSeedsOnce, recordAutoAnswers, suggestGuardTests } from './standing-run'
-import type { AutoHits, StandingIo } from './standing-run'
+import { addGuardTest, loadRules, offerSeedsOnce, standingTool, suggestGuardTests } from './standing-run'
+import type { StandingIo } from './standing-run'
 import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import { shimmerParts } from './shimmer'
@@ -62,6 +60,10 @@ import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
 import { handoverTool } from './handover-run'
 import type { HandoverIo } from './handover-run'
+import { askTool, answerTool, fyiTool, preflightTool } from './inbox-run'
+import type { InboxIo } from './inbox-run'
+import { checkTool } from './checks-run'
+import type { ChecksIo } from './checks-run'
 import { planTool } from './plan-run'
 import type { PlanIo } from './plan-run'
 import { testSlotTool } from './slots-run'
@@ -294,6 +296,25 @@ const planIoOf = ($: EngineInterface): PlanIo => ({
   planOwner: (plans, name) => planOwner(plans, name),
   limitsLine: (rows, workers) => limitsLine(rows, workers),
   syncPlans: (rows, edit, quietOwner) => syncPlans($, rows, edit, quietOwner),
+})
+
+const inboxIoOf = ($: EngineInterface): InboxIo => ({
+  standing: standingIoOf($),
+  refresh: () => refresh($),
+  deliver: (id, text, opts) => deliver($, id, text, opts),
+  toast: text => { void $.ui.toast(text) },
+  ownerNameOf: id => ownerNameOf($, id),
+  answerQuestion: (wanted, choice, by, options, user) => answerQuestion($, wanted, choice, by, options, user),
+  withPreflight: fn => withPreflight($, fn),
+  preflightTick: rows => preflightTick($, rows),
+  submitLater: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
+})
+
+const checksIoOf = ($: EngineInterface): ChecksIo => ({
+  agents: () => $.agent.list(),
+  checks: () => read($, checks),
+  now: () => $.clock.now(),
+  withChecks: fn => withChecks($, fn),
 })
 
 const slotsIoOf = ($: EngineInterface): SlotsIo => ({
@@ -2197,219 +2218,12 @@ export const register: Register = (on, options) => {
     return { result: guardReport(guardTestsFor(files, map), true) }
   })
 
-  on('tool.call', { tool: 'mcp__flow__ask' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    if (e.agentId === undefined) return { result: 'Refused: main cannot ask; decide, or ask the user in the chat.' }
-    const parsed = parseAsk(input)
-    if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error}` }
-    const rows = await refresh($)
-    const me = rows.find(a => a.id === e.agentId)
-    const name = me?.name ?? (String(input.from ?? '').trim() || 'unknown')
-    const parent = me?.parentId === undefined ? undefined : rows.find(a => a.id === me.parentId)
-    const addressee = parent !== undefined && parent.type === MANAGER && parent.name !== undefined ? parent.name : 'main'
-    const at = await $.clock.now()
-    // Standing answers hook: rules are read fresh. A fresh question that one matches is stored, then marked
-    // answered in the same write (so it has an id and history); the result line tells the asker.
-    const { rules } = await loadRules(standingIoOf($), options)
-    const { added, auto } = await withInbox($, cur => {
-      const r = autoAnswer(cur, addQuestions(cur, { name, id: e.agentId, isManager: me?.type === MANAGER }, addressee, parsed.questions, at), rules, at, true)
-      return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
-    })
-    await recordAutoAnswers(standingIoOf($), added, auto, name)
-    const date = await today($)
-    for (const { q, fresh } of added) {
-      const owner = notesOwner(q)
-      if (fresh && !auto.has(q.id) && !q.blocking && owner !== 'main') {
-        await appendNote($, owner, `- ${date} progress: assumed ${q.default} for ${q.id}: ${q.question}`)
-      }
-    }
-    const fresh = added.filter(a => a.fresh && !auto.has(a.q.id)).map(a => a.q)
-    if (addressee !== 'main' && fresh.length > 0 && parent !== undefined) {
-      const lines = fresh.map(q =>
-        `${name} asks ${q.id} (${q.blocking ? 'blocking' : 'non-blocking'}): ${q.question} - options ` +
-        `${q.options.map((o, i) => `${String.fromCharCode(97 + i)}) ${o}`).join(' ')} (default: ${q.default})` +
-        (q.escalated !== undefined ? ` - a standing rule (${q.escalated}) makes this the user's decision; it is in main's inbox as ${q.id}, main answers it directly and the worker gets the answer; don't answer or re-ask it.` : ''))
-      await deliver($, parent.id, `${lines.join('\n')}\nAnswer with mcp__flow__answer.`, { held: !fresh.some(q => q.blocking), urgent: fresh.some(q => q.blocking) }).catch(() => undefined)
-    } else if (addressee === 'main' && fresh.some(q => q.blocking)) {
-      void $.ui.toast(`${name} asks: ${fresh.length} question(s) in /flow inbox`)
-    }
-    return {
-      result: added.map(({ q, fresh: isNew }) => {
-        if (!isNew) return `${q.id}: already asked as ${q.id}.`
-        const hit = auto.get(q.id)
-        if (hit !== undefined) return `${q.id}: answered by standing answer ${hit.rid}: ${hit.answer}. Carry on from it.`
-        return q.blocking
-          ? `${q.id}: end your turn now; the answer arrives by message.`
-          : `${q.id}: proceed on the default (${q.default}), say in your report/PR that you assumed it; you'll get a message if the answer differs.`
-      }).join('\n'),
-    }
-  })
-
-  on('tool.call', { tool: 'mcp__flow__fyi' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    if (e.agentId === undefined) return { result: 'Refused: main cannot record a decision; just decide.' }
-    const parsed = parseFyi(input)
-    if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error}` }
-    const rows = await refresh($)
-    const me = rows.find(a => a.id === e.agentId)
-    const name = me?.name ?? (String(input.from ?? '').trim() || 'unknown')
-    const parent = me?.parentId === undefined ? undefined : rows.find(a => a.id === me.parentId)
-    const addressee = parent !== undefined && parent.type === MANAGER && parent.name !== undefined ? parent.name : 'main'
-    const at = await $.clock.now()
-    const added = await withInbox($, cur => {
-      const r = addQuestions(cur, { name, id: e.agentId, isManager: me?.type === MANAGER }, addressee, parsed.items.map(fyiAsked), at, 'fyi')
-      return { inbox: r.added.some(a => a.fresh) ? r.inbox : cur, out: r.added }
-    })
-    // Quiet by design: a log line, no message or toast.
-    await best($, 'logging a decision', () => appendLog($, { event: 'fyi', owner: noteKey(name), agent: name, text: added.map(a => a.q.id).join(' ') }))
-    return { result: `Recorded ${added.map(a => a.q.id).join(', ')}. Carry on; you get a message only if it is undone.` }
-  })
-
-  on('tool.call', { tool: 'mcp__flow__preflight' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    if (e.agentId === undefined) return { result: 'Refused: main does not file a pre-flight; it answers the managers\' questions in the round it receives.' }
-    const rows = await refresh($)
-    const me = rows.find(a => a.id === e.agentId)
-    if (me?.type !== MANAGER) return { result: 'Refused: only managers file a pre-flight. A worker asks its manager with mcp__flow__ask.' }
-    const parsed = parseFiling(input)
-    if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error} To file: ${FILE_HELP}.` }
-    const name = me.name ?? (String(input.from ?? '').trim() || 'unknown')
-    const at = await $.clock.now()
-    // Same standing-answer check as ask: a fresh question a rule matches is answered at once, so it is not
-    // open, never gates the manager and stays out of the round.
-    const { rules } = await loadRules(standingIoOf($), options)
-    // A filing is often sent again whole, and an answered question no longer dedupes in addQuestions: one
-    // already answered for this manager (by a rule or by main) is reported again, not stored again, so it
-    // neither re-gates the manager nor asks the user twice.
-    const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase()
-    const { added, auto, earlier } = parsed.questions.length === 0 ? { added: [], auto: new Map() as AutoHits, earlier: [] as string[] } : await withInbox($, cur => {
-      const before = (text: string) => cur.items.find(x => x.owner === name && x.state === 'answered' && norm(x.question) === norm(text))
-      const fresh = parsed.questions.filter(a => before(a.question) === undefined)
-      const earlier = parsed.questions.flatMap(a => { const x = before(a.question); return x === undefined ? [] : [`${x.id} already answered${x.answeredBy === AUTO ? ` by standing answer ${x.rule ?? '?'}` : ''}: ${x.answer ?? ''}`] })
-      const r = autoAnswer(cur, addQuestions(cur, { name, id: e.agentId, isManager: true }, 'main', fresh, at), rules, at)
-      return { inbox: r.inbox, out: { added: r.added, auto: r.hits, earlier } }
-    })
-    await recordAutoAnswers(standingIoOf($), added, auto, name)
-    const kept = added.filter(a => !auto.has(a.q.id))
-    const ids = { asked: kept.map(a => a.q.id), blocking: kept.filter(a => a.q.blocking).map(a => a.q.id) }
-    const answered = [...earlier, ...added.filter(a => auto.has(a.q.id)).map(a => `${a.q.id} by standing answer ${auto.get(a.q.id)!.rid}: ${auto.get(a.q.id)!.answer}`)]
-    const answeredLine = answered.length > 0 ? ` Answered, carry on from them: ${answered.join('; ')}.` : ''
-    const late = await withPreflight($, cur => {
-      const f = followUp(recordFiling(cur, name, parsed.filing, ids, at), name)
-      return { state: f.state, out: f.send ? f.state : undefined }
-    })
-    if (late !== undefined) {
-      const text = renderFollowUp(late, await read($, inbox), name, at)
-      $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
-    }
-    await preflightTick($, rows)
-    return {
-      result: ids.blocking.length === 0
-        ? `Pre-flight filed. Start your workers now.${answeredLine}${ids.asked.length > 0 ? ` Your non-blocking question(s) ${ids.asked.join(', ')} are with main: go on the defaults, say so in your PRs; you get a message if an answer differs.` : ''}`
-        : `Pre-flight filed with blocking question(s) ${ids.blocking.join(', ')}. End your turn now: main answers once for all managers and the answers arrive by message. Then start workers.${answeredLine}`,
-    }
-  })
-
-  on('tool.call', { tool: 'mcp__flow__answer' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const by = e.agentId === undefined ? 'main' : await ownerNameOf($, e.agentId)
-    const todo = new Map<string, string | null>()
-    const lines: string[] = []
-    const always = new Set<string>()
-    const answers = Array.isArray(input.answers) ? input.answers as Array<{ id?: unknown; choice?: unknown; always?: unknown }> : []
-    for (const a of answers) {
-      const id = String(a?.id ?? '').trim()
-      if (id === '' || typeof a?.choice !== 'string') {
-        lines.push(`${id || '(no id)'}: refused, each answer needs an id and a choice.`)
-      } else if (!todo.has(id)) {
-        todo.set(id, a.choice)
-        if (a.always === true) always.add(id)
-      }
-    }
-    if (input.defaults === true) {
-      const ids = Array.isArray(input.ids) ? input.ids.map(String) : undefined
-      const open = openFor(await read($, inbox), by).map(q => q.id)
-      for (const id of ids ?? open) if (!todo.has(id)) todo.set(id, null)
-      if (ids === undefined && open.length === 0 && todo.size === 0) lines.push('No open questions for you.')
-    }
-    if (todo.size === 0 && lines.length === 0) lines.push('Nothing to answer: pass answers, or defaults: true.')
-    for (const [id, choice] of todo) {
-      const before = always.has(id) ? findItem(await read($, inbox), id) : undefined
-      lines.push(await answerQuestion($, id, choice, by, options))
-      if (always.has(id) && choice !== null && before !== undefined && !isFyi(before)) lines.push(await alwaysRule(standingIoOf($), options, id, choice, e.agentId === undefined, before))
-    }
-    return { result: lines.join('\n') }
-  })
-
-  on('tool.call', { tool: 'mcp__flow__standing' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    if (e.agentId !== undefined) return { result: 'Refused: only main makes or removes standing answers. Ask main in the chat, or answer with the question\'s default.' }
-    const action = String(input.action ?? 'list')
-    if (action === 'list') {
-      const { rules } = await loadRules(standingIoOf($), options)
-      const box = await read($, inbox)
-      return { result: renderRules(rules, box, suggest(box, rules), seedsToOffer(rules)) }
-    }
-    if (action === 'add' && (input.seed !== undefined || input.seeds !== undefined)) {
-      const want = [...new Set([...(typeof input.seed === 'string' ? [input.seed] : []), ...(Array.isArray(input.seeds) ? input.seeds.map(String) : [])].map(s => s.trim()))]
-      const bad = want.filter(id => !SEEDS.some(s => s.id === id))
-      if (bad.length > 0 || want.length === 0) return { result: `Refused: unknown seed ${bad.map(b => `"${b}"`).join(', ') || '(none given)'}. The ids are ${seedIds().join(', ')}; nothing added.` }
-      const date = await today($)
-      const out: string[] = []
-      for (const id of want) {
-        const seed = SEEDS.find(s => s.id === id)!
-        const r = await addRule(standingIoOf($), options, { ...seed.rule, note: `seed ${id}, added ${date}` })
-        out.push(r.kind === 'error' ? `${id}: not added: ${r.msg}`
-          : r.kind === 'exists' ? `${id}: already there as rule ${r.id}; nothing added.`
-            : `${id}: rule ${r.id} added to the personal file. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.`)
-      }
-      return { result: out.join('\n') }
-    }
-    if (action === 'add') {
-      const v = validateRule({
-        topic: input.topic, match: input.match, answer: input.answer, escalate: input.escalate, blocking: input.blocking, from: input.from,
-        note: `added ${await today($)} by hand`,
-      })
-      if ('error' in v) return { result: `Refused: ${v.error}.` }
-      const r = await addRule(standingIoOf($), options, v.rule)
-      if (r.kind === 'error') return { result: `Not added: ${r.msg}` }
-      if (r.kind === 'exists') return { result: `Rule ${r.id} already says that; nothing added.` }
-      return { result: `Rule ${r.id} added to the personal file. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.` }
-    }
-    if (action === 'remove') {
-      const id = String(input.id ?? '').trim()
-      if (id === '') return { result: 'Refused: remove needs the rule id (see action "list").' }
-      return { result: await dropRule(standingIoOf($), options, id) }
-    }
-    return { result: 'Unknown action: use list, add or remove.' }
-  })
-
-  on('tool.call', { tool: 'mcp__flow__check' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const me = e.agentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.agentId)
-    const isMain = e.agentId === undefined
-    if (!isMain && !(me && isReviewer(me.type))) return { result: 'Refused: only main closes person checks. Tell main in your report.' }
-    const action = String(input.action ?? 'list')
-    if (action === 'list') return { result: renderChecksForAgents(await read($, checks), installed) }
-    const t = await $.clock.now()
-    if (action === 'pass' || action === 'fail' || action === 'skip') {
-      const ids = Array.isArray(input.ids) ? input.ids.map(String) : typeof input.id === 'string' ? [input.id] : []
-      const by = isMain ? 'main' : (me?.name ?? 'reviewer')
-      const note = typeof input.note === 'string' ? input.note : undefined
-      return { result: await withChecks($, cur => {
-        const r = closeChecks(cur, ids, action, by, note, t, !isMain)
-        return 'error' in r ? { checks: cur, out: `Refused: ${r.error}` } : { checks: r.checks, out: r.text }
-      }) }
-    }
-    if (action === 'started') {
-      if (!isMain) return { result: 'Refused: only main marks a follow-up started.' }
-      return { result: await withChecks($, cur => {
-        const r = markStarted(cur, String(input.id ?? ''), String(input.manager ?? ''))
-        return 'error' in r ? { checks: cur, out: `Refused: ${r.error}` } : { checks: r.checks, out: r.text }
-      }) }
-    }
-    return { result: 'Unknown action: use list, pass, fail, skip or started.' }
-  })
+  on('tool.call', { tool: 'mcp__flow__ask' }, ($, e) => askTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__fyi' }, ($, e) => fyiTool(inboxIoOf($), e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__preflight' }, ($, e) => preflightTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__answer' }, ($, e) => answerTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__standing' }, ($, e) => standingTool(standingIoOf($), options, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__check' }, ($, e) => checkTool(checksIoOf($), installed, e as unknown as Record<string, unknown>, e.agentId))
 
   on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>

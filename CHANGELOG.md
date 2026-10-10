@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: the ask, fyi, preflight, answer, standing and check tool handlers moved out of `hooks/register.tsx` into `hooks/inbox-run.ts`, `hooks/standing-run.ts` and `hooks/checks-run.ts`; no behavior change.
+
 ## [0.6.25] - 2026-10-11
 
 ### Changed
