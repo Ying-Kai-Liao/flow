@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: moved spawn routing (attachment check, continue rewrite, worker and manager model routing, size decisions, Fable refusal) into `hooks/spawn.ts` (no behavior change).
+
 ## [0.6.24] - 2026-10-11
 
 ### Changed
