@@ -4,6 +4,7 @@ import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'clau
 import type { Activity, AgentRow, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
+import { noteWork, runLine, serialFastForward, type RunWork } from './mainff'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
 import { addStep, addTurn, baseName, costBlock, entriesOfBranch, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
@@ -1901,13 +1902,13 @@ async function alwaysRule(
 const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 // One line appended to log.jsonl. A single short append does not interleave with another session's.
-async function appendLog($: EngineInterface, event: Omit<LogEvent, 'ts'>): Promise<void> {
+async function appendLog($: EngineInterface, event: Omit<LogEvent, 'ts'>, max = TEXT_MAX): Promise<void> {
   try {
     const dir = await stateDir($)
     if (dir === undefined) return
     const ts = new Date(await $.clock.now()).toISOString()
     const entry: LogEvent = { ts, ...event }
-    if (entry.text !== undefined) entry.text = cap(entry.text.replaceAll('\n', ' '), TEXT_MAX)
+    if (entry.text !== undefined) entry.text = cap(entry.text.replaceAll('\n', ' '), max)
     await $.process.run(['mkdir', '-p', dir])
     const r = await $.process.run(['sh', '-c', 'printf "%s\\n" "$1" >> "$2"', 'sh', JSON.stringify(entry), `${dir}/log.jsonl`])
     if (r.exitCode !== 0) throw new Error(r.stderr.trim() || 'append failed')
@@ -2020,7 +2021,19 @@ async function ownerNameOf($: EngineInterface, id: string | undefined): Promise<
 // whoever woke it, so the plugin forwards it to main at turn end. Main's own SendMessage clears the mark.
 const wokenByOthers = new Set<string>()
 
+// What each reviewer run did with the queue (agent id), for the main-checkout line of its report.
+const reviewerWork = new Map<string, RunWork>()
+
 const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
+
+// A reviewer's whole final answer plus the main-checkout line when it left it out; undefined for a run
+// that did no batch work.
+function reviewerReport(answer: string, work: RunWork | undefined): string | undefined {
+  const line = runLine(work)
+  const text = answer.trim()
+  if (line === undefined || text === '') return undefined
+  return /main checkout (fast-forwarded|not updated)/.test(text) ? text : `${text}\n${line}`
+}
 
 const normText = (t: string): string => t.replace(/\s+/g, ' ').trim()
 const RELAY_DELAY_MS = 3000
@@ -4471,6 +4484,7 @@ export const register: Register = (on, options) => {
         ).join('\n'),
       }
     }
+    if (e.agentId !== undefined) reviewerWork.set(e.agentId, noteWork(reviewerWork.get(e.agentId), action))
     if (action === 'ready') return { result: await recordReady($, settings, input) }
     const key = String(Number(input.pr))
     const h = all[key]
@@ -4515,10 +4529,15 @@ export const register: Register = (on, options) => {
     if (action === 'done') autoSweep($)
     let verify = ''
     if (action === 'done') {
+      // The push already happened; the isolated reviewer cannot touch the main checkout, so the plugin does.
+      const line = await serialFastForward(argv => $.process.run(argv), settings.base)
+      if (e.agentId !== undefined) reviewerWork.set(e.agentId, { ...(reviewerWork.get(e.agentId) ?? { touched: true, ready: false }), touched: true, line })
+      await best($, 'logging the main checkout', () => appendLog($, { event: 'main-ff', owner: next.reportTo, pr: next.pr, branch: next.branch, text: line }))
+      verify = ` ${line}: copy this exact line into your final report; never run git against the main checkout yourself.`
       await best($, 'capturing checks', async () => {
         const added = await captureChecks($, next, settings.verifyPaths, true)
         const scripted = added.filter(c => c.verifyCommand !== undefined)
-        verify = scripted.map(c => ` Run \`${c.verifyCommand}\` in your worktree at the merged main now; on exit 0 call mcp__flow__check action pass id ${c.id} with a one-line note of the output tail; on failure call action fail with the failure tail as the note.`).join('')
+        verify += scripted.map(c => ` Run \`${c.verifyCommand}\` in your worktree at the merged main now; on exit 0 call mcp__flow__check action pass id ${c.id} with a one-line note of the output tail; on failure call action fail with the failure tail as the note.`).join('')
         const skipped = added.filter(c => c.note !== undefined && c.verifyCommand === undefined)
         if (skipped.length) verify += ` Scripted verification is skipped for ${skipped.map(c => c.id).join(', ')} (${SKIP_NOTE.replace('scripted verification skipped: ', '')}); the check stays open for a person.`
       })
@@ -5172,8 +5191,21 @@ export const register: Register = (on, options) => {
       if (me !== undefined && FLOW_TYPES.has(me.type)) {
         await best($, 'logging a report', async () => {
           const last = e.answer.trim().split('\n').pop() ?? ''
-          await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: last })
+          const full = isReviewer(me.type) ? reviewerReport(e.answer, reviewerWork.get(id)) : undefined
+          await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: full ?? last }, full === undefined ? TEXT_MAX : 4000)
         })
+      }
+      // No host notification reaches main for a reviewer the plugin spawned: relay its whole report,
+      // only for runs that did batch work.
+      if (me !== undefined && isReviewer(me.type)) {
+        const work = reviewerWork.get(id)
+        reviewerWork.delete(id)
+        const full = reviewerReport(e.answer, work)
+        if (full !== undefined) {
+          $.clock.after(RELAY_DELAY_MS, () => void (async () => {
+            if (!(await mainHasAnswer($, e.answer))) toMain($, `Report from reviewer ${me.name}:\n${full}`)
+          })().catch(() => undefined))
+        }
       }
       // A manager someone other than main woke: the host returned its answer to that agent, so main
       // gets it here (once; main's own wake-ups never set the mark).
