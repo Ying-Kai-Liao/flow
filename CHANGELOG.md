@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.27] - 2026-10-11
+
+### Changed
+
+- Move inbox-side tool handlers out of register.tsx (#109)
+
 ## [0.6.26] - 2026-10-11
 
 ### Changed
