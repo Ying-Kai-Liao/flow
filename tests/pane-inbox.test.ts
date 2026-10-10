@@ -85,7 +85,7 @@ test('the inbox view opens with i, lists blocking first with the addressee, move
   await ask($, 'm1', [{ ...SOFT, question: 'Ship it?' }])
   await fyi($, 'w1', [F(1)])
   const ui = await mount($)
-  expect(await ui.find({ text: /Inbox: 3 questions for you \(1 blocking\), 1 FYI \(decisions agents made\)\. Press i/ })).toBeDefined()
+  expect(await ui.find({ text: /Inbox: 3 questions for you \(1 blocking\), 1 decision agents made\. Press i/ })).toBeDefined()
   await open(ui)
   expect(await ui.find({ text: /Inbox/ })).toBeDefined()
   // Blocking first; the worker's question is for its manager.
@@ -110,7 +110,7 @@ test('the inbox view opens with i, lists blocking first with the addressee, move
   await ui.unmount()
 })
 
-test('y takes a default or keeps an FYI; n overturns with the typed words', async ($, on) => {
+test('y takes a default or keeps a decision; n undoes with the typed words', async ($, on) => {
   const w = world(on)
   await ask($, 'm1', [SOFT])
   await fyi($, 'w1', [F(1), F(2)])
@@ -120,14 +120,15 @@ test('y takes a default or keeps an FYI; n overturns with the typed words', asyn
   await ui.press({ key: 'inbox-yes' })
   expect(stateOf(w.files, 'q1')?.answer).toBe('yes')
   await ui.press({ key: 'inbox-yes' })
-  expect(stateOf(w.files, 'q4')?.answer).toBe('yes')
+  expect(stateOf(w.files, 'q2')?.answer).toBe('yes')
+  // decisions follow the questions, newest first
   await ui.press({ key: 'inbox-yes' })
-  expect(stateOf(w.files, 'q2')?.answer).toBe('Keep')
-  expect(stateOf(w.files, 'q3')?.state).toBe('open')
+  expect(stateOf(w.files, 'd2')?.answer).toBe('Keep')
+  expect(stateOf(w.files, 'd1')?.state).toBe('open')
   await ui.input({ key: 'inbox-answer', text: 'use 10 s', kind: 'change' })
   await ui.press({ key: 'inbox-no' })
-  expect(stateOf(w.files, 'q3')?.answer).toBe('use 10 s')
-  expect(w.sent.some(s => s.to === 'w1' && s.text.includes('overturned your FYI q3') && s.text.includes('use 10 s'))).toBe(true)
+  expect(stateOf(w.files, 'd1')?.answer).toBe('use 10 s')
+  expect(w.sent.some(s => s.to === 'w1' && s.text.includes('undid your decision d1') && s.text.includes('use 10 s'))).toBe(true)
   await ui.unmount()
 })
 
@@ -143,7 +144,7 @@ test('free text through the Input answers the highlighted question', async ($, o
   await ui.unmount()
 })
 
-test('w keeps every FYI and leaves protected items open; a second w keeps nothing', async ($, on) => {
+test('w keeps every decision and leaves protected items open; a second w keeps nothing', async ($, on) => {
   const w = world(on)
   protectedItems(w.files)
   await fyi($, 'w1', [F(1), F(2)])
@@ -151,9 +152,9 @@ test('w keeps every FYI and leaves protected items open; a second w keeps nothin
   await open(ui)
   await ui.press({ key: 'inbox-all' })
   expect(stored(w.files).filter(x => x.state === 'open').map(x => x.id)).toEqual(['q1', 'q2', 'q3', 'q4'])
-  expect(await ui.find({ text: /Kept 2 FYIs/ })).toBeDefined()
+  expect(await ui.find({ text: /Kept 2 decisions/ })).toBeDefined()
   await ui.press({ key: 'inbox-all' })
-  expect(await ui.find({ text: /No open FYIs to keep/ })).toBeDefined()
+  expect(await ui.find({ text: /No open decisions to keep/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -175,19 +176,18 @@ test('y refuses a deploy, env, push and guard item, naming the explicit way; a d
   await ui.unmount()
 })
 
-test('three or more FYIs of one topic collapse into one row that y keeps and x expands', async ($, on) => {
+test('decisions are flat rows, newest first, with nothing folded; y keeps the highlighted one', async ($, on) => {
   const w = world(on)
   const fs = Array.from({ length: 7 }, (_, i) => F(i, 'worker-size'))
   await fyi($, 'm1', [...fs, F(100)])
   const ui = await mount($)
   await open(ui)
-  expect(await ui.find({ text: /worker-size x7 \(csv-export\)/ })).toBeDefined()
-  expect(await ui.find({ text: /Decision 3/ })).toBeUndefined()
-  await ui.press({ key: 'inbox-expand' })
-  expect(await ui.find({ text: /csv-export \[worker-size\]: Decision 3/ })).toBeDefined()
-  await ui.press({ key: 'inbox-expand' })
+  expect(await ui.find({ text: /0 questions, 8 decisions/ })).toBeDefined()
+  expect(await ui.find({ text: /> d8 csv-export: Decision 100/ })).toBeDefined()
+  expect(await ui.find({ text: /d4 csv-export \[worker-size\]: Decision 3/ })).toBeDefined()
+  expect(await ui.find({ key: 'inbox-expand' })).toBeUndefined()
   await ui.press({ key: 'inbox-yes' })
-  expect(stored(w.files).filter(x => x.state === 'open').map(x => x.id)).toEqual(['q8'])
+  expect(stored(w.files).filter(x => x.state === 'open').map(x => x.id)).toEqual(['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7'])
   await ui.unmount()
 })
 

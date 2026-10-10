@@ -218,7 +218,9 @@ export type LogEvent = {
 
 export type Question = {
   id: string
-  // Absent: a question. 'fyi': a decision the agent took itself (question = the decision, context = why); non-blocking, overturnable.
+  // A decision filed before decisions had their own ids keeps its old question id here; every lookup accepts it.
+  alias?: string
+  // Absent: a question. 'fyi': a decision the agent took itself (question = the decision, context = why); non-blocking, undoable. Id d<N>.
   // 'deploy' asks the user to approve one deploy target at one sha; standing answers never answer it
   // (unless a rule names the kind), and no agent waits for the reply.
   // 'env' asks the user about one env/secret change on a deploy target (or a step they do themselves);
@@ -257,7 +259,8 @@ export type Question = {
   escalated?: string
 }
 
-export type Inbox = { next: number; items: Question[] }
+// next: the counter of question ids (q1 ...); nextD: the one of decisions (d1 ...), separate so the two never collide.
+export type Inbox = { next: number; nextD?: number; items: Question[] }
 
 // A person check: see hooks/checks.ts.
 export type FollowUp = { state: 'open' | 'started'; manager?: string }
@@ -412,7 +415,6 @@ declare module 'claude-code' {
       testSlots: TestSlots
       viewMode: 'tree' | 'graph' | 'inbox'
       inboxCursor: string | null
-      inboxOpen: string[]
       inboxDraft: string
       inboxNote: string
       graphFocus: string | null

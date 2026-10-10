@@ -19,7 +19,7 @@ you ── main session
 
 - **One round of questions up front.** Managers look at their tasks first and ask what they need.
   After you answer, you can walk away.
-- **Small choices don't block you.** Agents decide them, log them, and you can overturn any of them.
+- **Small choices don't block you.** Agents decide them, log them, and you can undo any of them.
 - **Answer a question once.** Standing answers handle the ones that keep coming back.
 - **Every PR shows how it was checked.** A PR without a verification section is turned away.
 - **Risky things wait for you.** You can require approval before a merge, and before a deploy to
@@ -60,9 +60,9 @@ fix X" is enough.
 | Command | What it does |
 |---|---|
 | `/flow` | Opens the pane: managers, workers, and what needs you first. |
-| `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the FYIs by owner (older ones collapsed; `/flow inbox all` shows them, `/flow inbox q12` one item in full) and what standing answers did. |
-| `/flow ok [q10 q11 \| owner \| topic]` | Keeps FYIs (no words: every open FYI) or takes the default of an ordinary question. Never answers a deploy, push, env or guard item. |
-| `/flow no q12 [what instead]` | Overturns an FYI; the agent is told what to do instead. |
+| `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the decisions agents made as one flat table (newest 15; `/flow inbox decisions` lists all, `/flow inbox d12` one item in full) and what standing answers did. |
+| `/flow ok [d10 d11 \| owner \| topic]` | Keeps decisions (no words: every open decision) or takes the default of an ordinary question. Never answers a deploy, push, env or guard item. |
+| `/flow no d12 [what instead]` | Undoes a decision; the agent is told what to do instead. |
 | `/flow answer q3 <choice>` | Answers any question addressed to main (option letter, number, text, or your own words), deploy, push and env items included. |
 | `/flow checks` | Lists the after-deploy checks that only a person can do as one table (id, PR, title, what it needs, age). `/flow checks <id>` shows one in full; `pass`, `fail` and `skip <id...> <why>` close them. |
 | `/flow approve <n>` | Approves PR `n` when it is waiting for you. |
@@ -71,7 +71,7 @@ fix X" is enough.
 | `/flow resume` | Picks up unfinished work after a restart. |
 | `/flow clean` | Lists leftover worktrees and branches. Add `--yes` to remove them. |
 
-Questions, approvals and checks also show up in the pane and as notifications. With anything open, press `i` in the pane to read and answer the inbox there (`j`/`k` move, a digit or letter picks an option, `y` takes the default or keeps an FYI, `w` keeps all FYIs, `n` overturns, `r` types an answer); you may answer any question, a manager's too. The key row sits at the pane's bottom.
+Questions, approvals and checks also show up in the pane and as notifications. With anything open, press `i` in the pane to read and answer the inbox there (`j`/`k` move, a digit or letter picks an option, `y` takes the default or keeps a decision, `w` keeps all decisions, `n` undoes, `r` types an answer); you may answer any question, a manager's too. The key row sits at the pane's bottom.
 
 ## Settings
 

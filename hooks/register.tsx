@@ -16,7 +16,7 @@ import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle, waitsOnReport } from './dag'
 import type { AgentFact, Facts, Graph, Notice, Plan } from './dag'
 import {
-  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, renderItem, expandOk, stillOpen, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, renderItem, expandOk, findItem, stillOpen, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
@@ -211,7 +211,6 @@ const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
 const viewMode = atom({ plugin: 'flow', key: 'viewMode' } as const, 'tree' as 'tree' | 'graph' | 'inbox')
 // The inbox view: the highlighted row's key, the expanded groups, the typed answer and the last result line.
 const inboxCursor = atom({ plugin: 'flow', key: 'inboxCursor' } as const, null as string | null)
-const inboxOpen = atom({ plugin: 'flow', key: 'inboxOpen' } as const, [] as string[])
 const inboxDraft = atom({ plugin: 'flow', key: 'inboxDraft' } as const, '')
 const inboxNote = atom({ plugin: 'flow', key: 'inboxNote' } as const, '')
 const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
@@ -1113,8 +1112,10 @@ const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOS
 // The one way a question gets answered: marks it, tells the asker when that is needed, notes the decision.
 // choice null takes the question's default. Returns one result line.
 // user: the person answering from the pane or a /flow command, who may answer any question, a manager's included.
-async function answerQuestion($: EngineInterface, id: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> {
+async function answerQuestion($: EngineInterface, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> {
   const at = await $.clock.now()
+  // A decision filed before decisions had d-ids is also found by its old q-id.
+  const id = findItem(await read($, inbox), wanted)?.id ?? wanted.trim().toLowerCase()
   const marked = await withInbox($, (cur): { inbox: Inbox; out: Marked | { kind: 'escalated'; q: Question } } => {
     // A standing rule made this the user's decision: only main answers it.
     const held = cur.items.find(x => x.id === id)
@@ -1141,10 +1142,10 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
     if (alive(asker)) {
       delivered = await deliver($, asker.id, answerMessage(q, answer, who, isDefault), { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
     } else if (isFyi(q) && q.addressee !== 'main') {
-      // A finished owner cannot act on an overturn: its manager (the notes owner) gets it, naming the owner.
+      // A finished owner cannot act on an undo: its manager (the notes owner) gets it, naming the owner.
       const mgr = (await $.agent.list()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && alive(a))
       if (mgr !== undefined) {
-        delivered = await deliver($, mgr.id, `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s FYI; ${q.owner} is no longer running, so act on it yourself or with a new worker.)`, { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
+        delivered = await deliver($, mgr.id, `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s decision; ${q.owner} is no longer running, so act on it yourself or with a new worker.)`, { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
       }
     }
     if (!delivered) hint = `; ${q.owner} is gone: main should relay it to ${noteKey(q.owner)}-2`
@@ -1158,16 +1159,15 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
       await deliver($, mgr.id, `flow: the user answered ${q.id}, which ${q.owner} asked you: ${answer}. It is closed; don't answer it.`, { urgent: false, onGone: () => undefined }).catch(() => false)
     }
   }
-  if (!(isFyi(q) && isDefault)) await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${noteText(q)}: ${isFyi(q) ? `overturned, ${answer}` : answer}"`)
+  if (!(isFyi(q) && isDefault)) await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${noteText(q)}: ${isFyi(q) ? `undone, ${answer}` : answer}"`)
   const guard = q.guard !== undefined && answer === ADD_OPTION ? ` ${await addGuardTest($, options, q.guard.glob, q.guard.test)}` : ''
   return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.${guard}${deployNote}`
 }
 
-// The pane's inbox rows, read fresh. A roster with nothing in it says nothing about who is live, so age alone decides.
+// The pane's inbox rows, read fresh.
 async function paneInboxRows($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> {
-  const [box, open, ros, now] = await Promise.all([read($, inbox), read($, inboxOpen), read($, roster), $.clock.now()])
-  const live = ros.length === 0 ? undefined : ros.filter(a => a.name !== undefined && !ENDED.has(a.status)).map(a => a.name!)
-  return { rows: paneRows(box, now, { live, open }), now }
+  const [box, now] = await Promise.all([read($, inbox), $.clock.now()])
+  return { rows: paneRows(box), now }
 }
 
 // Pane presses run one after another, so a second press sees the first one's answer and highlight.
@@ -2435,9 +2435,9 @@ async function routeWorker($: EngineInterface, e: AgentSpawnInput, models: SizeM
   return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size } }
 }
 
-// The downgrade FYI: below large the user can overturn the manager's size. Filed by the plugin, owned by the
-// spawning manager and addressed to main like the manager's own FYI; a standing rule can ack or overturn it.
-// An FYI for the same worker is never filed twice.
+// The downgrade decision: below large the user can undo the manager's size. Filed by the plugin, owned by the
+// spawning manager and addressed to main like the manager's own decisions; a standing rule can keep or undo it.
+// A decision for the same worker is never filed twice.
 async function fileSizeFyi($: EngineInterface, options: Record<string, unknown>, name: string, parentId: string | undefined, routed: Routed): Promise<void> {
   if (routed.size === 'large' || parentId === undefined) return
   const parent = (await $.agent.list()).find(a => a.id === parentId)
@@ -2450,7 +2450,7 @@ async function fileSizeFyi($: EngineInterface, options: Record<string, unknown>,
     if (cur.items.some(x => x.owner === owner && isFyi(x) && x.topic === 'worker-size' && x.question.startsWith(`${name} runs `))) {
       return { inbox: cur, out: { added: [] as Array<{ q: Question }>, auto: new Map() as AutoHits } }
     }
-    const asked = fyiAsked({ decision, why: 'The plugin routes the worker model by the size on its brief; below large a harder package may need a rerun. Overturn to restart it at the size you choose.', topic: 'worker-size' })
+    const asked = fyiAsked({ decision, why: 'The plugin routes the worker model by the size on its brief; below large a harder package may need a rerun. Undo it to restart the worker at the size you choose.', topic: 'worker-size' })
     const r = autoAnswer(cur, addQuestions(cur, { name: owner, id: parentId, isManager: true }, 'main', [asked], at, 'fyi'), rules, at)
     return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
   })
@@ -3719,7 +3719,7 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and FYIs (/flow inbox all adds the older FYIs, /flow inbox <id> shows one in full), /flow ok keeps every open FYI (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] overturns an FYI, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and the decisions agents made (/flow inbox decisions lists them all, /flow inbox <id> shows one in full), /flow ok keeps every open decision (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] undoes a decision, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
       argumentHint: '[inbox [all|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|resume|approve <pr>|push [back <pr>|drop]|clean]',
     })
     await $.command.register({
@@ -3814,9 +3814,9 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'fyi',
-      description: 'Record a decision you took yourself on a reversible choice (a threshold, wording, a name, a default, styling within the existing design) as a non-blocking FYI: "I decided X because Y; say if wrong". ' +
-        'A worker\'s FYIs go to its manager, a manager\'s to main. Never stop for it: carry on. You get a message only if it is overturned; then change your work. ' +
-        'Irreversible or product-defining choices (what customers pay for, who receives data, deleting data) are asks, not FYIs. Main cannot call it.',
+      description: 'Record a decision you took yourself on a reversible choice (a threshold, wording, a name, a default, styling within the existing design) as a non-blocking decision the user can keep or undo: "I decided X because Y; say if wrong". The tool is named fyi for compatibility; the items are decisions with ids d1, d2, ... ' +
+        'A worker\'s decisions go to its manager, a manager\'s to main. Never stop for it: carry on. You get a message only if it is undone; then change your work. ' +
+        'Irreversible or product-defining choices (what customers pay for, who receives data, deleting data) are asks, not decisions. Main cannot call it.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -3882,7 +3882,7 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'answer',
       description: 'Answer questions addressed to you in the decision inbox: a manager answers its workers\' asks, main answers the managers\'. ' +
-        'FYIs (mcp__flow__fyi) are answered the same way: the choice Keep, or defaults: true, acknowledges; any other choice or free text overturns and messages the owner. Main may answer any FYI. ' +
+        'Decisions (mcp__flow__fyi, ids d1, d2, ...) are answered the same way: the choice Keep, or defaults: true, keeps them; any other choice or free text undoes the decision and messages the owner. Main may answer any decision. An old q-id of a decision still works. ' +
         'answers: [{id, choice}] (choice is an option\'s letter, number or text, or free text). defaults: true takes every default of your open questions, or only those in ids.',
       inputSchema: {
         type: 'object',
@@ -4170,11 +4170,11 @@ export const register: Register = (on, options) => {
       const w = arg.split(/\s+/).slice(1)
       const box = await read($, inbox)
       const now = await $.clock.now()
-      if (w.length === 1 && /^q\d+$/i.test(w[0]!)) return { text: renderItem(box, w[0]!, now) }
-      if (w.length > 1 || (w.length === 1 && w[0] !== 'all')) return { text: 'Usage: /flow inbox, /flow inbox all (also the older FYIs), /flow inbox <id> (one item in full)' }
-      const live = (await $.agent.list()).filter(a => a.name !== undefined && (LIVE.has(a.status) || a.status === 'idle')).map(a => a.name!)
+      if (w.length === 1 && /^[qd]\d+$/i.test(w[0]!)) return { text: renderItem(box, w[0]!, now) }
+      // `all` is the older spelling of `decisions`: both list every decision.
+      if (w.length > 1 || (w.length === 1 && w[0] !== 'all' && w[0] !== 'decisions')) return { text: 'Usage: /flow inbox, /flow inbox decisions (every decision), /flow inbox <id> (one item in full)' }
       const sec = inboxChecksSection(await read($, checks), installed)
-      return { text: [renderInbox(box, now, { live, all: w.length === 1 }), ...sec].join('\n') }
+      return { text: [renderInbox(box, now, { all: w.length === 1, width: termWidth() }), ...sec].join('\n') }
     }
     if (/^(ok|no|answer)(\s|$)/.test(arg)) {
       const [verb = ''] = arg.split(/\s+/)
@@ -4186,9 +4186,9 @@ export const register: Register = (on, options) => {
         for (const id of ids) lines.push(await answerQuestion($, id, null, 'main', options, true))
       } else if (verb === 'no') {
         const m = /^(\S+)(?:\s+([\s\S]+))?$/.exec(rest)
-        const q = m === null ? undefined : (await read($, inbox)).items.find(x => x.id === m[1]!.toLowerCase())
+        const q = m === null ? undefined : findItem(await read($, inbox), m[1]!)
         if (m === null) return { text: 'Usage: /flow no <id> [what to do instead]' }
-        if (q !== undefined && !isFyi(q)) lines.push(`${q.id}: not an FYI; answer a question with /flow answer ${q.id} <choice>.`)
+        if (q !== undefined && !isFyi(q)) lines.push(`${q.id}: not a decision; answer a question with /flow answer ${q.id} <choice>.`)
         else lines.push(await answerQuestion($, m[1]!.toLowerCase(), m[2] ?? OVERTURN, 'main', options, true))
       } else {
         const m = /^(\S+)\s+([\s\S]+)$/.exec(rest)
@@ -4319,7 +4319,7 @@ export const register: Register = (on, options) => {
       await refreshBehind($)
       return { text }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and FYIs, /flow ok keeps FYIs, /flow no <id> overturns one, /flow answer <id> <choice> answers a question, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and the decisions agents made, /flow ok keeps decisions, /flow no <id> undoes one, /flow answer <id> <choice> answers a question, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await $.ui.open({ id: PANE, title: 'Flow', focus: true })
     return { text: 'Flow pane opened.' }
   })
@@ -4444,7 +4444,7 @@ export const register: Register = (on, options) => {
       })
       if (routed !== undefined) {
         const r = routed
-        await best($, 'filing a worker-size FYI', () => fileSizeFyi($, options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
+        await best($, 'filing a worker-size decision', () => fileSizeFyi($, options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
       }
       if (preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
         await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt))
@@ -4939,7 +4939,7 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'mcp__flow__fyi' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
-    if (e.agentId === undefined) return { result: 'Refused: main cannot record an FYI; just decide.' }
+    if (e.agentId === undefined) return { result: 'Refused: main cannot record a decision; just decide.' }
     const parsed = parseFyi(input)
     if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error}` }
     const rows = await refresh($)
@@ -4953,8 +4953,8 @@ export const register: Register = (on, options) => {
       return { inbox: r.added.some(a => a.fresh) ? r.inbox : cur, out: r.added }
     })
     // Quiet by design: a log line, no message or toast.
-    await best($, 'logging an FYI', () => appendLog($, { event: 'fyi', owner: noteKey(name), agent: name, text: added.map(a => a.q.id).join(' ') }))
-    return { result: `Recorded ${added.map(a => a.q.id).join(', ')}. Carry on; you get a message only if it is overturned.` }
+    await best($, 'logging a decision', () => appendLog($, { event: 'fyi', owner: noteKey(name), agent: name, text: added.map(a => a.q.id).join(' ') }))
+    return { result: `Recorded ${added.map(a => a.q.id).join(', ')}. Carry on; you get a message only if it is undone.` }
   })
 
   on('tool.call', { tool: 'mcp__flow__preflight' }, async ($, e) => {
@@ -5026,7 +5026,7 @@ export const register: Register = (on, options) => {
     }
     if (todo.size === 0 && lines.length === 0) lines.push('Nothing to answer: pass answers, or defaults: true.')
     for (const [id, choice] of todo) {
-      const before = always.has(id) ? (await read($, inbox)).items.find(x => x.id === id) : undefined
+      const before = always.has(id) ? findItem(await read($, inbox), id) : undefined
       lines.push(await answerQuestion($, id, choice, by, options))
       if (always.has(id) && choice !== null && before !== undefined && !isFyi(before)) lines.push(await alwaysRule($, options, id, choice, e.agentId === undefined, before))
     }
@@ -5871,14 +5871,13 @@ export const register: Register = (on, options) => {
     if (mode === 'inbox') {
       // Only some surfaces have an Input; without one the keys still answer.
       const Input = ($.ui.resolve(e) as unknown as { Input?: (p: { key: string; label: string; placeholder: string; value: string; onInput: (v: string) => void; onSubmit: (v: string) => void }) => null }).Input
-      const [ibox, iopen, icur, draft, note] = await Promise.all([read($, inbox), read($, inboxOpen), read($, inboxCursor), read($, inboxDraft), read($, inboxNote)])
+      const [ibox, icur, draft, note] = await Promise.all([read($, inbox), read($, inboxCursor), read($, inboxDraft), read($, inboxNote)])
       // The same rows a press reads, so what is drawn and what is pressed fold alike.
       const irows = (await paneInboxRows($)).rows
       const ihot = Math.max(0, irows.findIndex(r => r.key === icur))
       const hotRow = irows[ihot]
       const hq = hotRow?.q
-      const members = hotRow === undefined || hotRow.kind === 'item' ? [] : ibox.items.filter(x => hotRow.ids.includes(x.id)).slice(0, 3)
-      const detail = hq !== undefined ? 2 + hq.options.length + (hq.context ? 1 : 0) : hotRow === undefined ? 1 : 1 + members.length
+      const detail = hq !== undefined ? 2 + hq.options.length + (hq.context ? 1 : 0) : 1
       const size = Math.max(2, rows - 1 - detail - 4 - 2)
       const win = viewOf(irows, ihot, size)
       const iBelow = irows.length - win.top - win.rows.length
@@ -5914,7 +5913,7 @@ export const register: Register = (on, options) => {
         const h = await here()
         if (h === undefined) return
         const { fresh, i, row } = h
-        if (row?.q === undefined) return say('Move to a question or an FYI first.')
+        if (row?.q === undefined) return say('Move to a question or a decision first.')
         if (n >= row.q.options.length) return
         await done([await answerRow(row.q.id, row.q.options[n]!)], fresh, i)
       })
@@ -5940,17 +5939,17 @@ export const register: Register = (on, options) => {
         if (h === undefined) return
         const { fresh, i } = h
         const open = (await read($, inbox)).items.filter(x => x.state === 'open' && isFyi(x) && protectedWhy(x) === undefined)
-        if (open.length === 0) return say('No open FYIs to keep.')
+        if (open.length === 0) return say('No open decisions to keep.')
         const lines: string[] = []
         for (const q of open) lines.push(await answerRow(q.id, null))
         const kept = lines.filter(l => l.includes(': Keep (default)')).length
-        await done([`Kept ${kept} FYI${kept === 1 ? '' : 's'}.`, ...lines.filter(l => !l.includes(': Keep (default)'))], fresh, i)
+        await done([`Kept ${kept} decision${kept === 1 ? '' : 's'}.`, ...lines.filter(l => !l.includes(': Keep (default)'))], fresh, i)
       })
-      const overturn = () => paneSerial(async () => {
+      const undo = () => paneSerial(async () => {
         const h = await here()
         if (h === undefined) return
         const { fresh, i, row } = h
-        if (row?.q === undefined || !isFyi(row.q)) return say('n overturns one FYI: move to it first.')
+        if (row?.q === undefined || !isFyi(row.q)) return say('n undoes one decision: move to it first.')
         const text = (await read($, inboxDraft)).trim()
         await update($, inboxDraft, () => '')
         await done([await answerRow(row.q.id, text === '' ? OVERTURN : text)], fresh, i)
@@ -5966,7 +5965,7 @@ export const register: Register = (on, options) => {
         const h = await here()
         if (h === undefined) return
         const { fresh, i, row } = h
-        if (row?.q === undefined) return say('Move to a question or an FYI first.')
+        if (row?.q === undefined) return say('Move to a question or a decision first.')
         await update($, inboxDraft, () => '')
         await done([await answerRow(row.q.id, text)], fresh, i)
       })
@@ -5977,15 +5976,6 @@ export const register: Register = (on, options) => {
         const to = fresh[Math.min(fresh.length - 1, Math.max(0, i + d))]
         if (to !== undefined) await update($, inboxCursor, () => to.key)
       })
-      const expand = () => paneSerial(async () => {
-        const h = await here(false)
-        if (h === undefined) return
-        const { row } = h
-        const open = await read($, inboxOpen)
-        const k = row === undefined ? undefined : row.kind !== 'item' ? row.key : [`g:${row.owner}:${row.q?.topic}`, `o:${row.owner}`].find(x => open.includes(x))
-        if (k === undefined) return
-        await update($, inboxOpen, o => (o.includes(k) ? o.filter(x => x !== k) : [...o, k]))
-      })
       const back = async () => {
         await acted()
         await update($, viewMode, () => 'tree')
@@ -5995,26 +5985,20 @@ export const register: Register = (on, options) => {
       const nF = ibox.items.filter(x => x.state === 'open' && isFyi(x)).length
       return (
         <Box flexDirection="column" height={rows}>
-          <Text bold>Inbox <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} FYI${nF === 1 ? '' : 's'}`}</Text></Text>
+          <Text bold>Inbox <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
           {win.top > 0 && <Text dimColor>  ↑ {win.top} above</Text>}
           {win.rows.map(r => (
             <Button key={`row-${r.key}`} plain onPress={() => void paneSerial(async () => { await acted(); await update($, inboxCursor, () => r.key) })}>
-              <Text inverse={r.key === hotRow?.key} color={r.q?.blocking ? 'warning' : undefined} wrap="truncate-end">{r.key === hotRow?.key ? '> ' : '  '}{paneRowText(r)}</Text>
+              <Text inverse={r.key === hotRow?.key} color={r.q.blocking ? 'warning' : undefined} wrap="truncate-end">{r.key === hotRow?.key ? '> ' : '  '}{paneRowText(r)}</Text>
             </Button>
           ))}
           {iBelow > 0 && <Text dimColor>  ↓ {iBelow} more</Text>}
           {hq !== undefined && (
             <Box flexDirection="column">
-              <Text bold>{hq.id} {isFyi(hq) ? 'FYI' : 'question'} {tagsOf(hq)}</Text>
+              <Text bold>{hq.id} {isFyi(hq) ? 'decision' : 'question'} {tagsOf(hq)}</Text>
               <Text>{hq.question}</Text>
               {hq.options.map((o, k) => <Text key={`opt-${k}`}>  {String.fromCharCode(97 + k)}) {o}{o === hq.default ? ' (default)' : ''}</Text>)}
               {hq.context && <Text dimColor>why: {clip(hq.context, 200)}</Text>}
-            </Box>
-          )}
-          {hq === undefined && hotRow !== undefined && (
-            <Box flexDirection="column">
-              <Text bold>{paneRowText(hotRow)}</Text>
-              {members.map(m => <Text key={`m-${m.id}`} dimColor wrap="truncate-end">  {m.id}: {clip(m.question, 90)}</Text>)}
             </Box>
           )}
           {hotRow === undefined && <Text dimColor>Nothing to answer.</Text>}
@@ -6034,10 +6018,9 @@ export const register: Register = (on, options) => {
             <Button key="inbox-next" plain dimColor hotkey="j" onPress={move(1)}>j next</Button>
             <Button key="inbox-prev" plain dimColor hotkey="k" onPress={move(-1)}>k prev</Button>
             <Button key="inbox-yes" plain dimColor hotkey="y" onPress={takeDefault}>y default/keep</Button>
-            <Button key="inbox-all" plain dimColor hotkey="w" onPress={keepAll}>w keep FYIs</Button>
-            <Button key="inbox-no" plain dimColor hotkey="n" onPress={overturn}>n overturn</Button>
+            <Button key="inbox-all" plain dimColor hotkey="w" onPress={keepAll}>w keep all decisions</Button>
+            <Button key="inbox-no" plain dimColor hotkey="n" onPress={undo}>n undo</Button>
             <Button key="inbox-reply" plain dimColor hotkey="r" onPress={reply}>r reply</Button>
-            <Button key="inbox-expand" plain dimColor hotkey="x" onPress={expand}>x expand</Button>
             <Button key="inbox-back" plain dimColor hotkey="i" onPress={back}>i back</Button>
           </Box>
         </Box>
@@ -6074,7 +6057,7 @@ export const register: Register = (on, options) => {
           <Text dimColor wrap="truncate-end">
             Inbox: {[
               ...(openQs.length > 0 ? [`${openQs.length} question${openQs.length === 1 ? '' : 's'} for you${openQs.some(q => q.blocking) ? ` (${openQs.filter(q => q.blocking).length} blocking)` : ''}`] : []),
-              ...(fyiCount > 0 ? [`${fyiCount} FYI${fyiCount === 1 ? '' : 's'} (decisions agents made)`] : []),
+              ...(fyiCount > 0 ? [`${fyiCount} decision${fyiCount === 1 ? '' : 's'} agents made`] : []),
             ].join(', ')}. Press i to answer or keep them.
           </Text>
         )}

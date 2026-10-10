@@ -131,7 +131,7 @@ test('normal maps to worker_model_normal, large to worker_model; settings change
   expect(w.spawned.map(s => s.model)).toEqual(['opus', 'sonnet'])
 })
 
-test('no Size line: the model param or worker_model as before, size left unset, no FYI', { options: OPTS }, async ($, on) => {
+test('no Size line: the model param or worker_model as before, size left unset, no decision', { options: OPTS }, async ($, on) => {
   const w = world(on)
   await spawn($, 'csv-fix', 'Your name: csv-fix\n# t', { model: 'opus' })
   await spawn($, 'other', 'Size: tiny\n# t', { model: 'sonnet' })
@@ -196,7 +196,7 @@ test('Continue on branch escalates from the sized workers on that branch', { opt
   expect(w.logs.join('\n')).toContain('size normal -> sonnet (escalated)')
 })
 
-test('a small or normal worker files one worker-size FYI for its manager; large and an escalation to large do not', { options: OPTS }, async ($, on) => {
+test('a small or normal worker files one worker-size decision for its manager; large and an escalation to large do not', { options: OPTS }, async ($, on) => {
   const w = world(on)
   await spawn($, 'csv-fix', 'Size: small — docs only')
   await spawn($, 'csv-fix', 'Size: small — docs only')
@@ -211,7 +211,7 @@ test('a small or normal worker files one worker-size FYI for its manager; large 
   expect(items(w).length).toBe(2)
 })
 
-test('a standing rule answers the worker-size FYI at once', { options: { ...OPTS, standing_answers: JSON.stringify([{ id: 'sz', topic: 'worker-size', answer: 'Keep' }]) } }, async ($, on) => {
+test('a standing rule answers the worker-size decision at once', { options: { ...OPTS, standing_answers: JSON.stringify([{ id: 'sz', topic: 'worker-size', answer: 'Keep' }]) } }, async ($, on) => {
   const w = world(on)
   await spawn($, 'csv-fix', 'Size: small — docs')
   const q = items(w)[0]!

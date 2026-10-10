@@ -142,39 +142,38 @@ const fyi = ($: Dollar, agentId: string | null, items: unknown[]) =>
   $.tool.call({ tool: 'mcp__flow__fyi', from: 'x', items, ...(agentId === null ? {} : { agentId }) } as never).then(r => String(r.result))
 const D1 = { decision: 'Use a 30 s timeout', why: 'the conservative choice' }
 
-test('an FYI is recorded quietly, listed, and acked with defaults without a message', async ($, on) => {
+test('a decision is recorded quietly, listed, and acked with defaults without a message', async ($, on) => {
   const w = world(on)
   expect(await fyi($, null, [D1])).toContain('Refused')
   expect(await fyi($, 'w1', [D1, { decision: 'x' }])).toContain('Refused, nothing recorded')
   const r = await fyi($, 'w1', [D1])
-  expect(r).toContain('Recorded q1')
-  expect(r).toContain('only if it is overturned')
-  expect(await fyi($, 'w1', [D1])).toContain('Recorded q1')
+  expect(r).toContain('Recorded d1')
+  expect(r).toContain('only if it is undone')
+  expect(await fyi($, 'w1', [D1])).toContain('Recorded d1')
   expect(w.sent).toEqual([])
   expect(w.toasts).toEqual([])
   const text = await inbox($)
-  expect(text.startsWith('1 FYI.')).toBe(true)
-  expect(text).toContain('csv-worker:')
-  expect(text).toContain('q1 (0 min): Use a 30 s timeout')
-  expect(await answer($, 'm1', { defaults: true })).toContain('q1: Keep (default)')
+  expect(text.startsWith('1 decision.')).toBe(true)
+  expect(text).toMatch(/d1 +csv-worker +Use a 30 s timeout +0 min/)
+  expect(await answer($, 'm1', { defaults: true })).toContain('d1: Keep (default)')
   expect(w.sent).toEqual([])
   expect(await inbox($)).toBe('No open questions.')
 })
 
-test('overturning an FYI messages the owner; with the owner gone, its manager', async ($, on) => {
+test('undoing a decision messages the owner; with the owner gone, its manager', async ($, on) => {
   const w = world(on)
   await fyi($, 'w1', [D1, { decision: 'Name it exporter', why: 'matches the module' }])
-  const r = await answer($, null, { answers: [{ id: 'q1', choice: 'use 60 s' }] })
-  expect(r).toContain('q1: use 60 s')
+  const r = await answer($, null, { answers: [{ id: 'd1', choice: 'use 60 s' }] })
+  expect(r).toContain('d1: use 60 s')
   expect(w.sent[0]!.to).toBe('w1')
-  expect(w.sent[0]!.text).toContain('overturned your FYI q1: you decided "Use a 30 s timeout". Instead: use 60 s.')
-  expect(notes(w.files)).toContain('overturned, use 60 s')
+  expect(w.sent[0]!.text).toContain('undid your decision d1: you decided "Use a 30 s timeout". Instead: use 60 s.')
+  expect(notes(w.files)).toContain('undone, use 60 s')
 
   w.agents.splice(1, 1)
-  await answer($, null, { answers: [{ id: 'q2', choice: 'Overturn' }] })
+  await answer($, null, { answers: [{ id: 'd2', choice: 'Undo' }] })
   const last = w.sent[w.sent.length - 1]!
   expect(last.to).toBe('m1')
-  expect(last.text).toContain('overturned your FYI q2')
+  expect(last.text).toContain('undid your decision d2')
   expect(last.text).toContain('csv-worker')
 })
 
@@ -183,44 +182,44 @@ test('overturning an FYI messages the owner; with the owner gone, its manager', 
 const cmd = ($: Dollar, args: string) => $.command.run({ command: 'flow', args } as never).then(r => r.text ?? '')
 const D2 = { decision: 'Name it export.csv', why: 'matches the docs', topic: 'naming' }
 
-test('/flow ok keeps every open FYI and leaves questions; twice finds nothing; no message is sent', async ($, on) => {
+test('/flow ok keeps every open decision and leaves questions; twice finds nothing; no message is sent', async ($, on) => {
   const w = world(on)
   await fyi($, 'w1', [D1, D2])
   await ask($, 'm1', [SOFT])
   const r = await cmd($, 'ok')
-  expect(r).toContain('q1: Keep (default)')
-  expect(r).toContain('q2: Keep (default)')
-  expect(r).not.toContain('q3:')
+  expect(r).toContain('d1: Keep (default)')
+  expect(r).toContain('d2: Keep (default)')
+  expect(r).not.toContain('q1:')
   expect(r).toContain('Still open: 1 question')
   expect(w.sent).toEqual([])
-  expect(await cmd($, 'ok')).toContain('No open FYIs to keep.')
+  expect(await cmd($, 'ok')).toContain('No open decisions to keep.')
 })
 
-test('/flow ok <ids|owner|topic>: a question takes its default, words expand to FYIs, repeats are reported once', async ($, on) => {
+test('/flow ok <ids|owner|topic>: a question takes its default, words expand to decisions, repeats are reported once', async ($, on) => {
   world(on)
   await fyi($, 'w1', [D1, D2])
   await fyi($, 'm1', [{ decision: 'Use UTF-8', why: 'safe' }])
   await ask($, 'm1', [SOFT])
-  const r = await cmd($, 'ok q4 q4 q9')
-  expect(r.match(/q4: yes \(default\)/g)?.length).toBe(1)
+  const r = await cmd($, 'ok q1 q1 q9')
+  expect(r.match(/q1: yes \(default\)/g)?.length).toBe(1)
   expect(r).toContain('q9: no such question.')
-  expect(await cmd($, 'ok naming')).toContain('q2: Keep (default)')
-  expect(await cmd($, 'ok q2')).toContain('q2: already answered')
-  expect(await cmd($, 'ok csv-export')).toContain('q3: Keep (default)')
-  expect(await cmd($, 'ok nothing-like-this')).toContain('no open FYIs for that owner or topic')
+  expect(await cmd($, 'ok naming')).toContain('d2: Keep (default)')
+  expect(await cmd($, 'ok d2')).toContain('d2: already answered')
+  expect(await cmd($, 'ok csv-export')).toContain('d3: Keep (default)')
+  expect(await cmd($, 'ok nothing-like-this')).toContain('no open decisions for that owner or topic')
 })
 
-test('/flow no overturns an FYI with the words given and tells its owner; a question is refused', async ($, on) => {
+test('/flow no undoes a decision with the words given and tells its owner; a question is refused', async ($, on) => {
   const w = world(on)
   await fyi($, 'w1', [D1, D2])
   await ask($, 'm1', [SOFT])
-  const r = await cmd($, 'no q1 use 60 s, not 30')
-  expect(r).toContain('q1: use 60 s, not 30')
+  const r = await cmd($, 'no d1 use 60 s, not 30')
+  expect(r).toContain('d1: use 60 s, not 30')
   expect(w.sent[0]!.to).toBe('w1')
   expect(w.sent[0]!.text).toContain('Instead: use 60 s, not 30.')
-  expect(await cmd($, 'no q2')).toContain('q2: Overturn')
+  expect(await cmd($, 'no d2')).toContain('d2: Undo')
   expect(w.sent[1]!.text).toContain('Instead: undo it.')
-  expect(await cmd($, 'no q3')).toContain('not an FYI')
+  expect(await cmd($, 'no q1')).toContain('not a decision')
   expect(await cmd($, 'no')).toContain('Usage')
 })
 
@@ -250,19 +249,59 @@ test('/flow ok refuses a guard item and says how; /flow answer answers it', asyn
   await fyi($, 'w1', [D1])
   expect(await cmd($, 'ok q1')).toContain('answer it explicitly: /flow answer q1 <choice>')
   const bulk = await cmd($, 'ok')
-  expect(bulk).toContain('q2: Keep (default)')
+  expect(bulk).toContain('d1: Keep (default)')
   expect(bulk).not.toContain('q1:')
   expect(await cmd($, 'answer q1 b')).toContain('q1: No')
 })
 
-test('/flow inbox <id> prints one item in full; inbox all shows older FYIs of agents that are gone', async ($, on) => {
+test('/flow inbox <id> prints one item in full; decisions of agents that are gone are plain rows, never an Older line', async ($, on) => {
   const w = world(on)
   await fyi($, 'w1', [D1])
   w.agents.splice(1, 1)
-  expect(await cmd($, 'inbox')).toContain('Older: 1 FYI (q1)')
-  expect(await cmd($, 'inbox all')).toContain('q1 (0 min): Use a 30 s timeout')
-  const one = await cmd($, 'inbox q1')
+  const list = await cmd($, 'inbox')
+  expect(list).toMatch(/d1 +csv-worker +Use a 30 s timeout +0 min/)
+  expect(list).not.toContain('Older')
+  expect(await cmd($, 'inbox decisions')).toContain('d1')
+  expect(await cmd($, 'inbox all')).toContain('d1')
+  const one = await cmd($, 'inbox d1')
   expect(one).toContain('why: the conservative choice')
-  expect(one).toContain('/flow no q1')
-  expect(await cmd($, 'inbox q7')).toContain('no such question')
+  expect(one).toContain('/flow no d1')
+  expect(await cmd($, 'inbox q7')).toContain('no such question or decision')
+  expect(await cmd($, 'inbox nonsense')).toContain('Usage')
+})
+
+// A decision stored before decisions had their own ids: a q-id with no nextD counter.
+const oldDecision = (id: string, askedAt: number, extra: Record<string, unknown> = {}) => ({
+  id, kind: 'fyi', owner: 'csv-worker', addressee: 'csv-export', question: `Old ${id}`, options: ['Keep', 'Overturn'], default: 'Keep',
+  blocking: false, askedAt, state: 'open', delivered: false, askerId: 'w1', askerIsManager: false, ...extra,
+})
+
+test('an old q-id of a migrated decision still works in /flow ok, /flow no, /flow inbox and mcp__flow__answer', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/inbox.json`, JSON.stringify({ next: 12, items: [
+    oldDecision('q10', 1_000_000), oldDecision('q11', 1_000_001), oldDecision('q4', 999_000, { state: 'answered', answer: 'Keep' }),
+  ] }))
+  // any inbox write loads the file, migrates it and persists it
+  await fyi($, 'w1', [D1])
+  const stored = (JSON.parse(w.files.get(`${DIR}/inbox.json`)!) as { next: number; nextD: number; items: { id: string; alias?: string }[] })
+  expect(stored.items.map(x => [x.id, x.alias])).toEqual([['d2', 'q10'], ['d3', 'q11'], ['d1', 'q4'], ['d4', undefined]])
+  expect(stored.next).toBe(12)
+  expect(stored.nextD).toBe(5)
+  expect(await cmd($, 'inbox q4')).toContain('Answered: Keep')
+  expect(await cmd($, 'inbox q10')).toContain('d2 decision')
+  expect(await cmd($, 'ok q10')).toContain('d2: Keep (default)')
+  expect(await cmd($, 'no q11 do it differently')).toContain('d3: do it differently')
+  expect(w.sent.some(s => s.to === 'w1' && s.text.includes('undid your decision d3'))).toBe(true)
+  // a new question takes the next q number, which no alias holds
+  await ask($, 'm1', [SOFT])
+  expect(await cmd($, 'inbox')).toContain('q12 ')
+})
+
+test('mcp__flow__answer accepts the old q-id of a decision, also in defaults ids', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/inbox.json`, JSON.stringify({ next: 12, items: [oldDecision('q10', 1_000_000), oldDecision('q11', 1_000_001)] }))
+  await fyi($, 'w1', [D1])
+  expect(await answer($, 'm1', { defaults: true, ids: ['q10'] })).toContain('d1: Keep (default)')
+  expect(await answer($, 'm1', { answers: [{ id: 'q11', choice: 'Undo' }] })).toContain('d2: Undo')
+  expect(w.sent.some(s => s.to === 'w1' && s.text.includes('undid your decision d2'))).toBe(true)
 })

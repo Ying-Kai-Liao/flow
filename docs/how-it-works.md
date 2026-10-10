@@ -129,44 +129,43 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   assumed it; a message comes only if the answer differs. **Blocking**: it ends its turn and the
   answer arrives by message.
 - `/flow inbox` is the person's view: a one-line summary, the questions (blocking first; deploy, push,
-  env and guard items tagged NEEDS YOU) with the options (default marked), a `why:` line and age, the FYIs
-  grouped by owner, then what standing answers did. Headlines are cut at about 100 characters;
-  `/flow inbox <id>` prints one item in full. Three or more FYIs of one topic from one owner collapse into one
-  line (`topic x3 (q10 q11 q12)`); FYIs older than 2 h, or whose owner is no longer running, collapse into
-  an "Older" line per owner unless you ask for `/flow inbox all`. Nothing expires or is acked by itself. `status` and the Flow pane show the open inbox first. An agent
+  env and guard items tagged NEEDS YOU) with the options on one line (default marked) and age, the decisions
+  as one flat table (id, from, headline, age; newest first, the newest 15 and a `+M more` line, `/flow inbox decisions`
+  lists all), then what standing answers did. Rows never wrap and headlines are cut with an ellipsis;
+  `/flow inbox <id>` prints one item in full, with its why. Nothing is grouped or folded away, and nothing expires or is acked by itself. `status` and the Flow pane show the open inbox first. An agent
   with an open blocking question shows as asking in the pane, the toasts and the task graph.
-- You answer from the prompt: `/flow ok` keeps every open FYI, `/flow ok q10 q11` or `/flow ok <owner|topic>`
-  keeps those (an ordinary question named by id takes its default), `/flow no q12 <what instead>` overturns
-  an FYI, `/flow answer q3 b` answers any open question (option letter, number, text or free
+- You answer from the prompt: `/flow ok` keeps every open decision, `/flow ok d10 d11` or `/flow ok <owner|topic>`
+  keeps those (an ordinary question named by id takes its default), `/flow no d12 <what instead>` undoes
+  a decision, `/flow answer q3 b` answers any open question (option letter, number, text or free
   text), also one a worker asked its manager: you override the manager, the asker is told "the user answered",
   and a live manager is told the question is closed. A deploy, push, env or guard item is never answered by `/flow ok`; only `/flow answer` does. All of
   them go through the same path as `mcp__flow__answer`, so delivery, notes and standing-answer suggestions
   are unchanged. Main (the agent) answers with `mcp__flow__answer`: `answers: [{id, choice}]` where choice is the option text, its
   letter or number, or free text; or `defaults: true` (optionally `ids`) to accept the defaults.
   **In the pane**: with anything open, the key row at the bottom shows `i inbox`. The inbox view lists every
-  open question (blocking first; `for <manager>` marks those not addressed to you) and FYI (by owner; three or more
-  of one topic fold into one `topic xN` row, stale ones into an `Older` row) with one highlighted row, its options
+  open question (blocking first; `for <manager>` marks those not addressed to you) and decision (newest first, one row each) with one highlighted row, its options
   and `why:`. Keys: `j`/`k` move, `1`-`9` or `a`-`h` pick that option of the highlighted item, `y` takes a
-  question's default or keeps an FYI (or the whole folded group), `w` keeps all open FYIs, `n` overturns the
-  highlighted FYI (with what you typed in the answer field as "what instead"), `r` types a free-text answer
-  (Enter sends), `x` expands or folds a group, `i` goes back. Deploy, env, push and guard items are never
-  answered by `y`, `w` or a group keep: only their own digit or letter, or free text, answers them. Every answer
+  question's default or keeps a decision, `w` keeps all open decisions, `n` undoes the
+  highlighted decision (with what you typed in the answer field as "what instead"), `r` types a free-text answer
+  (Enter sends), `i` goes back. Deploy, env, push and guard items are never
+  answered by `y` or `w`: only their own digit or letter, or free text, answers them. Every answer
   goes through the same path as the `/flow` commands.
   The addressee answers with `mcp__flow__answer` (you, from the prompt or the pane, may answer anything): your main session for managers' questions (tell it "defaults", "1 b,
   3 defaults" or free text), a manager for its workers'. The answer is messaged to the asker and
   recorded as a decision note. If the asker is gone, the result says undelivered and the main
   session relays it to the successor (`<name>-2`).
-- **FYIs.** For a reversible choice (a threshold, wording, a name, a default) an agent does not ask: it
+- **Decisions.** For a reversible choice (a threshold, wording, a name, a default) an agent does not ask: it
   decides, continues, and records `mcp__flow__fyi` (`from`, `items: [{decision, why, alternative?, topic?}]`;
-  the batch is validated whole, main cannot call it). An FYI is a non-blocking inbox item (`kind: "fyi"`,
-  same `q<n>` ids, options Keep / Overturn, default Keep), addressed like an ask: a worker's to its
+  the batch is validated whole, main cannot call it). A decision is a non-blocking inbox item (stored `kind: "fyi"`,
+  its own `d<n>` ids from a separate counter, options Keep / Undo, default Keep; a decision filed before they had d-ids was
+  migrated to one and keeps its old q-id as an alias that every command and `mcp__flow__answer` still accepts), addressed like an ask: a worker's to its
   manager, a manager's to main. Nobody is messaged or toasted when one is recorded, and it never
   counts as asking. `/flow inbox` lists them in their own section, `status` and the pane as a count.
-  `mcp__flow__answer` acks (the choice Keep, or `defaults: true`, also with `ids`): no message. Any other
-  choice, free text included, overturns: the owner is messaged what it decided and what to do instead,
-  or, if it is no longer running, its manager (naming the owner); the overturn is noted as a decision.
-  The addressee may answer an FYI, and so may main (the user overrides what a manager has not looked at).
-  Standing answers never answer an FYI.
+  `mcp__flow__answer` keeps it (the choice Keep, or `defaults: true`, also with `ids`): no message. Any other
+  choice, free text included, undoes it: the owner is messaged what it decided and what to do instead,
+  or, if it is no longer running, its manager (naming the owner); the undo is noted as a decision.
+  The addressee may answer a decision, and so may main (the user overrides what a manager has not looked at).
+  Standing answers never answer a decision.
 - A report whose last line ends in `?` still counts as a question, for agents that don't use the
   tool. `decision_phrases` is deprecated.
 
@@ -222,7 +221,7 @@ An after-deploy check that needs a person (a browser look, a real conversation, 
 - **After an update.** Once per installed version, when an update installs the version some open checks were waiting for, main gets one prompt listing the checks that can now be done. Main tells the user; it starts no managers for them.
 - **Scripted checks.** A manager can pass `verify_command` (a shell command, such as an e2e or smoke run) on `mcp__flow__handover` when the after-deploy check can be scripted. If the check still needs a person, the reviewer runs the command at the merged main and closes the check itself: pass on exit 0, fail otherwise. The file-only `verify_paths` setting limits this: when set and the PR changes no matching file, the command is skipped and the check stays open for a person, with a note saying so.
 
-Not to be confused with the check-only verify worker (for after-deploy checks an agent can do, see Deploying), FYIs and standing answers (see Questions and the inbox).
+Not to be confused with the check-only verify worker (for after-deploy checks an agent can do, see Deploying), decisions and standing answers (see Questions and the inbox).
 
 ## Attachments
 
@@ -445,8 +444,8 @@ Not verified:
 - `status`: the tree, the handovers, the limits, the plans and the test slots as text, for check-ins; with `pr` it names the PR's owner.
 - `preflight`: a manager files its pre-flight before starting workers (see Pre-flight).
 - `ask`: questions with options, a recommended default and `blocking` (see Questions and the inbox).
-- `fyi`: records a decision the agent took itself, non-blocking and overturnable (see Questions and the inbox).
-- `answer`: answers inbox questions (and acks or overturns FYIs) by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
+- `fyi`: records a decision the agent took itself, non-blocking and undoable (see Questions and the inbox).
+- `answer`: answers inbox questions (and keeps or undoes decisions) by id, or accepts the defaults; `always: true` (main) also makes a standing answer.
 - `standing`: main only: list, add and remove standing answers.
 - `check`: main only (the reviewer may close checks that carry a verify command): `list`, `pass` (`ids`, optional `note`), `fail` (`id`, required `note`) and `started` (`id`, `manager`) for a failed check's follow-up (see Person checks).
 - `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without

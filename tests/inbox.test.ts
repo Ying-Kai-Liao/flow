@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import { test } from './support'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, markAnswered, needsMessage, normalizeInbox,
-  openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, isStaleFyi, overridesManager, needsExplicitAnswer, paneRows, paneRowText, protectedWhy,
+  openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, findItem, DECISIONS_SHOWN, overridesManager, needsExplicitAnswer, paneRows, paneRowText, protectedWhy,
 } from '../hooks/inbox'
 import type { AskedQuestion, Inbox } from '../hooks/inbox'
 
@@ -182,7 +182,6 @@ test('renderInbox: empty text, blocking first and the default marked', () => {
   expect(text.indexOf('other owner')).toBeLessThan(text.indexOf('loose one'))
   expect(text).toContain('b) B (default)')
   expect(text).not.toContain('a) A (default)')
-  expect(text).toContain('why: because')
   expect(text).toContain('q3 BLOCKING')
   expect(text).toContain('q1 (worker-1, for mgr, 2 min): loose one')
   expect(text).not.toContain('mcp__flow__')
@@ -206,7 +205,7 @@ test('normalizeInbox turns garbage into an empty inbox and keeps ids moving', ()
   expect(normalizeInbox({ next: 1, items: inbox.items }).next).toBe(3)
 })
 
-// FYI items
+// Decisions (stored as kind 'fyi')
 
 const fyiOf = (decision: string, asker = W, addressee = 'mgr', base: Inbox = EMPTY_INBOX) =>
   addQuestions(base, asker, addressee, [fyiAsked({ decision, why: 'safer' })], 1000, 'fyi').inbox
@@ -218,66 +217,110 @@ test('parseFyi checks the batch whole and keeps the optional fields', () => {
   expect('error' in parseFyi({ items: [] })).toBe(true)
 })
 
-test('an FYI is stored non-blocking with Keep as default, and an identical open one dedupes', () => {
+test('a decision is stored non-blocking with Keep as default, gets a d-id, and an identical open one dedupes', () => {
   const a = fyiOf('Use 30 s')
   const q = a.items[0]!
-  expect(q).toMatchObject({ id: 'q1', kind: 'fyi', blocking: false, options: ['Keep', 'Overturn'], default: 'Keep', question: 'Use 30 s', context: 'safer' })
+  expect(q).toMatchObject({ id: 'd1', kind: 'fyi', blocking: false, options: ['Keep', 'Undo'], default: 'Keep', question: 'Use 30 s', context: 'safer' })
   const again = addQuestions(a, W, 'mgr', [fyiAsked({ decision: ' use 30  s ', why: 'x' })], 2000, 'fyi')
   expect(again.added[0]!.fresh).toBe(false)
   expect(again.inbox.items.length).toBe(1)
-  // a question with the same text is not an FYI duplicate
-  expect(addQuestions(a, W, 'mgr', [ask('Use 30 s')], 2000).added[0]!.fresh).toBe(true)
+  // a question with the same text is not a decision duplicate, and it takes a q-id from its own counter
+  const q1 = addQuestions(a, W, 'mgr', [ask('Use 30 s')], 2000)
+  expect(q1.added[0]!.fresh).toBe(true)
+  expect(q1.added[0]!.q.id).toBe('q1')
+  expect(q1.inbox).toMatchObject({ next: 2, nextD: 2 })
 })
 
 test('old rows without kind read back as questions; kind fyi is kept', () => {
   const raw = { next: 3, items: [
     { id: 'q1', owner: 'w', addressee: 'm', question: 'Q', options: ['a', 'b'], default: 'a', blocking: false, askedAt: 1, state: 'open', delivered: false },
-    { id: 'q2', kind: 'fyi', owner: 'w', addressee: 'm', question: 'D', options: ['Keep', 'Overturn'], default: 'Keep', blocking: false, askedAt: 1, state: 'open', delivered: false },
+    { id: 'd1', kind: 'fyi', owner: 'w', addressee: 'm', question: 'D', options: ['Keep', 'Undo'], default: 'Keep', blocking: false, askedAt: 1, state: 'open', delivered: false },
   ] }
   const n = normalizeInbox(raw)
   expect(n.items.map(x => x.kind)).toEqual([undefined, 'fyi'])
 })
 
-test('renderInbox puts FYIs in their own section after the questions; inboxHead counts them', () => {
+// A decision stored before decisions had their own ids: a q-id, no nextD.
+const stored = (id: string, askedAt: number, extra: Record<string, unknown> = {}) =>
+  ({ id, kind: 'fyi', owner: 'w', addressee: 'm', question: `D ${id}`, options: ['Keep', 'Overturn'], default: 'Keep', blocking: false, askedAt, state: 'open', delivered: false, ...extra })
+const oldQ = (id: string) => ({ id, owner: 'w', addressee: 'm', question: `Q ${id}`, options: ['a', 'b'], default: 'a', blocking: false, askedAt: 1, state: 'open', delivered: false })
+
+test('migration: stored decisions under q-ids get stable d-ids in askedAt order and keep the q-id as alias; idempotent', () => {
+  const raw = { next: 12, items: [oldQ('q1'), stored('q10', 500), stored('q4', 500), stored('q5', 100, { state: 'answered', answer: 'Keep' }), oldQ('q11')] }
+  const n = normalizeInbox(raw)
+  expect(n.items.map(x => x.id)).toEqual(['q1', 'd3', 'd2', 'd1', 'q11'])
+  expect(n.items.map(x => x.alias)).toEqual([undefined, 'q10', 'q4', 'q5', undefined])
+  expect(n.nextD).toBe(4)
+  expect(n.next).toBe(12)
+  // the same input always gives the same ids, and the migrated result is a fixed point
+  expect(normalizeInbox(JSON.parse(JSON.stringify(raw)))).toEqual(n)
+  expect(normalizeInbox(JSON.parse(JSON.stringify(n)))).toEqual(n)
+})
+
+test('migration: the q counter stays above aliases, new decisions continue after the migrated d-ids', () => {
+  const n = normalizeInbox({ next: 2, items: [stored('q9', 1)] })
+  expect(n.next).toBe(10)
+  const added = addQuestions(n, W, 'mgr', [fyiAsked({ decision: 'new', why: 'w' })], 5, 'fyi')
+  expect(added.added[0]!.q.id).toBe('d2')
+  const q = addQuestions(added.inbox, W, 'mgr', [ask('A question?')], 6)
+  expect(q.added[0]!.q.id).toBe('q10')
+})
+
+test('findItem and markAnswered accept the d-id and the old q-id of a migrated decision', () => {
+  const box = normalizeInbox({ next: 12, items: [stored('q10', 1, { addressee: 'mgr' })] })
+  expect(findItem(box, 'D1')?.id).toBe('d1')
+  expect(findItem(box, 'q10')?.id).toBe('d1')
+  expect(findItem(box, 'q11')).toBeUndefined()
+  const m = markAnswered(box, 'q10', null, 'mgr', 5)
+  expect(m.kind === 'ok' && m.q.id).toBe('d1')
+  expect(m.kind === 'ok' && m.inbox.items[0]!.state).toBe('answered')
+  // answered ones are found by the old id too
+  expect(renderItem(m.kind === 'ok' ? m.inbox : box, 'q10', 1000)).toContain('Answered: Keep')
+  expect(renderItem(box, 'q10', 1000)).toContain('d1 decision')
+  expect(renderItem(box, 'q10', 1000)).toContain('earlier id q10')
+})
+
+test('renderInbox puts decisions in their own section after the questions; inboxHead counts them', () => {
   const base = store([ask('Which db?')])
   const box = fyiOf('Use 30 s', W, 'mgr', base)
   const text = renderInbox(box, 2000)
-  expect(text.indexOf('Questions')).toBeLessThan(text.indexOf('FYIs (decided'))
-  expect(text).toContain('1 question, 1 FYI.')
-  expect(text).toContain('q2 (0 min): Use 30 s')
-  expect(text).toContain('why: safer')
+  expect(text.indexOf('Questions')).toBeLessThan(text.indexOf('Decisions agents made (keep or undo)'))
+  expect(text).toContain('1 question, 1 decision.')
+  expect(text).toMatch(/d1 +worker-1 +Use 30 s +0 min/)
+  expect(text).not.toContain('why: safer')
+  expect(text).not.toMatch(/FYI/i)
   const head = inboxHead(box, 2000)
-  expect(head.filter(l => l.includes('FYI')).length).toBe(1)
-  expect(head.some(l => l.includes('q2'))).toBe(false)
+  expect(head.filter(l => l.includes('decision')).length).toBe(1)
+  expect(head.some(l => l.includes('d1'))).toBe(false)
   const only = renderInbox(fyiOf('Use 30 s'), 2000)
-  expect(only.startsWith('1 FYI.')).toBe(true)
-  expect(only).toContain('FYIs (decided')
+  expect(only.startsWith('1 decision.')).toBe(true)
+  expect(only).toContain('Decisions agents made')
 })
 
-test('askingNames ignores FYIs', () => {
+test('askingNames ignores decisions', () => {
   expect(askingNames(fyiOf('Use 30 s'))).toEqual([])
 })
 
-test('an FYI is acked by Keep (no message) and overturned by anything else (message)', () => {
+test('a decision is kept by Keep (no message) and undone by anything else (message)', () => {
   const box = fyiOf('Use 30 s')
-  const ack = markAnswered(box, 'q1', null, 'mgr', 5000)
+  const ack = markAnswered(box, 'd1', null, 'mgr', 5000)
   expect(ack.kind === 'ok' && needsMessage(ack.q, ack.isDefault)).toBe(false)
-  const keep = markAnswered(box, 'q1', 'keep', 'mgr', 5000)
+  const keep = markAnswered(box, 'd1', 'keep', 'mgr', 5000)
   expect(keep.kind === 'ok' && keep.isDefault).toBe(true)
-  const over = markAnswered(box, 'q1', 'use 60 s', 'mgr', 5000)
+  const over = markAnswered(box, 'd1', 'use 60 s', 'mgr', 5000)
   expect(over.kind).toBe('ok')
   if (over.kind !== 'ok') return
   expect(needsMessage(over.q, over.isDefault)).toBe(true)
   expect(answerMessage(over.q, over.answer, 'mgr', over.isDefault)).toBe(
-    'flow: mgr overturned your FYI q1: you decided "Use 30 s". Instead: use 60 s. Change your work (on your branch / PR if it is still open) and say so in your report.')
-  expect(markAnswered(over.inbox, 'q1', null, 'mgr', 6000).kind).toBe('answered')
+    'flow: mgr undid your decision d1: you decided "Use 30 s". Instead: use 60 s. Change your work (on your branch / PR if it is still open) and say so in your report.')
+  expect(markAnswered(over.inbox, 'd1', null, 'mgr', 6000).kind).toBe('answered')
 })
 
-test('main may answer any FYI but not another addressee\'s question', () => {
+test('main may answer any decision but not another addressee\'s question', () => {
   const box = fyiOf('Use 30 s', W, 'mgr', store([ask('Which db?')]))
-  expect(markAnswered(box, 'q2', null, 'main', 5000).kind).toBe('ok')
+  expect(markAnswered(box, 'd1', null, 'main', 5000).kind).toBe('ok')
   expect(markAnswered(box, 'q1', null, 'main', 5000).kind).toBe('refused')
-  expect(markAnswered(box, 'q2', null, 'other-mgr', 5000).kind).toBe('refused')
+  expect(markAnswered(box, 'd1', null, 'other-mgr', 5000).kind).toBe('refused')
 })
 
 // ---- the person's view ----
@@ -299,58 +342,55 @@ test('renderInbox: summary first, blocking questions first, long headline clippe
   box = addQuestions(box, { name: 'mgr-b', isManager: true }, 'main', [ask('L'.repeat(300), { blocking: true, context: 'because', options: ['Yes', 'No'] })], 60_000).inbox
   box = fyis(box, 'mgr-a', ['kept'], undefined, 0)
   const text = renderInbox(box, 120_000)
-  expect(text.split('\n')[0]).toBe('2 questions (1 blocking), 1 FYI.')
+  expect(text.split('\n')[0]).toBe('2 questions (1 blocking), 1 decision.')
   expect(text.indexOf('q2 BLOCKING')).toBeLessThan(text.indexOf('q1 '))
   expect(text).toContain(`${'L'.repeat(97)}...`)
   expect(text).not.toContain('L'.repeat(98))
-  expect(text).toContain('      a) Yes (default)')
-  expect(text).toContain('      why: because')
-  expect(text.indexOf('Questions')).toBeLessThan(text.indexOf('FYIs'))
-  expect(text).toContain('/flow ok q10 q11')
-  expect(text).toContain('/flow no q12 <what instead>')
-  expect(text).toContain('/flow answer <id>')
+  expect(text).toContain('      a) Yes (default) b) No')
+  expect(text).not.toContain('why:')
+  expect(text.indexOf('Questions')).toBeLessThan(text.indexOf('Decisions'))
+  expect(text).toContain('/flow ok d10 d11')
+  expect(text).toContain('/flow no d12 <what instead>')
+  expect(text).toContain('/flow answer q1')
   expect(text).not.toContain('mcp__flow__')
 })
 
-test('renderInbox: push is NEEDS YOU; a question for a manager shows "for" and says answering overrides it', () => {
+test('renderInbox: push is NEEDS YOU; a question for a manager shows "for"; the item view says answering overrides it', () => {
   const base = addQuestions(EMPTY_INBOX, { name: 'flow', isManager: true }, 'main', [ask('Push?', { blocking: true })], 0).inbox
   const box: Inbox = { ...base, items: [{ ...base.items[0]!, kind: 'push' }] }
   expect(renderInbox(box, 1000)).toContain('q1 BLOCKING NEEDS YOU: PUSH')
   const mine = addQuestions(EMPTY_INBOX, W, 'mgr', [ask('Hm?')], 0).inbox
   const t = renderInbox(mine, 1000)
   expect(t).toContain('for mgr')
-  expect(t).toContain('overrides the manager')
   expect(renderItem(mine, 'q1', 1000)).toContain('answering it overrides mgr')
 })
 
-test('renderInbox: three FYIs of one topic collapse within an owner; two do not; owners stay separate', () => {
+test('renderInbox: decisions are one flat table, newest first, nothing grouped or collapsed', () => {
   let box = fyis(EMPTY_INBOX, 'mgr-a', ['a1 text', 'a2 text', 'a3 text'], 'worker-size', 0)
-  box = fyis(box, 'mgr-b', ['b1 text', 'b2 text'], 'worker-size', 0)
-  const text = renderInbox(box, 1000)
-  expect(text).toContain('worker-size x3 (q1 q2 q3): a1 text; a2 text; a3 text')
-  expect(text).toContain('/flow ok worker-size')
-  expect(text).toContain('q4 [worker-size] (0 min): b1 text')
-  expect(text.indexOf('mgr-a:')).toBeLessThan(text.indexOf('mgr-b:'))
+  box = fyis(box, 'mgr-b', ['b1 text', 'b2 text'], 'worker-size', 5 * H)
+  const text = renderInbox(box, 6 * H)
+  const lines = text.split('\n')
+  const at = lines.findIndex(l => l.includes('Decisions agents made'))
+  expect(lines[at + 1]).toMatch(/^id +from +decision +age$/)
+  expect(lines.slice(at + 2, at + 7).map(l => l.trim().split(/\s+/)[0])).toEqual(['d5', 'd4', 'd3', 'd2', 'd1'])
+  expect(text).toMatch(/d5 +mgr-b +b2 text +1 h/)
+  expect(text).toMatch(/d1 +mgr-a +a1 text +6 h/)
+  expect(text).not.toMatch(/Older|x3|\+\d+ more|mgr-a:/)
 })
 
-test('renderInbox: FYIs older than 2 h or of an owner that is not live collapse per owner unless all', () => {
-  let box = fyis(EMPTY_INBOX, 'mgr-a', ['old one', 'old two'], undefined, 0)
-  box = fyis(box, 'mgr-a', ['fresh'], undefined, 3 * H)
-  box = fyis(box, 'mgr-gone', ['fresh but gone'], undefined, 3 * H)
-  const now = 3 * H + 60_000
-  const text = renderInbox(box, now, { live: ['mgr-a'] })
-  expect(text).toContain('Older: 2 FYIs (q1 q2)')
-  expect(text).toContain('Older: 1 FYI (q4)')
-  expect(text).toContain('q3 (1 min): fresh')
-  expect(text).not.toContain('old one')
-  const all = renderInbox(box, now, { live: ['mgr-a'], all: true })
-  expect(all).toContain('old one')
-  expect(all).toContain('fresh but gone')
-  expect(all).not.toContain('Older:')
-  // without a live list only age counts; a manager's continuation counts as live
-  expect(renderInbox(box, now)).toContain('fresh but gone')
-  expect(isStaleFyi(box.items[2]!, now, ['mgr-a-2'])).toBe(false)
-  expect(isStaleFyi(box.items[3]!, now, ['mgr-a-2'])).toBe(true)
+test('renderInbox: a long list shows the newest 15 and a +M more line; all (decisions) lists every row; rows never wrap', () => {
+  let box = EMPTY_INBOX
+  for (let i = 1; i <= 20; i++) box = fyis(box, 'mgr-a', [`decision number ${i} ${'x'.repeat(200)}`], undefined, i * 1000)
+  const text = renderInbox(box, 60_000, { width: 80 })
+  const rows = text.split('\n').filter(l => /^d\d+ /.test(l))
+  expect(rows.length).toBe(DECISIONS_SHOWN)
+  expect(rows[0]).toContain('d20')
+  expect(text).toContain('+5 more: /flow inbox decisions')
+  for (const l of text.split('\n')) expect(l.length).toBeLessThanOrEqual(130)
+  for (const l of rows) { expect(l.length).toBeLessThanOrEqual(80); expect(l).toContain('…') }
+  const all = renderInbox(box, 60_000, { all: true, width: 80 })
+  expect(all.split('\n').filter(l => /^d\d+ /.test(l)).length).toBe(20)
+  expect(all).not.toContain('more:')
 })
 
 test('renderItem prints one item in full; unknown ids and answered items are said plainly', () => {
@@ -359,23 +399,27 @@ test('renderItem prints one item in full; unknown ids and answered items are sai
   expect(full).toContain('L'.repeat(300))
   expect(full).toContain('C'.repeat(300))
   expect(full).toContain('/flow answer q1')
-  expect(renderItem(box, 'q9', 0)).toBe('q9: no such question.')
+  expect(renderItem(box, 'q9', 0)).toBe('q9: no such question or decision.')
   const m = markAnswered(box, 'q1', 'b', 'main', 5)
   expect(m.kind === 'ok' && renderItem(m.inbox, 'q1', 1000)).toContain('Answered: No (by main)')
 })
 
-test('expandOk: no words is every open FYI; ids pass; owner and topic expand to FYIs; protected items are refused', () => {
+test('expandOk: no words is every open decision; ids pass; owner and topic expand to decisions; protected items are refused', () => {
   let box = fyis(EMPTY_INBOX, 'mgr-a', ['one', 'two'], 'naming', 0)
   box = fyis(box, 'mgr-b', ['three'], undefined, 0)
   box = addQuestions(box, { name: 'mgr-b', isManager: true }, 'main', [ask('Q?')], 0).inbox
   const withPush: Inbox = { ...box, items: [...box.items, { ...box.items[3]!, id: 'q9', kind: 'push' }] }
-  expect(expandOk(withPush, []).ids).toEqual(['q1', 'q2', 'q3'])
-  expect(expandOk(withPush, ['q4', 'q4', 'Q4']).ids).toEqual(['q4'])
-  expect(expandOk(withPush, ['naming']).ids).toEqual(['q1', 'q2'])
-  expect(expandOk(withPush, ['mgr-b']).ids).toEqual(['q3'])
+  expect(expandOk(withPush, []).ids).toEqual(['d1', 'd2', 'd3'])
+  expect(expandOk(withPush, ['q1', 'q1', 'Q1']).ids).toEqual(['q1'])
+  expect(expandOk(withPush, ['d2', 'D3']).ids).toEqual(['d2', 'd3'])
+  expect(expandOk(withPush, ['naming']).ids).toEqual(['d1', 'd2'])
+  expect(expandOk(withPush, ['mgr-b']).ids).toEqual(['d3'])
   expect(expandOk(withPush, ['q9'])).toEqual({ ids: [], lines: ['q9: answer it explicitly: /flow answer q9 <choice>'] })
-  expect(expandOk(withPush, ['nope']).lines[0]).toContain('no open FYIs')
-  expect(expandOk(EMPTY_INBOX, []).lines).toEqual(['No open FYIs to keep.'])
+  expect(expandOk(withPush, ['nope']).lines[0]).toContain('no open decisions')
+  expect(expandOk(EMPTY_INBOX, []).lines).toEqual(['No open decisions to keep.'])
+  // the old q-id of a migrated decision resolves to the d-id
+  const migrated = normalizeInbox({ next: 12, items: [stored('q10', 1), stored('q11', 2)] })
+  expect(expandOk(migrated, ['q11', 'q10']).ids).toEqual(['d2', 'd1'])
 })
 
 test('predicates: the user may answer anything, over a manager when it is addressed to one; deploy, env, push and guard need an explicit answer', () => {
@@ -391,18 +435,14 @@ test('predicates: the user may answer anything, over a manager when it is addres
   expect(stillOpen(EMPTY_INBOX)).toBe('Nothing is left open.')
 })
 
-test('paneRows: questions blocking first, then FYIs by owner with 3+ of a topic folded and stale ones in an older row', () => {
+test('paneRows: questions blocking first, then every decision newest first, one flat row each', () => {
   let box = store([ask('soft'), ask('hard', { blocking: true })])
   box = fyis(box, 'mgr-a', ['a1', 'a2', 'a3', 'a4'], 'worker-size', 10_440_000)
-  box = fyis(box, 'mgr-b', ['b1', 'b2'], 'worker-size', 10_440_000)
   box = fyis(box, 'mgr-c', ['c1'], undefined, 0)
-  const rows = paneRows(box, 3 * 3_600_000, { live: ['mgr-a', 'mgr-b'] })
-  expect(rows.map(r => r.key)).toEqual(['q2', 'q1', 'o:mgr-c', 'g:mgr-a:worker-size', 'q7', 'q8'])
-  expect(rows[3]!.ids).toEqual(['q3', 'q4', 'q5', 'q6'])
+  const rows = paneRows(box)
+  expect(rows.map(r => r.key)).toEqual(['q2', 'q1', 'd4', 'd3', 'd2', 'd1', 'd5'])
   expect(paneRowText(rows[0]!)).toContain('q2 BLOCKING worker-1, for mgr: hard')
-  expect(paneRowText(rows[3]!)).toBe('worker-size x4 (mgr-a): q3 q4 q5 q6')
-  const open = paneRows(box, 3 * 3_600_000, { live: ['mgr-a', 'mgr-b'], open: ['g:mgr-a:worker-size', 'o:mgr-c'] })
-  expect(open.map(r => r.key)).toEqual(['q2', 'q1', 'o:mgr-c', 'q9', 'g:mgr-a:worker-size', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8'])
+  expect(paneRowText(rows[2]!)).toBe('d4 mgr-a [worker-size]: a4')
 })
 
 test('protectedWhy names the explicit way for deploy, env, push and guard items only', () => {

@@ -90,7 +90,7 @@ export function openPushItem(inbox: Inbox, b: ReadyBatch, now: number): { inbox:
     options: [PUSH_ANSWER, LATER_ANSWER, DROP_ANSWER], default: LATER_ANSWER, blocking: true, context: pushContext(b), kind: PUSH_KIND,
     askedAt: now, state: 'open', delivered: true, askerIsManager: false,
   }
-  return { inbox: { next: inbox.next + 1, items: [...inbox.items, q] }, q }
+  return { inbox: { ...inbox, next: inbox.next + 1, items: [...inbox.items, q] }, q }
 }
 
 // Closes the batch's item when it is still open (idempotent: an answer already closed it).
