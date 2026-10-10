@@ -328,3 +328,10 @@ export function goneMessage(s: Session, tail: string): string {
   return `flow session: ${s.harness} worker "${s.name}" (${s.host}) ended without writing a new report. ` +
     `Its worktree is ${s.worktree} on ${s.branch}.${tail.trim() ? `\nLast terminal lines:\n${tail.trim()}` : ''}`
 }
+
+export function ago(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.round(s / 60)
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60}m`
+}
