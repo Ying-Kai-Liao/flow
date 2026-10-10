@@ -103,12 +103,12 @@ test('the queue retries infrastructure failures within fixed bounds', () => {
 })
 
 test('flaky_tests adds the rerun rule, and nothing when empty', () => {
-  expect(all(base)[2]).not.toContain('flaky')
-  expect(all({ ...base, flakyTests: [] })[2]).not.toContain('flaky')
+  expect(all(base)[2]).not.toContain('Known flaky')
+  expect(all({ ...base, flakyTests: [] })[2]).not.toContain('Known flaky')
   const q = all({ ...base, flakyTests: ['tests/a.test.ts'] })[2]
   expect(q).toContain('Known flaky tests: `tests/a.test.ts`')
   expect(q).toContain('by running the full check once more')
-  expect(q).toContain('flaky rerun: <file> failed, passed on rerun')
+  expect(q).toContain('flaky: <test>')
   expect(all({ ...base, flakyTests: ['tests/a.test.ts'], testCommand: 'vitest run {files}' })[2]).toContain('in place of {files}')
 })
 

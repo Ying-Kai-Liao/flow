@@ -73,10 +73,10 @@ test('a handover is saved as a versioned file and logged; queue take, done and b
   await call($, { tool: 'mcp__flow__queue', action: 'back', pr: 8, reason: 'head moved' })
 
   const log = logOf(files)
-  expect(log.map(l => l.event)).toEqual(['handover', 'take', 'done', 'main-ff', 'handover', 'back'])
+  expect(log.map(l => l.event)).toEqual(['handover', 'take', 'done', 'main-ff', 'branch-delete', 'handover', 'back'])
   expect(log[0]).toMatchObject({ owner: 'csv-export', pr: 7, branch: 'flow/csv' })
   expect(log[2]).toMatchObject({ pr: 7, text: 'merged ok' })
-  expect(log[5]).toMatchObject({ pr: 8, text: 'head moved' })
+  expect(log[6]).toMatchObject({ pr: 8, text: 'head moved' })
   // The settings package owns config.json: flow never writes it.
   expect(files.has(`${DIR}/config.json`)).toBe(false)
 })

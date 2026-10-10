@@ -207,7 +207,7 @@ export type Session = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff' | 'branch-delete' | 'tests-failed' | 'flaky'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string
@@ -404,6 +404,7 @@ declare module 'claude-code' {
       queueRuns: number
       // Per reviewer run (agent id), what it did with the queue; persisted so a reload keeps the final report whole.
       reviewerWork: Record<string, { touched: boolean; ready: boolean; line?: string }>
+      testFails: { last: Record<string, string[]>; flaky: Record<string, string[]> }
       prCache: PrCache
       // Deploy gates, mirrored from <state dir>/deploys.json, and how many commits each target is behind the base.
       deploys: Deploys

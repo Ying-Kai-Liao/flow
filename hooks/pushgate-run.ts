@@ -139,7 +139,7 @@ export async function recordReady(io: PushIo, settings: Settings, input: Record<
     })
   }
   io.toast(`Batch ${id} ready to push (${prs.map(n => `#${n}`).join(' ')}): /flow push`)
-  return `Recorded batch ${id}: ${prs.map(n => `#${n}`).join(', ')} are ready and wait for the user's /flow push (inbox ${q.id}). Do not push, delete branches, publish or deploy. End your run now with your report: batch ${id} ready, awaits /flow push.`
+  return `Recorded batch ${id}: ${prs.map(n => `#${n}`).join(', ')} are ready and wait for the user's /flow push (inbox ${q.id}). Do not push, publish or deploy. End your run now with your report: batch ${id} ready, awaits /flow push.`
 }
 
 // After a PR is done or sent back, a batch with none of its PRs left is finished: its ref goes.
@@ -175,7 +175,7 @@ export async function pushAct(io: PushIo, act: PushAct, by: string): Promise<str
   const hs = await io.handovers()
   if (act.kind === 'push') {
     const queue = await io.ensureQueue()
-    return `Batch ${before.id} released (${before.prs.map(n => `#${n}`).join(', ')}). A reviewer pushes it, deletes the merged branches, deploys and marks the PRs done. ${queue}`
+    return `Batch ${before.id} released (${before.prs.map(n => `#${n}`).join(', ')}). A reviewer pushes it, deploys and marks the PRs done (the plugin deletes the merged branches then). ${queue}`
   }
   if (act.kind === 'back') {
     const h = hs[String(act.pr)]

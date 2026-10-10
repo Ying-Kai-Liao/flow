@@ -342,6 +342,40 @@ export function killRefusal(command: string, depth = 0): string | undefined {
   return undefined
 }
 
+// --- Remote-ref delete guard -----------------------------------------------------------------
+
+export const DELETE_REFUSAL = 'flow: do not delete a remote branch yourself. The plugin deletes each merged branch when the reviewer calls mcp__flow__reviewer action "done", and only after the merge is confirmed pushed.'
+
+// Why a command line is refused as a `git push` that deletes a remote ref (--delete, -d, or a
+// `:ref` refspec), or undefined. A chain with one such push is refused as a whole.
+export function remoteDeleteRefusal(command: string, depth = 0): string | undefined {
+  if (depth > MAX_DEPTH) return undefined
+  for (const pipeline of parse(command)) {
+    for (const cmd of pipeline) {
+      for (const sub of cmd.subs) {
+        const why = remoteDeleteRefusal(sub, depth + 1)
+        if (why !== undefined) return why
+      }
+      const { words } = resolve(cmd.words)
+      if (words.length === 0) continue
+      const name = basename(words[0]!)
+      const args = words.slice(1)
+      const script = innerScript(name, args)
+      if (script !== undefined) {
+        const why = remoteDeleteRefusal(script, depth + 1)
+        if (why !== undefined) return why
+      }
+      if (name !== 'git') continue
+      let k = 0
+      while (k < args.length && args[k]!.startsWith('-')) k += ['-C', '-c', '--git-dir', '--work-tree'].includes(args[k]!) ? 2 : 1
+      if (args[k] !== 'push') continue
+      const rest = args.slice(k + 1)
+      if (rest.some(a => a === '--delete' || /^-[a-zA-Z]*d[a-zA-Z]*$/.test(a) || /^\+?:./.test(a))) return DELETE_REFUSAL
+    }
+  }
+  return undefined
+}
+
 // --- Main-checkout guard -------------------------------------------------------------------
 
 // A path a command writes: a file, or for git a directory whose checkout it changes.
