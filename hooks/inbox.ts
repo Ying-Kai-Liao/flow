@@ -161,12 +161,13 @@ export type Marked =
 // Marks one question answered. choice null takes the question's default.
 // A standing answer rule id as the last argument answers for the rule: no addressee check, and nothing is
 // left to deliver (the ask result tells the asker).
-export function markAnswered(inbox: Inbox, id: string, choice: string | null, by: string, now: number, rule?: string): Marked {
+// user: the person answering through the pane or /flow commands, who may answer any open question, also one addressed to a manager.
+export function markAnswered(inbox: Inbox, id: string, choice: string | null, by: string, now: number, rule?: string, user = false): Marked {
   const q = inbox.items.find(x => x.id === id)
   if (q === undefined) return { kind: 'unknown' }
   if (q.state === 'answered') return { kind: 'answered', q }
   // Main may also answer any FYI: the user overrides what a manager has not looked at.
-  if (rule === undefined && !isAddressee(q, by) && !(isFyi(q) && by === 'main')) return { kind: 'refused', q }
+  if (rule === undefined && !user && !isAddressee(q, by) && !(isFyi(q) && by === 'main')) return { kind: 'refused', q }
   const answer = choice === null ? q.default : parseChoice(q.options, choice).text
   if (answer === '') return { kind: 'empty', q }
   // Answering with the default's text counts as the default, however it was typed.
@@ -228,8 +229,8 @@ export const recentAuto = (inbox: Inbox | undefined, now: number): Question[] =>
 // --- The person's view (/flow inbox) and the commands behind it (/flow ok, no, answer). ---
 // Everything that decides what is grouped, collapsed or refused is a pure function here, so the Flow pane can reuse it.
 
-// Main (the user) may answer an FYI of anyone and whatever is addressed to main.
-export const mainMayAnswer = (q: Question): boolean => isFyi(q) || isAddressee(q, 'main')
+// The user may answer any open question; one addressed to a manager is answered over the manager's head, and the manager is told.
+export const overridesManager = (q: Question): boolean => !isFyi(q) && !isAddressee(q, 'main')
 
 // Deploy, env and push items and a guard_tests suggestion change something outside the chat: a bulk
 // `/flow ok` never answers them; the person names the choice with `/flow answer`.
@@ -297,7 +298,7 @@ export function expandOk(inbox: Inbox | undefined, words: string[]): { ids: stri
   return { ids, lines }
 }
 
-const tagsOf = (q: Question): string => [
+export const tagsOf = (q: Question): string => [
   q.blocking ? 'BLOCKING' : '',
   q.kind === 'deploy' ? 'NEEDS YOU: DEPLOY APPROVAL' : q.kind === 'push' ? 'NEEDS YOU: PUSH' : q.kind === 'env' ? `NEEDS YOU:${envLabel(q)}` : q.guard !== undefined ? 'NEEDS YOU: GUARD TEST' : '',
   q.escalated !== undefined ? `ESCALATED (rule ${q.escalated}), for main` : '',
@@ -320,6 +321,69 @@ function fyiLines(q: Question, now: number): string[] {
   const lines = [`    ${q.id}${q.topic ? ` [${q.topic}]` : ''} (${age(now - q.askedAt)}): ${clip(q.question)}`]
   if (q.context) lines.push(`        why: ${clip(q.context, 140)}`)
   return lines
+}
+
+// --- The pane's inbox view: the same grouping as renderInbox, as rows a person moves over. ---
+
+export type PaneRow = {
+  // item: the question's or FYI's id. group: g:<owner>:<topic>. older: o:<owner>.
+  key: string
+  kind: 'item' | 'group' | 'older'
+  ids: string[]
+  owner?: string
+  topic?: string
+  q?: Question
+}
+
+// Questions (blocking first, then oldest), then each owner's FYIs: 3 or more of one topic fold into a group row and
+// an owner's stale FYIs into an older row. `open` lists the group and older keys the person expanded.
+export function paneRows(inbox: Inbox | undefined, now: number, opts: { live?: string[]; open?: string[] } = {}): PaneRow[] {
+  const rows: PaneRow[] = ordered(questionsOf(inbox)).map(q => ({ key: q.id, kind: 'item' as const, ids: [q.id], q }))
+  const fyis = fyisOf(inbox)
+  const open = opts.open ?? []
+  const item = (q: Question): PaneRow => ({ key: q.id, kind: 'item', ids: [q.id], owner: q.owner, q })
+  for (const o of [...new Set(fyis.map(q => q.owner))]) {
+    const mine = fyis.filter(q => q.owner === o)
+    const stale = mine.filter(q => isStaleFyi(q, now, opts.live))
+    const fresh = mine.filter(q => !stale.includes(q))
+    const byTopic = new Map<string, Question[]>()
+    for (const q of fresh) if (q.topic) byTopic.set(q.topic, [...(byTopic.get(q.topic) ?? []), q])
+    const done = new Set<string>()
+    for (const q of fresh) {
+      const g = q.topic === undefined ? undefined : byTopic.get(q.topic)
+      if (g === undefined || g.length < 3) { rows.push(item(q)); continue }
+      if (done.has(q.topic!)) continue
+      done.add(q.topic!)
+      const key = `g:${o}:${q.topic}`
+      rows.push({ key, kind: 'group', ids: g.map(x => x.id), owner: o, topic: q.topic })
+      if (open.includes(key)) rows.push(...g.map(item))
+    }
+    if (stale.length > 0) {
+      rows.push({ key: `o:${o}`, kind: 'older', ids: stale.map(x => x.id), owner: o })
+      if (open.includes(`o:${o}`)) rows.push(...stale.map(item))
+    }
+  }
+  return rows
+}
+
+// A row's one line in the pane's list.
+export function paneRowText(r: PaneRow): string {
+  const q = r.q
+  if (q === undefined) {
+    return r.kind === 'group'
+      ? `${r.topic} x${r.ids.length} (${r.owner}): ${r.ids.join(' ')}`
+      : `Older: ${plural(r.ids.length, 'FYI')} (${r.owner}): ${r.ids.join(' ')}`
+  }
+  if (isFyi(q)) return `${q.id} ${q.owner}${q.topic ? ` [${q.topic}]` : ''}: ${clip(q.question, 80)}`
+  const tags = tagsOf(q)
+  return `${q.id}${tags === '' ? '' : ` ${tags}`} ${isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`}: ${q.guard !== undefined ? q.question : clip(q.question, 80)}`
+}
+
+// Why `y`, `w` and a group keep refuse an item, and the explicit way. undefined: the item may be answered by default.
+export function protectedWhy(q: Question): string | undefined {
+  if (!needsExplicitAnswer(q)) return undefined
+  const what = q.kind === 'deploy' ? 'a deploy approval' : q.kind === 'push' ? 'a push' : q.kind === 'env' ? 'an env change' : 'a guard test suggestion'
+  return `${q.id} is ${what}: y never answers it. Press its digit or letter, or r and type your answer.`
 }
 
 // One owner's fresh FYIs: three or more of one topic collapse into one line.
@@ -356,7 +420,8 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { live?
   if (open.length > 0) {
     lines.push('', 'Questions')
     for (const q of open) lines.push(...questionLines(q, now))
-    if (open.some(mainMayAnswer)) lines.push('  Answer: /flow answer <id> <letter or your own words>. Take the default: /flow ok <id> (not for NEEDS YOU items).')
+    lines.push('  Answer: /flow answer <id> <letter or your own words>. Take the default: /flow ok <id> (not for NEEDS YOU items).')
+    if (open.some(overridesManager)) lines.push('  A question for a manager can be answered here too; that overrides the manager, who is told.')
   }
   if (fyis.length > 0) {
     lines.push('', 'FYIs (decided by agents; say if one is wrong)')
@@ -387,9 +452,10 @@ export function renderItem(inbox: Inbox | undefined, id: string, now: number): s
     ...optionLines(q, '  '),
   ]
   if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${q.answeredBy ?? '?'})`)
-  else if (mainMayAnswer(q)) {
+  else {
     lines.push('', isFyi(q) ? `Keep: /flow ok ${q.id}. Overturn: /flow no ${q.id} <what instead>.` : `Answer: /flow answer ${q.id} <letter or your own words>${needsExplicitAnswer(q) ? '' : `, or /flow ok ${q.id} for the default`}.`)
-  } else lines.push('', `It is addressed to ${q.addressee}; main cannot answer it.`)
+    if (overridesManager(q)) lines.push(`It is for ${q.addressee}; answering it overrides ${q.addressee}, who is told.`)
+  }
   return lines.join('\n')
 }
 

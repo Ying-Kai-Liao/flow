@@ -57,7 +57,7 @@ test('groups: newer than installed per version ascending, ready, no version, unk
 test('pane and inbox lines count open checks and follow-ups, and are empty when there are none', () => {
   expect(paneChecksLine(EMPTY_CHECKS, '1.0.0')).toBeUndefined()
   expect(inboxChecksSection(EMPTY_CHECKS, '1.0.0')).toEqual([])
-  expect(paneChecksLine(seed(), '0.3.30')).toBe('Checks: 4 open (1 need install of 0.3.31)')
+  expect(paneChecksLine(seed(), '0.3.30')).toBe('4 checks to try by hand (1 wait for 0.3.31 to be installed). /flow checks lists them')
 })
 
 test('closing: pass, fail needs a note and makes a follow-up, closed ones are refused, started marks the follow-up', () => {

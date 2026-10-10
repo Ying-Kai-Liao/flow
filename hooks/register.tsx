@@ -16,8 +16,9 @@ import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Graph, Notice, Plan } from './dag'
 import {
-  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, renderItem, expandOk, stillOpen, markAnswered, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, renderItem, expandOk, stillOpen, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
 } from './inbox'
+import type { PaneRow } from './inbox'
 import {
   closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, FILE_HELP, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
   recordFiling, recordSpawn, renderFollowUp, renderRound, renderStatus,
@@ -205,7 +206,12 @@ async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
 }
 const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
 // The pane draws the agents as a tree of cards or as the dependency graph; the graph's highlight is a node id.
-const viewMode = atom({ plugin: 'flow', key: 'viewMode' } as const, 'tree' as 'tree' | 'graph')
+const viewMode = atom({ plugin: 'flow', key: 'viewMode' } as const, 'tree' as 'tree' | 'graph' | 'inbox')
+// The inbox view: the highlighted row's key, the expanded groups, the typed answer and the last result line.
+const inboxCursor = atom({ plugin: 'flow', key: 'inboxCursor' } as const, null as string | null)
+const inboxOpen = atom({ plugin: 'flow', key: 'inboxOpen' } as const, [] as string[])
+const inboxDraft = atom({ plugin: 'flow', key: 'inboxDraft' } as const, '')
+const inboxNote = atom({ plugin: 'flow', key: 'inboxNote' } as const, '')
 const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
 const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders: [], waiters: [] } as TestSlots)
 
@@ -1095,13 +1101,14 @@ const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOS
 
 // The one way a question gets answered: marks it, tells the asker when that is needed, notes the decision.
 // choice null takes the question's default. Returns one result line.
-async function answerQuestion($: EngineInterface, id: string, choice: string | null, by: string, options: Record<string, unknown>): Promise<string> {
+// user: the person answering from the pane or a /flow command, who may answer any question, a manager's included.
+async function answerQuestion($: EngineInterface, id: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> {
   const at = await $.clock.now()
   const marked = await withInbox($, (cur): { inbox: Inbox; out: Marked | { kind: 'escalated'; q: Question } } => {
     // A standing rule made this the user's decision: only main answers it.
     const held = cur.items.find(x => x.id === id)
     if (held !== undefined && held.state === 'open' && held.escalated !== undefined && by !== 'main') return { inbox: cur, out: { kind: 'escalated', q: held } }
-    const m = markAnswered(cur, id, choice, by, at)
+    const m = markAnswered(cur, id, choice, by, at, undefined, user)
     return { inbox: m.kind === 'ok' ? m.inbox : cur, out: m }
   })
   if (marked.kind === 'escalated') return `${id}: refused, standing rule ${marked.q.escalated} makes this the user's decision. It is in main's inbox as ${id}; main answers it directly and the asker gets the answer. Don't answer or re-ask it.`
@@ -1110,6 +1117,9 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
   if (marked.kind === 'refused') return `${id}: refused, it is addressed to ${marked.q.addressee}, not ${by}.`
   if (marked.kind === 'empty') return `${id}: refused, the choice is empty.`
   const { q, answer, isDefault } = marked
+  // The user over a manager's head: the asker hears "the user", and the manager learns the question is closed.
+  const over = user && overridesManager(q)
+  const who = over ? 'the user' : by
   const deployNote = q.kind === 'deploy' ? await onDeployAnswer($, q, answer) : q.kind === ENV_KIND ? await onEnvAnswer($, q, answer) : q.kind === PUSH_KIND ? await onPushAnswer($, q, answer, by) : ''
   let delivered = true
   let hint = ''
@@ -1118,7 +1128,7 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
     delivered = false
     const alive = (a: AgentInfo | undefined): a is AgentInfo => a !== undefined && (LIVE.has(a.status) || a.status === 'idle')
     if (alive(asker)) {
-      delivered = await deliver($, asker.id, answerMessage(q, answer, by, isDefault), { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
+      delivered = await deliver($, asker.id, answerMessage(q, answer, who, isDefault), { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
     } else if (isFyi(q) && q.addressee !== 'main') {
       // A finished owner cannot act on an overturn: its manager (the notes owner) gets it, naming the owner.
       const mgr = (await $.agent.list()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && alive(a))
@@ -1131,9 +1141,30 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
   await withInbox($, cur => ({
     inbox: { ...cur, items: cur.items.map(x => (x.id === id ? { ...x, delivered } : x)) }, out: undefined,
   }))
+  if (over) {
+    const mgr = (await $.agent.list()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && (LIVE.has(a.status) || a.status === 'idle'))
+    if (mgr !== undefined) {
+      await deliver($, mgr.id, `flow: the user answered ${q.id}, which ${q.owner} asked you: ${answer}. It is closed; don't answer it.`, { urgent: false, onGone: () => undefined }).catch(() => false)
+    }
+  }
   if (!(isFyi(q) && isDefault)) await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${noteText(q)}: ${isFyi(q) ? `overturned, ${answer}` : answer}"`)
   const guard = q.guard !== undefined && answer === ADD_OPTION ? ` ${await addGuardTest($, options, q.guard.glob, q.guard.test)}` : ''
   return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.${guard}${deployNote}`
+}
+
+// The pane's inbox rows, read fresh. A roster with nothing in it says nothing about who is live, so age alone decides.
+async function paneInboxRows($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> {
+  const [box, open, ros, now] = await Promise.all([read($, inbox), read($, inboxOpen), read($, roster), $.clock.now()])
+  const live = ros.length === 0 ? undefined : ros.filter(a => a.name !== undefined && !ENDED.has(a.status)).map(a => a.name!)
+  return { rows: paneRows(box, now, { live, open }), now }
+}
+
+// Pane presses run one after another, so a second press sees the first one's answer and highlight.
+let paneChain: Promise<unknown> = Promise.resolve()
+const paneSerial = <T,>(fn: () => Promise<T>): Promise<T> => {
+  const run = paneChain.then(fn, fn)
+  paneChain = run.catch(() => undefined)
+  return run
 }
 
 // The question as a notes line: an env change names the variable, never its value.
@@ -4096,17 +4127,17 @@ export const register: Register = (on, options) => {
       if (verb === 'ok') {
         const { ids, lines: refused } = expandOk(await read($, inbox), rest === '' ? [] : rest.split(/\s+/))
         lines.push(...refused)
-        for (const id of ids) lines.push(await answerQuestion($, id, null, 'main', options))
+        for (const id of ids) lines.push(await answerQuestion($, id, null, 'main', options, true))
       } else if (verb === 'no') {
         const m = /^(\S+)(?:\s+([\s\S]+))?$/.exec(rest)
         const q = m === null ? undefined : (await read($, inbox)).items.find(x => x.id === m[1]!.toLowerCase())
         if (m === null) return { text: 'Usage: /flow no <id> [what to do instead]' }
         if (q !== undefined && !isFyi(q)) lines.push(`${q.id}: not an FYI; answer a question with /flow answer ${q.id} <choice>.`)
-        else lines.push(await answerQuestion($, m[1]!.toLowerCase(), m[2] ?? OVERTURN, 'main', options))
+        else lines.push(await answerQuestion($, m[1]!.toLowerCase(), m[2] ?? OVERTURN, 'main', options, true))
       } else {
         const m = /^(\S+)\s+([\s\S]+)$/.exec(rest)
         if (m === null) return { text: 'Usage: /flow answer <id> <option letter, number or your own words>' }
-        lines.push(await answerQuestion($, m[1]!.toLowerCase(), m[2]!, 'main', options))
+        lines.push(await answerQuestion($, m[1]!.toLowerCase(), m[2]!, 'main', options, true))
       }
       lines.push(stillOpen(await read($, inbox)))
       return { text: lines.join('\n') }
@@ -5375,8 +5406,11 @@ export const register: Register = (on, options) => {
     const gate = (await read($, pushState)).batch
     const askers = askingNames(await read($, inbox))
     const fyiCount = openAll(await read($, inbox)).filter(isFyi).length
+    // The key row is drawn when any key in it works: the agents' keys, the reviewer's, or the inbox's.
+    const anyOpen = openAll(await read($, inbox)).length > 0
     const checksLine = paneChecksLine(await read($, checks), installed)
-    const inboxRows = (openQs.length === 0 ? 0 : 1 + Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0)) + (fyiCount > 0 ? 1 : 0) + (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
+    // One inbox line (counts and the key) follows the listed questions.
+    const inboxRows = Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0) + (openQs.length > 0 || fyiCount > 0 ? 1 : 0) + (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
     const deployLines = behindLines(deployInfos, await read($, deploys), await read($, behind)).slice(0, 3)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
@@ -5722,7 +5756,7 @@ export const register: Register = (on, options) => {
     const queueOpen = fold[MERGE_QUEUE_KEY] === false
     const prRows = prs.length > 0 ? 1 + (queueOpen ? Math.min(prs.length, 5) : 0) : 0
     const usageRows = rows >= 20 ? Math.min(4, limits.length) : 0
-    const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows - deployLines.length
+    const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 || anyOpen || Object.keys(hs).length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows - deployLines.length
     const wide = treeItems(list, fold, cur ?? first, false, acts)
     const fullTree = CARD_ROWS + wide.items.reduce((n, i) => n + (i.collapsed ? 1 : CARD_ROWS), 0) <= avail
     const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
@@ -5759,6 +5793,157 @@ export const register: Register = (on, options) => {
       const c = (await read($, cursor)) ?? hotId
       return items.find(x => x.a.id === c) ?? items[hotIdx]
     }
+    if (mode === 'inbox') {
+      // Only some surfaces have an Input; without one the keys still answer.
+      const Input = ($.ui.resolve(e) as unknown as { Input?: (p: { key: string; label: string; placeholder: string; value: string; onInput: (v: string) => void; onSubmit: (v: string) => void }) => null }).Input
+      const [ibox, iopen, icur, draft, note] = await Promise.all([read($, inbox), read($, inboxOpen), read($, inboxCursor), read($, inboxDraft), read($, inboxNote)])
+      const live = list.length === 0 ? undefined : list.filter(a => a.name !== undefined && !ENDED.has(a.status)).map(a => a.name!)
+      const irows = paneRows(ibox, t, { live, open: iopen })
+      const ihot = Math.max(0, irows.findIndex(r => r.key === icur))
+      const hotRow = irows[ihot]
+      const hq = hotRow?.q
+      const members = hotRow === undefined || hotRow.kind === 'item' ? [] : ibox.items.filter(x => hotRow.ids.includes(x.id)).slice(0, 3)
+      const detail = hq !== undefined ? 2 + hq.options.length + (hq.context ? 1 : 0) : hotRow === undefined ? 1 : 1 + members.length
+      const size = Math.max(2, rows - 1 - detail - 4 - 2)
+      const win = viewOf(irows, ihot, size)
+      const iBelow = irows.length - win.top - win.rows.length
+      // Every press reads the inbox fresh (never the row drawn), so it acts on what is open now.
+      const here = async () => {
+        await acted()
+        const { rows: fresh } = await paneInboxRows($)
+        const c = await read($, inboxCursor)
+        const i = Math.max(0, fresh.findIndex(r => r.key === c))
+        return { fresh, i, row: fresh[i] }
+      }
+      // After an answer the highlight goes to the next row (else the one before), and the result is shown.
+      const done = async (lines: string[], fresh: PaneRow[], i: number) => {
+        const next = fresh[i + 1] ?? fresh[i - 1]
+        await update($, inboxCursor, () => next?.key ?? null)
+        const text = lines.join(' ')
+        await update($, inboxNote, () => text)
+        void $.ui.toast(clip(text, 120))
+      }
+      const say = (text: string) => update($, inboxNote, () => text)
+      const answerRow = (id: string, choice: string | null) => answerQuestion($, id, choice, 'main', {}, true)
+      const pickOption = (n: number) => () => paneSerial(async () => {
+        const { fresh, i, row } = await here()
+        if (row?.q === undefined) return say('Move to a question or an FYI first.')
+        if (n >= row.q.options.length) return
+        await done([await answerRow(row.q.id, row.q.options[n]!)], fresh, i)
+      })
+      const takeDefault = () => paneSerial(async () => {
+        const { fresh, i, row } = await here()
+        if (row === undefined) return
+        const lines: string[] = []
+        let refused = 0
+        for (const id of row.ids) {
+          const q = (await read($, inbox)).items.find(x => x.id === id)
+          const why = q === undefined ? undefined : protectedWhy(q)
+          if (why !== undefined) { lines.push(why); refused++; continue }
+          lines.push(await answerRow(id, null))
+        }
+        // A refusal leaves the highlight where it is.
+        if (refused === lines.length) return say(lines.join(' '))
+        await done(lines, fresh, i)
+      })
+      const keepAll = () => paneSerial(async () => {
+        const { fresh, i } = await here()
+        const open = (await read($, inbox)).items.filter(x => x.state === 'open' && isFyi(x) && protectedWhy(x) === undefined)
+        if (open.length === 0) return say('No open FYIs to keep.')
+        const lines: string[] = []
+        for (const q of open) lines.push(await answerRow(q.id, null))
+        const kept = lines.filter(l => l.includes(': Keep (default)')).length
+        await done([`Kept ${kept} FYI${kept === 1 ? '' : 's'}.`, ...lines.filter(l => !l.includes(': Keep (default)'))], fresh, i)
+      })
+      const overturn = () => paneSerial(async () => {
+        const { fresh, i, row } = await here()
+        if (row?.q === undefined || !isFyi(row.q)) return say('n overturns one FYI: move to it first.')
+        const text = (await read($, inboxDraft)).trim()
+        await update($, inboxDraft, () => '')
+        await done([await answerRow(row.q.id, text === '' ? OVERTURN : text)], fresh, i)
+      })
+      const reply = () => paneSerial(async () => {
+        await acted()
+        await say('Type your answer and press Enter.')
+        void $.ui.focus({ requestId: PANE, key: 'inbox-answer' }).catch(() => undefined)
+      })
+      const submit = (value: string) => void paneSerial(async () => {
+        const text = value.trim()
+        if (text === '') return
+        const { fresh, i, row } = await here()
+        if (row?.q === undefined) return say('Move to a question or an FYI first.')
+        await update($, inboxDraft, () => '')
+        await done([await answerRow(row.q.id, text)], fresh, i)
+      })
+      const move = (d: number) => () => paneSerial(async () => {
+        const { fresh, i } = await here()
+        const to = fresh[Math.min(fresh.length - 1, Math.max(0, i + d))]
+        if (to !== undefined) await update($, inboxCursor, () => to.key)
+      })
+      const expand = () => paneSerial(async () => {
+        const { row } = await here()
+        const open = await read($, inboxOpen)
+        const k = row === undefined ? undefined : row.kind !== 'item' ? row.key : [`g:${row.owner}:${row.q?.topic}`, `o:${row.owner}`].find(x => open.includes(x))
+        if (k === undefined) return
+        await update($, inboxOpen, o => (o.includes(k) ? o.filter(x => x !== k) : [...o, k]))
+      })
+      const back = async () => {
+        await acted()
+        await update($, viewMode, () => 'tree')
+      }
+      const nOpts = hq?.options.length ?? 0
+      const nQ = ibox.items.filter(x => x.state === 'open' && !isFyi(x)).length
+      const nF = ibox.items.filter(x => x.state === 'open' && isFyi(x)).length
+      return (
+        <Box flexDirection="column" height={rows}>
+          <Text bold>Inbox <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} FYI${nF === 1 ? '' : 's'}`}</Text></Text>
+          {win.top > 0 && <Text dimColor>  ↑ {win.top} above</Text>}
+          {win.rows.map(r => (
+            <Button key={`row-${r.key}`} plain onPress={() => void paneSerial(async () => { await acted(); await update($, inboxCursor, () => r.key) })}>
+              <Text inverse={r.key === hotRow?.key} color={r.q?.blocking ? 'warning' : undefined} wrap="truncate-end">{r.key === hotRow?.key ? '> ' : '  '}{paneRowText(r)}</Text>
+            </Button>
+          ))}
+          {iBelow > 0 && <Text dimColor>  ↓ {iBelow} more</Text>}
+          {hq !== undefined && (
+            <Box flexDirection="column">
+              <Text bold>{hq.id} {isFyi(hq) ? 'FYI' : 'question'} {tagsOf(hq)}</Text>
+              <Text>{hq.question}</Text>
+              {hq.options.map((o, k) => <Text key={`opt-${k}`}>  {String.fromCharCode(97 + k)}) {o}{o === hq.default ? ' (default)' : ''}</Text>)}
+              {hq.context && <Text dimColor>why: {clip(hq.context, 200)}</Text>}
+            </Box>
+          )}
+          {hq === undefined && hotRow !== undefined && (
+            <Box flexDirection="column">
+              <Text bold>{paneRowText(hotRow)}</Text>
+              {members.map(m => <Text key={`m-${m.id}`} dimColor wrap="truncate-end">  {m.id}: {clip(m.question, 90)}</Text>)}
+            </Box>
+          )}
+          {hotRow === undefined && <Text dimColor>Nothing to answer.</Text>}
+          {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
+          <Box flexGrow={1} />
+          {Input !== undefined && <Input key="inbox-answer" label="answer " placeholder="your own words (r), or what instead (n)" value={draft} onInput={(v: string) => void update($, inboxDraft, () => v)} onSubmit={submit} />}
+          <Box flexDirection="row" gap={1}>
+            {Array.from({ length: Math.min(nOpts, 8) }, (_, k) => (
+              <Button key={`pick-${String.fromCharCode(97 + k)}`} plain dimColor hotkey={String.fromCharCode(97 + k)} onPress={pickOption(k)}>{String.fromCharCode(97 + k)}</Button>
+            ))}
+            {Array.from({ length: Math.min(nOpts, 9) }, (_, k) => (
+              <Button key={`pick-${k + 1}`} plain dimColor hotkey={String(k + 1)} onPress={pickOption(k)}>{k + 1}</Button>
+            ))}
+            {nOpts > 0 && <Text dimColor>pick</Text>}
+          </Box>
+          <Box flexDirection="row" gap={1}>
+            <Button key="inbox-next" plain dimColor hotkey="j" onPress={move(1)}>j next</Button>
+            <Button key="inbox-prev" plain dimColor hotkey="k" onPress={move(-1)}>k prev</Button>
+            <Button key="inbox-yes" plain dimColor hotkey="y" onPress={takeDefault}>y default/keep</Button>
+            <Button key="inbox-all" plain dimColor hotkey="w" onPress={keepAll}>w keep FYIs</Button>
+            <Button key="inbox-no" plain dimColor hotkey="n" onPress={overturn}>n overturn</Button>
+            <Button key="inbox-reply" plain dimColor hotkey="r" onPress={reply}>r reply</Button>
+            <Button key="inbox-expand" plain dimColor hotkey="x" onPress={expand}>x expand</Button>
+            <Button key="inbox-back" plain dimColor hotkey="i" onPress={back}>i back</Button>
+          </Box>
+        </Box>
+      )
+    }
     if (mode === 'graph') {
       const ids = new Set(list.map(a => a.id))
       return (
@@ -5773,7 +5958,7 @@ export const register: Register = (on, options) => {
       : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" height={rows}>
         {gate !== undefined && gate.state === 'ready' && (
           <Text color="warning" bold wrap="truncate-end">⇪ Batch {gate.id} ready to push: {gate.prs.map(n => `#${n}`).join(' ')}{gate.version === undefined ? '' : ` (${gate.version})`} · check: {gate.check}</Text>
         )}
@@ -5781,13 +5966,19 @@ export const register: Register = (on, options) => {
         {gate !== undefined && gate.state !== 'ready' && (
           <Text color="suggestion" wrap="truncate-end">⇪ Batch {gate.id} {gate.state === 'pushing' ? 'released, a reviewer is pushing it' : `is being rebuilt${gate.reason === undefined ? '' : ` (${gate.reason})`}`}: {gate.prs.map(n => `#${n}`).join(' ')}</Text>
         )}
-        <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PRs handed over` : ''} · press one to see it</Text>
+        <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PR${prs.length === 1 ? '' : 's'} with the reviewer` : ''}{list.length > 0 ? ' · press an agent to open it' : ''}</Text>
         {openQs.slice(0, 5).map(q => (
           <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{q.id} {q.owner}: {q.question}</Text>
         ))}
         {openQs.length > 5 && <Text dimColor>and {openQs.length - 5} more</Text>}
-        {openQs.length > 0 && <Text dimColor>/flow inbox to read, answer in the chat</Text>}
-        {fyiCount > 0 && <Text dimColor>{fyiCount} FYI (decided by agents; /flow inbox)</Text>}
+        {(openQs.length > 0 || fyiCount > 0) && (
+          <Text dimColor wrap="truncate-end">
+            Inbox: {[
+              ...(openQs.length > 0 ? [`${openQs.length} question${openQs.length === 1 ? '' : 's'} for you${openQs.some(q => q.blocking) ? ` (${openQs.filter(q => q.blocking).length} blocking)` : ''}`] : []),
+              ...(fyiCount > 0 ? [`${fyiCount} FYI${fyiCount === 1 ? '' : 's'} (decisions agents made)`] : []),
+            ].join(', ')}. Press i to answer or keep them.
+          </Text>
+        )}
         {checksLine !== undefined && <Text dimColor wrap="truncate-end">{checksLine}</Text>}
         {unhanded.length > 0 && (
           <Text color="warning" wrap="truncate-end">
@@ -5828,17 +6019,23 @@ export const register: Register = (on, options) => {
           </Text>
         ))}
         {deployLines.map(l => <Text key={`deploy-${l}`} dimColor wrap="truncate-end">{'  '}⏸ {l}</Text>)}
-        {list.length > 0 && (
+        {(list.length > 0 || anyOpen || prs.length > 0) && <Box flexGrow={1} />}
+        {(list.length > 0 || anyOpen || prs.length > 0) && (
           <Box flexDirection="row" gap={1}>
-            <Button key="nav-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>
-            <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>
-            <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>
-            <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
+            {list.length > 0 && <Button key="nav-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
+            {list.length > 0 && <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
+            {list.length > 0 && <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>}
+            {list.length > 0 && <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
               const i = await hotItem()
               if (i) await toggleFold(i.a, i.collapsed)
-            }}>{items[hotIdx]?.collapsed ? 'c expand' : 'c collapse'}</Button>
+            }}>{items[hotIdx]?.collapsed ? 'c expand' : 'c collapse'}</Button>}
             {prs.length > 0 && <Button key="nav-queue" plain dimColor hotkey="q" onPress={toggleQueue}>q reviewer</Button>}
-            {toggle}
+            {anyOpen && <Button key="nav-inbox" plain dimColor hotkey="i" onPress={async () => {
+              await acted()
+              await update($, inboxCursor, () => null)
+              await update($, viewMode, () => 'inbox')
+            }}>i inbox</Button>}
+            {list.length > 0 && toggle}
           </Box>
         )}
       </Box>

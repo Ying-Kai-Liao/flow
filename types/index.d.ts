@@ -410,7 +410,11 @@ declare module 'claude-code' {
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots
-      viewMode: 'tree' | 'graph'
+      viewMode: 'tree' | 'graph' | 'inbox'
+      inboxCursor: string | null
+      inboxOpen: string[]
+      inboxDraft: string
+      inboxNote: string
       graphFocus: string | null
       overrideView: string | null | undefined
       hinted: boolean

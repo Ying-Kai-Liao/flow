@@ -153,8 +153,12 @@ export function paneChecksLine(c: Checks, installed: string | undefined): string
   const g = groupOpen(c, installed)
   const need = g.install.reduce((n, x) => n + x.items.length, 0)
   const vers = g.install.map(x => x.version).join(', ')
-  const bits = [...(need ? [`${need} need install of ${vers}`] : []), ...(fu.length ? [`${fu.length} follow-up${fu.length > 1 ? 's' : ''}`] : [])]
-  return `Checks: ${open.length} open${bits.length ? ` (${bits.join(', ')})` : ''}`
+  const waits = need ? ` (${need} wait for ${vers} to be installed)` : ''
+  const parts = [
+    ...(open.length ? [`${open.length} check${open.length === 1 ? '' : 's'} to try by hand${waits}`] : []),
+    ...(fu.length ? [`${fu.length} failed check${fu.length === 1 ? '' : 's'} to hand to a manager`] : []),
+  ]
+  return `${parts.join(', ')}. /flow checks lists them`
 }
 
 // The /flow resume section: open checks are mentioned only; follow-ups are work for main to start.

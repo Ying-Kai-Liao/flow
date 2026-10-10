@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Flow pane inbox view (`i`): read every open question and FYI, and answer with keys (`j`/`k`, digits and letters, `y`, `w`, `n`, `r` and the answer field). FYIs fold by topic (`worker-size x7`) and age. Deploy, env, push and guard items are never answered by `y` or `w`.
+
+### Changed
+
+- The user may answer any open question from the pane and `/flow ok|no|answer`, including a worker's question to its manager; the asker and a live manager are told. `mcp__flow__answer` keeps the addressee rule.
+- The pane's key row is pinned to the bottom of the pane and also shows with no agents when a key in it works.
+- The pane's status lines are plain language: one inbox line, "Cleanup: ... can be removed, ... kept for you to decide", "N checks to try by hand".
+
 ## [0.6.10] - 2026-10-10
 
 ### Fixed
