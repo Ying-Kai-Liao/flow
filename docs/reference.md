@@ -150,6 +150,10 @@ restart. A failure in the ledger never touches the step.
   on the PR's branch, `-2` successors included), the reviewer, main and the session. Handover
   lines in status carry the PR's cost, and the reviewer's done report gets `| cost: ~$X (...)`
   appended (once). Workers run in other harness sessions are not counted.
+- **Session scope:** the block lists this session's entries (agents in the roster, or counted since
+  the session started; main is keyed per session as `main@<start>`) plus one "All time" line.
+  Per-PR cost on handover lines and in the done report is by branch across sessions. Entries not
+  counted for 90 days are dropped from `ledger.json` when it is loaded or saved.
 - **Prices are estimates:** one table in `hooks/cost.ts`, USD per million tokens at Anthropic
   first-party API list prices (taken 2026-10-10). Subscription plans are billed differently. A
   model not in the table is priced as the newest of its family; one that matches no family

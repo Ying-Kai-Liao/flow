@@ -2,12 +2,14 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { addStep, costBlock, costOf, hitRate, humanTokens, money, normalizeLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'
+import { addStep, costBlock, costOf, hitRate, humanTokens, money, normalizeLedger, pruneLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'
 import type { Ledger } from '../types'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
 
+// Steps counted at t=1_000_000 unless a test says otherwise.
+const add = (l: Ledger, key: string, model: string, usage: unknown, who?: Parameters<typeof addStep>[4], now = 1_000_000) => addStep(l, key, model, usage, who, now)
 const bucket = (b: Partial<typeof ZERO>) => ({ ...ZERO, ...b })
 const near = (a: number | undefined, b: number) => expect(Math.abs((a ?? NaN) - b)).toBeLessThan(1e-9)
 
@@ -39,12 +41,12 @@ test('an alias or an unknown version is priced as the newest of its family; an u
 
 test('haiku 5.5 prompts over 100K tokens are priced per step at the long tier', () => {
   let l: Ledger = {}
-  l = addStep(l, 'a', 'claude-haiku-5-5', { input_tokens: 150_000, output_tokens: 1000 })
-  l = addStep(l, 'a', 'claude-haiku-5-5', { input_tokens: 50_000 })
+  l = add(l, 'a', 'claude-haiku-5-5', { input_tokens: 150_000, output_tokens: 1000 })
+  l = add(l, 'a', 'claude-haiku-5-5', { input_tokens: 50_000 })
   // 150k at 0.50 + 1k out at 2.50, then 50k at 0.10.
   near(costOf('claude-haiku-5-5', l.a!.models['claude-haiku-5-5']!), 0.075 + 0.0025 + 0.005)
   // The threshold counts the whole prompt: cache reads too.
-  l = addStep({}, 'b', 'claude-haiku-5-5', { input_tokens: 10, cache_read_input_tokens: 100_000 })
+  l = add({}, 'b', 'claude-haiku-5-5', { input_tokens: 10, cache_read_input_tokens: 100_000 })
   near(costOf('claude-haiku-5-5', l.b!.models['claude-haiku-5-5']!), (10 * 0.5 + 100_000 * 0.05) / 1e6)
 })
 
@@ -55,11 +57,11 @@ test('hit rate is cache read over every prompt token', () => {
 
 test('steps add up across steps and models; missing fields count as 0; the cache write splits when the usage says so', () => {
   let l: Ledger = {}
-  l = addStep(l, 'w1', 'claude-sonnet-5-5', { input_tokens: 100, cache_creation_input_tokens: 40, cache_read_input_tokens: 10, output_tokens: 5 }, { role: 'worker', name: 'w' })
-  l = addStep(l, 'w1', 'claude-sonnet-5-5', { input_tokens: 1, cache_creation_input_tokens: 30, cache_creation: { ephemeral_5m_input_tokens: 10, ephemeral_1h_input_tokens: 20 } })
-  l = addStep(l, 'w1', 'claude-haiku-5-5', { output_tokens: 7 })
-  l = addStep(l, 'w1', 'claude-haiku-5-5', undefined)
-  l = addStep(l, 'w1', 'claude-haiku-5-5', {})
+  l = add(l, 'w1', 'claude-sonnet-5-5', { input_tokens: 100, cache_creation_input_tokens: 40, cache_read_input_tokens: 10, output_tokens: 5 }, { role: 'worker', name: 'w' })
+  l = add(l, 'w1', 'claude-sonnet-5-5', { input_tokens: 1, cache_creation_input_tokens: 30, cache_creation: { ephemeral_5m_input_tokens: 10, ephemeral_1h_input_tokens: 20 } })
+  l = add(l, 'w1', 'claude-haiku-5-5', { output_tokens: 7 })
+  l = add(l, 'w1', 'claude-haiku-5-5', undefined)
+  l = add(l, 'w1', 'claude-haiku-5-5', {})
   expect(l.w1!.models['claude-sonnet-5-5']).toEqual({ input: 101, write5m: 50, write1h: 20, read: 10, output: 5 })
   expect(l.w1!.models['claude-haiku-5-5']).toEqual(bucket({ output: 7 }))
   expect(l.w1!.name).toBe('w')
@@ -74,14 +76,14 @@ test('totals per manager (with its workers and successors) and per PR (a -2 succ
   const use = { input_tokens: 1_000_000 }
   let l: Ledger = {}
   const m = 'claude-opus-5-5'
-  l = addStep(l, 'm1', m, use, { role: 'manager', name: 'csv' })
-  l = addStep(l, 'w1', m, use, { role: 'worker', name: 'csv-worker', manager: 'csv', branch: 'flow/csv-worker' })
-  l = addStep(l, 'w2', m, use, { role: 'worker', name: 'csv-worker-2', manager: 'csv-2', branch: 'flow/csv-worker' })
-  l = addStep(l, 'w3', m, use, { role: 'worker', name: 'other', manager: 'other', branch: 'flow/other' })
-  l = addStep(l, 'q1', m, use, { role: 'reviewer', name: 'reviewer-1' })
-  l = addStep(l, 'main', m, use)
+  l = add(l, 'm1', m, use, { role: 'manager', name: 'csv' })
+  l = add(l, 'w1', m, use, { role: 'worker', name: 'csv-worker', manager: 'csv', branch: 'flow/csv-worker' })
+  l = add(l, 'w2', m, use, { role: 'worker', name: 'csv-worker-2', manager: 'csv-2', branch: 'flow/csv-worker' })
+  l = add(l, 'w3', m, use, { role: 'worker', name: 'other', manager: 'other', branch: 'flow/other' })
+  l = add(l, 'q1', m, use, { role: 'reviewer', name: 'reviewer-1' })
+  l = add(l, 'main@1', m, use)
   near(prCost(l, 'flow/csv-worker').usd, 8)
-  const text = costBlock(l, [{ pr: 7, branch: 'flow/csv-worker' }], true).join('\n')
+  const text = costBlock(l, [{ pr: 7, branch: 'flow/csv-worker' }], true, { start: 0, live: new Set() }).join('\n')
   expect(text).toContain('Cost (estimates at API list prices):')
   expect(text).toContain('manager csv total (with its workers): ~$12.00')
   expect(text).toContain('PR #7 (flow/csv-worker) workers: ~$8.00')
@@ -89,7 +91,38 @@ test('totals per manager (with its workers and successors) and per PR (a -2 succ
   expect(text).toContain('main total: ~$4.00')
   expect(text).toContain('session total: ~$24.00')
   expect(text).toContain('not counted')
-  expect(costBlock({}, [], false)).toEqual([])
+  expect(costBlock({}, [], false, { start: 0, live: new Set() })).toEqual([])
+})
+
+test('the block lists this session only; the all-time line counts both; a live agent stays in', () => {
+  const m = 'claude-opus-5-5'
+  const use = { input_tokens: 1_000_000 }
+  const day = 24 * 3600 * 1000
+  let l: Ledger = {}
+  l = add(l, 'main@100', m, use, undefined, 100)
+  l = add(l, 'old', m, use, { role: 'worker', name: 'old-worker', branch: 'flow/old' }, 200)
+  l = add(l, 'main@5000', m, use, undefined, 5000)
+  l = add(l, 'new', m, use, { role: 'worker', name: 'new-worker', branch: 'flow/new' }, 5100)
+  l = add(l, 'kept', m, use, { role: 'worker', name: 'kept-worker', branch: 'flow/kept' }, 300)
+  expect(Object.keys(l)).toEqual(['main@100', 'old', 'main@5000', 'new', 'kept'])
+  expect(l['main@100']!.name).toBe('main')
+  const text = costBlock(l, [{ pr: 1, branch: 'flow/old' }, { pr: 2, branch: 'flow/new' }], false, { start: 5000, live: new Set(['kept']) }).join('\n')
+  expect(text).toContain('worker new-worker')
+  expect(text).toContain('worker kept-worker')
+  expect(text).not.toContain('old-worker')
+  expect(text).toContain('PR #2')
+  expect(text).not.toContain('PR #1')
+  expect(text).toContain('session total: ~$12.00')
+  expect(text).toMatch(/All time \(since \d{4}-\d{2}-\d{2}\): ~\$20\.00/)
+  void day
+})
+
+test('pruneLedger drops entries older than 90 days and entries with no lastAt', () => {
+  const day = 24 * 3600 * 1000
+  const now = 200 * day
+  const e = { role: 'worker' as const, name: 'x', models: {} }
+  const l: Ledger = { fresh: { ...e, lastAt: now - 89 * day }, stale: { ...e, lastAt: now - 91 * day }, none: e }
+  expect(Object.keys(pruneLedger(l, now))).toEqual(['fresh'])
 })
 
 test('numbers are humanised and dollars compact', () => {
@@ -115,6 +148,7 @@ function world(on: On) {
     model: 'claude-opus-5-5', input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
   }
   on('agent.list', () => ({ value: agents }))
+  on('session.usage', () => ({ value: { startedAt: 900_000, rateLimits: [], context: { window: 200_000, tokens: undefined, percent: undefined } } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -182,11 +216,21 @@ test('the reviewer\'s done report gets the PR\'s cost once, and handover lines s
   expect(line.match(/\| cost:/g)?.length).toBe(1)
 })
 
-test('after a restart the ledger on disk is the history new steps are added to', async ($, on) => {
+test('after a restart the ledger on disk is history: only this session is listed, the all-time line has both, main is keyed per session', async ($, on) => {
   const w = world(on)
-  w.files.set('/r/.git/flow/ledger.json', JSON.stringify({ old: { role: 'worker', name: 'gone', branch: 'flow/gone', models: { 'claude-opus-5-5': bucket({ input: 1_000_000 }) } } }))
+  const old = { role: 'worker', name: 'gone', branch: 'flow/gone', firstAt: 500_000, lastAt: 500_000, models: { 'claude-opus-5-5': bucket({ input: 1_000_000 }) } }
+  const noStamp = { role: 'worker', name: 'unstamped', models: { 'claude-opus-5-5': bucket({ input: 1_000_000 }) } }
+  w.files.set('/r/.git/flow/ledger.json', JSON.stringify({ old, noStamp, 'main@100': { ...old, role: 'main', name: 'main' } }))
   await step($, 'w1')
+  await step($, undefined)
   const text = await status($)
-  expect(text).toContain('worker gone [claude-opus-5-5]: ~$4.00')
+  expect(text).not.toContain('worker gone')
+  expect(text).toContain('worker csv-worker [claude-opus-5-5]: ~$4.00')
+  expect(text).toContain('main total: ~$4.00')
   expect(text).toContain('session total: ~$8.00')
+  expect(text).toMatch(/All time \(since \d{4}-\d{2}-\d{2}\): ~\$16\.00/)
+  await w.clock.advance(3500)
+  await w.clock.settle()
+  const saved = JSON.parse([...w.files].find(([k]) => k.startsWith('/r/.git/flow/ledger.json.'))![1]) as Record<string, unknown>
+  expect(Object.keys(saved).sort()).toEqual(['main@100', 'main@900000', 'old', 'w1'])
 })

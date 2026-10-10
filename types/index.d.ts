@@ -13,6 +13,9 @@ export type LedgerEntry = {
   spawnModel?: string
   // A brief size tag (small/normal/large); unset today, a later routing change fills it.
   size?: string
+  // When the agent was first and last counted (ms); the status block and the 90-day prune use them.
+  firstAt?: number
+  lastAt?: number
   models: Record<string, Bucket>
 }
 export type Ledger = Record<string, LedgerEntry>

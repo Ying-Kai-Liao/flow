@@ -5,6 +5,7 @@
 // To update: edit PRICES below (USD per million tokens) and nothing else; the ledger keeps tokens,
 // not dollars, so a changed table reprices history.
 
+import { localDate } from './release'
 import type { Bucket, Ledger, LedgerEntry, Role, Tokens } from '../types'
 
 export type Rates = { input: number; write5m: number; write1h: number; read: number; output: number }
@@ -98,16 +99,17 @@ export function stepTokens(usage: unknown): Tokens | undefined {
   return { input: num(u.input_tokens), write5m, write1h, read: num(u.cache_read_input_tokens), output: num(u.output_tokens) }
 }
 
-export type Identity = Partial<Omit<LedgerEntry, 'models'>>
+export type Identity = Partial<Omit<LedgerEntry, 'models' | 'firstAt' | 'lastAt'>>
 
 const definedOnly = <T extends object>(o: T): Partial<T> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>
 
 // The ledger with one step added (a new object; the old one is untouched). A step with no tokens at all is skipped.
-export function addStep(ledger: Ledger, key: string, model: string, usage: unknown, who?: Identity): Ledger {
+export function addStep(ledger: Ledger, key: string, model: string, usage: unknown, who: Identity | undefined, now: number): Ledger {
   const t = stepTokens(usage)
   if (t === undefined || all(t) === 0) return ledger
-  const cur: LedgerEntry = ledger[key] ?? { role: key === 'main' ? 'main' : 'other', name: key === 'main' ? 'main' : key, models: {} }
-  const entry: LedgerEntry = { ...cur, ...(who ? definedOnly(who) : {}) }
+  const isMain = key.startsWith('main@')
+  const cur: LedgerEntry = ledger[key] ?? { role: isMain ? 'main' : 'other', name: isMain ? 'main' : key, models: {} }
+  const entry: LedgerEntry = { ...cur, ...(who ? definedOnly(who) : {}), firstAt: cur.firstAt ?? now, lastAt: now }
   const b: Bucket = entry.models[model] ?? { ...ZERO }
   const over = priceOf(model)?.long?.over
   const long = over !== undefined && prompt(t) > over
@@ -116,9 +118,9 @@ export function addStep(ledger: Ledger, key: string, model: string, usage: unkno
 }
 
 // Identity recorded at spawn (or filled from the roster): sets the fields, keeps the tokens.
-export function setIdentity(ledger: Ledger, key: string, who: Identity & { role: Role; name: string }): Ledger {
+export function setIdentity(ledger: Ledger, key: string, who: Identity & { role: Role; name: string }, now: number): Ledger {
   const cur = ledger[key]
-  return { ...ledger, [key]: { models: {}, ...cur, ...definedOnly(who) } as LedgerEntry }
+  return { ...ledger, [key]: { models: {}, ...cur, ...definedOnly(who), firstAt: cur?.firstAt ?? now, lastAt: now } as LedgerEntry }
 }
 
 // What came off disk: anything that is not a ledger entry is dropped.
@@ -145,9 +147,20 @@ export function mergeLedgers(a: Ledger, b: Ledger): Ledger {
       const x = models[m]
       models[m] = x === undefined ? bk : { ...add(x, bk), ...(x.long || bk.long ? { long: add(x.long ?? ZERO, bk.long ?? ZERO) } : {}) }
     }
-    out[k] = { ...e, ...o, models }
+    out[k] = {
+      ...e, ...o, models,
+      ...(o.firstAt !== undefined || e.firstAt !== undefined ? { firstAt: Math.min(o.firstAt ?? Infinity, e.firstAt ?? Infinity) } : {}),
+      ...(o.lastAt !== undefined || e.lastAt !== undefined ? { lastAt: Math.max(o.lastAt ?? 0, e.lastAt ?? 0) } : {}),
+    }
   }
   return out
+}
+
+// The ledger file stays bounded: an entry not counted for 90 days goes, and so does one with no `lastAt`.
+export const KEEP_MS = 90 * 24 * 3600 * 1000
+export function pruneLedger(ledger: Ledger, now: number): Ledger {
+  const kept = Object.entries(ledger).filter(([, e]) => e.lastAt !== undefined && e.lastAt >= now - KEEP_MS)
+  return kept.length === Object.keys(ledger).length ? ledger : Object.fromEntries(kept)
 }
 
 // --- Totals ---
@@ -208,9 +221,13 @@ export const entriesOfBranch = (ledger: Ledger, branch: string): LedgerEntry[] =
 export const prCost = (ledger: Ledger, branch: string): Total => totalOf(entriesOfBranch(ledger, branch))
 
 // The block of `status`: one line per agent that took steps, then manager, PR, reviewer, main and session totals.
-export function costBlock(ledger: Ledger, prs: { pr: number; branch: string }[], otherSessions: boolean): string[] {
-  const entries = Object.values(ledger).filter(e => Object.keys(e.models).length > 0)
-  if (entries.length === 0) return []
+// `scope`: this session started at `start` and has `live` agent ids in its roster. An entry is this
+// session's when its agent is live or was counted since the start; the older ones only reach the all-time line.
+export function costBlock(ledger: Ledger, prs: { pr: number; branch: string }[], otherSessions: boolean, scope: { start: number; live: Set<string> }): string[] {
+  const counted = Object.entries(ledger).filter(([, e]) => Object.keys(e.models).length > 0)
+  if (counted.length === 0) return []
+  const here = counted.filter(([k, e]) => scope.live.has(k) || (e.lastAt ?? 0) >= scope.start)
+  const entries = here.map(([, e]) => e)
   const lines = ['Cost (estimates at API list prices):']
   const order: Record<Role, number> = { main: 0, manager: 1, worker: 2, reviewer: 3, other: 4 }
   for (const e of [...entries].sort((a, b) => order[a.role] - order[b.role] || a.name.localeCompare(b.name))) {
@@ -221,7 +238,7 @@ export function costBlock(ledger: Ledger, prs: { pr: number; branch: string }[],
     lines.push(`  manager ${m} total (with its workers): ${totalText(totalOf(entries.filter(e => ownerOf(e) === m)))}`)
   }
   for (const p of [...prs].sort((a, b) => a.pr - b.pr)) {
-    const mine = entriesOfBranch(ledger, p.branch).filter(e => Object.keys(e.models).length > 0)
+    const mine = entriesOfBranch(ledger, p.branch).filter(e => entries.includes(e) && Object.keys(e.models).length > 0)
     if (mine.length > 0) lines.push(`  PR #${p.pr} (${p.branch}) workers: ${totalText(totalOf(mine))}`)
   }
   const rev = entries.filter(e => e.role === 'reviewer')
@@ -229,6 +246,8 @@ export function costBlock(ledger: Ledger, prs: { pr: number; branch: string }[],
   const main = entries.filter(e => e.role === 'main')
   if (main.length > 0) lines.push(`  main total: ${totalText(totalOf(main))}`)
   lines.push(`  session total: ${totalText(totalOf(entries))}`)
+  const first = Math.min(...counted.map(([, e]) => e.firstAt ?? Infinity))
+  lines.push(`  All time${Number.isFinite(first) ? ` (since ${localDate(first)})` : ''}: ${totalText(totalOf(counted.map(([, e]) => e)))}`)
   if (otherSessions) lines.push('  Workers run in other harness sessions are not counted.')
   return lines
 }

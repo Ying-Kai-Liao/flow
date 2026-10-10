@@ -6,7 +6,7 @@ import { absolutePath, parseAttachments, rewriteAttachments } from './attachment
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
-import { addStep, costBlock, mergeLedgers, normalizeLedger, prCost, reportSuffix, setIdentity } from './cost'
+import { addStep, costBlock, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
@@ -878,7 +878,8 @@ function loadLedger($: EngineInterface): Promise<void> {
       const dir = await stateDir($)
       if (dir === undefined) return
       const disk = normalizeLedger(await readJson($, `${dir}/ledger.json`))
-      await update($, ledger, cur => mergeLedgers(disk, cur))
+      const now = await $.clock.now()
+      await update($, ledger, cur => pruneLedger(mergeLedgers(disk, cur), now))
     } catch {
       // No history: count from here.
     }
@@ -891,26 +892,35 @@ async function saveLedger($: EngineInterface): Promise<void> {
     const dir = await stateDir($)
     if (dir === undefined) return
     await $.process.run(['mkdir', '-p', dir])
-    await writeJsonAtomic($, `${dir}/ledger.json`, await read($, ledger))
+    await writeJsonAtomic($, `${dir}/ledger.json`, pruneLedger(await read($, ledger), await $.clock.now()))
   } catch {
     // The meter is best-effort.
   }
 }
 
 // Every step changes the ledger; the file is written at most every few seconds.
-async function changeLedger($: EngineInterface, fn: (l: Ledger) => Ledger): Promise<void> {
+async function changeLedger($: EngineInterface, fn: (l: Ledger, now: number) => Ledger): Promise<void> {
   await loadLedger($)
-  await update($, ledger, fn)
+  const now = await $.clock.now()
+  await update($, ledger, l => fn(l, now))
   if (ledgerSaveDue) return
   ledgerSaveDue = true
   $.clock.after(3000, () => { ledgerSaveDue = false; void saveLedger($) })
+}
+
+// Main's entry is per session: the ledger outlives the session, and its steps must not merge with an earlier one's.
+async function mainKey($: EngineInterface): Promise<string> {
+  const u = await $.session.usage().then(x => x, () => undefined)
+  return `main@${u?.startedAt ?? 0}`
 }
 
 // The cost block of status, or nothing before the first counted step.
 async function costLines($: EngineInterface, prs: { pr: number; branch: string }[]): Promise<string[]> {
   try {
     await loadLedger($)
-    return costBlock(await read($, ledger), prs, Object.keys(await read($, sessions)).length > 0)
+    const start = (await $.session.usage().then(x => x, () => undefined))?.startedAt ?? 0
+    const live = new Set((await read($, roster)).map(a => a.id))
+    return costBlock(await read($, ledger), prs, Object.keys(await read($, sessions)).length > 0, { start, live })
   } catch {
     return []
   }
@@ -4159,12 +4169,12 @@ export const register: Register = (on, options) => {
         const name = (e as { name?: string }).name ?? e.description
         const role = (ROLE[e.subagentType] ?? 'other') as Role
         const parent = e.parentAgentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.parentAgentId)
-        await changeLedger($, l => setIdentity(l, id, {
+        await changeLedger($, (l, now) => setIdentity(l, id, {
           role, name,
           ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }),
           ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
           ...(typeof used === 'string' && { spawnModel: used }),
-        }))
+        }, now))
       })
       if (preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
         await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt))
@@ -5028,7 +5038,7 @@ export const register: Register = (on, options) => {
     }
     try {
       if (r?.usage) {
-        const key = e.agentId ?? 'main'
+        const key = e.agentId ?? await mainKey($)
         const model = r.usage.model || e.model
         await loadLedger($)
         // A step that arrives before its spawn was seen takes its identity from the roster.
@@ -5043,7 +5053,7 @@ export const register: Register = (on, options) => {
             who = { role, name, ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }), ...(role === 'worker' && { branch: `flow/${name}` }) }
           }
         }
-        await changeLedger($, l => addStep(l, key, model, r.usage, who))
+        await changeLedger($, (l, now) => addStep(l, key, model, r.usage, who, now))
       }
     } catch {
       // The ledger is best-effort: the step passes untouched.
