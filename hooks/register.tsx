@@ -1,8 +1,13 @@
+// This file is the wiring only: atoms, `on(...)` hooks, `$.tool.register` calls, and io builders whose
+// closures spell out each `$.noun.event(...)` call. New logic goes into a module under hooks/, either
+// pure or taking an io object of closures (see deliver.ts), because the engine refuses `$` across an
+// import and wants atoms declared in this file.
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
 import type { Activity, AgentRow, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
+import { grantFile, grantSlots, heldBy, reapSlots, slotLine, span, CLAIM_MS, LEASE_MS, WAIT_DEFAULT_S, WAIT_MAX_S } from './slots'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { noteWork, runLine, serialFastForward, type RunWork } from './mainff'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
@@ -41,7 +46,8 @@ import {
 } from './prompts'
 import type { Settings } from './prompts'
 import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
-import { isFable, mergeLayers, renameOptions } from './settings'
+import { isFable, mergeLayers, renameOptions, settingsOf } from './settings'
+import type { WarnSettings } from './settings'
 import { bumpVersion, changelogSection, cutChangelog, highestBump, isBump, labelBump, localDate, readVersion, setVersion } from './release'
 import type { Bump } from './release'
 import {
@@ -77,8 +83,6 @@ import type { Deploys, DeployMode, Draft, EnvInput, Hold, TargetInfo, TargetStat
 
 const PANE = 'flow'
 const POLL_MS = 3000
-// The 1M-window Sonnet: workers read whole diffs and long briefs. Refused for sub-agents, it falls back to plain sonnet.
-const DEFAULT_WORKER_MODEL = 'sonnet[1m]'
 const LOG_MAX = 40
 const MANAGER = 'flow:manager'
 const WORKER = 'flow:worker'
@@ -216,16 +220,8 @@ const inboxNote = atom({ plugin: 'flow', key: 'inboxNote' } as const, '')
 const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
 const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders: [], waiters: [] } as TestSlots)
 
-// A hook has a 10 s budget, a $.clock wait included, so acquire blocks only briefly. A free slot
-// is granted to the head waiter at once (claimed: false); it has CLAIM_MS to confirm with acquire,
-// else the grant passes on. The grant is signalled by a file and a message, so waiting costs no turns.
-const LEASE_MS = 45 * 60_000
-const CLAIM_MS = 2 * 60_000
-const WAIT_MAX_S = 8
-const WAIT_DEFAULT_S = 2
 // <git-common-dir>/flow/test-slots, set at session start; undefined when not in a git repo.
 let slotDir: string | undefined
-const grantFile = (key: string): string | undefined => slotDir && `${slotDir}/${key.replace(/[^\w.-]/g, '_')}.granted`
 // The test_slots setting, for refresh()'s status line (set where the settings are read).
 let slotLimit = 1
 // The decision_phrases setting, for the question check in refresh() and syncPlans().
@@ -233,50 +229,6 @@ let decisionPhrases: string[] = []
 // Pre-flight setting and round wait (ms); set by register() like the others.
 let preflightOn = true
 let preflightWaitMs = 10 * 60_000
-
-const span = (ms: number): string => {
-  const m = Math.floor(ms / 60_000)
-  return m < 1 ? `${Math.max(0, Math.round(ms / 1000))}s` : `${m}m`
-}
-const heldBy = (h: SlotEntry, t: number): string => `${h.name} (${h.label}, ${span(t - h.since)})`
-
-// Drops holders and waiters whose agent ended or is gone and holders past the lease. The main session (key "main") never ends. Returns the new state and what was dropped.
-export function reapSlots(state: TestSlots, rows: AgentRow[], t: number): { state: TestSlots; notes: string[] } {
-  const status = new Map(rows.map(a => [a.id, a.status]))
-  const gone = (key: string) => key !== 'main' && (status.get(key) === undefined || ENDED.has(status.get(key)!))
-  const notes: string[] = []
-  const holders = state.holders.filter(h => {
-    if (gone(h.key)) return false
-    if (t - h.since >= LEASE_MS) {
-      notes.push(`test slot of ${h.name} (${h.label}) released after ${span(LEASE_MS)}: its lease ran out`)
-      return false
-    }
-    return true
-  })
-  const waiters = state.waiters.filter(w => !gone(w.key))
-  const changed = holders.length !== state.holders.length || waiters.length !== state.waiters.length
-  return { state: changed ? { holders, waiters } : state, notes }
-}
-
-// Gives free slots to the head waiters, after dropping grants nobody confirmed within CLAIM_MS.
-// Pure: the caller does the signalling for `granted`.
-export function grantSlots(state: TestSlots, limit: number, t: number): { state: TestSlots; granted: SlotEntry[]; notes: string[] } {
-  const notes: string[] = []
-  const holders = state.holders.filter(h => {
-    if (h.claimed !== false || t - h.since < CLAIM_MS) return true
-    notes.push(`test slot offered to ${h.name} (${h.label}) passed on: not confirmed within ${span(CLAIM_MS)}`)
-    return false
-  })
-  const waiters = [...state.waiters]
-  const granted: SlotEntry[] = []
-  while (holders.length < limit && waiters.length > 0) {
-    const w = { ...waiters.shift()!, since: t, claimed: false }
-    holders.push(w)
-    granted.push(w)
-  }
-  const changed = holders.length !== state.holders.length || granted.length > 0
-  return { state: changed ? { holders, waiters } : state, granted, notes }
-}
 
 // Applies `pre`, reaps, grants, and signals: a grant file and a message per new holder, the files
 // of everyone who left the line removed. Every slot change goes through here, inside one update().
@@ -306,22 +258,16 @@ const sh = ($: EngineInterface, script: string, ...args: string[]) =>
 
 async function signalSlots($: EngineInterface, granted: SlotEntry[], left: string[]): Promise<void> {
   for (const key of left) {
-    const f = grantFile(key)
+    const f = grantFile(slotDir, key)
     if (f) await sh($, 'rm -f "$1"', f)
   }
   for (const g of granted) {
-    const f = grantFile(g.key)
+    const f = grantFile(slotDir, g.key)
     if (f) await sh($, 'mkdir -p "$(dirname "$1")" && : > "$1"', f)
     if (g.key !== 'main') {
       await deliver($, g.key, `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`, { onGone: () => undefined }).catch(() => undefined)
     }
   }
-}
-
-function slotLine(state: TestSlots, limit: number, t: number): string {
-  if (state.holders.length === 0 && state.waiters.length === 0) return ''
-  const held = state.holders.length ? `held by ${state.holders.map(h => heldBy(h, t)).join(', ')}` : 'free'
-  return `Test slots: ${state.holders.length}/${limit} ${held}${state.waiters.length ? ` · ${state.waiters.length} waiting` : ''}`
 }
 
 export type TreeItem = { a: AgentRow; depth: number; kids: number; collapsed: boolean }
@@ -455,7 +401,6 @@ function windowOf(model: string, mainModel: string | undefined, mainWindow: numb
   return tokens > window ? Math.max(window, LARGE_WINDOW) : window
 }
 
-type WarnSettings = { contextWarn: number; contextWarn1m: number; contextWarnTokens: number }
 
 // The percent in force: a 1M window has its own, so the 200k percent never applies to it.
 function windowPercent(s: WarnSettings, window: number): number {
@@ -539,70 +484,6 @@ function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
   return h.kind === 'done'
     ? `handed off${h.to ? ` → ${h.to}` : ''}`
     : `wrapping up${h.percent === undefined ? '' : ` (told at ${h.percent}%)`}${h.reminders > 1 ? ` · ${h.reminders} reminders` : ''}`
-}
-
-// The pane's context meter marks this percent; the rest of the settings go into the prompts.
-type Guards = { mainGuard: boolean; mainAllow: string[] }
-
-// `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
-  const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
-  const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
-  const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
-  // Sub-agents don't run on Fable, whatever the source says.
-  const model = (k: string, d: string) => { const m = str(k, d); return isFable(m) ? d : m }
-  const harnesses = harnessesOf(options.harnesses)
-  return {
-    contextWarn: Math.min(100, Math.max(1, Math.round(num('context_warn_percent', 40)))),
-    contextWarn1m: Math.min(100, Math.max(1, Math.round(num('context_warn_percent_1m', 35)))),
-    contextWarnTokens: Math.max(0, Math.round(num('context_warn_tokens', 0))),
-    handoff: options.handoff !== false,
-    mainGuard: options.main_checkout_guard !== false,
-    mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
-    maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
-    preflight: str('preflight', 'on') !== 'off',
-    preflightWait: Math.max(1, num('preflight_wait', 10)),
-    verifyPaths: strs('verify_paths'),
-    cleanup: str('cleanup', 'auto') === 'off' ? 'off' : 'auto',
-    base: str('base_branch', base),
-    testCommand: str('test_command', ''),
-    fullCheck: str('full_check_command', ''),
-    deployCommand: str('deploy_command', ''),
-    deployTargets: deployTargetsOf(options.deploy_targets),
-    stateFile: stateFileOf(options.state_file),
-    mergeMethod: str('merge_method', 'squash'),
-    mergeMode: str('merge_mode', 'auto'),
-    pushMode: parsePushMode(options.push_mode),
-    useReviewer: options.reviewer !== false,
-    maxWorkers: num('max_workers', 3),
-    maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
-    testSlots: Math.max(1, Math.floor(num('test_slots', 1))),
-    workerModel: model('worker_model', DEFAULT_WORKER_MODEL),
-    workerModelSmall: model('worker_model_small', 'haiku'),
-    workerModelNormal: model('worker_model_normal', 'sonnet'),
-    exploreModel: model('explore_model', 'haiku'),
-    conflictModel: model('conflict_model', 'opus'),
-    managerModel: model('manager_model', 'opus'),
-    reviewerModel: model('reviewer_model', 'sonnet'),
-    language: str('language', 'English'),
-    bigFiles: strs('big_files'),
-    bigFileLines: num('big_file_lines', 1500),
-    migrationsDir: str('migrations_dir', ''),
-    decisionPhrases: strs('decision_phrases'),
-    workerChecks: strs('worker_checks'),
-    alwaysTests: strs('always_tests'),
-    flakyTests: strs('flaky_tests'),
-    release: str('release', 'off') === 'on',
-    releaseGithub: str('release_github', 'off') === 'on',
-    releaseFiles: strs('release_files'),
-    changelogFile: str('changelog_file', 'CHANGELOG.md'),
-    guardTests: parseGuardTests(options.guard_tests) ?? {},
-    workerHarness: str('worker_harness', 'agent'),
-    sessionHost: ['orca', 'tmux'].includes(str('session_host', 'auto')) ? str('session_host', 'auto') : 'auto',
-    harnesses,
-    harnessNames: Object.keys(harnesses),
-    minQuota: Math.min(100, Math.max(0, Math.round(num('min_quota', 10)))),
-  }
 }
 
 // The last batch the release tool cut, so a retried push does not release twice.
@@ -4859,7 +4740,7 @@ export const register: Register = (on, options) => {
     }
     const st = await read($, testSlots)
     const pos = st.waiters.findIndex(w => w.key === key) + 1
-    const f = grantFile(key)
+    const f = grantFile(slotDir, key)
     return {
       result: `No slot after ${wait} s; queued, position ${pos}. Held by ${st.holders.map(h => heldBy(h, t)).join(', ') || 'nobody'}. You keep your place and are granted the slot when it is your turn (it is offered for ${span(CLAIM_MS)}). Don't poll acquire. ${f ? `Wait with Bash (timeout 600000, or run_in_background and continue when notified): until [ -e '${f}' ]; do sleep 3; done . Or do other work; a "your test slot is granted" message arrives.` : 'Do other work; a "your test slot is granted" message arrives.'} Then call acquire once to confirm, run, and release.`,
     }
