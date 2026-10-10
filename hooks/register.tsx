@@ -26,7 +26,7 @@ import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle, waitsOnReport } from './dag'
 import type { AgentFact, Facts, Graph, Notice, Plan } from './dag'
 import {
-  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, renderItem, expandOk, findItem, stillOpen, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
+  addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, renderItem, expandOk, findItem, stillOpen, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk,
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
@@ -41,8 +41,8 @@ import {
 import type { Check, Checks } from './checks'
 import { termWidth } from './table'
 import type { Inbox, Marked, Question } from './inbox'
-import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
-import type { Resolved, Rule } from './standing'
+import { AUTO, escalation, renderRules, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
+import type { Rule } from './standing'
 import { addGuardTest, addRule, alwaysRule, autoAnswer, dropRule, loadRules, offerSeedsOnce, recordAutoAnswers, suggestGuardTests } from './standing-run'
 import type { AutoHits, StandingIo } from './standing-run'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
@@ -69,8 +69,8 @@ import type { HarnessSpec, Limit } from './sessions'
 import { sessionTool as sessionToolTo, watchSessions as watchSessionsTo } from './session-run'
 import type { Caller, Ran, SessionIo } from './session-run'
 import { branchOwners, buildDigest, findWorktree, noteKey, ownerFor } from './state'
-import { ADD_OPTION, addMapping, guardReport, guardTestsFor, parseGuardTests, pathsFromStatus, suggestionQuestion, suggestionsFor } from './guardtests'
-import type { GuardMap } from './guardtests'
+import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus} from './guardtests'
+import type {} from './guardtests'
 import { autoRefused, effectiveMode, labelSpec, parseMode, takeDecision } from './mergemode'
 import {
   EMPTY_PUSH, normalizePush,
