@@ -2,7 +2,8 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
-import { elapsed, summarizeCall, tokensDown } from '../hooks/register'
+import { summarizeCall } from '../hooks/pane'
+import { elapsed, tokensDown } from '../hooks/meter'
 
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const
 
