@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `reviewer_model` now defaults to `sonnet` (was `opus`).
+### Changed
+
+- `mcp__flow__status` is scoped by caller: a manager sees its own subtree, handovers and cost lines, a worker sees itself and its manager, main and the reviewer see everything. Finished handovers show the newest 5 with a `+N earlier finished PRs` line and are clipped to 220 characters; `pr:<n>` gives the full line.
+- The worker session prompt now starts with the shared rules and ends with the per-session values, so workers in other harnesses share a common prompt prefix.
+- `standing` and `push` (main only) are deferred tools, kept out of every agent's tool prefix; main loads them with ToolSearch.
 
 ## [0.6.4] - 2026-10-10
 
