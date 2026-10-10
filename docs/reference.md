@@ -136,6 +136,26 @@ worker must run only when its diff touches a matching path.
   personal flow config" writes it to `<git-common-dir>/flow/config.json`; copy it into
   `.claude/flow.json` to share it. Flow never edits the committed file.
 
+## Cost meter
+
+Every agent step adds its tokens (input, cache write 5m and 1h, cache read, output) to a ledger
+keyed by agent, then by the model the API reports. Main's steps count under `main`. Each entry
+keeps the agent's name, role, manager, branch and spawn model, so the ledger keeps an agent the
+roster forgot. It is saved to `ledger.json` at most every few seconds and loaded again after a
+restart. A failure in the ledger never touches the step.
+
+- **Where it shows:** `mcp__flow__status` and `/flow status` print "Cost (estimates at API list
+  prices)": one line per agent (tokens in / cache write / cache read / out, cache hit %, `~$`),
+  then a total per manager (its own plus its workers' and its successors'), per PR (the workers
+  on the PR's branch, `-2` successors included), the reviewer, main and the session. Handover
+  lines in status carry the PR's cost, and the reviewer's done report gets `| cost: ~$X (...)`
+  appended (once). Workers run in other harness sessions are not counted.
+- **Prices are estimates:** one table in `hooks/cost.ts`, USD per million tokens at Anthropic
+  first-party API list prices (taken 2026-10-10). Subscription plans are billed differently. A
+  model not in the table is priced as the newest of its family; one that matches no family
+  shows `~$?`. To update, edit the table there; the ledger holds tokens, so history is repriced.
+- **Cache hit %** is cache read over input + cache write + cache read.
+
 ## State on disk
 
 Flow's state survives a restart. It lives in `<git-common-dir>/flow/` (for example `.git/flow/`),
@@ -151,6 +171,7 @@ stops a tool call.
   push.json                the batch behind the push gate (see Push gate)
   preflight.json           pre-flight filings and rounds (see Pre-flight)
   checks.json              person checks and their follow-ups (see Person checks)
+  ledger.json              tokens spent per agent and model (see Cost meter)
   config.json              not state: the settings loader's file, never touched by flow
 ```
 

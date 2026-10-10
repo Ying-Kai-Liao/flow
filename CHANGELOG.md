@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Cost meter: a durable per-agent, per-model token ledger (`ledger.json`) with API list-price estimates (`hooks/cost.ts`). `mcp__flow__status` and the new `/flow status` show cost per agent, manager, PR, reviewer, main and session with cache-hit rates; the reviewer's done report and handover lines carry the PR's cost.
+
 ## [0.6.2] - 2026-10-10
 
 ### Fixed
