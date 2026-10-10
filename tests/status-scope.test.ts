@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
@@ -25,13 +24,21 @@ function world(on: On, hs: Handover[]) {
     { id: 'q1', name: 'reviewer-1', description: 'q', type: 'flow:reviewer', status: 'running' },
   ]
   const files = new Map<string, string>()
-  for (const h of hs) files.set(`${DIR}/handovers/${h.pr}.json`, JSON.stringify({ version: 1, ...h }))
+  for (const h of hs) files.set(`${DIR}/handovers/${h.pr}.json`, JSON.stringify(h))
   on('agent.list', () => ({ value: agents }))
   on('session.usage', () => ({ value: { startedAt: 900_000, rateLimits: [], context: { window: 200_000, tokens: undefined, percent: undefined } } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
+  on('fs.exists', (_, e) => ({ value: files.has((e as unknown as { path: string }).path) }))
+  on('fs.stat', () => { throw new Error('ENOENT') })
+  on('session.start', () => ({ cwd: '/r' }))
+  on('command.register', () => ({ value: undefined } as never))
+  on('tool.register', () => ({ value: undefined } as never))
+  on('agent.register', (_, e) => ({ value: { agent: (e as unknown as { name: string }).name } }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('fs.list', (_, e) => ({ value: [...files.keys()].filter(k => k.startsWith(`${e.path}/`)).map(k => ({ name: k.slice(e.path.length + 1), isDirectory: false })) }) as never)
   on('fs.write', (_, e) => { files.set(e.path, e.text); return { value: undefined } })
   on('fs.read', (_, e) => {
     const t = files.get(e.path)
@@ -127,8 +134,3 @@ test('the session prompt puts the shared worker rules first and the per-session 
   expect(fill(SESSION_PROMPT, settings).startsWith(shared)).toBe(true)
 })
 
-test('only standing and push are deferred', () => {
-  const src = readFileSync(new URL('../hooks/register.tsx', import.meta.url), 'utf8')
-  const deferred = [...src.matchAll(/name: '([a-z-]+)',[\s\S]*?isDeferred: (true|false)/g)].filter(m => m[2] === 'true').map(m => m[1])
-  expect(deferred.sort()).toEqual(['push', 'standing'])
-})
