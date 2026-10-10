@@ -6,6 +6,7 @@ import { absolutePath, parseAttachments, rewriteAttachments } from './attachment
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
+import { deliver, flushAgent, resetDelivery } from './deliver'
 import { addStep, costBlock, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
@@ -304,10 +305,7 @@ async function signalSlots($: EngineInterface, granted: SlotEntry[], left: strin
     const f = grantFile(g.key)
     if (f) await sh($, 'mkdir -p "$(dirname "$1")" && : > "$1"', f)
     if (g.key !== 'main') {
-      await $.session.send({
-        to: { agentId: g.key },
-        text: `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`,
-      }).catch(() => undefined)
+      await deliver($, g.key, `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`).catch(() => undefined)
     }
   }
 }
@@ -731,7 +729,7 @@ async function syncPlans(
       $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
     } else {
       const agent = agentFor(n.owner, rows.filter(a => !ENDED.has(a.status)))
-      if (agent) await $.session.send({ to: { agentId: agent.id }, text }).catch(() => undefined)
+      if (agent) await deliver($, agent.id, text).catch(() => undefined)
     }
   }
   return result
@@ -1113,14 +1111,12 @@ async function answerQuestion($: EngineInterface, id: string, choice: string | n
     delivered = false
     const alive = (a: AgentInfo | undefined): a is AgentInfo => a !== undefined && (LIVE.has(a.status) || a.status === 'idle')
     if (alive(asker)) {
-      delivered = await $.session.send({ to: { agentId: asker.id }, text: answerMessage(q, answer, by, isDefault) })
-        .then(() => true, () => false)
+      delivered = await deliver($, asker.id, answerMessage(q, answer, by, isDefault), { urgent: q.blocking === true }).catch(() => false)
     } else if (isFyi(q) && q.addressee !== 'main') {
       // A finished owner cannot act on an overturn: its manager (the notes owner) gets it, naming the owner.
       const mgr = (await $.agent.list()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && alive(a))
       if (mgr !== undefined) {
-        delivered = await $.session.send({ to: { agentId: mgr.id }, text: `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s FYI; ${q.owner} is no longer running, so act on it yourself or with a new worker.)` })
-          .then(() => true, () => false)
+        delivered = await deliver($, mgr.id, `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s FYI; ${q.owner} is no longer running, so act on it yourself or with a new worker.)`, { urgent: q.blocking === true }).catch(() => false)
       }
     }
     if (!delivered) hint = `; ${q.owner} is gone: main should relay it to ${noteKey(q.owner)}-2`
@@ -1305,7 +1301,13 @@ async function dropRef($: EngineInterface, ref: string): Promise<void> {
 // A message for the manager that owns a PR: sent when it is alive, else noted for it and sent to main.
 async function tellManager($: EngineInterface, name: string, text: string): Promise<void> {
   const live = (await $.agent.list()).find(a => a.name === name && (LIVE.has(a.status) || a.status === 'idle'))
-  if (live !== undefined && await $.session.send({ to: { agentId: live.id }, text }).then(() => true, () => false)) return
+  // Urgent: tellManager carries push-gate send-backs and report fallbacks, which the manager acts on now.
+  // A failed send has already gone through onGone.
+  if (live !== undefined) await deliver($, live.id, text, { urgent: true, onGone: t => tellMain($, name, t) }).catch(() => undefined)
+  else await tellMain($, name, text)
+}
+
+async function tellMain($: EngineInterface, name: string, text: string): Promise<void> {
   await best($, 'noting a report', async () => void (await appendNote($, name, `- ${await today($)} ${text}`)))
   toMain($, `${text} (${name} is not running; relay it or start a manager.)`)
 }
@@ -2133,10 +2135,7 @@ async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, o
   await update($, handoffs, hs => ({ ...hs, [branch]: record }))
   if (count > maxContinues && me.parentId !== undefined) {
     void $.ui.toast(`${branch} has handed off ${count} times: split it`)
-    await $.session.send({
-      to: { agentId: me.parentId },
-      text: `flow: ${branch} has handed off ${count} times (max_continues ${maxContinues}). The package is too big for one worker: split the Remaining part of its handoff note into smaller briefs instead of another plain continuation.`,
-    }).catch(() => undefined)
+    await deliver($, me.parentId, `flow: ${branch} has handed off ${count} times (max_continues ${maxContinues}). The package is too big for one worker: split the Remaining part of its handoff note into smaller briefs instead of another plain continuation.`, { urgent: true }).catch(() => undefined)
   }
 }
 
@@ -2774,8 +2773,8 @@ function resumeInstructions(items: Leftover[], limit: number, notes: Map<string,
 // The wrap-up as a message, for an agent idle or waiting between turns. A refused send is logged, not retried.
 async function sendWrapUp($: EngineInterface, me: { id: string; type: string; name?: string }, percent: number, limit: string): Promise<void> {
   const text = wrapUpText(ROLE[me.type] ?? 'worker', percent, limit)
-  const sent = await $.session.send({ to: { agentId: me.id }, text }).catch(() => undefined)
-  if (sent !== undefined && !sent.isDelivered) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered: ${sent.reason ?? 'unknown'}`)
+  const sent = await deliver($, me.id, text, { urgent: true }).catch(() => false)
+  if (!sent) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered`)
 }
 
 // An agent past the threshold reads the wrap-up after a tool result: on its first tool call
@@ -3198,7 +3197,7 @@ async function typeInto($: EngineInterface, s: Session, text: string): Promise<R
 
 async function tellOwner($: EngineInterface, s: Session, text: string): Promise<void> {
   if (s.owner === 'main') $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
-  else await $.session.send({ to: { agentId: s.owner }, text }).catch(() => undefined)
+  else await deliver($, s.owner, text).catch(() => undefined)
 }
 
 async function noteSession($: EngineInterface, name: string, t: number, line: string, answer?: string): Promise<void> {
@@ -4229,6 +4228,8 @@ export const register: Register = (on, options) => {
       await best($, 'marking a wake-up', async () => {
         const target = (await $.agent.list()).find(a => a.id === to || a.name === to)
         if (target === undefined || target.type !== MANAGER) return
+        // The reviewer's message wakes the manager anyway: what waited for it goes out with it.
+        if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) await flushAgent($, target.id)
         if (id === undefined) wokenByOthers.delete(target.id)
         else if (target.status !== 'running') wokenByOthers.add(target.id)
       })
@@ -4634,7 +4635,7 @@ export const register: Register = (on, options) => {
         `${name} asks ${q.id} (${q.blocking ? 'blocking' : 'non-blocking'}): ${q.question} - options ` +
         `${q.options.map((o, i) => `${String.fromCharCode(97 + i)}) ${o}`).join(' ')} (default: ${q.default})` +
         (q.escalated !== undefined ? ` - a standing rule (${q.escalated}) makes this the user's decision; it is in main's inbox as ${q.id}, main answers it directly and the worker gets the answer; don't answer or re-ask it.` : ''))
-      await $.session.send({ to: { agentId: parent.id }, text: `${lines.join('\n')}\nAnswer with mcp__flow__answer.` }).catch(() => undefined)
+      await deliver($, parent.id, `${lines.join('\n')}\nAnswer with mcp__flow__answer.`, { held: !fresh.some(q => q.blocking), urgent: fresh.some(q => q.blocking) }).catch(() => undefined)
     } else if (addressee === 'main' && fresh.some(q => q.blocking)) {
       void $.ui.toast(`${name} asks: ${fresh.length} question(s) in /flow inbox`)
     }
