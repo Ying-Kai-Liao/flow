@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: moved the pane tree, fold and handoff helpers into `hooks/pane.ts` and the card, meter and quota-line builders into `hooks/pane-view.tsx` (no behavior change).
+
 ## [0.6.23] - 2026-10-11
 
 ### Changed

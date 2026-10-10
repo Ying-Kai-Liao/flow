@@ -47,6 +47,9 @@ import { addGuardTest, addRule, alwaysRule, autoAnswer, dropRule, loadRules, off
 import type { AutoHits, StandingIo } from './standing-run'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import { shimmerParts } from './shimmer'
+import { card as cardTo, limitLine as limitLineTo, meter as meterTo } from './pane-view'
+import type { Usage } from './pane-view'
+import { COLOR, describeCall, foldDefault, GLYPH, handoffOf, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, summarizeCall, treeItems, viewOf } from './pane'
 import type { GNode, Seg } from './graph'
 import {
   fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT,
@@ -97,22 +100,6 @@ import type { DeployIo } from './deploy-run'
 // `flow:worker` agents in worktrees of their own and hand approved PRs to the
 // `flow:reviewer` agent through this plugin's tools. The pane in main shows the tree.
 
-// Display order: what may need a person first, finished agents last.
-const ORDER = ['waiting', 'idle', 'running', 'pending', 'failed', 'killed', 'completed']
-const GLYPH: Record<string, string> = {
-  pending: '○', running: '●', waiting: '◐', idle: '◌', completed: '✓', failed: '✗', killed: '■',
-}
-const COLOR: Record<string, string> = {
-  running: 'suggestion', waiting: 'warning', idle: 'warning', completed: 'success', failed: 'error', killed: 'error',
-}
-const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [CONTINUE]: 'worker', [SESSION]: 'worker', [REVIEWER]: 'reviewer', [QUEUE]: 'reviewer' }
-const ROOT_GLYPH = '◆'
-// Plan states, drawn like the agent statuses they turn into; a waiting node has no agent yet.
-const PLAN_GLYPH: Record<string, string> = { waiting: '○', ready: '◌', running: '●', done: '✓', blocked: '✗' }
-const PLAN_COLOR: Record<string, string | undefined> = { waiting: undefined, ready: 'warning', running: 'suggestion', done: 'success', blocked: 'error' }
-const HANDOVER_GLYPH: Record<Handover['status'], string> = {
-  pending: '…', awaiting: '⏸', taken: '●', ready: '⇪', done: '✓', returned: '↩',
-}
 
 const roster = atom({ plugin: 'flow', key: 'roster' } as const, [] as AgentRow[])
 const activity = atom({ plugin: 'flow', key: 'activity' } as const, {} as Record<string, Activity>)
@@ -257,123 +244,6 @@ async function signalSlots($: EngineInterface, granted: SlotEntry[], left: strin
       await deliver($, g.key, `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`, { onGone: () => undefined }).catch(() => undefined)
     }
   }
-}
-
-export type TreeItem = { a: AgentRow; depth: number; kids: number; collapsed: boolean }
-
-// Managers and the reviewer start collapsed; everything else has no default.
-export const foldDefault = (a: AgentRow): boolean | undefined => (a.type === MANAGER || isReviewer(a.type) ? true : undefined)
-
-// The rows of the tree in the order they are drawn and walked. A collapsed agent is one row with
-// its children hidden: the person's choice wins, then the role's default, then `auto`, which folds
-// every agent with children except the ones on the way to the highlight (a crowded tree).
-// `at` is the highlight, moved up to the nearest row that is drawn.
-export function treeItems(
-  list: AgentRow[], fold: Record<string, boolean>, cur: string | null | undefined, auto: boolean,
-  acts: Record<string, Activity> = {},
-): { items: TreeItem[]; at: string | undefined } {
-  const ids = new Set(list.map(a => a.id))
-  const kids = (id: string | undefined) => list
-    .filter(a => (id === undefined ? a.parentId === undefined || !ids.has(a.parentId) : a.parentId === id))
-    .sort((a, b) => rankOf(a, acts) - rankOf(b, acts))
-  const path = new Set<string>()
-  for (let a = list.find(x => x.id === cur); a !== undefined && !path.has(a.id); a = list.find(x => x.id === a!.parentId)) path.add(a.id)
-  const items: TreeItem[] = []
-  const walk = (a: AgentRow, depth: number) => {
-    const under = kids(a.id)
-    const collapsed = fold[a.id] ?? foldDefault(a) ?? (under.length > 0 && auto && !path.has(a.id))
-    items.push({ a, depth, kids: under.length, collapsed })
-    if (!collapsed) for (const c of under) walk(c, depth + 1)
-  }
-  for (const a of kids(undefined)) walk(a, 0)
-  const drawn = new Set(items.map(i => i.a.id))
-  let at: string | undefined = cur ?? undefined
-  while (at !== undefined && !drawn.has(at)) at = list.find(a => a.id === at)?.parentId
-  return { items, at }
-}
-
-// The window of rows to draw: all of them, or `size` rows with the highlight in the middle.
-export function viewOf<T>(items: T[], at: number, size: number): { top: number; rows: T[] } {
-  if (items.length <= size) return { top: 0, rows: items }
-  const top = Math.min(Math.max(0, at - Math.floor(size / 2)), items.length - size)
-  return { top, rows: items.slice(top, top + size) }
-}
-
-// A plan node with an agent is drawn by the agent's status; one without has only its plan state.
-const planState = (n: GNode): boolean => n.agentId === undefined && n.state in PLAN_GLYPH
-const nodeGlyph = (n: GNode): string => (planState(n) ? PLAN_GLYPH[n.state] ?? '?' : GLYPH[n.state] ?? PLAN_GLYPH[n.state] ?? '?')
-const nodeColor = (n: GNode): string | undefined => (planState(n) ? PLAN_COLOR[n.state] : COLOR[n.state] ?? PLAN_COLOR[n.state])
-
-// One line for a tool call: the tool and its most telling argument.
-function describeCall(e: Record<string, unknown>): string {
-  const tool = String(e.tool ?? '?').replace(/^mcp__flow__/, '')
-  const arg = [e.file_path, e.command, e.pattern, e.path, e.url, e.description, e.action, e.prompt]
-    .find(v => typeof v === 'string' && v.length > 0) as string | undefined
-  // A command is its first line, cut at a heredoc: its body is code, not news.
-  const text = arg === undefined ? '' : (e.command === arg ? arg.split('\n')[0]!.replace(/<<.*$/, '') : arg)
-  const short = text === '' ? '' : ' ' + text.replace(/\s+/g, ' ').trim().slice(0, 90)
-  return tool + short
-}
-
-const base = (path: unknown): string => String(path ?? '').split('/').pop() ?? ''
-
-// What a call is, in a few plain words for a card: never a command's body or a prompt.
-export function summarizeCall(e: Record<string, unknown>): string {
-  const tool = String(e.tool ?? '?').replace(/^mcp__flow__/, '')
-  const file = base(e.file_path)
-  switch (tool) {
-    case 'Edit': case 'MultiEdit': case 'NotebookEdit': return file ? `editing ${file}` : 'editing'
-    case 'Write': return file ? `writing ${file}` : 'writing'
-    case 'Read': return file ? `reading ${file}` : 'reading'
-    case 'Grep': case 'Glob': return 'searching'
-    case 'Agent': {
-      const role = String(e.subagent_type ?? e.subagentType ?? '').replace(/^flow:/, '')
-      const name = String(e.name ?? '')
-      return ['started', role === 'manager' || role === 'worker' ? role : 'agent', name].filter(Boolean).join(' ')
-    }
-    case 'Bash': {
-      const cmd = String(e.command ?? '').split('\n')[0]!.trim()
-      // git and gh first: a commit message may say "test".
-      if (/^git\s+\S+/.test(cmd)) return 'git ' + cmd.split(/\s+/)[1]
-      if (/^gh\s+pr\b/.test(cmd)) return 'gh pr ' + (cmd.split(/\s+/)[2] ?? '')
-      if (/\b(tsc|test|vitest|jest|pytest)\b/.test(cmd)) return 'running tests'
-      return 'running a command'
-    }
-    default: return tool
-  }
-}
-
-
-function rank(status: string): number {
-  const i = ORDER.indexOf(status)
-  return i === -1 ? ORDER.length : i
-}
-
-// An agent told to wrap up sorts with what needs a person, ahead of plain running.
-function rankOf(a: AgentRow, acts: Record<string, Activity>): number {
-  return handoffOf(a, acts[a.id])?.kind === 'wrapping' ? Math.min(rank(a.status), rank('idle')) : rank(a.status)
-}
-
-// Where an agent is in its handoff: told to wrap up and still live, or ended (idle counts) on a
-// report whose last line is `HANDOFF: <branch>` (a manager's is `HANDOFF: manager <name>`).
-// Old rows without the fields give undefined.
-export function handoffOf(a: AgentRow, act: Activity | undefined):
-  { kind: 'wrapping'; percent?: number; reminders: number } | { kind: 'done'; to: string } | undefined {
-  if (act === undefined) return undefined
-  if (ENDED.has(a.status) || a.status === 'idle') {
-    const last = (act.answer ?? '').trim().split('\n').pop()?.trim() ?? ''
-    if (last.startsWith('HANDOFF:')) return { kind: 'done', to: last.slice('HANDOFF:'.length).trim() }
-  }
-  if (!ENDED.has(a.status) && act.handoffNotifiedAt !== undefined) {
-    return { kind: 'wrapping', percent: act.handoffPercent, reminders: act.remindersSent ?? 0 }
-  }
-  return undefined
-}
-
-function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): string {
-  return h.kind === 'done'
-    ? `handed off${h.to ? ` → ${h.to}` : ''}`
-    : `wrapping up${h.percent === undefined ? '' : ` (told at ${h.percent}%)`}${h.reminders > 1 ? ` · ${h.reminders} reminders` : ''}`
 }
 
 // The last batch the release tool cut, so a retried push does not release twice.
@@ -3759,28 +3629,13 @@ export const register: Register = (on, options) => {
     const main = usage?.context
     if (main !== undefined) mainWindow = main.window
 
-    const usageOf = (a: AgentRow): { percent: number; tokens: number; window: number } | undefined => {
+    const usageOf = (a: AgentRow): Usage | undefined => {
       const u = acts[a.id]?.usage
       if (u === undefined) return undefined
       const window = u.window ?? windowOf(u.model, mainModel, mainWindow, u.tokens)
       return { percent: Math.round(u.tokens / window * 100), tokens: u.tokens, window }
     }
-    // Theme keys only: the filled part is legible on any background, the empty cells are 'inactive'
-    // rather than dim, and the colour turns at the warn and danger marks.
-    const meter = (u: { percent: number; tokens: number; window: number } | undefined, dim: boolean, time: string) => {
-      // Time and tokens sit dimmed together after the bar; the window figures are not repeated.
-      const tail = [time, u === undefined ? '' : tokensDown(u.tokens)].filter(Boolean).join(' · ')
-      return u === undefined
-        ? <Text dimColor>context ?{tail ? `   ${tail}` : ''}</Text>
-        : <Text dimColor={dim}>
-          {cells(u.percent, warnOf(u.window)).map((c, i) => (
-            <Text key={String(i)} dimColor={dim} color={c.kind === 'empty' ? 'inactive' : c.kind === 'mark' ? 'text' : meterColor(u.percent, warnOf(u.window)) ?? 'success'}>{c.ch}</Text>
-          ))}
-          <Text color={meterColor(u.percent, warnOf(u.window))} dimColor={dim}> {u.percent}%</Text>
-          {limitTokens(settings, u.window) !== undefined && <Text dimColor> · {limitTokens(settings, u.window)}│</Text>}
-          <Text dimColor>{tail ? `   ${tail}` : ''}</Text>
-        </Text>
-    }
+    const meter = (u: Usage | undefined, dim: boolean, time: string) => meterTo({ Box, Text, Button }, settings, warnOf, u, dim, time)
     // Running time: to now while live, frozen at the end once it ended (the moment the roster saw
     // it end, else its last activity). No start on record, no time.
     const runTime = (act: Activity | undefined, isEnded: boolean): string =>
@@ -3789,21 +3644,7 @@ export const register: Register = (on, options) => {
     // Quota left per window, for Claude (this session's account) and the harnesses flow can read:
     // the share left as a bar that turns at 40% and 20%, the reset, and when the pace runs it out.
     const limits = [...claudeLimits(usage?.rateLimits ?? []), ...hLimits]
-    const limitLine = (l: Limit) => {
-      const left = Math.max(0, Math.min(100, Math.round(100 - l.used)))
-      const tone = left <= 20 ? 'error' : left <= 40 ? 'warning' : 'success'
-      const filled = left > 0 ? Math.max(1, Math.round(left / 100 * METER_CELLS)) : 0
-      const out = runsOutIn(l, t)
-      return (
-        <Text key={`lim-${l.tool}-${l.label}`} wrap="truncate-end">
-          <Text dimColor>{`${l.tool} ${l.label}`.padEnd(12)}</Text>
-          <Text color={tone}>{'█'.repeat(filled)}</Text><Text color="inactive">{'░'.repeat(METER_CELLS - filled)}</Text>
-          <Text color={tone}> {left}% left</Text>
-          {l.resetsAt !== undefined && l.resetsAt > t && <Text dimColor> · resets in {elapsed(l.resetsAt - t)}</Text>}
-          {out !== undefined && <Text color={out < 3600_000 ? 'error' : 'warning'}> · empty in {elapsed(out)} at this pace</Text>}
-        </Text>
-      )
-    }
+    const limitLine = (l: Limit) => limitLineTo({ Box, Text, Button }, t, l)
 
     // A control on a session worker, run here without a model turn. Restart and stop take a second
     // press within ARM_MS, so a stray key never kills a worker.
@@ -3841,60 +3682,9 @@ export const register: Register = (on, options) => {
       await acted()
       await update($, folded, f => ({ ...f, [a.id]: !(f[a.id] ?? foldDefault(a) ?? shown) }))
     }
-    const asksOf = (x: AgentRow) => asksQuestion(acts[x.id]?.answer, settings.decisionPhrases) && !['running', 'pending'].includes(x.status)
-    // `collapsed` undefined draws no chevron (the detail view's cards).
-    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, collapsed?: boolean) => {
-      const act = acts[a.id]
-      const hand = handoffOf(a, act)
-      const dim = ENDED.has(a.status) && hand?.kind !== 'done'
-      const asks = (asksQuestion(act?.answer, settings.decisionPhrases) || askers.includes(a.name ?? '')) && !['running', 'pending'].includes(a.status)
-      const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
-      const u = usageOf(a)
-      const under = list.filter(c => c.parentId === a.id).length
-      // What a collapsed card hides that needs a person.
-      const hidden = (id: string): AgentRow[] => list.filter(c => c.parentId === id).flatMap(c => [c, ...hidden(c.id)])
-      const below = collapsed ? hidden(a.id) : []
-      const nAsk = below.filter(asksOf).length
-      const nHand = below.filter(c => handoffOf(c, acts[c.id])?.kind === 'wrapping').length
-      // Only a running agent shines; a pending one is still starting up.
-      const working = a.status === 'running' && !asks
-      const head = <Text>
-        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> {working
-          ? <Text bold>{shimmerParts(labelOf(a), t).map((p, i) => <Text key={`sh${i}`} bold inverse={hot} color={p.lit ? 'suggestion' : undefined}>{p.text}</Text>)}</Text>
-          : <Text bold inverse={hot}>{labelOf(a)}</Text>}
-        {under > 0 && <Text dimColor> (+{under})</Text>}
-        <Text dimColor>  {ROLE[a.type] ?? a.type}</Text>
-        {hand?.kind === 'wrapping' && <Text bold color="warning">  handoff</Text>}
-        {collapsed && asks && <Text color="warning"> asks</Text>}
-        {nAsk > 0 && <Text color="warning"> · {nAsk} asks</Text>}
-        {nHand > 0 && <Text color="warning"> · {nHand} handoff</Text>}
-      </Text>
-      // The description shows only while there is nothing done to show; the detail view has it.
-      const second = hand !== undefined && !asks
-        ? <Text color={hand.kind === 'wrapping' ? 'warning' : undefined}>{handoffText(hand)}</Text>
-        : doing !== undefined && doing !== ''
-        ? <Text color={asks ? 'warning' : undefined} dimColor={!asks}>{doing.slice(0, 60)}</Text>
-        : <Text dimColor>{a.description.slice(0, 60)}</Text>
-      return (
-        <Box key={`row-${a.id}`} paddingLeft={bordered ? depth * 2 : depth * 2 + 1}>
-          {collapsed !== undefined && (
-            <Button key={`fold-${a.id}`} plain dimColor={dim} onPress={() => toggleFold(a, collapsed)}>{collapsed ? '▸ ' : '▾ '}</Button>
-          )}
-          {full && !collapsed ? (
-            // A Button holds Text only, so the border is drawn around it.
-            <Box flexDirection="column" borderStyle={bordered ? 'round' : undefined} borderDimColor={dim} borderColor={working ? 'suggestion' : undefined} paddingX={bordered ? 1 : 0}>
-              <Button key={a.id} plain dimColor={dim} onPress={() => open(a.id)}>
-                {head}{'\n'}{second}{'\n'}{meter(u, dim, runTime(act, dim))}
-              </Button>
-            </Box>
-          ) : (
-            <Button key={a.id} plain dimColor={dim} onPress={() => open(a.id)}>
-              {head}{u !== undefined && <Text color={meterColor(u.percent, warnOf(u.window))}> {u.percent}%</Text>}
-            </Button>
-          )}
-        </Box>
-      )
-    }
+    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, collapsed?: boolean) => cardTo({
+      els: { Box, Text, Button }, list, acts, askers, decisionPhrases: settings.decisionPhrases, t, usageOf, warnOf, meter, runTime, toggleFold, open,
+    }, a, depth, full, bordered, hot, collapsed)
     const agent = list.find(a => a.id === pick)
 
     const toggle = <Button key="toggle-view" plain dimColor hotkey="g" onPress={async () => {

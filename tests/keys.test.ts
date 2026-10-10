@@ -2,7 +2,7 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
-import { treeItems, viewOf } from '../hooks/register'
+import { treeItems, viewOf } from '../hooks/pane'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
