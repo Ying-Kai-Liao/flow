@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.16] - 2026-10-11
+
+### Changed
+
+- Rename FYI to Decisions: d-ids, undo wording, flat decisions table (#89)
+
 ## [0.6.15] - 2026-10-11
 
 ### Fixed
