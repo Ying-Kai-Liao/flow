@@ -14,7 +14,7 @@ const DIR = '/r/.git/flow'
 const handover = (pr: number, reportTo: string, status: Handover['status'], at: number, extra: Partial<Handover> = {}): Handover =>
   ({ pr, title: `Title ${pr}`, head: `head${pr}000000`, branch: `flow/b${pr}`, reportTo, verified: '', pending: 'none', afterDeploy: 'none', status, at, ...extra }) as Handover
 
-function world(on: On, hs: Handover[]) {
+function world(on: On, hs: Handover[], onTool?: (e: unknown) => void) {
   mock.clock(on, { now: 1_000_000 })
   const agents: AgentInfo[] = [
     { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
@@ -35,7 +35,7 @@ function world(on: On, hs: Handover[]) {
   on('fs.stat', () => { throw new Error('ENOENT') })
   on('session.start', () => ({ cwd: '/r' }))
   on('command.register', () => ({ value: undefined } as never))
-  on('tool.register', () => ({ value: undefined } as never))
+  on('tool.register', (_, e) => { onTool?.(e); return { value: undefined } as never })
   on('agent.register', (_, e) => ({ value: { agent: (e as unknown as { name: string }).name } }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('fs.list', (_, e) => ({ value: [...files.keys()].filter(k => k.startsWith(`${e.path}/`)).map(k => ({ name: k.slice(e.path.length + 1), isDirectory: false })) }) as never)
@@ -115,6 +115,18 @@ test('old handovers with fields missing still render', async ($, on) => {
   expect(text).toContain('#3 done')
   expect(text).toContain('#4 returned')
   expect(cappedHandovers([old, bare]).hidden).toBe(0)
+})
+
+test('the main-only standing and push tools are deferred; status, ask, queue and check stay loaded', async ($, on) => {
+  const seen = new Map<string, boolean>()
+  world(on, [], e => {
+    const t = e as { name: string; isDeferred?: boolean }
+    seen.set(t.name, t.isDeferred === true)
+  })
+  await start($)
+  expect(seen.get('standing')).toBe(true)
+  expect(seen.get('push')).toBe(true)
+  for (const name of ['status', 'ask', 'queue', 'check']) expect(seen.get(name)).toBe(false)
 })
 
 test('cappedHandovers keeps every open handover and only caps the finished ones', () => {
