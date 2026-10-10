@@ -356,3 +356,50 @@ test('a pending-decisions line for a PR is not swallowed by an earlier needs-a-p
   expect(w.prompts.filter(p => p.includes('Report for csv-export')).length).toBe(2)
   expect(w.prompts.some(p => /pending decisions: PR #7: pick a name/i.test(p))).toBe(true)
 })
+
+const planAdd = ($: Dollar, nodes: Record<string, unknown>[]) =>
+  $.tool.call({ tool: 'mcp__flow__plan', action: 'add', nodes, agentId: 'm1' } as never)
+
+// The host drops a manager that ended its turn to wait for a merge: the reviewer's report must still wake it.
+test('a manager dropped from the roster with a node after the merged PR is woken by the report', async ($, on) => {
+  const w = world(on)
+  await handover($, 'm1')
+  await planAdd($, [{ id: 'csv-export-a', title: 'a' }, { id: 'csv-export-b', title: 'b', after: ['csv-export-a'] }])
+  await queueDone($, 7)
+  w.agents.splice(0, 2)
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged abc1234')).toBe('sent')
+})
+
+test('a completed manager with a node after the merged PR is woken by the report', async ($, on) => {
+  const w = world(on)
+  await handover($, 'm1')
+  await planAdd($, [{ id: 'csv-export-a', title: 'a' }, { id: 'csv-export-b', title: 'b', after: ['csv-export-a'] }])
+  await queueDone($, 7)
+  w.agents[0]!.status = 'completed'
+  w.agents[1]!.status = 'completed'
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged abc1234')).toBe('sent')
+})
+
+test('a finished manager is noted and sent to main in idle, completed and absent states', async ($, on) => {
+  const w = world(on)
+  await handover($, 'm1')
+  await planAdd($, [{ id: 'csv-export-a', title: 'a' }])
+  await queueDone($, 7)
+  await $.tool.call({ tool: 'mcp__flow__plan', action: 'done', id: 'csv-export-a', agentId: 'm1' } as never)
+  w.agents[1]!.status = 'completed'
+  w.agents[0]!.status = 'idle'
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toContain('Not sent')
+  w.agents[0]!.status = 'completed'
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged again')).toContain('Not sent')
+  w.agents.splice(0, 2)
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged once more')).toContain('Not sent')
+})
+
+test('a killed manager with a node left is not woken', async ($, on) => {
+  const w = world(on)
+  await handover($, 'm1')
+  await planAdd($, [{ id: 'csv-export-a', title: 'a' }, { id: 'csv-export-b', title: 'b', after: ['csv-export-a'] }])
+  await queueDone($, 7)
+  w.agents[0]!.status = 'killed'
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toContain('Not sent')
+})

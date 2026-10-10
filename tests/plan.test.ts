@@ -171,3 +171,17 @@ test('a manager the host drops from its list keeps its last state and never read
   await s.clock.advance(10)
   expect(s.submitted).toEqual([])
 })
+
+test('a ready notice reaches an owner the host dropped after it ended its turn', async ($, on) => {
+  const s = session(on)
+  await plan($, { action: 'add', nodes: [{ id: 'csv' }, { id: 'login', title: 'redirect', after: ['csv'] }] })
+  s.agents.push({ id: 'w1', name: 'csv', description: 'w', type: 'flow:worker', status: 'running', parentId: 'm1' })
+  await $.tool.call({ tool: 'mcp__flow__handover', pr: 7, verified: 'x', report_to: 'csv-export', agentId: 'm1' } as never)
+  const q = s.agents.find(a => a.type === 'flow:reviewer')!
+  // The manager ends its turn to wait for the merge and the host drops it from the roster.
+  s.agents.splice(s.agents.findIndex(a => a.id === 'm1'), 1)
+  await $.tool.call({ tool: 'mcp__flow__queue', action: 'done', pr: 7, sha: 'abc1234', report: 'ok', agentId: q.id } as never)
+  await s.clock.advance(10_000)
+  expect(s.sent.map(m => m.to)).toEqual(['m1'])
+  expect(s.sent[0]!.text).toContain('Ready to start')
+})

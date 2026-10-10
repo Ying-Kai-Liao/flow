@@ -2204,7 +2204,9 @@ async function reviewerSendGuard($: EngineInterface, rid: string, to: string, te
     const seen = hits.length === 0 ? (await read($, seenAgents))[name] : undefined
     if (seen?.status !== 'failed' && seen?.status !== 'killed') {
       const ids = hits.length > 0 ? hits.map(a => a.id) : seen?.id !== undefined ? [seen.id] : []
-      if (!(await managerFinished($, ids, name, rows))) return undefined
+      // Live workers are left out: a worker's own report resumes its manager, and the old routing sent a
+      // report for an ended manager to main whatever its workers were doing.
+      if (ids.length > 0 && !(await managerFinished($, ids, name, []))) return undefined
     }
   }
   const idle = hits.length > 0 && !hits.some(a => a.status !== 'idle' && !ENDED.has(a.status))
