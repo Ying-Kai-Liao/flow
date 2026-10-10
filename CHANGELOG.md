@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The reviewer now fast-forwards the main checkout and reports it after a PUSH RUN too (push_mode confirm), not only after a normal push; untracked files no longer count as a dirty main checkout.
+
 ## [0.6.3] - 2026-10-10
 
 ### Added

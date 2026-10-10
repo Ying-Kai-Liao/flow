@@ -143,3 +143,16 @@ test('the reviewer fast-forwards a clean main checkout after a batch and reports
   expect(q).toContain('main checkout fast-forwarded to <sha>')
   expect(q).toContain('main checkout not updated: <dirty | on branch X | ff failed>')
 })
+
+test('the push run continues with the after-batch steps and the untracked clause is there', () => {
+  const q = fill(REVIEWER_PROMPT, { ...base, pushMode: 'confirm' })
+  const run = q.slice(q.indexOf('## Push run'), q.indexOf('## A batch'))
+  expect(run).toContain('"After a batch" section')
+  expect(run).toContain('fast-forward the main checkout')
+  expect(run).toContain('main checkout not updated: batch awaits /flow push')
+  expect(q).toContain('\n## After a batch\n')
+  const after = q.slice(q.indexOf('## After a batch'))
+  expect(after).toContain('main checkout fast-forwarded to <sha>')
+  expect(after).toContain('untracked files, an untracked directory say, do not count as dirty')
+  expect(after).toContain('status --porcelain --untracked-files=no')
+})
