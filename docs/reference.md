@@ -19,7 +19,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `merge_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` holds every handed-over PR until you run `/flow approve <n>` (see Merge mode) |
 | `push_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` makes the reviewer stop after the full check and the release, and waits for your `/flow push` (see Push gate) |
 | `release` | `off` | `/config`, file | `on`: release at merge, the reviewer bumps the version once per batch (see Releases) |
-| `manager_model` | `opus` | `/config`, file | managers |
+| `manager_model` | `opus` | `/config`, file | managers, except those whose prompt says `Size: small` |
 | `worker_model` | `sonnet[1m]` | `/config`, file | workers of size `large`, and workers whose brief has no `Size:` line (see Model routing). Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
 | `max_workers` | 3 | `/config`, file | workers per manager at a time |
 
@@ -38,6 +38,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `reviewer_model` | `sonnet` | `/config`, file | the reviewer |
 | `conflict_model` | `opus` | `/config`, file | the sub-agent the reviewer starts for mechanical conflicts in code files and for fixes to PRs that break only in combination |
 | `explore_model` | `haiku` | `/config`, file | an Explore sub-agent that a flow agent (manager, worker, reviewer) starts without its own model. Main's own Explore spawns are untouched |
+| `manager_model_small` | `sonnet` | `/config`, file | managers whose prompt says `Size: small` (see Model routing) |
 | `worker_model_small` | `haiku` | `/config`, file | workers whose brief says `Size: small` |
 | `worker_model_normal` | `sonnet` | `/config`, file | workers whose brief says `Size: normal` |
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
@@ -74,7 +75,7 @@ An unset full check or deploy is a step that's skipped and reported, never impro
 
 The reviewer was called the merge queue before. For older setups the agent type `flow:queue`, the tool `mcp__flow__queue` and the settings `merge_queue` and `queue_model` still work as aliases of `flow:reviewer`, `mcp__flow__reviewer`, `reviewer` and `reviewer_model`; the old settings names are deprecated and warn once.
 
-Sub-agents don't run on Fable: a Fable model is refused in settings, for every model key above including `worker_model_small`, `worker_model_normal`, `explore_model` and `conflict_model` (a warning, the default applies) and denied at spawn, for flow agents and for anything a flow agent starts.
+Sub-agents don't run on Fable: a Fable model is refused in settings, for every model key above including `manager_model_small`, `worker_model_small`, `worker_model_normal`, `explore_model` and `conflict_model` (a warning, the default applies) and denied at spawn, for flow agents and for anything a flow agent starts.
 
 ### Settings per repo
 

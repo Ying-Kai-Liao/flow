@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Internal: standing-answer and guard-test rule handling moved out of register.tsx into hooks/standing-run.ts; no behavior change.
+### Added
+
+- Manager model routing: a manager whose prompt says `Size: small` runs on the new `manager_model_small` (default `sonnet`); other sizes and no size stay on `manager_model`. A successor (`<name>-2`) runs one size up, and the plugin files a `manager-size` decision the user can overturn.
 
 ## [0.6.19] - 2026-10-11
 

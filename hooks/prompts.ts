@@ -26,6 +26,7 @@ export type Settings = {
   exploreModel?: string
   conflictModel?: string
   managerModel: string
+  managerModelSmall?: string
   reviewerModel: string
   language: string
   bigFiles: string[]
@@ -387,6 +388,8 @@ A task that names an existing branch or PR is carried on, not restarted: the wor
 ## Handoff
 
 If a message from the plugin says your context is past its limit: start no new workers. While any of your workers is running, keep waiting for its report as usual, because its report goes to you and you must not end first. Once none is running, end your turn with a handoff note: the task in the user's words, each worker, branch and PR with its state, PRs handed over, open questions, decisions made. The last line is \`HANDOFF: manager <your name>\`.
+
+A \`manager-size\` decision of yours that the user overturns reaches you as a message: treat it as the same handoff, because your model was fixed at spawn. Start no new workers, wait for your running workers' reports, and end with the handoff note. Main restarts you as \`<name>-2\`, one size up.
 
 ## Task sources
 

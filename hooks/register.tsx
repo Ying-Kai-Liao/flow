@@ -19,7 +19,7 @@ import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo,
 import { addStep, addTurn, baseName, entriesOfBranch, prCost, reportSuffix, setIdentity } from './cost'
 import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
 import type { CostIo } from './cost-run'
-import { backNote, effectiveSize, floorFrom, generation, isSuccessorName, modelFor, parseSize } from './routing'
+import { backNote, effectiveSize, floorFrom, generation, isSuccessorName, managerDecision, managerModelFor, MANAGER_FYI_WHY, modelFor, parseSize } from './routing'
 import type { Size, SizeModels } from './routing'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
@@ -1496,6 +1496,41 @@ async function fileSizeFyi($: EngineInterface, options: Record<string, unknown>,
   await recordAutoAnswers(standingIoOf($), added, auto, owner)
 }
 
+// A manager's model by the Size line main put on its prompt; a successor (`x-2`) runs one size up from the largest
+// size recorded for its predecessors. No size and no floor leaves the spawn alone.
+async function routeManager($: EngineInterface, e: AgentSpawnInput, small: string, base: string): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
+  const declared = parseSize(e.prompt)
+  const name = (e as { name?: string }).name ?? e.description
+  let floor: Size | undefined
+  if (isSuccessorName(name)) {
+    await loadLedger($)
+    const gen = generation(name)
+    const before = Object.values(await read($, ledger)).filter(x => x.role === 'manager' && baseName(x.name) === baseName(name) && generation(x.name) < gen)
+    floor = floorFrom(before.map(x => x.size))
+  }
+  const size = effectiveSize(declared?.size, floor)
+  if (size === undefined) return { e }
+  const model = managerModelFor(size, small, base)
+  return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size } }
+}
+
+// The manager's own downgrade decision: owned by the manager (so an overturn messages it), addressed to main.
+// Filed once per manager name.
+async function fileManagerSizeFyi($: EngineInterface, options: Record<string, unknown>, name: string, id: string, routed: Routed): Promise<void> {
+  if (routed.size === 'large') return
+  const at = await $.clock.now()
+  const { rules } = await loadRules(standingIoOf($), options)
+  const { added, auto } = await withInbox($, cur => {
+    if (cur.items.some(x => x.owner === name && isFyi(x) && x.topic === 'manager-size' && x.question.startsWith(`${name} runs `))) {
+      return { inbox: cur, out: { added: [] as Array<{ q: Question }>, auto: new Map() as AutoHits } }
+    }
+    const asked = fyiAsked({ decision: managerDecision(name, routed.size, routed.model, routed.reason, routed.escalated), why: MANAGER_FYI_WHY.replace('<name>', name), topic: 'manager-size' })
+    const r = autoAnswer(cur, addQuestions(cur, { name, id, isManager: true }, 'main', [asked], at, 'fyi'), rules, at)
+    return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
+  })
+  await recordAutoAnswers(standingIoOf($), added, auto, name)
+}
+
 const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / reviewer_model)."
 
 // Fable is refused for a flow agent and for anything a flow agent starts.
@@ -2670,6 +2705,10 @@ export const register: Register = (on, options) => {
       const r = await routeWorker($, e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel })
       e = r.e
       routed = r.routed
+    } else if (e.subagentType === MANAGER) {
+      const r = await routeManager($, e, settings.managerModelSmall ?? 'sonnet', settings.managerModel)
+      e = r.e
+      routed = r.routed
     } else if (e.subagentType === 'Explore' && e.model === undefined && e.parentAgentId !== undefined) {
       // Read-only exploring by a flow agent runs on the cheap model; main's own and an explicit model stay as they are.
       const parent = (await $.agent.list()).find(a => a.id === e.parentAgentId)
@@ -2744,7 +2783,8 @@ export const register: Register = (on, options) => {
       })
       if (routed !== undefined) {
         const r = routed
-        await best($, 'filing a worker-size decision', () => fileSizeFyi($, options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
+        if (e.subagentType === MANAGER) await best($, 'filing a manager-size decision', () => fileManagerSizeFyi($, options, (e as { name?: string }).name ?? e.description, id, r))
+        else await best($, 'filing a worker-size decision', () => fileSizeFyi($, options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
       }
       if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
         await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt))

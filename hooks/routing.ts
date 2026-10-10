@@ -54,3 +54,12 @@ export function backNote(workers: Array<{ name: string; size?: string; spawnMode
   const next = `${last.name.replace(/-\d+$/, '')}-${generation(last.name) + 1}`
   return `Its worker ran ${last.size}${last.spawnModel === undefined ? '' : ` (${last.spawnModel})`}: continue with a fresh ${next} worker (Continue on branch: ${branch}); it runs one size up.`
 }
+
+// A manager's model: only `small` goes to the cheaper one; normal, large and no size stay on manager_model.
+export const managerModelFor = (size: Size, small: string, base: string): string => (size === 'small' ? small : base)
+
+// The downgrade decision for a manager, as filed in the inbox.
+export const managerDecision = (name: string, size: Size, model: string, reason: string, escalated: boolean): string =>
+  `${name} runs ${size} -> ${model}${escalated ? ' (one size up after an earlier manager on this task)' : ''}: ${reason === '' ? 'no reason given' : reason}`
+
+export const MANAGER_FYI_WHY = 'The plugin routes the manager model by the Size line main put on its prompt; below large a harder task may need a bigger model. An overturn makes this manager hand off (no new workers, wait for running workers, end with a handoff note); main restarts it as <name>-2, which runs one size up.'

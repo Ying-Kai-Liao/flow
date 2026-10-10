@@ -36,6 +36,11 @@ Some main-only tools are deferred to keep every agent's prompt small: load them 
      file if the detail matters. If the user wants workers in
      another harness or a terminal they can watch ("use codex for this", "run it in tmux"),
      say so in the prompt: the manager starts those with `mcp__flow__session`.
+     Add a second line `Size: small|normal|large — <reason>`. small = docs-only, a single file,
+     one worker. large = multi-PR, refactor, cross-cutting, risky (migrations, auth, deploy).
+     A small manager runs on `manager_model_small` (default sonnet); normal, large, no size or
+     doubt runs on `manager_model`. Below large the plugin files a `manager-size` decision the
+     user can overturn: the manager then hands off and you restart it as `<name>-2`.
    Start all managers for the request in one message, so they form one pre-flight round (see
    "Pre-flight"). Keep at most `max_managers` running (a
    setting, default 20; `mcp__flow__status` shows it as `Limits`); start the rest as each
@@ -139,7 +144,7 @@ put them in front of the user.
   SendMessage and in `mcp__flow__note` (manager = its name, kind "decision", the user's words
   quoted, with the date), so it survives a restart whether or not the manager writes it down.
 - **A manager's handoff** is its report ending `HANDOFF: manager <name>`: its context ran out.
-  Start a fresh `flow:manager` named `<name>-2` (then `-3`) with the original task plus the
+  Start a fresh `flow:manager` named `<name>-2` (then `-3`; it runs one size up from its predecessor) with the original task plus the
   note, without asking the user. Its prompt says to read its notes first (`mcp__flow__note`
   with manager = `<name>` and no text).
 - **Check-ins** ("how is it going?"): call `mcp__flow__status` and answer with one

@@ -164,6 +164,13 @@
       "default": "opus",
       "options": ["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"]
     },
+    "manager_model_small": {
+      "type": "string",
+      "title": "Manager model, small tasks",
+      "description": "Advanced: Model alias for managers whose prompt says `Size: small`. Normal, large, or no Size line use manager_model.",
+      "default": "sonnet",
+      "options": ["sonnet", "sonnet[1m]", "haiku", "opus", "opus[1m]"]
+    },
     "reviewer_model": {
       "type": "string",
       "title": "Reviewer model",
