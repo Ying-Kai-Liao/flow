@@ -3,7 +3,7 @@
 // register.tsx (the engine refuses `$` across an import).
 import type { LogEvent } from '../types'
 import { mergeLayers } from './settings'
-import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderSeeds, ruleFromQuestion, sameRule, seedsToOffer } from './standing'
+import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
 import type { Resolved, Rule } from './standing'
 import { addMapping, parseGuardTests, suggestionQuestion, suggestionsFor } from './guardtests'
 import type { GuardMap } from './guardtests'
@@ -226,4 +226,47 @@ export async function alwaysRule(
   const what = rule.topic !== undefined ? `topic ${rule.topic}` : 'this exact question'
   if (r.kind === 'exists') return `${id}: rule ${r.id} already says "${rule.answer}" for ${what}; no duplicate added.`
   return `${id}: rule ${r.id} added: ${what} -> "${rule.answer}"${rule.blocking ? ' (also blocking)' : ''}. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.`
+}
+
+// The standing tool: list, add or remove standing answers. Only main may.
+export async function standingTool(io: StandingIo, options: Record<string, unknown>, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
+  if (agentId !== undefined) return { result: 'Refused: only main makes or removes standing answers. Ask main in the chat, or answer with the question\'s default.' }
+  const action = String(input.action ?? 'list')
+  if (action === 'list') {
+    const { rules } = await loadRules(io, options)
+    const box = await io.inbox()
+    return { result: renderRules(rules, box, suggest(box, rules), seedsToOffer(rules)) }
+  }
+  if (action === 'add' && (input.seed !== undefined || input.seeds !== undefined)) {
+    const want = [...new Set([...(typeof input.seed === 'string' ? [input.seed] : []), ...(Array.isArray(input.seeds) ? input.seeds.map(String) : [])].map(s => s.trim()))]
+    const bad = want.filter(id => !SEEDS.some(s => s.id === id))
+    if (bad.length > 0 || want.length === 0) return { result: `Refused: unknown seed ${bad.map(b => `"${b}"`).join(', ') || '(none given)'}. The ids are ${seedIds().join(', ')}; nothing added.` }
+    const date = await io.today()
+    const out: string[] = []
+    for (const id of want) {
+      const seed = SEEDS.find(s => s.id === id)!
+      const r = await addRule(io, options, { ...seed.rule, note: `seed ${id}, added ${date}` })
+      out.push(r.kind === 'error' ? `${id}: not added: ${r.msg}`
+        : r.kind === 'exists' ? `${id}: already there as rule ${r.id}; nothing added.`
+          : `${id}: rule ${r.id} added to the personal file. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.`)
+    }
+    return { result: out.join('\n') }
+  }
+  if (action === 'add') {
+    const v = validateRule({
+      topic: input.topic, match: input.match, answer: input.answer, escalate: input.escalate, blocking: input.blocking, from: input.from,
+      note: `added ${await io.today()} by hand`,
+    })
+    if ('error' in v) return { result: `Refused: ${v.error}.` }
+    const r = await addRule(io, options, v.rule)
+    if (r.kind === 'error') return { result: `Not added: ${r.msg}` }
+    if (r.kind === 'exists') return { result: `Rule ${r.id} already says that; nothing added.` }
+    return { result: `Rule ${r.id} added to the personal file. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.` }
+  }
+  if (action === 'remove') {
+    const id = String(input.id ?? '').trim()
+    if (id === '') return { result: 'Refused: remove needs the rule id (see action "list").' }
+    return { result: await dropRule(io, options, id) }
+  }
+  return { result: 'Unknown action: use list, add or remove.' }
 }
