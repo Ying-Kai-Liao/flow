@@ -65,6 +65,11 @@ export async function publishRelease(io: ReleaseIo, settings: Settings, dir: str
     if (sha === undefined) return `Refused: no commit "Release ${version}" in the last 50 first-parent commits of ${dir}. Publish only after the release commit is in HEAD.`
     const anc = await git('merge-base', '--is-ancestor', sha, 'HEAD')
     if (anc.exitCode !== 0) return `Refused: the commit "Release ${version}" is not an ancestor of HEAD in ${dir}.`
+    // A tag must only ever point at a commit that reached origin: the release commit is checked against the fetched base before anything is tagged.
+    const fetched = await git('fetch', 'origin', settings.base)
+    if (fetched.exitCode !== 0) return `Not published: could not fetch origin/${settings.base}: ${tail(fetched)}. The release commit is pushed; report this, the batch stays done.`
+    const onBase = await git('merge-base', '--is-ancestor', sha, `origin/${settings.base}`)
+    if (onBase.exitCode !== 0) return `Not published: the release commit ${sha.slice(0, 8)} is not on origin/${settings.base}; no tag was made. Push the release commit first, then call publish again.`
     const existing = await git('rev-parse', '--verify', '--quiet', `refs/tags/${tag}^{commit}`)
     if (existing.exitCode === 0 && existing.stdout.trim() !== sha) return `Not published: tag ${tag} already exists at ${existing.stdout.trim().slice(0, 8)}, not at the release commit ${sha.slice(0, 8)}; it was not moved. The release commit is pushed; report this, the batch stays done.`
     if (existing.exitCode !== 0) {

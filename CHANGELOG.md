@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Internal: tool specs moved out of `hooks/register.tsx` into `hooks/tools.ts`; no behavior change.
 - Internal: moved spawn routing (attachment check, continue rewrite, worker and manager model routing, size decisions, Fable refusal) into `hooks/spawn.ts` (no behavior change).
 - Internal: moved the handover, plan, test_slot, migrations and status tool handlers and the `/flow` command out of `hooks/register.tsx` into `hooks/handover-run.ts`, `plan-run.ts`, `slots-run.ts`, `migrations-run.ts`, `status-run.ts` and `command.ts` (no behavior change).
+### Fixed
+
+- The release publish step fetches origin/main and refuses to tag a release commit that is not on it, so a tag is never pushed for a commit that did not reach origin.
 
 ## [0.6.24] - 2026-10-11
 
