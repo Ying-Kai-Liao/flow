@@ -221,3 +221,18 @@ test('with no agents but an open question the key row shows the inbox key only',
   expect(await ui.find({ key: 'nav-next' })).toBeUndefined()
   await ui.unmount()
 })
+
+test('a highlight answered meanwhile answers nothing: the highlight moves and the note says so', async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [SOFT, { ...SOFT, question: 'Other?' }])
+  const ui = await mount($)
+  await open(ui)
+  await ui.press({ key: 'inbox-next' })
+  await cmd($, 'answer q2 b')
+  await ui.press({ key: 'inbox-yes' })
+  expect(stateOf(w.files, 'q1')?.state).toBe('open')
+  expect(await ui.find({ text: /q2 was answered meanwhile \(by main\); the highlight moved, press again/ })).toBeDefined()
+  await ui.press({ key: 'inbox-yes' })
+  expect(stateOf(w.files, 'q1')?.answer).toBe('yes')
+  await ui.unmount()
+})

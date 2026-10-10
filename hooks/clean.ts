@@ -330,9 +330,9 @@ export function leftoverLine(c: { worktrees: number; branches: number; needsLook
   ]
   const parts = [
     ...(gone.length ? [`${gone.join(' and ')} can be removed`] : []),
-    ...(c.needsLook ? [`${c.needsLook} kept for you to decide`] : []),
+    ...(c.needsLook ? [`${c.needsLook} hold${c.needsLook === 1 ? 's' : ''} work that isn't merged`] : []),
   ]
-  return `Cleanup: ${parts.join(', ')}. /flow clean shows them`
+  return `Cleanup: ${parts.join(', ')}. /flow clean lists them`
 }
 
 // This session's pids: `start` and its ancestors up to and including the nearest `claude` process,

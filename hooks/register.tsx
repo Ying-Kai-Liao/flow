@@ -5797,8 +5797,8 @@ export const register: Register = (on, options) => {
       // Only some surfaces have an Input; without one the keys still answer.
       const Input = ($.ui.resolve(e) as unknown as { Input?: (p: { key: string; label: string; placeholder: string; value: string; onInput: (v: string) => void; onSubmit: (v: string) => void }) => null }).Input
       const [ibox, iopen, icur, draft, note] = await Promise.all([read($, inbox), read($, inboxOpen), read($, inboxCursor), read($, inboxDraft), read($, inboxNote)])
-      const live = list.length === 0 ? undefined : list.filter(a => a.name !== undefined && !ENDED.has(a.status)).map(a => a.name!)
-      const irows = paneRows(ibox, t, { live, open: iopen })
+      // The same rows a press reads, so what is drawn and what is pressed fold alike.
+      const irows = (await paneInboxRows($)).rows
       const ihot = Math.max(0, irows.findIndex(r => r.key === icur))
       const hotRow = irows[ihot]
       const hq = hotRow?.q
@@ -5808,11 +5808,21 @@ export const register: Register = (on, options) => {
       const win = viewOf(irows, ihot, size)
       const iBelow = irows.length - win.top - win.rows.length
       // Every press reads the inbox fresh (never the row drawn), so it acts on what is open now.
-      const here = async () => {
+      // strict: a highlight that is no longer in the list (answered meanwhile, or folded away) answers nothing;
+      // the highlight moves to the first row and the person presses again.
+      const here = async (strict = true) => {
         await acted()
         const { rows: fresh } = await paneInboxRows($)
         const c = await read($, inboxCursor)
-        const i = Math.max(0, fresh.findIndex(r => r.key === c))
+        const at = fresh.findIndex(r => r.key === c)
+        if (strict && c !== null && at < 0) {
+          const was = (await read($, inbox)).items.find(x => x.id === c)
+          const by = was?.state === 'answered' ? ` (by ${was.answeredBy ?? '?'})` : ''
+          await update($, inboxCursor, () => fresh[0]?.key ?? null)
+          await update($, inboxNote, () => `${c} ${was?.state === 'answered' ? 'was answered meanwhile' : 'moved out of the list'}${by}; the highlight moved, press again.`)
+          return undefined
+        }
+        const i = Math.max(0, at)
         return { fresh, i, row: fresh[i] }
       }
       // After an answer the highlight goes to the next row (else the one before), and the result is shown.
@@ -5826,13 +5836,17 @@ export const register: Register = (on, options) => {
       const say = (text: string) => update($, inboxNote, () => text)
       const answerRow = (id: string, choice: string | null) => answerQuestion($, id, choice, 'main', {}, true)
       const pickOption = (n: number) => () => paneSerial(async () => {
-        const { fresh, i, row } = await here()
+        const h = await here()
+        if (h === undefined) return
+        const { fresh, i, row } = h
         if (row?.q === undefined) return say('Move to a question or an FYI first.')
         if (n >= row.q.options.length) return
         await done([await answerRow(row.q.id, row.q.options[n]!)], fresh, i)
       })
       const takeDefault = () => paneSerial(async () => {
-        const { fresh, i, row } = await here()
+        const h = await here()
+        if (h === undefined) return
+        const { fresh, i, row } = h
         if (row === undefined) return
         const lines: string[] = []
         let refused = 0
@@ -5847,7 +5861,9 @@ export const register: Register = (on, options) => {
         await done(lines, fresh, i)
       })
       const keepAll = () => paneSerial(async () => {
-        const { fresh, i } = await here()
+        const h = await here(false)
+        if (h === undefined) return
+        const { fresh, i } = h
         const open = (await read($, inbox)).items.filter(x => x.state === 'open' && isFyi(x) && protectedWhy(x) === undefined)
         if (open.length === 0) return say('No open FYIs to keep.')
         const lines: string[] = []
@@ -5856,7 +5872,9 @@ export const register: Register = (on, options) => {
         await done([`Kept ${kept} FYI${kept === 1 ? '' : 's'}.`, ...lines.filter(l => !l.includes(': Keep (default)'))], fresh, i)
       })
       const overturn = () => paneSerial(async () => {
-        const { fresh, i, row } = await here()
+        const h = await here()
+        if (h === undefined) return
+        const { fresh, i, row } = h
         if (row?.q === undefined || !isFyi(row.q)) return say('n overturns one FYI: move to it first.')
         const text = (await read($, inboxDraft)).trim()
         await update($, inboxDraft, () => '')
@@ -5870,18 +5888,24 @@ export const register: Register = (on, options) => {
       const submit = (value: string) => void paneSerial(async () => {
         const text = value.trim()
         if (text === '') return
-        const { fresh, i, row } = await here()
+        const h = await here()
+        if (h === undefined) return
+        const { fresh, i, row } = h
         if (row?.q === undefined) return say('Move to a question or an FYI first.')
         await update($, inboxDraft, () => '')
         await done([await answerRow(row.q.id, text)], fresh, i)
       })
       const move = (d: number) => () => paneSerial(async () => {
-        const { fresh, i } = await here()
+        const h = await here(false)
+        if (h === undefined) return
+        const { fresh, i } = h
         const to = fresh[Math.min(fresh.length - 1, Math.max(0, i + d))]
         if (to !== undefined) await update($, inboxCursor, () => to.key)
       })
       const expand = () => paneSerial(async () => {
-        const { row } = await here()
+        const h = await here(false)
+        if (h === undefined) return
+        const { row } = h
         const open = await read($, inboxOpen)
         const k = row === undefined ? undefined : row.kind !== 'item' ? row.key : [`g:${row.owner}:${row.q?.topic}`, `o:${row.owner}`].find(x => open.includes(x))
         if (k === undefined) return

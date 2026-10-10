@@ -362,7 +362,7 @@ background after each PR the reviewer marks done, and when a reviewer agent ends
 at the base, goes once the reviewer is gone). Never two sweeps at once; errors go to the log. With
 `cleanup` = `off` nothing runs by itself, the tool's `apply` runs dry and says so, and only
 `/flow clean --yes` removes. The pane and `status` show one dim line while there are leftovers,
-e.g. `Cleanup: 3 worktrees and 12 branches can be removed, 1 kept for you to decide. /flow clean shows them` (zero counts are left out), from a dry sweep
+e.g. `Cleanup: 3 worktrees and 12 branches can be removed, 1 holds work that isn't merged. /flow clean lists them` (zero counts are left out), from a dry sweep
 refreshed with the PR list (every 5 minutes).
 
 ## Guards

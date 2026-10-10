@@ -188,9 +188,9 @@ test('the listing and the leftover line', () => {
   expect(dry).toContain('Kept for a person to decide:')
   expect(dry.split('\n').at(-1)).toBe('Run /flow clean --yes to remove them.')
   expect(sweepText(s, { applied: true })).toContain('Removed 1 branch:')
-  expect(leftoverLine({ worktrees: 3, branches: 12, needsLook: 1 })).toBe('Cleanup: 3 worktrees and 12 branches can be removed, 1 kept for you to decide. /flow clean shows them')
-  expect(leftoverLine({ worktrees: 0, branches: 2, needsLook: 5 })).toBe('Cleanup: 2 branches can be removed, 5 kept for you to decide. /flow clean shows them')
-  expect(leftoverLine({ worktrees: 0, branches: 0, needsLook: 5 })).toBe('Cleanup: 5 kept for you to decide. /flow clean shows them')
+  expect(leftoverLine({ worktrees: 3, branches: 12, needsLook: 1 })).toBe("Cleanup: 3 worktrees and 12 branches can be removed, 1 holds work that isn't merged. /flow clean lists them")
+  expect(leftoverLine({ worktrees: 0, branches: 2, needsLook: 5 })).toBe("Cleanup: 2 branches can be removed, 5 hold work that isn't merged. /flow clean lists them")
+  expect(leftoverLine({ worktrees: 0, branches: 0, needsLook: 5 })).toBe("Cleanup: 5 hold work that isn't merged. /flow clean lists them")
   expect(leftoverLine({ worktrees: 0, branches: 0, needsLook: 0 })).toBeUndefined()
 })
 
@@ -302,7 +302,7 @@ test('/flow clean lists, /flow clean --yes removes and logs', async ($, on) => {
   expect(r.ran).toEqual([])
   // The dry sweep's counts feed the status line.
   const status = async () => String((await $.tool.call({ tool: 'mcp__flow__status' } as never)).result)
-  expect(await status()).toContain('Cleanup: 1 worktree and 2 branches can be removed. /flow clean shows them')
+  expect(await status()).toContain('Cleanup: 1 worktree and 2 branches can be removed. /flow clean lists them')
   const done = String((await flow($, 'clean --yes')).text)
   expect(done).toContain('Removed 1 worktree:')
   expect(r.ran).toEqual([`git worktree remove ${WT('a')}`, 'git worktree prune', 'git branch -D flow/a', 'git branch -D flow/b'])
