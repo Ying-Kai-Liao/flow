@@ -33,6 +33,7 @@ import type { Inbox, Marked, Question } from './inbox'
 import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
 import type { Resolved, Rule } from './standing'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
+import { shimmerParts } from './shimmer'
 import type { GNode, Seg } from './graph'
 import {
   fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, SESSION_PROMPT, WORKER_PROMPT,
@@ -5540,8 +5541,12 @@ export const register: Register = (on, options) => {
       const below = collapsed ? hidden(a.id) : []
       const nAsk = below.filter(asksOf).length
       const nHand = below.filter(c => handoffOf(c, acts[c.id])?.kind === 'wrapping').length
+      // Only a running agent shines; a pending one is still starting up.
+      const working = a.status === 'running' && !asks
       const head = <Text>
-        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> <Text bold inverse={hot}>{labelOf(a)}</Text>
+        <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> {working
+          ? <Text bold>{shimmerParts(labelOf(a), t).map((p, i) => <Text key={`sh${i}`} bold inverse={hot} color={p.lit ? 'suggestion' : undefined}>{p.text}</Text>)}</Text>
+          : <Text bold inverse={hot}>{labelOf(a)}</Text>}
         {under > 0 && <Text dimColor> (+{under})</Text>}
         <Text dimColor>  {ROLE[a.type] ?? a.type}</Text>
         {hand?.kind === 'wrapping' && <Text bold color="warning">  handoff</Text>}
@@ -5562,7 +5567,7 @@ export const register: Register = (on, options) => {
           )}
           {full && !collapsed ? (
             // A Button holds Text only, so the border is drawn around it.
-            <Box flexDirection="column" borderStyle={bordered ? 'round' : undefined} borderDimColor={dim} paddingX={bordered ? 1 : 0}>
+            <Box flexDirection="column" borderStyle={bordered ? 'round' : undefined} borderDimColor={dim} borderColor={working ? 'suggestion' : undefined} paddingX={bordered ? 1 : 0}>
               <Button key={a.id} plain dimColor={dim} onPress={() => open(a.id)}>
                 {head}{'\n'}{second}{'\n'}{meter(u, dim, runTime(act, dim))}
               </Button>
