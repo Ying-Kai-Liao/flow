@@ -106,6 +106,20 @@ The files are checked every few seconds by modification time. New settings apply
   expected format. Fix with `gh pr edit <n> --body-file <file>` and call again. The format:
 
 ```
+## Message delivery
+
+A message to an idle agent starts a turn, and once the 5-minute prompt cache has expired that turn re-writes the whole context at full price. So the plugin batches its messages (`hooks/deliver.ts`):
+
+- A running agent gets a message at once, together with anything queued for it.
+- An idle agent's messages are queued and sent as one wake-up 8 seconds after the first; identical texts go once.
+- Urgent kinds skip the wait and flush the queue: answers to blocking asks, push-gate send-backs, the max-continues and wrap-up notices.
+- A non-blocking ask is held: it does not wake the manager, and goes out with the next message, on the agent's next turn, or after 10 minutes at the latest. `/flow inbox` still shows it.
+- A reviewer's message to a manager holds that manager's queue for the turn the message starts, so both arrive in one turn; a 60 second timer sends the queue if the message never lands.
+- If the agent has ended, queued texts go to the message's fallback, else to main.
+- A send the host refuses to an agent that has not ended (for example one waiting between turns) is put back in the queue as held and goes out on its next turn; if it is refused again at the 10 minute cap, it falls back with a "could not be delivered" note.
+
+The queue is in memory: a plugin reload loses it.
+
 ## The test lock
 
 Six worktrees running the whole suite at once can exhaust memory and time out the real check.
