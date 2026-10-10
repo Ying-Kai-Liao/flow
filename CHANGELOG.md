@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-10-10
+
+### Changed
+
+- Less re-sent text: scoped status, stable-first session prompt, deferred tools (#79)
+
 ## [0.6.8] - 2026-10-10
 
 ### Added
