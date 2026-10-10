@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Fewer wake-ups: messages to an idle agent that arrive within 8 seconds go out as one; urgent ones (blocking answers, push-gate send-backs, max-continues, wrap-up) go at once; a non-blocking ask waits for the manager's next turn (10 minutes at most). See "Message delivery" in `docs/reference.md`.
+
 ## [0.6.4] - 2026-10-10
 
 ### Fixed
