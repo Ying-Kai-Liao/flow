@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: tool specs moved out of `hooks/register.tsx` into `hooks/tools.ts`; no behavior change.
+
 ## [0.6.24] - 2026-10-11
 
 ### Changed
