@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: model routing (brief sizes, escalation, `worker-size` FYIs, `explore_model`, `reviewer_model` now `sonnet`, `conflict_model`) in the reference.
+
 ## [0.6.3] - 2026-10-10
 
 ### Added
