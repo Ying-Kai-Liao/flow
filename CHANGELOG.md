@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: the release tool and cost ledger moved from register.tsx into hooks/release-run.ts and hooks/cost-run.ts (no behavior change)
+
 ## [0.6.20] - 2026-10-11
 
 ### Changed
