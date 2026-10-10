@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: terminal sessions moved out of register.tsx into hooks/session-run.ts; no behavior change.
+
 ## [0.6.17] - 2026-10-11
 
 ### Changed
