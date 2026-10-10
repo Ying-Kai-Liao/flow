@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-10-10
+
 ### Added
 
 - Flow pane: a running agent's name shimmers (a bright stretch moves one step per second on the shared tick) and its card border uses the suggestion color; idle, waiting, pending and ended agents look as before.
