@@ -129,6 +129,34 @@
       "default": "sonnet[1m]",
       "options": ["sonnet[1m]", "sonnet", "opus[1m]", "opus", "haiku"]
     },
+    "worker_model_small": {
+      "type": "string",
+      "title": "Worker model, small briefs",
+      "description": "Model alias for workers whose brief says `Size: small`. Normal maps to worker_model_normal, large to worker_model; a brief without a Size line uses worker_model.",
+      "default": "haiku",
+      "options": ["haiku", "sonnet", "sonnet[1m]", "opus", "opus[1m]"]
+    },
+    "worker_model_normal": {
+      "type": "string",
+      "title": "Worker model, normal briefs",
+      "description": "Model alias for workers whose brief says `Size: normal`.",
+      "default": "sonnet",
+      "options": ["sonnet", "sonnet[1m]", "haiku", "opus", "opus[1m]"]
+    },
+    "explore_model": {
+      "type": "string",
+      "title": "Explore model",
+      "description": "Model alias for read-only Explore sub-agents started by flow agents (not by the main session) when they name no model.",
+      "default": "haiku",
+      "options": ["haiku", "sonnet", "opus"]
+    },
+    "conflict_model": {
+      "type": "string",
+      "title": "Conflict model",
+      "description": "Model alias for the sub-agent the reviewer starts to resolve a merge conflict in code files or a combination failure.",
+      "default": "opus",
+      "options": ["opus", "sonnet", "haiku"]
+    },
     "manager_model": {
       "type": "string",
       "title": "Manager model",
@@ -140,8 +168,8 @@
       "type": "string",
       "title": "Reviewer model",
       "description": "Model alias for the reviewer. Set explicitly so it does not follow the main session's model.",
-      "default": "opus",
-      "options": ["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"]
+      "default": "sonnet",
+      "options": ["sonnet", "sonnet[1m]", "opus", "opus[1m]", "haiku"]
     },
     "language": {
       "type": "string",

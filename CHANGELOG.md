@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Model routing: a worker brief's `Size: small | normal | large` line picks the worker's model at spawn (settings `worker_model_small` haiku, `worker_model_normal` sonnet, large = `worker_model`); the Size line wins over a model param, and a brief without one is spawned as before. The ledger records the size, `status` shows cost by size, and a worker below large gets a non-blocking `worker-size` FYI (overturnable, answerable by a standing rule).
+- A successor of a worker (`<name>-N`, or `Continue on branch:`) runs one size up from its predecessors' recorded size; a reviewer "back" for a small or normal worker's PR tells the manager to continue with a fresh worker.
+- Settings `explore_model` (haiku: Explore sub-agents started by flow agents) and `conflict_model` (opus: the reviewer's sub-agent for code-file merge conflicts and combination fixes).
+
+### Changed
+
+- `reviewer_model` now defaults to `sonnet` (was `opus`).
+
 ## [0.6.4] - 2026-10-10
 
 ### Fixed

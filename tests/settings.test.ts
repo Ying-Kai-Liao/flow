@@ -159,12 +159,12 @@ test('a Fable model setting is refused at load', async ($, on) => {
   expect(w.toasts.join('\n')).toContain('Fable')
 })
 
-test('agents carry the configured models, opus for manager and reviewer by default', async ($, on) => {
+test('agents carry the configured models, opus for the manager and sonnet for the reviewer by default', async ($, on) => {
   const w = world(on, {})
   await start($)
   expect(w.last('manager')!.model).toBe('opus')
-  expect(w.last('reviewer')!.model).toBe('opus')
-  expect(w.last('queue')!.model).toBe('opus')
+  expect(w.last('reviewer')!.model).toBe('sonnet')
+  expect(w.last('queue')!.model).toBe('sonnet')
   expect(w.last('worker')!.model).toBe('sonnet[1m]')
 })
 
@@ -269,7 +269,7 @@ test('a refused [1m] model falls back once to the plain model, tells once, and l
 const USER_CONFIG_KEYS = [
   'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_mode', 'push_mode', 'reviewer', 'max_managers', 'max_workers',
   'test_slots', 'context_warn_percent', 'context_warn_percent_1m', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow', 'max_continues',
-  'worker_model', 'manager_model', 'reviewer_model', 'language', 'base_branch', 'cleanup',
+  'worker_model', 'worker_model_small', 'worker_model_normal', 'explore_model', 'conflict_model', 'manager_model', 'reviewer_model', 'language', 'base_branch', 'cleanup',
 ]
 
 test('every userConfig key in plugin.json is a settings key', () => {
