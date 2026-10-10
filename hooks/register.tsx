@@ -2455,19 +2455,20 @@ async function withCost($: EngineInterface, branch: string, report: string): Pro
 
 // How many finished handovers status lists; the rest only count, `pr:<n>` gives any one in full.
 const FINISHED_SHOWN = 5
-const FINISHED_LINE_MAX = 220
+const FINISHED_REPORT_MAX = 120
 
 // Open handovers in order, then the newest finished ones, and how many finished were left out.
 export function cappedHandovers(list: Handover[]): { shown: Handover[]; hidden: number } {
-  const finished = list.filter(h => h.status === 'done').sort((a, b) => b.at - a.at)
+  const finished = list.filter(h => h.status === 'done').sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
   const keep = new Set(finished.slice(0, FINISHED_SHOWN))
   return { shown: list.filter(h => h.status !== 'done' || keep.has(h)), hidden: Math.max(0, finished.length - FINISHED_SHOWN) }
 }
 
 const clipLine = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-function handoverLine(h: Handover): string {
-  const tail = h.status === 'done' ? ` ${h.sha ?? ''} ${h.report ?? ''}`
+// reportMax clips only the reviewer's report, so the title and evidence of a finished line stay.
+function handoverLine(h: Handover, reportMax?: number): string {
+  const tail = h.status === 'done' ? ` ${h.sha ?? ''} ${reportMax === undefined ? h.report ?? '' : clipLine(h.report ?? '', reportMax)}`
     : h.status === 'returned' ? ` returned: ${h.reason ?? ''}`
     : h.status === 'awaiting' ? ` awaiting the user's approval: /flow approve ${h.pr}`
     : h.status === 'ready' ? ' ready in a batch that awaits the user: /flow push' : ''
@@ -3900,8 +3901,9 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'status',
-      description: 'The flow at a glance: every manager, worker and reviewer of this session with its status and last report, and every handed-over PR. ' +
-        'With pr, who owns that PR and its log lines.',
+      description: 'The flow at a glance: managers, workers and reviewer with their status and last report, and handed-over PRs. ' +
+        'Scoped by caller: a manager sees its own subtree and PRs, a worker itself and its manager, main and the reviewer everything. ' +
+        'Only the newest 5 finished PRs are listed. With pr, that PR in full: its handover line, owner and log lines.',
       inputSchema: { type: 'object', properties: { pr: { type: 'number', description: 'A PR number, to see who owns it' } } },
       isDeferred: false,
     })
@@ -5103,6 +5105,8 @@ export const register: Register = (on, options) => {
     const me = e.agentId === undefined ? undefined : allRows.find(r => r.id === e.agentId)
     const scope: 'all' | 'manager' | 'worker' = me === undefined ? 'all' : me.type === MANAGER ? 'manager' : WORKERS.has(me.type) ? 'worker' : 'all'
     const mine = new Set<string>(me === undefined ? [] : [me.id])
+    // A successor (x-2) has no parent link to x's workers: seed with every manager of the same base name.
+    if (scope === 'manager') for (const r of allRows) if (r.type === MANAGER && r.name !== undefined && baseName(r.name) === baseName(me?.name ?? '')) mine.add(r.id)
     if (scope === 'manager') for (let grew = true; grew;) { grew = false; for (const r of allRows) if (r.parentId !== undefined && mine.has(r.parentId) && !mine.has(r.id)) { mine.add(r.id); grew = true } }
     if (scope === 'worker' && me?.parentId !== undefined) mine.add(me.parentId)
     const rows = scope === 'all' ? allRows : allRows.filter(r => mine.has(r.id))
@@ -5149,7 +5153,7 @@ export const register: Register = (on, options) => {
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
         ...(scope === 'worker' ? [] : [
           list.length ? 'Handed-over PRs:' : 'No PRs handed over.',
-          ...shown.map(h => `${h.status === 'done' ? clipLine(handoverLine(h), FINISHED_LINE_MAX) : handoverLine(h)}${h.report?.includes('| cost:') ? '' : reportSuffix(prCost(led, h.branch))}`),
+          ...shown.map(h => `${handoverLine(h, FINISHED_REPORT_MAX)}${h.report?.includes('| cost:') ? '' : reportSuffix(prCost(led, h.branch))}`),
           ...(hidden > 0 ? [`+${hidden} earlier finished PRs (mcp__flow__status pr:<n> for one)`] : []),
         ]),
         ...(unhanded.length ? [
@@ -5693,7 +5697,7 @@ export const register: Register = (on, options) => {
 
     // The tree: each agent under the one that started it, what needs a person first.
     const first = treeItems(list, fold, undefined, false, acts).items[0]?.a.id
-    const prs = Object.values(hs).sort((a, b) => b.at - a.at)
+    const prs = Object.values(hs).sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
     const live = list.filter(a => !ENDED.has(a.status)).length
     // Header, the PR lines and the hint row are fixed; the root and the agents share what is left.
     // Full cards if all fit, else the crowded tree (compact rows, folded but for the highlight's

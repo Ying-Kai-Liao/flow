@@ -264,7 +264,7 @@ export function renderSeeds(seeds: Seed[]): string[] {
   return [
     'Suggested starting rules (not applied):',
     ...seeds.map(s => `  ${s.label}: mcp__flow__standing {"action":"add","seed":"${s.id}"}`),
-    `Several at once: mcp__flow__standing {"action":"add","seeds":${JSON.stringify(seeds.map(s => s.id))}}. Nothing is applied until you add it.`,
+    `Several at once: mcp__flow__standing {"action":"add","seeds":${JSON.stringify(seeds.map(s => s.id))}}. Nothing is applied until you add it. (Load mcp__flow__standing with ToolSearch first.)`,
   ]
 }
 

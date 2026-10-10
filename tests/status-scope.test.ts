@@ -70,8 +70,19 @@ test('main and the reviewer see everything; finished PRs are capped to the newes
     for (const n of [10, 9, 8, 7, 6]) expect(text).toContain(`#${n} done`)
     for (const n of [5, 4, 3, 2, 1]) expect(text).not.toContain(`#${n} done`)
     expect(text).toContain('+5 earlier finished PRs (mcp__flow__status pr:<n> for one)')
-    expect(text).not.toContain('x'.repeat(300))
+    expect(text).not.toContain('x'.repeat(200))
+    // Only the report is clipped: the title stays.
+    expect(text).toContain('— Title 10')
   }
+})
+
+test('a successor manager sees workers parented to its predecessor', async ($, on) => {
+  const { agents } = world(on, FIXTURE)
+  agents.push({ id: 'm1b', name: 'csv-export-2', description: 'm', type: 'flow:manager', status: 'running' })
+  await start($)
+  const text = await status($, { agentId: 'm1b' })
+  expect(text).toContain('csv-worker')
+  expect(text).not.toContain('other-worker')
 })
 
 test('pr:<n> on a capped old PR still gives its full handover line', async ($, on) => {
