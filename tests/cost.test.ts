@@ -258,6 +258,7 @@ test('the cost line shows turns and cache write per turn; rows without turns ren
 
 test('turn.complete counts one turn per turn id, for main and agents, and ledger.json keeps it', async ($, on) => {
   const w = world(on)
+  on('turn.complete', (_, e) => ({ text: e.answer }) as never)
   await step($, 'w1')
   const done = (turnId: string, agentId?: string) => $.turn.complete({ turnId, agentId, answer: 'x', durationMs: 1, isAborted: true, reason: 'answer' } as never)
   await done('t1', 'w1')
