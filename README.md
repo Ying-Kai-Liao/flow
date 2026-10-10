@@ -88,7 +88,7 @@ flow works with no setup. Most people set a few things in `.claude/flow.json` at
 - `full_check_command`: what the reviewer runs once before it pushes a batch of merges.
 - `deploy_targets`: where the reviewer deploys, in order. Give a target `"mode": "confirm"` to make production wait for your OK. Leave it out and nothing deploys.
 - `merge_mode`: `auto` merges handed-over PRs; `confirm` waits for your `/flow approve`.
-- `worker_model`, `manager_model`, `reviewer_model`, `max_managers`, `max_workers`: models and limits.
+- `worker_model`, `worker_model_small`, `worker_model_normal`, `manager_model`, `reviewer_model`, `conflict_model`, `explore_model`, `max_managers`, `max_workers`: models and limits.
 
 Anything you leave out is skipped and reported. flow never guesses a command. The full list, with
 defaults, is in the [reference](docs/reference.md).

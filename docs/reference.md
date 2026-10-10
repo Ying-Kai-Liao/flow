@@ -27,9 +27,13 @@ Most options are under `/config` → flow:. Every option can also be set in a se
 | `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `max_workers` | 3 | `/config`, file | workers per manager at a time |
 | `test_slots` | 1 | `/config`, file | how many heavy test runs may run at once across all agents (minimum 1) |
-| `worker_model` | `sonnet[1m]` | `/config`, file | workers. Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
+| `worker_model` | `sonnet[1m]` | `/config`, file | workers of size `large`, and workers whose brief has no `Size:` line (see Model routing). Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
+| `worker_model_small` | `haiku` | `/config`, file | workers whose brief says `Size: small` |
+| `worker_model_normal` | `sonnet` | `/config`, file | workers whose brief says `Size: normal` |
 | `manager_model` | `opus` | `/config`, file | managers |
-| `reviewer_model` | `opus` | `/config`, file | the reviewer |
+| `reviewer_model` | `sonnet` | `/config`, file | the reviewer |
+| `conflict_model` | `opus` | `/config`, file | the sub-agent the reviewer starts for mechanical conflicts in code files and for fixes to PRs that break only in combination |
+| `explore_model` | `haiku` | `/config`, file | an Explore sub-agent that a flow agent (manager, worker, reviewer) starts without its own model. Main's own Explore spawns are untouched |
 | `language` | `English` | `/config`, file | the language agents write reports and PR text in |
 | `big_files` | none | file only | files workers grep and never read whole (a list) |
 | `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
@@ -60,7 +64,7 @@ An unset full check or deploy is a step that's skipped and reported, never impro
 
 The reviewer was called the merge queue before. For older setups the agent type `flow:queue`, the tool `mcp__flow__queue` and the settings `merge_queue` and `queue_model` still work as aliases of `flow:reviewer`, `mcp__flow__reviewer`, `reviewer` and `reviewer_model`; the old settings names are deprecated and warn once.
 
-Sub-agents don't run on Fable: a Fable model is refused in settings (a warning, the default applies) and denied at spawn, for flow agents and for anything a flow agent starts.
+Sub-agents don't run on Fable: a Fable model is refused in settings, for every model key above including `worker_model_small`, `worker_model_normal`, `explore_model` and `conflict_model` (a warning, the default applies) and denied at spawn, for flow agents and for anything a flow agent starts.
 
 ### Settings per repo
 
@@ -136,12 +140,28 @@ worker must run only when its diff touches a matching path.
   personal flow config" writes it to `<git-common-dir>/flow/config.json`; copy it into
   `.claude/flow.json` to share it. Flow never edits the committed file.
 
+## Model routing
+
+A manager picks a model per worker by size, not by name. It writes `Size: small | normal | large — <reason>` as the second line of the brief (after `Your name:`) and omits the Agent `model` parameter. At spawn the plugin maps the size to a model:
+
+| Size | Setting (default) | Use for |
+|---|---|---|
+| `small` | `worker_model_small` (`haiku`) | docs, one-file fixes, renames, mechanical changes |
+| `normal` | `worker_model_normal` (`sonnet`) | an ordinary change in a few files with clear scope |
+| `large` | `worker_model` (`sonnet[1m]`) | cross-cutting work, big files, unclear scope, anything needing a long context |
+
+The `Size:` line wins over an explicit `model` parameter. Without one nothing changes: the `model` parameter or `worker_model` applies. An unknown size word is ignored.
+
+- **Escalation:** a successor worker (named `<name>-N`, or a brief with `Continue on branch: flow/<x>`) of a small or normal worker runs at least one size above its predecessor (small, then normal, then large), automatically. That covers a BLOCKED or failed worker, a context handoff, and a PR the reviewer sends back: the reviewer's back message for a small or normal worker's PR tells the manager to continue with a fresh `-N` worker.
+- **Downgrade record:** a worker started below large makes the plugin file a non-blocking FYI from the manager to the user, topic `worker-size`, e.g. "csv-docs runs small -> haiku: docs only". It is never a blocking ask and never silent. Overturn it in `/flow inbox`: the manager is told and restarts the package at the size you chose. Standing answers (`mcp__flow__standing`, topic `worker-size`) can acknowledge recurring cases (see Standing answers).
+- **Explore and reviewer:** Explore sub-agents of flow agents run on `explore_model`. The reviewer runs on `reviewer_model`; it still resolves changelog and version-file conflicts itself, and starts a sub-agent on `conflict_model` for mechanical conflicts in code files and for fixes to PRs that break only in combination.
+
 ## Cost meter
 
 Every agent step adds its tokens (input, cache write 5m and 1h, cache read, output) to a ledger
 keyed by agent, then by the model the API reports. Main's steps count under `main`. Each entry
-keeps the agent's name, role, manager, branch and spawn model, so the ledger keeps an agent the
-roster forgot. It is saved to `ledger.json` at most every few seconds and loaded again after a
+keeps the agent's name, role, manager, branch, size and spawn model, so the ledger keeps an agent the
+roster forgot and cost can be split by model and size. It is saved to `ledger.json` at most every few seconds and loaded again after a
 restart. A failure in the ledger never touches the step.
 
 - **Where it shows:** `mcp__flow__status` and `/flow status` print "Cost (estimates at API list
