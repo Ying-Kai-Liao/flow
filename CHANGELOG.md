@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The cost meter counts turns per agent and shows `N turns, ~Xk cache write/turn` on the cost lines, so the cache cost of each wake-up can be read.
+
+### Fixed
+
+- The plugin now fast-forwards the main checkout after the reviewer's "done" (a worktree-isolated reviewer cannot), and relays the reviewer's whole final report to main instead of only its last line.
+
 ## [0.6.6] - 2026-10-10
 
 ### Changed
@@ -24,12 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `reviewer_model` now defaults to `sonnet` (was `opus`).
-### Added
-
-- The cost meter counts turns per agent and shows `N turns, ~Xk cache write/turn` on the cost lines, so the cache cost of each wake-up can be read.
-### Fixed
-
-- The plugin now fast-forwards the main checkout after the reviewer's "done" (a worktree-isolated reviewer cannot), and relays the reviewer's whole final report to main instead of only its last line.
 
 ## [0.6.4] - 2026-10-10
 
