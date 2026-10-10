@@ -1,3 +1,25 @@
+// The cost ledger (hooks/cost.ts): tokens of one agent on one model. `long` counts the steps whose
+// prompt passed the model's long-prompt threshold (they are also in the main counts).
+export type Tokens = { input: number; write5m: number; write1h: number; read: number; output: number }
+export type Bucket = Tokens & { long?: Tokens }
+export type Role = 'manager' | 'worker' | 'reviewer' | 'main' | 'other'
+export type LedgerEntry = {
+  role: Role
+  name: string
+  // The manager a worker belongs to (the parent's name).
+  manager?: string
+  // `flow/<worker name>`, or the branch a continuation carries on.
+  branch?: string
+  spawnModel?: string
+  // A brief size tag (small/normal/large); unset today, a later routing change fills it.
+  size?: string
+  // When the agent was first and last counted (ms); the status block and the 90-day prune use them.
+  firstAt?: number
+  lastAt?: number
+  models: Record<string, Bucket>
+}
+export type Ledger = Record<string, LedgerEntry>
+
 // Where a harness logs what it does: Codex's rollout files, or a Claude Code transcript.
 export type DigestKind = 'codex-rollout' | 'claude-transcript'
 
@@ -372,6 +394,8 @@ declare module 'claude-code' {
       inbox: Inbox
       // Person checks, mirrored from <state dir>/checks.json.
       checks: Checks
+      // Tokens spent per agent and model, mirrored from <state dir>/ledger.json (hooks/cost.ts).
+      ledger: Ledger
       queueRuns: number
       prCache: PrCache
       // Deploy gates, mirrored from <state dir>/deploys.json, and how many commits each target is behind the base.

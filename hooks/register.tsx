@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
+import { addStep, costBlock, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
 import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
@@ -126,6 +127,8 @@ const inbox = atom({ plugin: 'flow', key: 'inbox' } as const, EMPTY_INBOX as Inb
 // Pre-flight records, mirrored from <state dir>/preflight.json.
 const preflight = atom({ plugin: 'flow', key: 'preflight' } as const, EMPTY_PREFLIGHT as Preflight)
 const checks = atom({ plugin: 'flow', key: 'checks' } as const, EMPTY_CHECKS as Checks)
+// Tokens spent per agent and model, mirrored (throttled) to <state dir>/ledger.json. Never forgets an ended agent.
+const ledger = atom({ plugin: 'flow', key: 'ledger' } as const, {} as Ledger)
 const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
@@ -861,6 +864,65 @@ async function readJson($: EngineInterface, path: string): Promise<unknown> {
     return JSON.parse(await $.fs.read(path))
   } catch {
     return undefined
+  }
+}
+
+// --- Cost ledger ---
+// Loaded from disk once, before the first change, so what this run counts is added to the history.
+let ledgerLoad: Promise<void> | undefined
+let ledgerSaveDue = false
+
+function loadLedger($: EngineInterface): Promise<void> {
+  ledgerLoad ??= (async () => {
+    try {
+      const dir = await stateDir($)
+      if (dir === undefined) return
+      const disk = normalizeLedger(await readJson($, `${dir}/ledger.json`))
+      const now = await $.clock.now()
+      await update($, ledger, cur => pruneLedger(mergeLedgers(disk, cur), now))
+    } catch {
+      // No history: count from here.
+    }
+  })()
+  return ledgerLoad
+}
+
+async function saveLedger($: EngineInterface): Promise<void> {
+  try {
+    const dir = await stateDir($)
+    if (dir === undefined) return
+    await $.process.run(['mkdir', '-p', dir])
+    await writeJsonAtomic($, `${dir}/ledger.json`, pruneLedger(await read($, ledger), await $.clock.now()))
+  } catch {
+    // The meter is best-effort.
+  }
+}
+
+// Every step changes the ledger; the file is written at most every few seconds.
+async function changeLedger($: EngineInterface, fn: (l: Ledger, now: number) => Ledger): Promise<void> {
+  await loadLedger($)
+  const now = await $.clock.now()
+  await update($, ledger, l => fn(l, now))
+  if (ledgerSaveDue) return
+  ledgerSaveDue = true
+  $.clock.after(3000, () => { ledgerSaveDue = false; void saveLedger($) })
+}
+
+// Main's entry is per session: the ledger outlives the session, and its steps must not merge with an earlier one's.
+async function mainKey($: EngineInterface): Promise<string> {
+  const u = await $.session.usage().then(x => x, () => undefined)
+  return `main@${u?.startedAt ?? 0}`
+}
+
+// The cost block of status, or nothing before the first counted step.
+async function costLines($: EngineInterface, prs: { pr: number; branch: string }[]): Promise<string[]> {
+  try {
+    await loadLedger($)
+    const start = (await $.session.usage().then(x => x, () => undefined))?.startedAt ?? 0
+    const live = new Set((await read($, roster)).map(a => a.id))
+    return costBlock(await read($, ledger), prs, Object.keys(await read($, sessions)).length > 0, { start, live })
+  } catch {
+    return []
   }
 }
 
@@ -2287,6 +2349,17 @@ async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>,
   return undefined
 }
 
+// The reviewer's report with the PR's workers' cost appended, once.
+async function withCost($: EngineInterface, branch: string, report: string): Promise<string> {
+  if (report.includes('| cost:')) return report
+  try {
+    await loadLedger($)
+    return `${report}${reportSuffix(prCost(await read($, ledger), branch))}`
+  } catch {
+    return report
+  }
+}
+
 function handoverLine(h: Handover): string {
   const tail = h.status === 'done' ? ` ${h.sha ?? ''} ${h.report ?? ''}`
     : h.status === 'returned' ? ` returned: ${h.reason ?? ''}`
@@ -3434,8 +3507,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions to answer, /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox|checks|preflight|close|resume|approve <pr>|push [back <pr>|drop]|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions to answer, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox|checks|status|preflight|close|resume|approve <pr>|push [back <pr>|drop]|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -3901,6 +3974,10 @@ export const register: Register = (on, options) => {
       }
       return { text: 'Usage: /flow checks, /flow checks pass <id...>, /flow checks fail <id> <note>' }
     }
+    if (arg === 'status') {
+      const lines = await costLines($, Object.values(await read($, handovers)))
+      return { text: lines.length > 0 ? lines.join('\n') : 'No agent steps counted yet.' }
+    }
     if (arg === 'preflight') {
       return { text: renderStatus(await read($, preflight), await read($, inbox), endedManagers(await read($, roster)), await $.clock.now(), preflightWaitMs) }
     }
@@ -4088,6 +4165,17 @@ export const register: Register = (on, options) => {
       }))
       await refresh($)
       void openPane($)
+      await best($, 'recording an agent in the cost ledger', async () => {
+        const name = (e as { name?: string }).name ?? e.description
+        const role = (ROLE[e.subagentType] ?? 'other') as Role
+        const parent = e.parentAgentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.parentAgentId)
+        await changeLedger($, (l, now) => setIdentity(l, id, {
+          role, name,
+          ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }),
+          ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
+          ...(typeof used === 'string' && { spawnModel: used }),
+        }, now))
+      })
       if (preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
         await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt))
       }
@@ -4330,7 +4418,7 @@ export const register: Register = (on, options) => {
       }
     }
     const next: Handover = action === 'take' ? { ...h, status: 'taken' }
-      : action === 'done' ? { ...h, status: 'done', sha: String(input.sha ?? ''), report: String(input.report ?? '') }
+      : action === 'done' ? { ...h, status: 'done', sha: String(input.sha ?? ''), report: await withCost($, h.branch, String(input.report ?? '')) }
       : action === 'back' ? { ...h, status: 'returned', reason: String(input.reason ?? '') }
       : h
     if (next === h) return { result: `Unknown action "${action}".` }
@@ -4844,6 +4932,8 @@ export const register: Register = (on, options) => {
     const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
     const [unhanded, cache] = [await currentUnhanded($), await read($, prCache)]
     const leftover = leftoverLine(await read($, leftovers))
+    const costs = await costLines($, Object.values(hs))
+    const led = await read($, ledger)
     const lines: string[] = []
     const byParent = new Map<string | undefined, AgentRow[]>()
     for (const a of rows) byParent.set(a.parentId, [...(byParent.get(a.parentId) ?? []), a])
@@ -4874,7 +4964,7 @@ export const register: Register = (on, options) => {
         limitsLine(rows, settings.maxWorkers),
         ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
-        list.length ? 'Handed-over PRs:' : 'No PRs handed over.', ...list.map(handoverLine),
+        list.length ? 'Handed-over PRs:' : 'No PRs handed over.', ...list.map(h => `${handoverLine(h)}${h.report?.includes('| cost:') ? '' : reportSuffix(prCost(led, h.branch))}`),
         ...(unhanded.length ? [
           'Needs attention:', ...unhanded.map(u => `  ${unhandedLine(u)}`),
           'A manager reviews it and hands it over, or closes it.',
@@ -4888,6 +4978,7 @@ export const register: Register = (on, options) => {
         ...(queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
         ...(leftover ? [leftover] : []),
         ...(plans.length ? ['Plans:', ...plans.flatMap(([who, g]) => [`${who}:`, ...describe(g).map(l => `  ${l}`)])] : []),
+        ...costs,
         `State: ${await stateDir($) ?? 'none (not a git repo)'}`,
       ].join('\n'),
     }
@@ -4944,6 +5035,28 @@ export const register: Register = (on, options) => {
       if (id === undefined) mainWindow = (await warnMain($, settings, mainWarn)) ?? mainWindow
     } catch {
       // The meter is cosmetic: never fail the agent's step over it.
+    }
+    try {
+      if (r?.usage) {
+        const key = e.agentId ?? await mainKey($)
+        const model = r.usage.model || e.model
+        await loadLedger($)
+        // A step that arrives before its spawn was seen takes its identity from the roster.
+        let who: { role: Role; name: string; manager?: string; branch?: string } | undefined
+        if (e.agentId !== undefined && (await read($, ledger))[key] === undefined) {
+          const all = await $.agent.list()
+          const me = all.find(a => a.id === e.agentId)
+          if (me) {
+            const role = (ROLE[me.type] ?? 'other') as Role
+            const parent = all.find(a => a.id === me.parentId)
+            const name = labelOf(me)
+            who = { role, name, ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }), ...(role === 'worker' && { branch: `flow/${name}` }) }
+          }
+        }
+        await changeLedger($, (l, now) => addStep(l, key, model, r.usage, who, now))
+      }
+    } catch {
+      // The ledger is best-effort: the step passes untouched.
     }
     return r
   })
