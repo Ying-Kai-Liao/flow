@@ -254,6 +254,8 @@ npm run validate                 # claude plugin validate . (must pass)
 npm run check                    # typecheck + validate + claude plugin test .
 ```
 
+Where code goes: `hooks/register.tsx` is the wiring only (atoms, `on(...)` hooks, `$.tool.register` calls, and small io builders that spell out each `$.noun.event(...)` call). Put new logic in a module under `hooks/`. The engine refuses `$` across an import and wants atoms declared in `register.tsx`, so a module is either pure (`pushgate.ts`, `clean.ts`, `table.ts`) or takes an io object of plain closures that `register.tsx` builds (`deliver.ts` is the example).
+
 `npm run typecheck` works in a fresh worktree: it runs `npm ci` when `node_modules` is missing and,
 when `.claude-plugin/types` is missing, symlinks it to the main checkout's copy. Claude Code writes
 those type definitions itself (gitignored, per Claude Code version) when it loads the plugin from a

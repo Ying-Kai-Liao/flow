@@ -2,7 +2,7 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 
-import { reapSlots } from '../hooks/register'
+import { reapSlots } from '../hooks/slots'
 
 const agents = (...ids: string[]): AgentInfo[] =>
   ids.map(id => ({ id, name: id, description: id, type: 'flow:worker', status: 'running' }) as AgentInfo)

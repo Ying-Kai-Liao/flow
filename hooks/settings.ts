@@ -9,6 +9,13 @@
 import { parseRules } from './standing'
 import type { Resolved } from './standing'
 import { mergeGuardTests, parseGuardTests } from './guardtests'
+import type { GuardMap } from './guardtests'
+import { harnessesOf } from './sessions'
+import type { HarnessSpec } from './sessions'
+import { allowList } from './guards'
+import { parsePushMode } from './pushgate'
+import { deployTargetsOf, stateFileOf } from './prompts'
+import type { Settings } from './prompts'
 
 type Kind = 'string' | 'number' | 'boolean' | 'list' | 'objects' | 'object' | 'globmap'
 
@@ -209,4 +216,73 @@ export function mergeLayers(options: Record<string, unknown>, layers: { path: st
   }
   if (hasRules) raw.standing_answers = [...rules.personal, ...rules.repo, ...rules.config]
   return { raw, files, warnings }
+}
+
+// The 1M-window Sonnet: workers read whole diffs and long briefs. Refused for sub-agents, it falls back to plain sonnet.
+const DEFAULT_WORKER_MODEL = 'sonnet[1m]'
+
+export type WarnSettings = { contextWarn: number; contextWarn1m: number; contextWarnTokens: number }
+
+// The pane's context meter marks this percent; the rest of the settings go into the prompts.
+type Guards = { mainGuard: boolean; mainAllow: string[] }
+
+// `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
+export function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
+  const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
+  const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
+  const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
+  // Sub-agents don't run on Fable, whatever the source says.
+  const model = (k: string, d: string) => { const m = str(k, d); return isFable(m) ? d : m }
+  const harnesses = harnessesOf(options.harnesses)
+  return {
+    contextWarn: Math.min(100, Math.max(1, Math.round(num('context_warn_percent', 40)))),
+    contextWarn1m: Math.min(100, Math.max(1, Math.round(num('context_warn_percent_1m', 35)))),
+    contextWarnTokens: Math.max(0, Math.round(num('context_warn_tokens', 0))),
+    handoff: options.handoff !== false,
+    mainGuard: options.main_checkout_guard !== false,
+    mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
+    maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
+    preflight: str('preflight', 'on') !== 'off',
+    preflightWait: Math.max(1, num('preflight_wait', 10)),
+    verifyPaths: strs('verify_paths'),
+    cleanup: str('cleanup', 'auto') === 'off' ? 'off' : 'auto',
+    base: str('base_branch', base),
+    testCommand: str('test_command', ''),
+    fullCheck: str('full_check_command', ''),
+    deployCommand: str('deploy_command', ''),
+    deployTargets: deployTargetsOf(options.deploy_targets),
+    stateFile: stateFileOf(options.state_file),
+    mergeMethod: str('merge_method', 'squash'),
+    mergeMode: str('merge_mode', 'auto'),
+    pushMode: parsePushMode(options.push_mode),
+    useReviewer: options.reviewer !== false,
+    maxWorkers: num('max_workers', 3),
+    maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
+    testSlots: Math.max(1, Math.floor(num('test_slots', 1))),
+    workerModel: model('worker_model', DEFAULT_WORKER_MODEL),
+    workerModelSmall: model('worker_model_small', 'haiku'),
+    workerModelNormal: model('worker_model_normal', 'sonnet'),
+    exploreModel: model('explore_model', 'haiku'),
+    conflictModel: model('conflict_model', 'opus'),
+    managerModel: model('manager_model', 'opus'),
+    reviewerModel: model('reviewer_model', 'sonnet'),
+    language: str('language', 'English'),
+    bigFiles: strs('big_files'),
+    bigFileLines: num('big_file_lines', 1500),
+    migrationsDir: str('migrations_dir', ''),
+    decisionPhrases: strs('decision_phrases'),
+    workerChecks: strs('worker_checks'),
+    alwaysTests: strs('always_tests'),
+    flakyTests: strs('flaky_tests'),
+    release: str('release', 'off') === 'on',
+    releaseGithub: str('release_github', 'off') === 'on',
+    releaseFiles: strs('release_files'),
+    changelogFile: str('changelog_file', 'CHANGELOG.md'),
+    guardTests: parseGuardTests(options.guard_tests) ?? {},
+    workerHarness: str('worker_harness', 'agent'),
+    sessionHost: ['orca', 'tmux'].includes(str('session_host', 'auto')) ? str('session_host', 'auto') : 'auto',
+    harnesses,
+    harnessNames: Object.keys(harnesses),
+    minQuota: Math.min(100, Math.max(0, Math.round(num('min_quota', 10)))),
+  }
 }
