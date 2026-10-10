@@ -918,12 +918,14 @@ async function mainKey($: EngineInterface): Promise<string> {
 }
 
 // The cost block of status, or nothing before the first counted step.
-async function costLines($: EngineInterface, prs: { pr: number; branch: string }[]): Promise<string[]> {
+async function costLines($: EngineInterface, prs: { pr: number; branch: string }[], keep?: (e: Ledger[string]) => boolean): Promise<string[]> {
   try {
     await loadLedger($)
     const start = (await $.session.usage().then(x => x, () => undefined))?.startedAt ?? 0
     const live = new Set((await read($, roster)).map(a => a.id))
-    return costBlock(await read($, ledger), prs, Object.keys(await read($, sessions)).length > 0, { start, live })
+    const all = await read($, ledger)
+    const led = keep === undefined ? all : Object.fromEntries(Object.entries(all).filter(([, e]) => keep(e)))
+    return costBlock(led, prs, Object.keys(await read($, sessions)).length > 0, { start, live })
   } catch {
     return []
   }
@@ -2450,6 +2452,19 @@ async function withCost($: EngineInterface, branch: string, report: string): Pro
     return report
   }
 }
+
+// How many finished handovers status lists; the rest only count, `pr:<n>` gives any one in full.
+const FINISHED_SHOWN = 5
+const FINISHED_LINE_MAX = 220
+
+// Open handovers in order, then the newest finished ones, and how many finished were left out.
+export function cappedHandovers(list: Handover[]): { shown: Handover[]; hidden: number } {
+  const finished = list.filter(h => h.status === 'done').sort((a, b) => b.at - a.at)
+  const keep = new Set(finished.slice(0, FINISHED_SHOWN))
+  return { shown: list.filter(h => h.status !== 'done' || keep.has(h)), hidden: Math.max(0, finished.length - FINISHED_SHOWN) }
+}
+
+const clipLine = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 function handoverLine(h: Handover): string {
   const tail = h.status === 'done' ? ` ${h.sha ?? ''} ${h.report ?? ''}`
@@ -5081,10 +5096,23 @@ export const register: Register = (on, options) => {
       }
     }
     if (queueOn && (await $.clock.now()) - (await read($, prCache)).fetchedAt > PR_MIN_GAP_MS) await fetchPrs($)
-    const [rows, acts, hs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
-    const [unhanded, cache] = [await currentUnhanded($), await read($, prCache)]
-    const leftover = leftoverLine(await read($, leftovers))
-    const costs = await costLines($, Object.values(hs))
+    const [allRows, acts, allHs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
+    // What the caller needs, so the result it keeps in its context stays small: a manager sees its own
+    // subtree and PRs, a worker itself and its manager. Main, the reviewer (it works the whole queue) and
+    // an unknown caller see everything.
+    const me = e.agentId === undefined ? undefined : allRows.find(r => r.id === e.agentId)
+    const scope: 'all' | 'manager' | 'worker' = me === undefined ? 'all' : me.type === MANAGER ? 'manager' : WORKERS.has(me.type) ? 'worker' : 'all'
+    const mine = new Set<string>(me === undefined ? [] : [me.id])
+    if (scope === 'manager') for (let grew = true; grew;) { grew = false; for (const r of allRows) if (r.parentId !== undefined && mine.has(r.parentId) && !mine.has(r.id)) { mine.add(r.id); grew = true } }
+    if (scope === 'worker' && me?.parentId !== undefined) mine.add(me.parentId)
+    const rows = scope === 'all' ? allRows : allRows.filter(r => mine.has(r.id))
+    const myBase = baseName(me?.name ?? '')
+    const hs = scope === 'all' ? allHs : scope === 'manager' ? Object.fromEntries(Object.entries(allHs).filter(([, h]) => baseName(h.reportTo) === myBase)) : {}
+    const [unhanded, cache] = scope === 'all' ? [await currentUnhanded($), await read($, prCache)] : [[], await read($, prCache)]
+    const leftover = scope === 'all' ? leftoverLine(await read($, leftovers)) : ''
+    const costs = scope === 'worker' ? [] : await costLines($, Object.values(hs), scope === 'manager'
+      ? en => (en.role === 'manager' ? baseName(en.name) : en.role === 'worker' && en.manager !== undefined ? baseName(en.manager) : undefined) === myBase
+      : undefined)
     const led = await read($, ledger)
     const lines: string[] = []
     const byParent = new Map<string | undefined, AgentRow[]>()
@@ -5102,21 +5130,28 @@ export const register: Register = (on, options) => {
     }
     for (const a of rows.filter(r => r.parentId === undefined || !ids.has(r.parentId))) walk(a, 0)
     const list = Object.values(hs).sort((a, b) => a.at - b.at)
-    const plans = Object.entries(await read($, plan)).filter(([, g]) => Object.keys(g).length > 0)
-    const slots = slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
+    const { shown, hidden } = cappedHandovers(list)
+    const plans = scope === 'worker' ? [] : Object.entries(await read($, plan)).filter(([who, g]) => Object.keys(g).length > 0 && (scope === 'all' || baseName(who) === myBase))
+    const slots = scope === 'worker' ? '' : slotLine(await read($, testSlots), settings.testSlots, await $.clock.now())
     const seeds = e.agentId === undefined ? await offerSeedsOnce($, options) : []
-    const gate = (await read($, pushState)).batch
+    const gate = scope === 'all' ? (await read($, pushState)).batch : undefined
     const batchLines = gate?.state === 'ready' ? renderBatch(gate) : []
     const pushing = gate !== undefined && gate.state !== 'ready' ? renderBatch(gate) : []
     return {
       result: [
-        ...inboxHead(await read($, inbox), await $.clock.now()),
-        ...seeds,
-        ...behindLines(deployInfos, await read($, deploys), await read($, behind)).map(l => `Deploy: ${l}`),
-        limitsLine(rows, settings.maxWorkers),
+        ...(scope === 'all' ? [
+          ...inboxHead(await read($, inbox), await $.clock.now()),
+          ...seeds,
+          ...behindLines(deployInfos, await read($, deploys), await read($, behind)).map(l => `Deploy: ${l}`),
+        ] : []),
+        ...(scope === 'worker' ? [] : [limitsLine(allRows, settings.maxWorkers)]),
         ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
-        list.length ? 'Handed-over PRs:' : 'No PRs handed over.', ...list.map(h => `${handoverLine(h)}${h.report?.includes('| cost:') ? '' : reportSuffix(prCost(led, h.branch))}`),
+        ...(scope === 'worker' ? [] : [
+          list.length ? 'Handed-over PRs:' : 'No PRs handed over.',
+          ...shown.map(h => `${h.status === 'done' ? clipLine(handoverLine(h), FINISHED_LINE_MAX) : handoverLine(h)}${h.report?.includes('| cost:') ? '' : reportSuffix(prCost(led, h.branch))}`),
+          ...(hidden > 0 ? [`+${hidden} earlier finished PRs (mcp__flow__status pr:<n> for one)`] : []),
+        ]),
         ...(unhanded.length ? [
           'Needs attention:', ...unhanded.map(u => `  ${unhandedLine(u)}`),
           'A manager reviews it and hands it over, or closes it.',
@@ -5127,11 +5162,11 @@ export const register: Register = (on, options) => {
           ...list.filter(h => h.status === 'awaiting').map(h => `  #${h.pr} awaits approval: /flow approve ${h.pr} — ${h.title}`),
         ] : []),
         ...(pushing.length > 0 ? ['Push gate:', ...pushing.map(l => `  ${l}`)] : []),
-        ...(queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
+        ...(scope === 'all' && queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
         ...(leftover ? [leftover] : []),
         ...(plans.length ? ['Plans:', ...plans.flatMap(([who, g]) => [`${who}:`, ...describe(g).map(l => `  ${l}`)])] : []),
         ...costs,
-        `State: ${await stateDir($) ?? 'none (not a git repo)'}`,
+        ...(scope === 'all' ? [`State: ${await stateDir($) ?? 'none (not a git repo)'}`] : []),
       ].join('\n'),
     }
   })
