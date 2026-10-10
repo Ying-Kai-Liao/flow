@@ -150,7 +150,7 @@ test('the inbox view: Auto-answered section within 24 h, head count line, old in
   expect(text).toContain('No open questions.')
   expect(text).toContain('Auto-answered')
   expect(text).toContain('q1 csv-worker: Bump? -> patch (rule s1)')
-  expect(text).toContain('mcp__flow__standing remove')
+  expect(text).toContain('ask main to remove it')
   expect(renderInbox(m.inbox, 5000 + 25 * 3_600_000)).toBe('No open questions.')
   expect(inboxHead(m.inbox, 6000)[0]).toContain('1 auto-answered')
   expect(inboxHead(first.inbox, 6000)[0]).toContain('1 open')

@@ -215,9 +215,9 @@ test('queue back with failed_tests files one question to main; again for the sam
   expect(box).toContain('PR #7 was sent back: `test/admin.test.ts` failed. It changed src/routes/a.ts, src/routes/b.ts.')
   expect(box).toContain('{"src/routes/**":["test/admin.test.ts"]}')
   expect(box).toContain('[guard-tests]')
-  expect(box).toContain('non-blocking')
+  expect(box).toContain('NEEDS YOU')
   expect(box).toContain('a) Add it to my personal flow config')
-  expect(box).toContain('b) No  (default)')
+  expect(box).toContain('b) No (default)')
   // The queue sends it back again.
   expect(await back($, { failed_tests: ['test/admin.test.ts'] })).not.toContain('Asked main')
   expect((await inbox($)).match(/was sent back/g)).toHaveLength(1)

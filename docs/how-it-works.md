@@ -127,10 +127,19 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
 - **Non-blocking**: the agent goes ahead on the default and says in its report or PR that it
   assumed it; a message comes only if the answer differs. **Blocking**: it ends its turn and the
   answer arrives by message.
-- `/flow inbox` lists what is open, numbered, grouped by owner, blocking first, with the options
-  (default marked), context and age. `status` and the Flow pane show the open inbox first. An agent
+- `/flow inbox` is the person's view: a one-line summary, the questions (blocking first; deploy, push,
+  env and guard items tagged NEEDS YOU) with the options (default marked), a `why:` line and age, the FYIs
+  grouped by owner, then what standing answers did. Headlines are cut at about 100 characters;
+  `/flow inbox <id>` prints one item in full. Three or more FYIs of one topic from one owner collapse into one
+  line (`topic x3 (q10 q11 q12)`); FYIs older than 2 h, or whose owner is no longer running, collapse into
+  an "Older" line per owner unless you ask for `/flow inbox all`. Nothing expires or is acked by itself. `status` and the Flow pane show the open inbox first. An agent
   with an open blocking question shows as asking in the pane, the toasts and the task graph.
-- Answer with `mcp__flow__answer`: `answers: [{id, choice}]` where choice is the option text, its
+- You answer from the prompt: `/flow ok` keeps every open FYI, `/flow ok q10 q11` or `/flow ok <owner|topic>`
+  keeps those (an ordinary question named by id takes its default), `/flow no q12 <what instead>` overturns
+  an FYI, `/flow answer q3 b` answers any question addressed to main (option letter, number, text or free
+  text). A deploy, push, env or guard item is never answered by `/flow ok`; only `/flow answer` does. All of
+  them go through the same path as `mcp__flow__answer`, so delivery, notes and standing-answer suggestions
+  are unchanged. Main (the agent) answers with `mcp__flow__answer`: `answers: [{id, choice}]` where choice is the option text, its
   letter or number, or free text; or `defaults: true` (optionally `ids`) to accept the defaults.
   Only the addressee answers: your main session for managers' questions (tell it "defaults", "1 b,
   3 defaults" or free text), a manager for its workers'. The answer is messaged to the asker and

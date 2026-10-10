@@ -153,8 +153,9 @@ test('an FYI is recorded quietly, listed, and acked with defaults without a mess
   expect(w.sent).toEqual([])
   expect(w.toasts).toEqual([])
   const text = await inbox($)
-  expect(text).toContain('No open questions.')
-  expect(text).toContain('q1 csv-worker')
+  expect(text.startsWith('1 FYI.')).toBe(true)
+  expect(text).toContain('csv-worker:')
+  expect(text).toContain('q1 (0 min): Use a 30 s timeout')
   expect(await answer($, 'm1', { defaults: true })).toContain('q1: Keep (default)')
   expect(w.sent).toEqual([])
   expect(await inbox($)).toBe('No open questions.')
@@ -175,4 +176,90 @@ test('overturning an FYI messages the owner; with the owner gone, its manager', 
   expect(last.to).toBe('m1')
   expect(last.text).toContain('overturned your FYI q2')
   expect(last.text).toContain('csv-worker')
+})
+
+// ---- /flow ok, /flow no, /flow answer: the person's commands ----
+
+const cmd = ($: Dollar, args: string) => $.command.run({ command: 'flow', args } as never).then(r => r.text ?? '')
+const D2 = { decision: 'Name it export.csv', why: 'matches the docs', topic: 'naming' }
+
+test('/flow ok keeps every open FYI and leaves questions; twice finds nothing; no message is sent', async ($, on) => {
+  const w = world(on)
+  await fyi($, 'w1', [D1, D2])
+  await ask($, 'm1', [SOFT])
+  const r = await cmd($, 'ok')
+  expect(r).toContain('q1: Keep (default)')
+  expect(r).toContain('q2: Keep (default)')
+  expect(r).not.toContain('q3:')
+  expect(r).toContain('Still open: 1 question')
+  expect(w.sent).toEqual([])
+  expect(await cmd($, 'ok')).toContain('No open FYIs to keep.')
+})
+
+test('/flow ok <ids|owner|topic>: a question takes its default, words expand to FYIs, repeats are reported once', async ($, on) => {
+  world(on)
+  await fyi($, 'w1', [D1, D2])
+  await fyi($, 'm1', [{ decision: 'Use UTF-8', why: 'safe' }])
+  await ask($, 'm1', [SOFT])
+  const r = await cmd($, 'ok q4 q4 q9')
+  expect(r.match(/q4: yes \(default\)/g)?.length).toBe(1)
+  expect(r).toContain('q9: no such question.')
+  expect(await cmd($, 'ok naming')).toContain('q2: Keep (default)')
+  expect(await cmd($, 'ok q2')).toContain('q2: already answered')
+  expect(await cmd($, 'ok csv-export')).toContain('q3: Keep (default)')
+  expect(await cmd($, 'ok nothing-like-this')).toContain('no open FYIs for that owner or topic')
+})
+
+test('/flow no overturns an FYI with the words given and tells its owner; a question is refused', async ($, on) => {
+  const w = world(on)
+  await fyi($, 'w1', [D1, D2])
+  await ask($, 'm1', [SOFT])
+  const r = await cmd($, 'no q1 use 60 s, not 30')
+  expect(r).toContain('q1: use 60 s, not 30')
+  expect(w.sent[0]!.to).toBe('w1')
+  expect(w.sent[0]!.text).toContain('Instead: use 60 s, not 30.')
+  expect(await cmd($, 'no q2')).toContain('q2: Overturn')
+  expect(w.sent[1]!.text).toContain('Instead: undo it.')
+  expect(await cmd($, 'no q3')).toContain('not an FYI')
+  expect(await cmd($, 'no')).toContain('Usage')
+})
+
+test('/flow answer takes a letter or free text; only what is addressed to main (or an FYI) is answerable', async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [BLOCK, SOFT])
+  await ask($, 'w1', [{ ...BLOCK, question: 'Which delimiter?' }])
+  expect(await cmd($, 'answer q1 b')).toContain('q1: tsv')
+  expect(await cmd($, 'answer q2 maybe, ask legal')).toContain('q2: maybe, ask legal')
+  expect(w.sent.some(s => s.to === 'm1' && s.text.includes('maybe, ask legal'))).toBe(true)
+  expect(await cmd($, 'answer q3 a')).toContain('addressed to csv-export')
+  expect(await cmd($, 'answer q1 a')).toContain('already answered')
+  expect(await cmd($, 'answer q8 a')).toContain('no such question')
+  expect(await cmd($, 'answer q1')).toContain('Usage')
+})
+
+test('/flow ok refuses a guard item and says how; /flow answer answers it', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/inbox.json`, JSON.stringify({ next: 2, items: [{
+    id: 'q1', owner: 'reviewer-1', addressee: 'main', question: 'Add a guard mapping?', options: ['Add it to my personal flow config', 'No'], default: 'No',
+    blocking: false, askedAt: 1_000_000, state: 'open', delivered: false, guard: { glob: 'src/**', test: 't.test.ts' },
+  }] }))
+  // any inbox write loads the file into the atom the commands read
+  await fyi($, 'w1', [D1])
+  expect(await cmd($, 'ok q1')).toContain('answer it explicitly: /flow answer q1 <choice>')
+  const bulk = await cmd($, 'ok')
+  expect(bulk).toContain('q2: Keep (default)')
+  expect(bulk).not.toContain('q1:')
+  expect(await cmd($, 'answer q1 b')).toContain('q1: No')
+})
+
+test('/flow inbox <id> prints one item in full; inbox all shows older FYIs of agents that are gone', async ($, on) => {
+  const w = world(on)
+  await fyi($, 'w1', [D1])
+  w.agents.splice(1, 1)
+  expect(await cmd($, 'inbox')).toContain('Older: 1 FYI (q1)')
+  expect(await cmd($, 'inbox all')).toContain('q1 (0 min): Use a 30 s timeout')
+  const one = await cmd($, 'inbox q1')
+  expect(one).toContain('why: the conservative choice')
+  expect(one).toContain('/flow no q1')
+  expect(await cmd($, 'inbox q7')).toContain('no such question')
 })
