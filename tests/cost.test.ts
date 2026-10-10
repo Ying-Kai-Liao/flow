@@ -2,7 +2,7 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { addStep, addTurn, costBlock, costOf, hitRate, humanTokens, money, normalizeLedger, pruneLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'
+import { addStep, addTurn, costBlock, costOf, hitRate, humanTokens, mergeLedgers, money, normalizeLedger, pruneLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'
 import type { Ledger } from '../types'
 
 type Dollar = Parameters<TestBody>[0]
@@ -233,4 +233,41 @@ test('after a restart the ledger on disk is history: only this session is listed
   await w.clock.settle()
   const saved = JSON.parse([...w.files].find(([k]) => k.startsWith('/r/.git/flow/ledger.json.'))![1]) as Record<string, unknown>
   expect(Object.keys(saved).sort()).toEqual(['main@100', 'main@900000', 'old', 'w1'])
+})
+
+test('addTurn counts per agent; old rows read as 0; merging adds turns; an agent with no row gets an empty one', () => {
+  let l: Ledger = add({}, 'w1', 'claude-opus-5-5', { input_tokens: 1000 })
+  expect(l.w1?.turns).toBeUndefined()
+  l = addTurn(addTurn(l, 'w1', 2_000_000), 'w1', 3_000_000)
+  expect(l.w1?.turns).toBe(2)
+  expect(addTurn({}, 'w9', 5).w9).toMatchObject({ turns: 1, models: {} })
+  expect(mergeLedgers(l, { w1: { ...l.w1!, turns: 3 } }).w1?.turns).toBe(5)
+})
+
+test('the cost line shows turns and cache write per turn; rows without turns render as before; totals sum turns', () => {
+  const m = { 'claude-opus-5-5': bucket({ write5m: 300_000, write1h: 100_000 }) }
+  const ledger: Ledger = {
+    a: { role: 'worker', name: 'a', models: m, turns: 4, lastAt: 1 },
+    b: { role: 'worker', name: 'b', models: m, lastAt: 1 },
+  }
+  const text = costBlock(ledger, [], false, { start: 0, live: new Set() }).join('\n')
+  expect(text).toMatch(/worker a .*hit [^\n]*, 4 turns, ~100k cache write\/turn\)/)
+  expect(text).not.toMatch(/worker b [^\n]*turns/)
+  expect(text).toMatch(/session total: [^\n]*, 4 turns, ~200k cache write\/turn\)/)
+})
+
+test('turn.complete counts one turn per turn id, for main and agents, and ledger.json keeps it', async ($, on) => {
+  const w = world(on)
+  await step($, 'w1')
+  const done = (turnId: string, agentId?: string) => $.turn.complete({ turnId, agentId, answer: 'x', durationMs: 1, isAborted: true, reason: 'answer' } as never)
+  await done('t1', 'w1')
+  await done('t1', 'w1')
+  await done('t2', 'w1')
+  await done('t1', undefined)
+  expect(await status($)).toMatch(/worker csv-worker [^\n]*, 2 turns, ~/)
+  await w.clock.advance(3500)
+  await w.clock.settle()
+  const saved = JSON.parse([...w.files].find(([k]) => k.startsWith('/r/.git/flow/ledger.json'))![1]) as Record<string, { turns?: number }>
+  expect(saved.w1?.turns).toBe(2)
+  expect(saved['main@900000']?.turns).toBe(1)
 })
