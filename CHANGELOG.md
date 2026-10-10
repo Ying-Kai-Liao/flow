@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.14] - 2026-10-11
+
 ### Added
 
 - `/flow checks` is a compact table: one row per open check (id, PR, title cut to the terminal width, what it needs, age), grouped as Try now, Needs install of X and Version unknown, with failed checks that have an open follow-up in their own section and a footer of person commands. A narrow terminal drops age, then needs.
