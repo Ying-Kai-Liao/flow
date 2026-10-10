@@ -78,7 +78,7 @@ import {
   release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
 } from './deploy'
 import type { Deploys, DeployMode, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
-import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, QUEUE, REVIEWER, TEXT_MAX, WORKER, WORKERS, type Ran } from './core'
+import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, QUEUE, REVIEWER, TEXT_MAX, WORKER, WORKERS } from './core'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start

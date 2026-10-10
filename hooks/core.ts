@@ -44,4 +44,3 @@ export const mirror = {
 export const TEXT_MAX = 300
 export const NOTES_MAX = 3000
 export const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
-export type Ran = { exitCode: number; stdout: string; stderr: string }
