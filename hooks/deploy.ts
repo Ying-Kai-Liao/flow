@@ -194,7 +194,7 @@ export function openApprovalItem(inbox: Inbox, target: string, sha: string, cont
     options: [APPROVE, DECLINE], default: DECLINE, blocking: true, context, kind: DEPLOY_KIND,
     askedAt: now, state: 'open', delivered: false, askerIsManager: false,
   }
-  return { inbox: { next: inbox.next + 1, items: [...inbox.items, q] }, q }
+  return { inbox: { ...inbox, next: inbox.next + 1, items: [...inbox.items, q] }, q }
 }
 
 // A newer sha for the same open item: its text and context follow, the id stays.
@@ -358,7 +358,7 @@ function envItem(inbox: Inbox, q: Pick<Question, 'question' | 'options' | 'defau
     ...q, id: `q${inbox.next}`, owner: 'env', addressee: 'main', blocking: true, kind: ENV_KIND,
     askedAt: now, state: 'open', delivered: false, askerIsManager: false,
   }
-  return { inbox: { next: inbox.next + 1, items: [...inbox.items, item] }, q: item }
+  return { inbox: { ...inbox, next: inbox.next + 1, items: [...inbox.items, item] }, q: item }
 }
 
 // The items for one change of one PR: the login step (if any) and the change itself. A re-handover of the

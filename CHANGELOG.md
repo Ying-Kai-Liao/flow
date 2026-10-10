@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The post-update prompt for main names the number of checks now due and shows them as the table, not every step.
+### Changed
+
+- "FYI" is now "Decisions" everywhere a person or an agent reads it (/flow inbox, /flow ok and no, the Flow pane, status, docs, agent prompts and tool descriptions), and "overturn" is "undo" (`n undo`, `/flow no d12 <what instead>`). The `mcp__flow__fyi` tool keeps its name.
+- Decisions have their own ids, `d1`, `d2`, ..., from a counter separate from questions (`q1`, ...). Decisions already stored under a q-id are migrated on read to stable d-ids (oldest first) and keep the old q-id as an alias: `/flow ok q10`, `/flow no q10`, `/flow inbox q10` and `mcp__flow__answer` with `q10` still find them, and no new question reuses a number an alias holds.
+- /flow inbox shows the decisions as one flat table (id, from, headline, age; newest first, the newest 15 and a `+M more` line; `/flow inbox decisions` lists all). Questions list their options on one line; the full text and the why are in `/flow inbox <id>`. The commands footer lists only what a person types.
+- Flow pane inbox view: decisions are plain rows, newest first.
+
+### Removed
+
+- The "Older" row, the per-owner and per-topic group rows of decisions, and the pane's `x expand` key. `/flow inbox all` is still accepted as `/flow inbox decisions`.
 
 ## [0.6.13] - 2026-10-10
 

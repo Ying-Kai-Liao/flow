@@ -1,4 +1,5 @@
 import { noteKey } from './state'
+import { renderTable } from './table'
 import type { Inbox, Question } from '../types'
 
 export type { Inbox, Question }
@@ -59,8 +60,15 @@ export function parseAsk(input: unknown): { questions: AskedQuestion[] } | { err
 }
 
 export const KEEP = 'Keep'
-export const OVERTURN = 'Overturn'
+export const OVERTURN = 'Undo'
 export const isFyi = (q: Question): boolean => q.kind === 'fyi'
+
+// An item by its id, or by the question id a decision had before it got its d-id.
+export const findItem = (inbox: Inbox | undefined, id: string): Question | undefined => {
+  const w = id.trim().toLowerCase()
+  const items = (inbox ?? EMPTY_INBOX).items
+  return items.find(x => x.id === w) ?? items.find(x => x.alias === w)
+}
 
 // How an env item reads in the inbox views.
 export const envLabel = (q: Question): string =>
@@ -68,7 +76,7 @@ export const envLabel = (q: Question): string =>
 
 export type AskedFyi = { decision: string; why: string; alternative?: string; topic?: string }
 
-// An FYI batch checked whole, like parseAsk: one bad item refuses the call and nothing is recorded.
+// A decision batch checked whole, like parseAsk: one bad item refuses the call and nothing is recorded.
 export function parseFyi(input: unknown): { items: AskedFyi[] } | { error: string } {
   const raw = (input as { items?: unknown } | null)?.items
   if (!Array.isArray(raw) || raw.length === 0) return { error: 'items must be a non-empty list.' }
@@ -90,7 +98,7 @@ export function parseFyi(input: unknown): { items: AskedFyi[] } | { error: strin
   return { items: out }
 }
 
-// An FYI as a stored question: the decision is the text, the why the context; Keep is the default.
+// A decision as a stored question: the decision is the text, the why the context; Keep is the default.
 export const fyiAsked = (f: AskedFyi): AskedQuestion => ({
   question: f.decision, options: [KEEP, OVERTURN], default: KEEP, blocking: false,
   context: f.alternative === undefined ? f.why : `${f.why} (otherwise: ${f.alternative})`,
@@ -106,6 +114,7 @@ export function addQuestions(
   inbox: Inbox, asker: Asker, addressee: string, asked: AskedQuestion[], now: number, kind?: 'fyi',
 ): { inbox: Inbox; added: Array<{ q: Question; fresh: boolean }> } {
   let next = inbox.next
+  let nextD = inbox.nextD ?? 1
   const items = [...inbox.items]
   const added: Array<{ q: Question; fresh: boolean }> = []
   for (const a of asked) {
@@ -115,14 +124,14 @@ export function addQuestions(
       continue
     }
     const q: Question = {
-      id: `q${next++}`, owner: asker.name, addressee, ...a, askedAt: now, state: 'open', delivered: false,
+      id: kind === 'fyi' ? `d${nextD++}` : `q${next++}`, owner: asker.name, addressee, ...a, askedAt: now, state: 'open', delivered: false,
       ...(kind === 'fyi' ? { kind } : {}),
       ...(asker.id !== undefined ? { askerId: asker.id } : {}), askerIsManager: asker.isManager,
     }
     items.push(q)
     added.push({ q, fresh: true })
   }
-  return { inbox: { next, items }, added }
+  return { inbox: { ...inbox, next, ...(nextD > 1 ? { nextD } : {}), items }, added }
 }
 
 // Whose notes carry the lines about this question.
@@ -162,11 +171,12 @@ export type Marked =
 // A standing answer rule id as the last argument answers for the rule: no addressee check, and nothing is
 // left to deliver (the ask result tells the asker).
 // user: the person answering through the pane or /flow commands, who may answer any open question, also one addressed to a manager.
-export function markAnswered(inbox: Inbox, id: string, choice: string | null, by: string, now: number, rule?: string, user = false): Marked {
-  const q = inbox.items.find(x => x.id === id)
+export function markAnswered(inbox: Inbox, wanted: string, choice: string | null, by: string, now: number, rule?: string, user = false): Marked {
+  const q = findItem(inbox, wanted)
+  const id = q?.id ?? wanted
   if (q === undefined) return { kind: 'unknown' }
   if (q.state === 'answered') return { kind: 'answered', q }
-  // Main may also answer any FYI: the user overrides what a manager has not looked at.
+  // Main may also answer any decision: the user overrides what a manager has not looked at.
   if (rule === undefined && !user && !isAddressee(q, by) && !(isFyi(q) && by === 'main')) return { kind: 'refused', q }
   const answer = choice === null ? q.default : parseChoice(q.options, choice).text
   if (answer === '') return { kind: 'empty', q }
@@ -195,8 +205,8 @@ export const needsMessage = (q: Question, isDefault: boolean): boolean => q.guar
 // What the asker is told when its question is answered.
 export function answerMessage(q: Question, answer: string, by: string, isDefault: boolean): string {
   if (isFyi(q)) {
-    const instead = answer === OVERTURN ? 'undo it' : answer
-    return `flow: ${by} overturned your FYI ${q.id}: you decided "${q.question}". Instead: ${instead}. Change your work (on your branch / PR if it is still open) and say so in your report.`
+    const instead = answer === OVERTURN || answer === 'Overturn' ? 'undo it' : answer
+    return `flow: ${by} undid your decision ${q.id}: you decided "${q.question}". Instead: ${instead}. Change your work (on your branch / PR if it is still open) and say so in your report.`
   }
   const head = `flow: ${by} answered ${q.id}. Question: "${q.question}" Answer: ${answer}.`
   if (q.blocking) return `${head} Carry on from this answer.`
@@ -205,7 +215,7 @@ export function answerMessage(q: Question, answer: string, by: string, isDefault
     : `${head} You went on with the default "${q.default}": change your work to the answer, and say so in your report.`
 }
 
-// Questions only; FYIs have their own section.
+// Questions only; decisions have their own section.
 const questionsOf = (inbox: Inbox | undefined): Question[] => openAll(inbox ?? EMPTY_INBOX).filter(q => !isFyi(q))
 const fyisOf = (inbox: Inbox | undefined): Question[] => openAll(inbox ?? EMPTY_INBOX).filter(isFyi).sort((a, b) => a.askedAt - b.askedAt)
 
@@ -236,14 +246,6 @@ export const overridesManager = (q: Question): boolean => !isFyi(q) && !isAddres
 // `/flow ok` never answers them; the person names the choice with `/flow answer`.
 export const needsExplicitAnswer = (q: Question): boolean => q.kind === 'deploy' || q.kind === 'env' || q.kind === 'push' || q.guard !== undefined
 
-export const STALE_MS = 2 * 3_600_000
-
-// An FYI is stale when it is older than 2 h or its owner is not a live agent. live undefined: age alone decides.
-export function isStaleFyi(q: Question, now: number, live?: string[]): boolean {
-  if (now - q.askedAt > STALE_MS) return true
-  return live !== undefined && !live.some(n => n === q.owner || noteKey(n) === noteKey(q.owner))
-}
-
 // One line's worth of text: whitespace folded, cut at max with "...".
 export function clip(text: string, max = 100): string {
   const t = text.replace(/\s+/g, ' ').trim()
@@ -252,14 +254,14 @@ export function clip(text: string, max = 100): string {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
-// "2 questions (1 blocking), 9 FYIs." for what is open.
+// "2 questions (1 blocking), 9 decisions." for what is open.
 function summary(inbox: Inbox | undefined): string {
   const qs = questionsOf(inbox)
   const f = fyisOf(inbox).length
   const blocking = qs.filter(q => q.blocking).length
   const parts = [
     ...(qs.length > 0 ? [`${plural(qs.length, 'question')}${blocking > 0 ? ` (${blocking} blocking)` : ''}`] : []),
-    ...(f > 0 ? [plural(f, 'FYI')] : []),
+    ...(f > 0 ? [plural(f, 'decision')] : []),
   ]
   return parts.length === 0 ? 'Nothing open.' : `${parts.join(', ')}.`
 }
@@ -271,8 +273,9 @@ export const stillOpen = (inbox: Inbox | undefined): string => {
 }
 
 // The words after `/flow ok`: which ids to keep or take the default of, and the lines for words that name nothing to answer.
-// No words: every open FYI. A qN is passed on as it is (the answer step reports unknown or answered ids), except an item that
-// needs an explicit answer. Any other word is an owner or a topic and expands to that owner's or topic's open FYIs.
+// No words: every open decision. A qN or dN (also the old question id of a decision) is passed on as it is (the answer step
+// reports unknown or answered ids), except an item that needs an explicit answer. Any other word is an owner or a topic and
+// expands to that owner's or topic's open decisions.
 export function expandOk(inbox: Inbox | undefined, words: string[]): { ids: string[]; lines: string[] } {
   const box = inbox ?? EMPTY_INBOX
   const ids: string[] = []
@@ -280,19 +283,19 @@ export function expandOk(inbox: Inbox | undefined, words: string[]): { ids: stri
   const add = (id: string) => { if (!ids.includes(id)) ids.push(id) }
   if (words.length === 0) {
     for (const q of fyisOf(box)) add(q.id)
-    if (ids.length === 0) lines.push('No open FYIs to keep.')
+    if (ids.length === 0) lines.push('No open decisions to keep.')
     return { ids, lines }
   }
   for (const w of words) {
-    if (/^q\d+$/i.test(w)) {
-      const q = box.items.find(x => x.id === w.toLowerCase())
+    if (/^[qd]\d+$/i.test(w)) {
+      const q = findItem(box, w)
       if (q !== undefined && q.state === 'open' && needsExplicitAnswer(q)) lines.push(`${q.id}: answer it explicitly: /flow answer ${q.id} <choice>`)
-      else add(w.toLowerCase())
+      else add(q?.id ?? w.toLowerCase())
       continue
     }
     const key = noteKey(w)
     const hits = fyisOf(box).filter(q => noteKey(q.owner) === key || (q.topic !== undefined && q.topic.toLowerCase() === w.toLowerCase()))
-    if (hits.length === 0) lines.push(`${w}: no open FYIs for that owner or topic.`)
+    if (hits.length === 0) lines.push(`${w}: no open decisions for that owner or topic.`)
     for (const q of hits) add(q.id)
   }
   return { ids, lines }
@@ -308,72 +311,35 @@ export const tagsOf = (q: Question): string => [
 const optionLines = (q: Question, pad: string): string[] =>
   q.options.map((opt, i) => `${pad}${String.fromCharCode(97 + i)}) ${opt}${opt === q.default ? ' (default)' : ''}`)
 
+// Options on one line: "a) Keep (default)  b) Undo".
+const optionsLine = (q: Question): string => q.options.map((opt, i) => `${String.fromCharCode(97 + i)}) ${opt}${opt === q.default ? ' (default)' : ''}`).join('  ')
+
 function questionLines(q: Question, now: number): string[] {
   const tags = tagsOf(q)
   const who = isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`
-  const lines = [`  ${q.id}${tags === '' ? '' : ` ${tags}`} (${who}, ${age(now - q.askedAt)}): ${q.guard !== undefined ? q.question : clip(q.question)}`]
-  lines.push(...optionLines(q, '      '))
-  if (q.context) lines.push(`      why: ${clip(q.context, 140)}`)
-  return lines
+  return [
+    `  ${q.id}${tags === '' ? '' : ` ${tags}`} (${who}, ${age(now - q.askedAt)}): ${q.guard !== undefined ? q.question : clip(q.question)}`,
+    `      ${clip(optionsLine(q), 110)}`,
+  ]
 }
 
-function fyiLines(q: Question, now: number): string[] {
-  const lines = [`    ${q.id}${q.topic ? ` [${q.topic}]` : ''} (${age(now - q.askedAt)}): ${clip(q.question)}`]
-  if (q.context) lines.push(`        why: ${clip(q.context, 140)}`)
-  return lines
-}
-
-// --- The pane's inbox view: the same grouping as renderInbox, as rows a person moves over. ---
+// --- The pane's inbox view: the same order as renderInbox, as rows a person moves over. ---
 
 export type PaneRow = {
-  // item: the question's or FYI's id. group: g:<owner>:<topic>. older: o:<owner>.
+  // The question's or decision's id.
   key: string
-  kind: 'item' | 'group' | 'older'
   ids: string[]
-  owner?: string
-  topic?: string
-  q?: Question
+  q: Question
 }
 
-// Questions (blocking first, then oldest), then each owner's FYIs: 3 or more of one topic fold into a group row and
-// an owner's stale FYIs into an older row. `open` lists the group and older keys the person expanded.
-export function paneRows(inbox: Inbox | undefined, now: number, opts: { live?: string[]; open?: string[] } = {}): PaneRow[] {
-  const rows: PaneRow[] = ordered(questionsOf(inbox)).map(q => ({ key: q.id, kind: 'item' as const, ids: [q.id], q }))
-  const fyis = fyisOf(inbox)
-  const open = opts.open ?? []
-  const item = (q: Question): PaneRow => ({ key: q.id, kind: 'item', ids: [q.id], owner: q.owner, q })
-  for (const o of [...new Set(fyis.map(q => q.owner))]) {
-    const mine = fyis.filter(q => q.owner === o)
-    const stale = mine.filter(q => isStaleFyi(q, now, opts.live))
-    const fresh = mine.filter(q => !stale.includes(q))
-    const byTopic = new Map<string, Question[]>()
-    for (const q of fresh) if (q.topic) byTopic.set(q.topic, [...(byTopic.get(q.topic) ?? []), q])
-    const done = new Set<string>()
-    for (const q of fresh) {
-      const g = q.topic === undefined ? undefined : byTopic.get(q.topic)
-      if (g === undefined || g.length < 3) { rows.push(item(q)); continue }
-      if (done.has(q.topic!)) continue
-      done.add(q.topic!)
-      const key = `g:${o}:${q.topic}`
-      rows.push({ key, kind: 'group', ids: g.map(x => x.id), owner: o, topic: q.topic })
-      if (open.includes(key)) rows.push(...g.map(item))
-    }
-    if (stale.length > 0) {
-      rows.push({ key: `o:${o}`, kind: 'older', ids: stale.map(x => x.id), owner: o })
-      if (open.includes(`o:${o}`)) rows.push(...stale.map(item))
-    }
-  }
-  return rows
+// Questions (blocking first, then oldest), then every open decision, newest first. Nothing is folded away.
+export function paneRows(inbox: Inbox | undefined): PaneRow[] {
+  return [...ordered(questionsOf(inbox)), ...[...fyisOf(inbox)].reverse()].map(q => ({ key: q.id, ids: [q.id], q }))
 }
 
 // A row's one line in the pane's list.
 export function paneRowText(r: PaneRow): string {
   const q = r.q
-  if (q === undefined) {
-    return r.kind === 'group'
-      ? `${r.topic} x${r.ids.length} (${r.owner}): ${r.ids.join(' ')}`
-      : `Older: ${plural(r.ids.length, 'FYI')} (${r.owner}): ${r.ids.join(' ')}`
-  }
   if (isFyi(q)) return `${q.id} ${q.owner}${q.topic ? ` [${q.topic}]` : ''}: ${clip(q.question, 80)}`
   const tags = tagsOf(q)
   return `${q.id}${tags === '' ? '' : ` ${tags}`} ${isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`}: ${q.guard !== undefined ? q.question : clip(q.question, 80)}`
@@ -386,66 +352,57 @@ export function protectedWhy(q: Question): string | undefined {
   return `${q.id} is ${what}: y never answers it. Press its digit or letter, or r and type your answer.`
 }
 
-// One owner's fresh FYIs: three or more of one topic collapse into one line.
-function ownerFyis(items: Question[], now: number): string[] {
-  const byTopic = new Map<string, Question[]>()
-  for (const q of items) if (q.topic) byTopic.set(q.topic, [...(byTopic.get(q.topic) ?? []), q])
-  const collapsed = new Set([...byTopic].filter(([, g]) => g.length >= 3).map(([t]) => t))
-  const done = new Set<string>()
-  const lines: string[] = []
-  for (const q of items) {
-    if (q.topic === undefined || !collapsed.has(q.topic)) { lines.push(...fyiLines(q, now)); continue }
-    if (done.has(q.topic)) continue
-    done.add(q.topic)
-    const g = byTopic.get(q.topic)!
-    lines.push(`    ${q.topic} x${g.length} (${g.map(x => x.id).join(' ')}): ${g.map(x => clip(x.question, 60)).join('; ')}`)
-    lines.push(`        keep them all: /flow ok ${q.topic}`)
-  }
-  return lines
+export const DECISIONS_SHOWN = 15
+
+// The decisions as one flat table, newest first: id, from, headline, age. The full text and the why are in /flow inbox <id>.
+export function decisionRows(decisions: Question[], now: number, all: boolean, width = 100): string[] {
+  const newest = [...decisions].reverse()
+  const shown = all ? newest : newest.slice(0, DECISIONS_SHOWN)
+  const table = renderTable(
+    [{ header: 'id' }, { header: 'from', max: 16, drop: 1 }, { header: 'decision', flex: true, min: 20 }, { header: 'age', align: 'right' }],
+    shown.map(q => [q.id, q.owner, q.question, age(now - q.askedAt)]),
+    width,
+    { indent: 2 },
+  )
+  return newest.length > shown.length ? [...table, `  +${newest.length - shown.length} more: /flow inbox decisions`] : table
 }
 
-// /flow inbox: a summary line, the questions (blocking first), the FYIs by owner, then what a standing answer did.
-// opts.live: the names of the agents still running (for stale FYIs); opts.all: show stale FYIs in full.
-export function renderInbox(inbox: Inbox | undefined, now: number, opts: { live?: string[]; all?: boolean } = {}): string {
+// /flow inbox: a summary line, the questions (blocking first), the decisions as a flat table, then what a standing answer did.
+// opts.all: every decision, not just the newest few.
+export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?: boolean; width?: number } = {}): string {
   const open = ordered(questionsOf(inbox))
-  const fyis = fyisOf(inbox)
+  const decisions = fyisOf(inbox)
   const auto = recentAuto(inbox, now)
   const autoLines = auto.length === 0 ? [] : [
     '',
     `Auto-answered (last 24 h, ${auto.length} shown; to revoke a rule, ask main to remove it):`,
     ...auto.map(q => `  ${q.id} ${q.owner}: ${clip(q.question)} -> ${clip(q.answer ?? '', 60)} (rule ${q.rule ?? '?'})`),
   ]
-  if (open.length === 0 && fyis.length === 0) return ['No open questions.', ...autoLines].join('\n')
+  if (open.length === 0 && decisions.length === 0) return ['No open questions.', ...autoLines].join('\n')
   const lines = [summary(inbox)]
   if (open.length > 0) {
     lines.push('', 'Questions')
     for (const q of open) lines.push(...questionLines(q, now))
-    lines.push('  Answer: /flow answer <id> <letter or your own words>. Take the default: /flow ok <id> (not for NEEDS YOU items).')
-    if (open.some(overridesManager)) lines.push('  A question for a manager can be answered here too; that overrides the manager, who is told.')
   }
-  if (fyis.length > 0) {
-    lines.push('', 'FYIs (decided by agents; say if one is wrong)')
-    for (const o of [...new Set(fyis.map(q => q.owner))]) {
-      const mine = fyis.filter(q => q.owner === o)
-      const stale = opts.all === true ? [] : mine.filter(q => isStaleFyi(q, now, opts.live))
-      const fresh = mine.filter(q => !stale.includes(q))
-      lines.push(`  ${o}:`)
-      lines.push(...ownerFyis(fresh, now))
-      if (stale.length > 0) lines.push(`    Older: ${plural(stale.length, 'FYI')} (${stale.map(q => q.id).join(' ')}), shown by /flow inbox all`)
-    }
-    lines.push('  Keep all: /flow ok. Keep some: /flow ok q10 q11 or /flow ok <owner or topic>. Overturn: /flow no q12 <what instead>.')
+  if (decisions.length > 0) {
+    lines.push('', 'Decisions agents made (keep or undo)', ...decisionRows(decisions, now, opts.all === true, opts.width))
   }
+  const cmds = [
+    ...(decisions.length > 0 ? ['Keep all: /flow ok. Keep some: /flow ok d10 d11 or /flow ok <owner or topic>. Undo: /flow no d12 <what instead>.'] : []),
+    ...(open.length > 0 ? ['Answer a question: /flow answer q1 <letter or your own words>; its default: /flow ok q1 (not for NEEDS YOU items).'] : []),
+  ]
+  lines.push('', ...cmds)
   return [...lines, ...autoLines].join('\n')
 }
 
 // /flow inbox <id>: one item in full, answered or not.
 export function renderItem(inbox: Inbox | undefined, id: string, now: number): string {
-  const q = (inbox ?? EMPTY_INBOX).items.find(x => x.id === id.toLowerCase())
-  if (q === undefined) return `${id}: no such question.`
-  const kind = isFyi(q) ? 'FYI' : q.kind === 'deploy' ? 'deploy approval' : q.kind === 'push' ? 'push' : q.kind === 'env' ? 'env change' : 'question'
+  const q = findItem(inbox, id)
+  if (q === undefined) return `${id}: no such question or decision.`
+  const kind = isFyi(q) ? 'decision' : q.kind === 'deploy' ? 'deploy approval' : q.kind === 'push' ? 'push' : q.kind === 'env' ? 'env change' : 'question'
   const tags = tagsOf(q)
   const lines = [
-    `${q.id} ${kind}${tags === '' ? '' : ` ${tags}`}${isFyi(q) && q.topic ? ` [${q.topic}]` : ''} (from ${q.owner}, for ${q.addressee}, ${age(now - q.askedAt)} ago)`,
+    `${q.id} ${kind}${tags === '' ? '' : ` ${tags}`}${isFyi(q) && q.topic ? ` [${q.topic}]` : ''} (from ${q.owner}, for ${q.addressee}, ${age(now - q.askedAt)} ago)${q.alias === undefined ? '' : ` (earlier id ${q.alias})`}`,
     q.question,
     ...(q.context ? ['', `why: ${q.context}`] : []),
     '',
@@ -453,7 +410,7 @@ export function renderItem(inbox: Inbox | undefined, id: string, now: number): s
   ]
   if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${q.answeredBy ?? '?'})`)
   else {
-    lines.push('', isFyi(q) ? `Keep: /flow ok ${q.id}. Overturn: /flow no ${q.id} <what instead>.` : `Answer: /flow answer ${q.id} <letter or your own words>${needsExplicitAnswer(q) ? '' : `, or /flow ok ${q.id} for the default`}.`)
+    lines.push('', isFyi(q) ? `Keep: /flow ok ${q.id}. Undo: /flow no ${q.id} <what instead>.` : `Answer: /flow answer ${q.id} <letter or your own words>${needsExplicitAnswer(q) ? '' : `, or /flow ok ${q.id} for the default`}.`)
     if (overridesManager(q)) lines.push(`It is for ${q.addressee}; answering it overrides ${q.addressee}, who is told.`)
   }
   return lines.join('\n')
@@ -465,7 +422,7 @@ export function inboxHead(inbox: Inbox | undefined, now = Date.now()): string[] 
   const fyi = fyisOf(inbox).length
   const auto = recentAuto(inbox, now).length
   const autoLine = auto === 0 ? [] : [`Inbox: ${auto} auto-answered by standing answers in the last 24 h (/flow inbox).`]
-  const fyiLine = fyi === 0 ? [] : [`Inbox: ${fyi} FYI (decided by agents, non-blocking; /flow inbox lists them, mcp__flow__answer defaults true acks).`]
+  const fyiLine = fyi === 0 ? [] : [`Inbox: ${plural(fyi, 'decision')} (made by agents, non-blocking; /flow inbox lists them, mcp__flow__answer defaults true keeps them).`]
   if (open.length === 0) return [...fyiLine, ...autoLine]
   const blocking = open.filter(q => q.blocking).length
   return [
@@ -477,11 +434,26 @@ export function inboxHead(inbox: Inbox | undefined, now = Date.now()): string[] 
 }
 
 // A stored inbox read back from disk; anything malformed is dropped.
+// Decisions filed before they had their own ids sit under q-ids: each gets a d-id and keeps the q-id as its alias.
+// The numbers follow askedAt, then the old id, so every read of the same file gives the same ids, and they continue
+// after the highest d-id already in use. Neither counter ever hands out a number an id or an alias already holds.
 export function normalizeInbox(raw: unknown): Inbox {
-  const r = raw as { next?: unknown; items?: unknown } | null
-  const items = (Array.isArray(r?.items) ? r.items : []).filter((x): x is Question =>
+  const r = raw as { next?: unknown; nextD?: unknown; items?: unknown } | null
+  let items = (Array.isArray(r?.items) ? r.items : []).filter((x): x is Question =>
     typeof x === 'object' && x !== null && typeof (x as Question).id === 'string' && typeof (x as Question).question === 'string' &&
     Array.isArray((x as Question).options) && ((x as Question).state === 'open' || (x as Question).state === 'answered'))
-  const top = Math.max(0, ...items.map(x => Number(/^q(\d+)$/.exec(x.id)?.[1] ?? 0)))
-  return { next: Math.max(top + 1, typeof r?.next === 'number' ? r.next : 1), items }
+  const num = (id: string | undefined, re: RegExp) => Number(re.exec(id ?? '')?.[1] ?? 0)
+  const topD = Math.max(0, ...items.map(x => num(x.id, /^d(\d+)$/)))
+  let nextD = Math.max(topD + 1, typeof r?.nextD === 'number' ? r.nextD : 1)
+  const old = items.filter(x => isFyi(x) && /^q\d+$/.test(x.id)).sort((a, b) => a.askedAt - b.askedAt || num(a.id, /^q(\d+)$/) - num(b.id, /^q(\d+)$/))
+  if (old.length > 0) {
+    const moved = new Map(old.map(x => [x, { ...x, id: `d${nextD++}`, alias: x.id }]))
+    items = items.map(x => moved.get(x) ?? x)
+  }
+  const top = Math.max(0, ...items.map(x => Math.max(num(x.id, /^q(\d+)$/), num(x.alias, /^q(\d+)$/))))
+  return {
+    next: Math.max(top + 1, typeof r?.next === 'number' ? r.next : 1),
+    ...(nextD > 1 ? { nextD } : {}),
+    items,
+  }
 }
