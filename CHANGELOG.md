@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A manager that ended its turn waiting for a merge, with an open plan node or handover, is woken by the reviewer's report and plan notices instead of the report going to main.
+
 ## [0.6.12] - 2026-10-10
 
 ### Added

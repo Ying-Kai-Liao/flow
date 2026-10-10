@@ -703,7 +703,7 @@ async function syncPlans(
   if (edit === undefined && Object.keys(await read($, plan)).length === 0) return {}
   const [acts, hs] = await Promise.all([read($, activity), read($, handovers)])
   const agents: AgentFact[] = rows.map(a => ({
-    name: a.name, status: a.status, answer: acts[a.id]?.answer,
+    id: a.id, name: a.name, status: a.status, answer: acts[a.id]?.answer,
     children: rows.filter(c => c.parentId === a.id && LIVE_STATUS.has(c.status)).length,
     at: acts[a.id]?.lastAt,
     childAt: Math.max(0, ...rows.filter(c => c.parentId === a.id).map(c => acts[c.id]?.lastAt ?? 0)),
@@ -742,6 +742,15 @@ async function syncPlans(
     } else {
       const agent = agentFor(n.owner, rows.filter(a => !ENDED.has(a.status)))
       if (agent) await deliver($, agent.id, text).catch(() => undefined)
+      else {
+        // The owner ended its turn to wait (the host reports it completed or drops it): a ready node means it
+        // has work left, so the notice wakes it. Only a manager that cannot be resumed sends it to main.
+        const gone = agentFor(n.owner, agents.filter(a => a.status !== 'failed' && a.status !== 'killed'))
+        if (gone?.id !== undefined) {
+          resumable.add(gone.id)
+          await deliver($, gone.id, text, { onGone: t => tellMain($, n.owner, t) }).catch(() => undefined)
+        } else if (agentFor(n.owner, agents) !== undefined) await tellMain($, n.owner, text)
+      }
     }
   }
   return result
@@ -1343,7 +1352,24 @@ async function tellManager($: EngineInterface, name: string, text: string): Prom
   // Urgent: tellManager carries push-gate send-backs and report fallbacks, which the manager acts on now.
   // A failed send has already gone through onGone.
   if (live !== undefined) await deliver($, live.id, text, { urgent: true, onGone: t => tellMain($, name, t) }).catch(() => undefined)
-  else await tellMain($, name, text)
+  else {
+    const wake = await wakeTarget($, name)
+    if (wake !== undefined) {
+      resumable.add(wake)
+      await deliver($, wake, text, { urgent: true, onGone: t => tellMain($, name, t) }).catch(() => undefined)
+    } else await tellMain($, name, text)
+  }
+}
+
+// A manager that ended its turn (completed, or dropped from the roster) but still has work: its id, so a
+// message resumes it. Undefined when it is finished, was killed or failed, or its id is not known.
+async function wakeTarget($: EngineInterface, name: string): Promise<string | undefined> {
+  const rows = await $.agent.list()
+  const row = rows.find(a => a.name === name && a.type === MANAGER)
+  const seen = row === undefined ? (await read($, seenAgents))[name] : undefined
+  const id = row === undefined ? seen?.id : row.status === 'completed' ? row.id : undefined
+  if (id === undefined || seen?.status === 'failed' || seen?.status === 'killed') return undefined
+  return (await managerFinished($, [id], name, rows)) ? undefined : id
 }
 
 async function tellMain($: EngineInterface, name: string, text: string): Promise<void> {
@@ -2062,9 +2088,16 @@ const noteRunWork = ($: EngineInterface, id: string, f: (w: RunWork | undefined)
   update($, reviewerWork, m => ({ ...Object.fromEntries(Object.entries(m).slice(-FORWARDED_RIDS)), [id]: f(m[id]) }))
 
 // `$` stays in this file: deliver.ts gets the three calls it needs.
+// Managers that ended their turn to wait for a merge and have work left: a send resumes them, so they
+// count as idle (messages batch in the window) instead of gone.
+const resumable = new Set<string>()
 const ioOf = ($: EngineInterface): DeliverIo => ({
-  status: async id => (await $.agent.list()).find(a => a.id === id)?.status,
+  status: async id => {
+    const s = (await $.agent.list()).find(a => a.id === id)?.status
+    return resumable.has(id) && (s === undefined || s === 'completed') ? 'idle' : s
+  },
   send: async (id, text) => {
+    resumable.delete(id)
     const r = await $.session.send({ to: { agentId: id }, text })
     // A refused send is not a delivery: deliver() runs the fallback. The reason is kept for the caller that logs it.
     if (r?.isDelivered === false) {
@@ -2165,6 +2198,17 @@ async function reviewerSendGuard($: EngineInterface, rid: string, to: string, te
   const hits = rows.filter(a => a.id === to || a.name === to)
   if (hits.length > 0 && !hits.some(a => a.type === MANAGER)) return undefined
   const name = hits[0]?.name ?? to
+  // A manager that ended its turn to wait for a merge is 'completed' or dropped from the roster. With work
+  // left (a plan node, a handover, a live worker, a blocking ask) the report wakes it: the call goes through.
+  if (hits.every(a => a.status === 'completed')) {
+    const seen = hits.length === 0 ? (await read($, seenAgents))[name] : undefined
+    if (seen?.status !== 'failed' && seen?.status !== 'killed') {
+      const ids = hits.length > 0 ? hits.map(a => a.id) : seen?.id !== undefined ? [seen.id] : []
+      // Live workers are left out: a worker's own report resumes its manager, and the old routing sent a
+      // report for an ended manager to main whatever its workers were doing.
+      if (ids.length > 0 && !(await managerFinished($, ids, name, []))) return undefined
+    }
+  }
   const idle = hits.length > 0 && !hits.some(a => a.status !== 'idle' && !ENDED.has(a.status))
   // A host leaves a manager that finished its work 'idle', not completed. It counts as finished only
   // when nothing is left for it: no live child, no other open or returned handover, no open plan
@@ -4433,7 +4477,10 @@ export const register: Register = (on, options) => {
         }
       }
       await best($, 'marking a wake-up', async () => {
-        const target = (await $.agent.list()).find(a => a.id === to || a.name === to)
+        const listed = (await $.agent.list()).find(a => a.id === to || a.name === to)
+        // A manager the host dropped from the roster is held by the id last seen for it.
+        const seenId = listed === undefined ? (await read($, seenAgents))[to]?.id : undefined
+        const target = listed ?? (seenId === undefined ? undefined : { id: seenId, type: MANAGER, status: 'completed' })
         if (target === undefined || target.type !== MANAGER) return
         // The reviewer's message starts the manager's turn: what waited for it rides that turn (turn.step
         // flushes it) instead of waking the manager a second time just before. A timer covers a message that never lands.

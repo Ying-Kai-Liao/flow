@@ -391,7 +391,7 @@ declare module 'claude-code' {
       now: number
       handovers: Record<string, Handover>
       // The last status and answer seen per agent name (the plan's AgentFact in hooks/dag.ts).
-      'seen-agents': Record<string, { name?: string; status: string; answer?: string; children?: number; at?: number; childAt?: number }>
+      'seen-agents': Record<string, { id?: string; name?: string; status: string; answer?: string; children?: number; at?: number; childAt?: number }>
       // The decision inbox, mirrored from <state dir>/inbox.json.
       inbox: Inbox
       // Person checks, mirrored from <state dir>/checks.json.
