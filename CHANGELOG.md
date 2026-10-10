@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A manager whose last answer says it waits for a PR's merge (or the reviewer's report) is woken by that report instead of being treated as finished and having the report sent to main.
+
 ## [0.6.14] - 2026-10-11
 
 ### Added

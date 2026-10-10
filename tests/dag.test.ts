@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 import type { DagNode, Handover } from '../types'
-import { addNodes, agentFor, asksQuestion, describe, evaluate, layers, noticeText, settle } from '../hooks/dag'
+import { addNodes, agentFor, asksQuestion, describe, evaluate, layers, noticeText, settle, waitsOnReport } from '../hooks/dag'
 import { branchOwners } from '../hooks/state'
 import type { LogEvent } from '../types'
 import type { AgentFact, Facts, Graph, Plan } from '../hooks/dag'
@@ -283,4 +283,16 @@ test('an idle manager is not done while a worker reported after the manager last
   expect(stateWith({ ...idle, childAt: 150 })).toBe('running')
   // The manager acted after its last worker reported.
   expect(stateWith({ ...idle, childAt: 90 })).toBe('done')
+})
+
+test('waitsOnReport: the last paragraph waits on a PR of the manager that the report names', async () => {
+  expect(waitsOnReport('Done.\n\nWaiting for #7 to merge.', 'PR #7 merged', [7])).toBe(true)
+  expect(waitsOnReport('Waiting for #7 to merge.', 'PR #7 merged', [8])).toBe(false)
+  expect(waitsOnReport('Waiting for #9 to merge.', 'PR #7 merged', [7, 9])).toBe(false)
+  expect(waitsOnReport('I wait for the merge.', 'PR #7 merged', [7])).toBe(true)
+  expect(waitsOnReport('Waiting on the reviewer.', 'PR #7 merged', [7])).toBe(true)
+  expect(waitsOnReport('Waiting on the reviewer.', 'PR #7 merged', [8])).toBe(false)
+  expect(waitsOnReport('All done, #7 merged.', 'PR #7 merged', [7])).toBe(false)
+  expect(waitsOnReport('Waiting for #7.\n\nThanks, finished.', 'PR #7 merged', [7])).toBe(false)
+  expect(waitsOnReport(undefined, 'PR #7 merged', [7])).toBe(false)
 })

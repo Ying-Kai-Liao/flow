@@ -48,6 +48,18 @@ export function asksQuestion(answer: string | undefined, phrases: string[] = [])
   })
 }
 
+// The answer's last paragraph says the manager waits (for a merge or the reviewer's report) and that report
+// is the one it waits for: it names the same own PR, or names none and mentions merge/reviewer while the
+// report names one of the manager's PRs.
+export function waitsOnReport(answer: string | undefined, report: string, own: number[]): boolean {
+  const paragraph = ((answer ?? '').trim().split(/\n[ \t]*\n/).pop() ?? '')
+  if (!/\bwait/i.test(paragraph)) return false
+  const reported = new Set([...report.matchAll(/#(\d+)/g)].map(m => Number(m[1])))
+  const named = [...paragraph.matchAll(/#(\d+)/g)].map(m => Number(m[1]))
+  if (named.length > 0) return named.some(n => reported.has(n) && own.includes(n))
+  return /\bmerg|\breviewer/i.test(paragraph) && own.some(n => reported.has(n))
+}
+
 const lastLine = (answer: string | undefined) => (answer ?? '').trim().split('\n').pop() ?? ''
 const LIVE = new Set(['running', 'pending'])
 
