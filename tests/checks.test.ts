@@ -135,12 +135,17 @@ test('the table has one row per open check in groups, never wraps, and drops age
 
 test('failed checks with an open follow-up get their own section; an empty title shows PR only', () => {
   const c = addChecks(EMPTY_CHECKS, 5, '', 'a', [{ steps: 'a' }, { steps: 'b' }], 1).checks
-  const f = closeChecks(c, ['c2'], 'fail', 'user', 'blank page', 5)
+  const f0 = closeChecks(c, ['c2'], 'fail', 'user', 'blank page', 5)
+  if (!('checks' in f0)) throw new Error('expected a close')
+  const f = closeChecks(f0.checks, ['c1'], 'pass', 'user', undefined, 5)
   if (!('checks' in f)) throw new Error('expected a close')
   const t = renderChecksTable(f.checks, '1.0.0', 80, 100)
   expect(t).toContain('Failed, follow-up open')
   expect(t).toMatch(/c2\s+#5\s+failed: blank page · PR #5/)
   expect(t).not.toContain('start a manager')
+  expect(t).toMatch(/\nDetails: \/flow checks c2$/)
+  expect(t).not.toContain('Pass:')
+  expect(t).toMatch(/^id\s+PR\s+title/m)
 })
 
 test('detail view shows everything for one check, and unknown ids say so', () => {

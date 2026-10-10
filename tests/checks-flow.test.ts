@@ -217,3 +217,13 @@ test('after an update, main is prompted once per installed version with the chec
   await start($)
   expect(w.submitted.length).toBe(1)
 })
+
+test('ids are accepted in any case, the reason keeps its own', async ($, on) => {
+  const w = world(on)
+  seed(w, 7, { status: 'done', sha: 's', report: 'needs a person: PR #7: a | needs a person: PR #7: b | needs a person: PR #7: c' })
+  await start($)
+  expect(await cmd($, 'checks C1')).toContain('c1: PR #7')
+  expect(await cmd($, 'checks skip C1 c2 See C9')).toBe('Skipped: c1, c2.')
+  expect(await cmd($, 'checks pass C3')).toBe('Passed: c3.')
+  expect(stored(w).items[0]!.note).toBe('See C9')
+})

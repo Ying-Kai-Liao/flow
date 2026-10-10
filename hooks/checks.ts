@@ -190,7 +190,7 @@ const ago = (ms: number): string => {
 const byId = (a: Check, b: Check) => Number(a.id.slice(1)) - Number(b.id.slice(1))
 
 const COLS: Column[] = [
-  { header: 'id' }, { header: 'PR', align: 'right' }, { header: 'title', flex: true },
+  { header: 'id' }, { header: 'PR' }, { header: 'title', flex: true },
   { header: 'needs', max: 14, drop: 2 }, { header: 'age', max: 4, drop: 1 },
 ]
 
@@ -214,7 +214,8 @@ export function renderChecksTable(c: Checks, installed: string | undefined, widt
   if (footer) {
     const first = (open[0] ?? fu[0])!.id
     const ready = tryNow.map(x => x.id)
-    const parts = [
+    // Only failed checks left: pass, fail and skip on them are refused, so show the detail command alone.
+    const parts = open.length === 0 ? [`Details: /flow checks ${first}`] : [
       `Pass: /flow checks pass ${(ready.length ? ready.slice(0, 2) : [first]).join(' ')}`, `Fail: /flow checks fail ${first} <what you saw>`,
       `Skip: /flow checks skip ${first} <why>`, `Details: /flow checks ${first}`,
     ]

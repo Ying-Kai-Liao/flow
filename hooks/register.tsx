@@ -4192,6 +4192,8 @@ export const register: Register = (on, options) => {
     }
     if (arg === 'checks' || arg.startsWith('checks ')) {
       const w = arg.split(/\s+/).slice(1)
+      // Ids are matched in any case; only the id words are lowercased, the reason or note keeps its own.
+      for (let n = ['pass', 'fail', 'skip'].includes(w[0] ?? '') ? 1 : 0; /^c\d+$/i.test(w[n] ?? ''); n++) w[n] = w[n]!.toLowerCase()
       const t = await $.clock.now()
       if (w.length === 0) return { text: renderChecksTable(await read($, checks), installed, termWidth(), t) }
       if (w.length === 1 && !['pass', 'fail', 'skip'].includes(w[0]!)) return { text: renderCheckDetail(await read($, checks), w[0]!, installed, t) }
