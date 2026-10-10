@@ -345,3 +345,14 @@ test('the whole multi-paragraph final report is logged and relayed from persiste
   expect(w.logs.some(l => l.includes('"event":"report"') && l.includes('Deploy: none.'))).toBe(true)
   expect(w.prompts.some(p => p.includes('Report from reviewer') && p.includes('Deploy: none.'))).toBe(true)
 })
+
+test('a pending-decisions line for a PR is not swallowed by an earlier needs-a-person line for it', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  await send($, 'q1', 'csv-export', 'needs a person: PR #7: look at the pane')
+  const second = await send($, 'q1', 'csv-export', 'pending decisions: PR #7: pick a name')
+  expect(second).not.toContain('already forwarded')
+  await w.flush()
+  expect(w.prompts.filter(p => p.includes('Report for csv-export')).length).toBe(2)
+  expect(w.prompts.some(p => /pending decisions: PR #7: pick a name/i.test(p))).toBe(true)
+})

@@ -2082,11 +2082,13 @@ async function mainHasAnswer($: EngineInterface, answer: string): Promise<boolea
 const needLines = (text: string): string[] =>
   [...text.matchAll(/(needs a person:[^|\n]*|pending decisions:[^\n]*)/gi)].map(m => normText(m[1] ?? '')).filter(l => l !== '')
 
-// A needs line's identity for dedupe: its PR number when it names one, so a reworded repeat for the
-// same PR matches; otherwise its text. Old persisted entries are plain text and map the same way.
+// A needs line's identity for dedupe: for "needs a person" its PR number when it names one, so a reworded
+// repeat for the same PR matches. Any other line (pending decisions) keeps its text, so a pending-decisions
+// line is never swallowed by a needs-a-person line for the same PR. Old persisted entries are plain
+// normalized lines and map the same way.
 const needToken = (line: string): string => {
-  const m = /PR\s*#(\d+)/i.exec(line)
-  return m ? `pr:${m[1]}` : line
+  const m = /^needs a person:.*?PR\s*#(\d+)/i.exec(line)
+  return m ? `needs:pr:${m[1]}` : line
 }
 
 // Where a handover's report goes. Absent -> the caller's own name. A name no agent carries is refused,
