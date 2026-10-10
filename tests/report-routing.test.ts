@@ -403,3 +403,32 @@ test('a killed manager with a node left is not woken', async ($, on) => {
   w.agents[0]!.status = 'killed'
   expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toContain('Not sent')
 })
+
+const waiting = async ($: Dollar, w: ReturnType<typeof world>, answer: string) => {
+  await handover($, 'm1')
+  await queueDone($, 7)
+  await $.turn.complete({ turnId: 't', agentId: 'm1', answer } as never)
+  await w.flush()
+  w.agents[1]!.status = 'completed'
+}
+
+test('a manager whose last answer waits on the reported PR is woken when idle, completed or dropped', async ($, on) => {
+  const w = world(on)
+  await waiting($, w, 'Handed over.\n\nNext I am waiting for the reviewer report. When #7 merges I tell the next manager.')
+  w.agents[0]!.status = 'idle'
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toBe('sent')
+  w.agents[0]!.status = 'completed'
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toBe('sent')
+  // The roster memory is written by plan syncs: a finished node records the manager before it drops.
+  await planAdd($, [{ id: 'csv-export-a', title: 'a' }])
+  await $.tool.call({ tool: 'mcp__flow__plan', action: 'done', id: 'csv-export-a', agentId: 'm1' } as never)
+  w.agents.splice(0, 2)
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toBe('sent')
+})
+
+test('a waiting answer that names another PR leaves the manager finished', async ($, on) => {
+  const w = world(on)
+  await waiting($, w, 'Waiting for #9 to merge.')
+  w.agents[0]!.status = 'idle'
+  expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toContain('Not sent')
+})

@@ -13,7 +13,7 @@ import { backNote, effectiveSize, floorFrom, generation, isSuccessorName, modelF
 import type { Size, SizeModels } from './routing'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
-import { addNodes, agentFor, asksQuestion, describe, noticeText, settle } from './dag'
+import { addNodes, agentFor, asksQuestion, describe, noticeText, settle, waitsOnReport } from './dag'
 import type { AgentFact, Facts, Graph, Notice, Plan } from './dag'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, isFyi, parseFyi, openAll, renderInbox, renderItem, expandOk, stillOpen, markAnswered, overridesManager, clip, paneRows, paneRowText, protectedWhy, tagsOf, OVERTURN, needsMessage, normalizeInbox, notesOwner, openFor, parseAsk, parseChoice,
@@ -2175,7 +2175,7 @@ async function resolveReportTo($: EngineInterface, given: unknown, callerId: str
   return { name: asked }
 }
 
-async function managerFinished($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[]): Promise<boolean> {
+async function managerFinished($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[], report?: string): Promise<boolean> {
   // A child is live only while running or pending: workers sit 'idle' after their final report. A child
   // active more recently than the manager may have reported without the manager hearing it yet.
   const acts = await read($, activity)
@@ -2187,6 +2187,14 @@ async function managerFinished($: EngineInterface, ids: string[], name: string, 
   const plans = await read($, plan)
   if (Object.values(plans[planOwner(plans, name)] ?? {}).some(n => n.state === 'waiting' || n.state === 'ready' || n.state === 'running')) return false
   if ((await read($, inbox)).items.some(q => q.state === 'open' && q.blocking && isManagerOf(name.replace(/-\d+$/, ''), q.owner))) return false
+  // Its last answer says it waits for this very report (a follow-up after the merge): wake it.
+  if (report !== undefined) {
+    const stamp = (i: string) => acts[i]?.endedAt ?? acts[i]?.lastAt ?? 0
+    const newest = ids.reduce((best, i) => stamp(i) >= stamp(best) ? i : best, ids[0]!)
+    const answer = acts[newest]?.answer ?? (await read($, seenAgents))[name]?.answer
+    const own = Object.values(await read($, handovers)).filter(h => isManagerOf(name.replace(/-\d+$/, ''), h.reportTo)).map(h => h.pr)
+    if (waitsOnReport(answer, report, own)) return false
+  }
   return true
 }
 
@@ -2207,7 +2215,7 @@ async function reviewerSendGuard($: EngineInterface, rid: string, to: string, te
       const ids = hits.length > 0 ? hits.map(a => a.id) : seen?.id !== undefined ? [seen.id] : []
       // Live workers are left out: a worker's own report resumes its manager, and the old routing sent a
       // report for an ended manager to main whatever its workers were doing.
-      if (ids.length > 0 && !(await managerFinished($, ids, name, []))) return undefined
+      if (ids.length > 0 && !(await managerFinished($, ids, name, [], text))) return undefined
     }
   }
   const idle = hits.length > 0 && !hits.some(a => a.status !== 'idle' && !ENDED.has(a.status))
@@ -2215,7 +2223,7 @@ async function reviewerSendGuard($: EngineInterface, rid: string, to: string, te
   // when nothing is left for it: no live child, no other open or returned handover, no open plan
   // node, no open blocking ask. Otherwise the message wakes it as today.
   if (hits.length > 0 && !hits.every(a => ENDED.has(a.status))) {
-    if (!idle || !(await managerFinished($, hits.map(a => a.id), name, rows))) return undefined
+    if (!idle || !(await managerFinished($, hits.map(a => a.id), name, rows, text))) return undefined
   }
   // One outcome reaches main once: key on the manager and the PRs the text names (the text itself when
   // it names none). A repeat forwards only needs-a-person / pending-decisions lines not sent before.
