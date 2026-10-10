@@ -78,25 +78,13 @@ import {
   release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
 } from './deploy'
 import type { Deploys, DeployMode, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
+import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, QUEUE, REVIEWER, TEXT_MAX, WORKER, WORKERS } from './core'
 
 // The orca-flow pattern inside one Claude Code session. The main session is the super manager
 // (the `dispatch` skill); it starts `flow:manager` agents, which start
 // `flow:worker` agents in worktrees of their own and hand approved PRs to the
 // `flow:reviewer` agent through this plugin's tools. The pane in main shows the tree.
 
-const PANE = 'flow'
-const POLL_MS = 3000
-const LOG_MAX = 40
-const MANAGER = 'flow:manager'
-const WORKER = 'flow:worker'
-// A worker continued in its predecessor's worktree: the plugin rewrites a spawn to it, the model never picks it.
-const CONTINUE = 'flow:continue'
-const WORKERS = new Set([WORKER, CONTINUE, SESSION])
-const REVIEWER = 'flow:reviewer'
-// The reviewer's old agent type: a reviewer started by an older version still runs under it.
-const QUEUE = 'flow:queue'
-const isReviewer = (type: string): boolean => type === REVIEWER || type === QUEUE
-const LIVE_STATUS = new Set(['running', 'pending'])
 // Display order: what may need a person first, finished agents last.
 const ORDER = ['waiting', 'idle', 'running', 'pending', 'failed', 'killed', 'completed']
 const GLYPH: Record<string, string> = {
@@ -167,13 +155,6 @@ const PR_POLL_MS = 5 * 60_000
 const PR_MIN_GAP_MS = 60_000
 // A worker that just ended: its manager is probably reviewing the PR.
 const GRACE_MS = 20 * 60_000
-// Set by register(); refresh() and the pane flag nothing when there is no reviewer.
-let queueOn = true
-// The cleanup setting and the base it sweeps against; set by register() like queueOn.
-let cleanupMode: 'auto' | 'off' = 'auto'
-let cleanupBase = 'main'
-// The deploy targets and their modes; set by register() like queueOn.
-let deployInfos: TargetInfo[] = []
 const infosOf = (s: Parameters<typeof targetsOf>[0]): TargetInfo[] => targetsOf(s).map(t => ({ name: t.name, mode: t.mode, ...(t.envCommand !== undefined ? { envCommand: t.envCommand } : {}) }))
 
 export type Unhanded = { pr: number; title: string; branch: string; note: string }
@@ -207,7 +188,7 @@ export function unhandedPrs(
 const unhandedLine = (u: Unhanded): string => `#${u.pr} ${u.title} (${u.branch}) — ${u.note}`
 
 async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
-  if (!queueOn) return []
+  if (!mirror.queueOn) return []
   const [cache, hs, rows, acts, t] = await Promise.all([
     read($, prCache), read($, handovers), read($, roster), read($, activity), $.clock.now(),
   ])
@@ -225,13 +206,6 @@ const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders:
 
 // <git-common-dir>/flow/test-slots, set at session start; undefined when not in a git repo.
 let slotDir: string | undefined
-// The test_slots setting, for refresh()'s status line (set where the settings are read).
-let slotLimit = 1
-// The decision_phrases setting, for the question check in refresh() and syncPlans().
-let decisionPhrases: string[] = []
-// Pre-flight setting and round wait (ms); set by register() like the others.
-let preflightOn = true
-let preflightWaitMs = 10 * 60_000
 
 // Applies `pre`, reaps, grants, and signals: a grant file and a message per new holder, the files
 // of everyone who left the line removed. Every slot change goes through here, inside one update().
@@ -242,7 +216,7 @@ async function settleSlots($: EngineInterface, rows: AgentRow[], t: number, pre:
   await update($, testSlots, st => {
     notes.length = 0
     const r = reapSlots(pre(st), rows, t)
-    const g = grantSlots(r.state, slotLimit, t)
+    const g = grantSlots(r.state, mirror.slotLimit, t)
     notes.push(...r.notes, ...g.notes)
     // The caller of acquire is here to hear it: its grant is confirmed on the spot, with no signal.
     const state = me === undefined ? g.state
@@ -550,8 +524,6 @@ async function publishRelease($: EngineInterface, settings: Settings, dir: strin
   }
 }
 
-// How many managers main runs at once; refresh needs it to tell main how many slots are free.
-let maxManagers = 20
 // Managers whose end already freed a slot (and woke main), so a poll does not wake it twice.
 const freedSeen = new Set<string>()
 
@@ -594,10 +566,10 @@ async function syncPlans(
   const facts: Facts = {
     agents, owners,
     handovers: Object.values(hs),
-    phrases: decisionPhrases,
+    phrases: mirror.decisionPhrases,
     asking: askingNames(await read($, inbox)),
   }
-  const slots = Math.max(0, maxManagers - liveManagers(rows).length)
+  const slots = Math.max(0, mirror.maxManagers - liveManagers(rows).length)
   let notices: Notice[] = []
   let result: Plan = {}
   await update($, plan, p => {
@@ -634,7 +606,7 @@ async function syncPlans(
 }
 
 function limitsLine(rows: AgentRow[], workers: number): string {
-  return `Limits: managers ${liveManagers(rows).length}/${maxManagers}, workers per manager ${workers}`
+  return `Limits: managers ${liveManagers(rows).length}/${mirror.maxManagers}, workers per manager ${workers}`
 }
 
 // The roster as the board shows it: every agent of the session, with its role.
@@ -659,7 +631,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
     if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
     if (ENDED.has(a.status) && acts[a.id] !== undefined) ended.push(a.id)
     if (ENDED.has(a.status) || a.status === 'idle') {
-      const asks = asksQuestion(acts[a.id]?.answer, decisionPhrases) || askers.includes(a.name ?? '')
+      const asks = asksQuestion(acts[a.id]?.answer, mirror.decisionPhrases) || askers.includes(a.name ?? '')
       const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
       void $.ui.toast(`${role}${labelOf(a)}: ${asks ? 'asks a question' : a.status === 'idle' ? 'finished its turn' : a.status}`)
     }
@@ -690,7 +662,7 @@ async function refresh($: EngineInterface): Promise<AgentRow[]> {
   const unhanded = (await currentUnhanded($)).length
   if (unhanded) parts.push(`${unhanded} unhanded`)
   const slots = await read($, testSlots)
-  const slotPart = slots.holders.length || slots.waiters.length ? ` · tests ${slots.holders.length}/${slotLimit}` : ''
+  const slotPart = slots.holders.length || slots.waiters.length ? ` · tests ${slots.holders.length}/${mirror.slotLimit}` : ''
   $.ui.status(rows.length === 0 && hs.length === 0 && !unhanded ? undefined
     : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`}${slotPart} · /flow`)
   await syncPlans($, rows).catch(() => undefined)
@@ -708,8 +680,6 @@ async function openPane($: EngineInterface): Promise<void> {
 // does nothing (a failure goes to $.ui.log) and never throws, so a tool call or turn never fails
 // over state. `config.json` in this dir belongs to the settings package: never touched here.
 
-const TEXT_MAX = 300
-const NOTES_MAX = 3000
 
 let cached: string | undefined
 
@@ -952,7 +922,7 @@ async function preflightTick($: EngineInterface, rows: AgentRow[]): Promise<void
   const t = await $.clock.now()
   const ended = endedManagers(rows)
   const due = await withPreflight($, cur => {
-    const d = dueRound(cur, ended, t, preflightWaitMs)
+    const d = dueRound(cur, ended, t, mirror.preflightWaitMs)
     if (d === undefined) return { state: cur, out: undefined }
     const next = markDelivered(cur, d.round.id, t)
     return { state: next, out: { ...d, state: next } }
@@ -967,7 +937,7 @@ async function preflightTick($: EngineInterface, rows: AgentRow[]): Promise<void
 
 // Why this manager may not start workers yet, or undefined. Only a recorded manager is ever gated.
 async function preflightGate($: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
-  if (!preflightOn || agentId === undefined) return undefined
+  if (!mirror.preflightOn || agentId === undefined) return undefined
   const me = (await $.agent.list()).find(a => a.id === agentId)
   if (me?.type !== MANAGER || me.name === undefined) return undefined
   const g = gateOf(await read($, preflight), await read($, inbox), me.name)
@@ -978,10 +948,10 @@ async function preflightGate($: EngineInterface, agentId: string | undefined): P
 async function recordManager($: EngineInterface, name: string, prompt: string): Promise<void> {
   const t = await $.clock.now()
   const opened = await withPreflight($, cur => {
-    const next = recordSpawn(cur, name, isSkip(prompt), t, preflightWaitMs)
+    const next = recordSpawn(cur, name, isSkip(prompt), t, mirror.preflightWaitMs)
     return { state: next, out: next.rounds.length > cur.rounds.length }
   })
-  if (opened) $.clock.after(preflightWaitMs, () => void refresh($).catch(() => undefined))
+  if (opened) $.clock.after(mirror.preflightWaitMs, () => void refresh($).catch(() => undefined))
 }
 
 const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOString().slice(0, 10)
@@ -1090,10 +1060,10 @@ function refreshBehind($: EngineInterface): Promise<void> {
   behindRun ??= (async () => {
     const d = await read($, deploys)
     const out: Record<string, number> = {}
-    for (const t of deployInfos) {
+    for (const t of mirror.deployInfos) {
       const sha = d.targets[t.name]?.deployedSha
       if (sha === undefined) continue
-      const r = await $.process.run(['git', 'rev-list', '--count', `${sha}..origin/${cleanupBase}`], { timeoutMs: 10_000 }).catch(() => undefined)
+      const r = await $.process.run(['git', 'rev-list', '--count', `${sha}..origin/${mirror.cleanupBase}`], { timeoutMs: 10_000 }).catch(() => undefined)
       const n = r !== undefined && r.exitCode === 0 ? Number(r.stdout.trim()) : NaN
       if (Number.isInteger(n)) out[t.name] = n
     }
@@ -1129,7 +1099,7 @@ async function onEnvAnswer($: EngineInterface, q: Question, answer: string): Pro
   if (e === undefined) return ''
   const yes = e.role === 'change' ? answer.trim().toLowerCase() === 'yes' : answer.trim().toLowerCase() === 'done'
   const at = await $.clock.now()
-  const info = deployInfos.find(t => t.name === e.target)
+  const info = mirror.deployInfos.find(t => t.name === e.target)
   const hs = Object.values(await read($, handovers))
   const waiting = pendingEnv(hs, e.target, (await read($, deploys)).targets[e.target]).length > 0
   if (e.role === 'apply' && yes) {
@@ -1149,7 +1119,7 @@ async function onEnvAnswer($: EngineInterface, q: Question, answer: string): Pro
 
 // A person's (or main's) hold on a target.
 async function holdTarget($: EngineInterface, name: string, until: Hold['until'], by: string, reason: string | undefined): Promise<string> {
-  const bad = unknownTarget(deployInfos, name)
+  const bad = unknownTarget(mirror.deployInfos, name)
   if (bad !== undefined) return bad
   const at = await $.clock.now()
   await withDeploys($, cur => {
@@ -1162,8 +1132,8 @@ async function holdTarget($: EngineInterface, name: string, until: Hold['until']
 }
 
 async function releaseTarget($: EngineInterface, name: string): Promise<string> {
-  const info = deployInfos.find(t => t.name === name)
-  const bad = unknownTarget(deployInfos, name)
+  const info = mirror.deployInfos.find(t => t.name === name)
+  const bad = unknownTarget(mirror.deployInfos, name)
   if (bad !== undefined || info === undefined) return bad ?? ''
   const hs = Object.values(await read($, handovers))
   const ib = await read($, inbox)
@@ -1430,13 +1400,13 @@ async function deployTool($: EngineInterface, options: Record<string, unknown>, 
     const hs = Object.values(await read($, handovers))
     const ib = await read($, inbox)
     const envLines: Record<string, string> = {}
-    for (const t of deployInfos) envLines[t.name] = envListLine(pendingEnv(hs, t.name, d.targets[t.name]), d.targets[t.name], itemViewOf(ib))
-    return renderList(deployInfos, d, await read($, behind), envLines)
+    for (const t of mirror.deployInfos) envLines[t.name] = envListLine(pendingEnv(hs, t.name, d.targets[t.name]), d.targets[t.name], itemViewOf(ib))
+    return renderList(mirror.deployInfos, d, await read($, behind), envLines)
   }
   if (action !== 'gate' && action !== 'deployed' && action !== 'hold' && action !== 'release' && action !== 'env-applied') return 'Unknown action: use gate, deployed, env-applied, hold, release or list.'
   if ((action === 'hold' || action === 'release') && !isMain) return 'Refused: only main holds or releases a target, on the user\'s word. Ask main.'
-  const info = deployInfos.find(t => t.name === target)
-  if (info === undefined) return `Refused: ${unknownTarget(deployInfos, target)}`
+  const info = mirror.deployInfos.find(t => t.name === target)
+  if (info === undefined) return `Refused: ${unknownTarget(mirror.deployInfos, target)}`
   if (action === 'hold') {
     const until = input.until === 'released' ? 'released' : input.until === 'batch' ? 'batch' : undefined
     if (until === undefined) return 'Refused: hold needs until: "batch" or "released".'
@@ -1837,7 +1807,6 @@ async function alwaysRule(
   return `${id}: rule ${r.id} added: ${what} -> "${rule.answer}"${rule.blocking ? ' (also blocking)' : ''}. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.`
 }
 
-const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 // One line appended to log.jsonl. A single short append does not interleave with another session's.
 async function appendLog($: EngineInterface, event: Omit<LogEvent, 'ts'>, max = TEXT_MAX): Promise<void> {
@@ -2371,7 +2340,7 @@ async function startQueue($: EngineInterface): Promise<string> {
   const batch = (await read($, pushState)).batch
   const pending = batch !== undefined ? [] : Object.values(await read($, handovers)).filter(h => h.status === 'pending')
   const pushDue = batch !== undefined && batch.state !== 'ready'
-  const dueTargets = Object.entries((await read($, deploys)).targets).filter(([name, t]) => t.due === true && deployInfos.some(i => i.name === name)).map(([name]) => name)
+  const dueTargets = Object.entries((await read($, deploys)).targets).filter(([name, t]) => t.due === true && mirror.deployInfos.some(i => i.name === name)).map(([name]) => name)
   if (pending.length === 0 && dueTargets.length === 0 && !pushDue) {
     return batch === undefined ? 'Nothing pending.' : `Batch ${batch.id} awaits the user's /flow push; new handovers wait behind it.`
   }
@@ -2485,15 +2454,15 @@ const gatherLeftovers = ($: EngineInterface, base: string, resumed: Set<string>)
 // sweep, failures to the log only.
 let autoQueued = false
 function autoSweep($: EngineInterface): void {
-  if (cleanupMode !== 'auto' || autoQueued) return
+  if (mirror.cleanupMode !== 'auto' || autoQueued) return
   autoQueued = true
-  void sweep($, cleanupBase, true, undefined, () => { autoQueued = false })
+  void sweep($, mirror.cleanupBase, true, undefined, () => { autoQueued = false })
     .catch(err => warn($, 'cleaning up', err))
 }
 
 // The dry sweep behind the pane's leftover line, on the PR list's cadence.
 function refreshLeftovers($: EngineInterface): void {
-  void sweep($, cleanupBase, false).catch(err => warn($, 'looking for leftovers', err))
+  void sweep($, mirror.cleanupBase, false).catch(err => warn($, 'looking for leftovers', err))
 }
 
 // The wrap-up as a message, for an agent idle or waiting between turns. A refused send is logged, not retried.
@@ -2723,15 +2692,15 @@ const sessionTool = ($: EngineInterface, input: Record<string, unknown>, caller:
 
 export const register: Register = (on, options) => {
   let settings = settingsOf(renameOptions(options), 'main')
-  queueOn = settings.useReviewer
-  cleanupMode = settings.cleanup
-  cleanupBase = settings.base
-  deployInfos = infosOf(settings)
-  maxManagers = settings.maxManagers
-  slotLimit = settings.testSlots
-  decisionPhrases = settings.decisionPhrases
-  preflightOn = settings.preflight
-  preflightWaitMs = settings.preflightWait * 60_000
+  mirror.queueOn = settings.useReviewer
+  mirror.cleanupMode = settings.cleanup
+  mirror.cleanupBase = settings.base
+  mirror.deployInfos = infosOf(settings)
+  mirror.maxManagers = settings.maxManagers
+  mirror.slotLimit = settings.testSlots
+  mirror.decisionPhrases = settings.decisionPhrases
+  mirror.preflightOn = settings.preflight
+  mirror.preflightWaitMs = settings.preflightWait * 60_000
   // Settings reloads: the files' paths and mtimes, the detected base branch, whether a check runs.
   let paths: string[] = []
   let seen = ''
@@ -2740,15 +2709,15 @@ export const register: Register = (on, options) => {
   // Everything that mirrors the settings in a module-level variable is refreshed together.
   const apply = (s: typeof settings) => {
     settings = s
-    queueOn = s.useReviewer
-    cleanupMode = s.cleanup
-    cleanupBase = s.base
-    deployInfos = infosOf(s)
-    maxManagers = s.maxManagers
-    slotLimit = s.testSlots
-    decisionPhrases = s.decisionPhrases
-    preflightOn = s.preflight
-    preflightWaitMs = s.preflightWait * 60_000
+    mirror.queueOn = s.useReviewer
+    mirror.cleanupMode = s.cleanup
+    mirror.cleanupBase = s.base
+    mirror.deployInfos = infosOf(s)
+    mirror.maxManagers = s.maxManagers
+    mirror.slotLimit = s.testSlots
+    mirror.decisionPhrases = s.decisionPhrases
+    mirror.preflightOn = s.preflight
+    mirror.preflightWaitMs = s.preflightWait * 60_000
   }
   // Set once a `[1m]` model was refused for a sub-agent: later spawns go straight to the plain one.
   let noLong = false
@@ -2809,7 +2778,7 @@ export const register: Register = (on, options) => {
       if (dir === undefined) return
       const disk = normalizeDeploys(await readJson($, `${dir}/deploys.json`))
       await update($, deploys, () => disk)
-      queueDue = queueDue || Object.entries(disk.targets).some(([name, t]) => t.due === true && deployInfos.some(i => i.name === name))
+      queueDue = queueDue || Object.entries(disk.targets).some(([name, t]) => t.due === true && mirror.deployInfos.some(i => i.name === name))
       void refreshBehind($)
     })
     await best($, 'loading the push gate', async () => {
@@ -3379,7 +3348,7 @@ export const register: Register = (on, options) => {
       return { text: lines.length > 0 ? lines.join('\n') : 'No agent steps counted yet.' }
     }
     if (arg === 'preflight') {
-      return { text: renderStatus(await read($, preflight), await read($, inbox), endedManagers(await read($, roster)), await $.clock.now(), preflightWaitMs) }
+      return { text: renderStatus(await read($, preflight), await read($, inbox), endedManagers(await read($, roster)), await $.clock.now(), mirror.preflightWaitMs) }
     }
     if (arg === 'close') {
       if (!(await $.ui.panes()).some(p => p.id === PANE)) return { text: 'The Flow pane is not open.' }
@@ -3592,7 +3561,7 @@ export const register: Register = (on, options) => {
         const r = routed
         await best($, 'filing a worker-size decision', () => fileSizeFyi($, options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
       }
-      if (preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
+      if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
         await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt))
       }
       if (FLOW_TYPES.has(e.subagentType)) {
@@ -3691,7 +3660,7 @@ export const register: Register = (on, options) => {
     }
     const dest = await resolveReportTo($, input.report_to, e.agentId)
     if ('refuse' in dest) return { result: dest.refuse }
-    const envParsed = parseEnvInput(input.env, deployInfos)
+    const envParsed = parseEnvInput(input.env, mirror.deployInfos)
     if ('error' in envParsed) return { result: `Refused: ${envParsed.error}` }
     // Guard tests: from the PR's changed files (`gh pr diff` has no file-count cap). Never fail open, never block for good.
     let guard: ReturnType<typeof guardTestsFor> = []
@@ -4361,7 +4330,7 @@ export const register: Register = (on, options) => {
         result: [...(h === undefined ? [] : [handoverLine(h)]), `Owner of PR #${asked}: ${owner}`, ...mine.map(l => `${l.ts} ${l.event}${l.agent ? ` ${l.agent}` : ''}${l.text ? `: ${l.text}` : ''}`)].join('\n'),
       }
     }
-    if (queueOn && (await $.clock.now()) - (await read($, prCache)).fetchedAt > PR_MIN_GAP_MS) await fetchPrs($)
+    if (mirror.queueOn && (await $.clock.now()) - (await read($, prCache)).fetchedAt > PR_MIN_GAP_MS) await fetchPrs($)
     const [allRows, acts, allHs] = await Promise.all([refresh($), read($, activity), read($, handovers)])
     // What the caller needs, so the result it keeps in its context stays small: a manager sees its own
     // subtree and PRs, a worker itself and its manager. Main, the reviewer (it works the whole queue) and
@@ -4410,7 +4379,7 @@ export const register: Register = (on, options) => {
         ...(scope === 'all' ? [
           ...inboxHead(await read($, inbox), await $.clock.now()),
           ...seeds,
-          ...behindLines(deployInfos, await read($, deploys), await read($, behind)).map(l => `Deploy: ${l}`),
+          ...behindLines(mirror.deployInfos, await read($, deploys), await read($, behind)).map(l => `Deploy: ${l}`),
         ] : []),
         ...(scope === 'worker' ? [] : [limitsLine(allRows, settings.maxWorkers)]),
         ...(slots ? [slots] : []),
@@ -4430,7 +4399,7 @@ export const register: Register = (on, options) => {
           ...list.filter(h => h.status === 'awaiting').map(h => `  #${h.pr} awaits approval: /flow approve ${h.pr} — ${h.title}`),
         ] : []),
         ...(pushing.length > 0 ? ['Push gate:', ...pushing.map(l => `  ${l}`)] : []),
-        ...(scope === 'all' && queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
+        ...(scope === 'all' && mirror.queueOn && cache.error !== undefined ? [`Open PRs not checked: gh pr list failed: ${cache.error}`] : []),
         ...(leftover ? [leftover] : []),
         ...(plans.length ? ['Plans:', ...plans.flatMap(([who, g]) => [`${who}:`, ...describe(g).map(l => `  ${l}`)])] : []),
         ...costs,
@@ -4628,7 +4597,7 @@ export const register: Register = (on, options) => {
     const checksLine = paneChecksLine(await read($, checks), installed)
     // One inbox line (counts and the key) follows the listed questions.
     const inboxRows = Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0) + (openQs.length > 0 || fyiCount > 0 ? 1 : 0) + (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
-    const deployLines = behindLines(deployInfos, await read($, deploys), await read($, behind)).slice(0, 3)
+    const deployLines = behindLines(mirror.deployInfos, await read($, deploys), await read($, behind)).slice(0, 3)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
     const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
