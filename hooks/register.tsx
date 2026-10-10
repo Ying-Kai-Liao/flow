@@ -6,7 +6,7 @@ import { absolutePath, parseAttachments, rewriteAttachments } from './attachment
 import { checkEvidence, evidenceRefusal, evidenceSummary, evidenceText, type Evidence } from './evidence'
 import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, selectCleanup, sweepText, waitingPaths } from './clean'
 import type { CleanInputs, Kept, PrRow, Sweep } from './clean'
-import { deliver, flushAgent, resetDelivery } from './deliver'
+import { deliver as deliverTo, flushAgent as flushTo, resetDelivery, type DeliverIo, type DeliverOptions } from './deliver'
 import { addStep, costBlock, mergeLedgers, normalizeLedger, pruneLedger, prCost, reportSuffix, setIdentity } from './cost'
 import { analyze, cleanDir, findRefs, render, UNSET_TEXT } from './migrations'
 import type { PrInput } from './migrations'
@@ -2005,6 +2005,14 @@ async function ownerNameOf($: EngineInterface, id: string | undefined): Promise<
 // whoever woke it, so the plugin forwards it to main at turn end. Main's own SendMessage clears the mark.
 const wokenByOthers = new Set<string>()
 
+// `$` stays in this file: deliver.ts gets the three calls it needs.
+const ioOf = ($: EngineInterface): DeliverIo => ({
+  status: async id => (await $.agent.list()).find(a => a.id === id)?.status,
+  send: async (id, text) => void (await $.session.send({ to: { agentId: id }, text })),
+  after: (ms, fn) => void $.clock.after(ms, fn),
+})
+const deliver = ($: EngineInterface, id: string, text: string, opts?: DeliverOptions) => deliverTo(ioOf($), id, text, opts)
+const flushAgent = ($: EngineInterface, id: string) => flushTo(ioOf($), id)
 const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
 
 const normText = (t: string): string => t.replace(/\s+/g, ' ').trim()
@@ -3409,6 +3417,7 @@ export const register: Register = (on, options) => {
   let installed: string | undefined
 
   on('session.start', async ($, e, next) => {
+    resetDelivery(text => toMain($, text))
     // Handovers a restart would lose: merge what is on disk under this session's own records.
     let queueDue = false
     await best($, 'loading handovers', async () => {
@@ -4990,6 +4999,8 @@ export const register: Register = (on, options) => {
 
   // Context used by a subagent: the input side of its latest step. Observe only; the step passes untouched.
   on('turn.step', async function* ($, e, next) {
+    // The agent is running now: texts held for it ride along.
+    if (e.agentId !== undefined) await flushAgent($, e.agentId).catch(() => undefined)
     const r = yield* next(e)
     try {
       const id = e.agentId

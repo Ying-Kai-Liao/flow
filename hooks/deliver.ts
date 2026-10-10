@@ -4,7 +4,12 @@
 // and a message that needs no action yet (a non-blocking ask) waits for the agent's next turn.
 // The queue is in memory: a plugin reload loses it.
 
-import type { EngineInterface } from 'claude-code'
+// The engine handle `$` is never passed across an import, so the caller hands in these three calls.
+export type DeliverIo = {
+  status: (id: string) => Promise<string | undefined>
+  send: (id: string, text: string) => Promise<void>
+  after: (ms: number, fn: () => void) => void
+}
 
 // How long an idle agent's first queued message waits for company.
 export const WINDOW_MS = 8_000
@@ -37,13 +42,11 @@ const ENDED = new Set(['completed', 'failed', 'killed'])
 // The joined text of the queue: arrival order, identical texts once, a blank line between.
 const joined = (items: Item[]): string => [...new Set(items.map(i => i.text))].join('\n\n')
 
-async function statusOf($: EngineInterface, id: string): Promise<string | undefined> {
-  return (await $.agent.list()).find(a => a.id === id)?.status
-}
+const statusOf = (io: DeliverIo, id: string): Promise<string | undefined> => io.status(id)
 
 // Send a text now; false when the agent is gone or the send fails.
-const sendNow = ($: EngineInterface, id: string, text: string): Promise<boolean> =>
-  $.session.send({ to: { agentId: id }, text }).then(() => true, () => false)
+const sendNow = (io: DeliverIo, id: string, text: string): Promise<boolean> =>
+  io.send(id, text).then(() => true, () => false)
 
 // The agent is gone: each item goes to its own fallback, else to main with the target named.
 async function gone(id: string, items: Item[]): Promise<void> {
@@ -54,28 +57,28 @@ async function gone(id: string, items: Item[]): Promise<void> {
 }
 
 // Send everything queued for an agent as one message. A no-op when nothing is queued.
-export async function flushAgent($: EngineInterface, id: string): Promise<void> {
+export async function flushAgent(io: DeliverIo, id: string): Promise<void> {
   const q = queues.get(id)
   if (q === undefined || q.items.length === 0) return
   queues.delete(id)
-  const status = await statusOf($, id).catch(() => undefined)
-  if (status === undefined || ENDED.has(status) || !(await sendNow($, id, joined(q.items)))) await gone(id, q.items)
+  const status = await statusOf(io, id).catch(() => undefined)
+  if (status === undefined || ENDED.has(status) || !(await sendNow(io, id, joined(q.items)))) await gone(id, q.items)
 }
 
 // Arm the flush timer: the window when something is not held, else the cap. A shorter deadline
 // replaces a longer one; the stale timer sees its generation changed and does nothing.
-function arm($: EngineInterface, id: string, q: Queue): void {
+function arm(io: DeliverIo, id: string, q: Queue): void {
   const ms = q.items.some(i => !i.held) ? WINDOW_MS : HOLD_CAP_MS
   const g = ++generation
   q.generation = g
   q.timer = ms
-  $.clock.after(ms, () => {
-    if (queues.get(id)?.generation === g) void flushAgent($, id)
+  io.after(ms, () => {
+    if (queues.get(id)?.generation === g) void flushAgent(io, id)
   })
 }
 
-export async function deliver($: EngineInterface, id: string, text: string, opts: DeliverOptions = {}): Promise<boolean> {
-  const status = await statusOf($, id).catch(() => undefined)
+export async function deliver(io: DeliverIo, id: string, text: string, opts: DeliverOptions = {}): Promise<boolean> {
+  const status = await statusOf(io, id).catch(() => undefined)
   if (status === undefined || ENDED.has(status)) {
     // Not a live target: whatever was queued for it and this text fall back together.
     const q = queues.get(id)
@@ -88,7 +91,7 @@ export async function deliver($: EngineInterface, id: string, text: string, opts
   if (status !== 'idle' || opts.urgent === true) {
     // Running (or urgent): the agent takes everything queued for it now, with this text last.
     queues.delete(id)
-    const sent = await sendNow($, id, joined([...(q?.items ?? []), item]))
+    const sent = await sendNow(io, id, joined([...(q?.items ?? []), item]))
     if (!sent) await gone(id, [...(q?.items ?? []), item])
     return sent
   }
@@ -96,7 +99,7 @@ export async function deliver($: EngineInterface, id: string, text: string, opts
   queues.set(id, queue)
   if (!queue.items.some(i => i.text === text)) queue.items.push(item)
   // A held text must not shorten the wait of a queue that already has a window running.
-  if (queue.generation === 0 || (!item.held && queue.timer === HOLD_CAP_MS)) arm($, id, queue)
+  if (queue.generation === 0 || (!item.held && queue.timer === HOLD_CAP_MS)) arm(io, id, queue)
   return true
 }
 
