@@ -141,7 +141,7 @@ test('the reviewer fast-forwards a clean main checkout after a batch and reports
   expect(q).toContain('status --porcelain --untracked-files=no')
   expect(q).toContain('Never stash, reset or checkout in the main checkout')
   expect(q).toContain('main checkout fast-forwarded to <sha>')
-  expect(q).toContain('main checkout not updated: <dirty | on branch X | ff failed>')
+  expect(q).toContain('main checkout not updated: <dirty | on branch X | ff failed | nothing pushed>')
 })
 
 test('the push run continues with the after-batch steps and the untracked clause is there', () => {
@@ -153,6 +153,8 @@ test('the push run continues with the after-batch steps and the untracked clause
   expect(q).toContain('\n## After a batch\n')
   const after = q.slice(q.indexOf('## After a batch'))
   expect(after).toContain('main checkout fast-forwarded to <sha>')
+  expect(after.startsWith('## After a batch\n\nAfter every batch, call')).toBe(true)
+  expect(after).toContain('nothing pushed')
   expect(after).toContain('untracked files, an untracked directory say, do not count as dirty')
   expect(after).toContain('status --porcelain --untracked-files=no')
 })
