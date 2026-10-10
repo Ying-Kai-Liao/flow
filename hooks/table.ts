@@ -21,7 +21,7 @@ export const DEFAULT_WIDTH = 100
 export const MIN_WIDTH = 40
 
 // The width to render at: the given columns when a positive number, else the default; never below the minimum.
-export const termWidth = (columns: unknown = process.stdout?.columns): number =>
+export const termWidth = (columns: unknown = (globalThis as { process?: { stdout?: { columns?: number } } }).process?.stdout?.columns): number =>
   Math.max(MIN_WIDTH, typeof columns === 'number' && Number.isFinite(columns) && columns > 0 ? Math.floor(columns) : DEFAULT_WIDTH)
 
 // Collapses whitespace and cuts to max characters, ending in an ellipsis when something was cut.
@@ -30,7 +30,7 @@ export function truncate(text: string, max: number): string {
   return max <= 0 ? '' : t.length <= max ? t : max === 1 ? '…' : `${t.slice(0, max - 1).trimEnd()}…`
 }
 
-export function renderTable(cols: Column[], rows: Row[], width: number, opts: { limit?: number; indent?: number } = {}): string[] {
+export function renderTable(cols: Column[], rows: Row[], width: number, opts: { limit?: number; indent?: number; more?: (m: number) => string } = {}): string[] {
   const w = Math.max(MIN_WIDTH, Math.floor(width))
   const indent = ' '.repeat(opts.indent ?? 0)
   const room = w - indent.length
@@ -57,11 +57,11 @@ export function renderTable(cols: Column[], rows: Row[], width: number, opts: { 
   let shown = 0
   let hidden = 0
   for (const r of rows) {
-    if (typeof r === 'string') { if (opts.limit === undefined || shown < opts.limit) out.push('', truncate(indent + r, w)); continue }
+    if (typeof r === 'string') { if (opts.limit === undefined || shown < opts.limit) out.push('', indent + truncate(r, room)); continue }
     if (opts.limit !== undefined && shown >= opts.limit) { hidden++; continue }
     shown++
     out.push(line(i => r[i] ?? ''))
   }
-  if (hidden > 0) out.push(truncate(`${indent}+${hidden} more`, w))
+  if (hidden > 0) out.push(indent + truncate(opts.more ? opts.more(hidden) : `+${hidden} more`, room))
   return out
 }

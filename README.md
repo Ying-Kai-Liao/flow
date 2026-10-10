@@ -64,7 +64,7 @@ fix X" is enough.
 | `/flow ok [q10 q11 \| owner \| topic]` | Keeps FYIs (no words: every open FYI) or takes the default of an ordinary question. Never answers a deploy, push, env or guard item. |
 | `/flow no q12 [what instead]` | Overturns an FYI; the agent is told what to do instead. |
 | `/flow answer q3 <choice>` | Answers any question addressed to main (option letter, number, text, or your own words), deploy, push and env items included. |
-| `/flow checks` | Lists the after-deploy checks that only a person can do. |
+| `/flow checks` | Lists the after-deploy checks that only a person can do as one table (id, PR, title, what it needs, age). `/flow checks <id>` shows one in full; `pass`, `fail` and `skip <id...> <why>` close them. |
 | `/flow approve <n>` | Approves PR `n` when it is waiting for you. |
 | `/flow push` | Pushes the batch the reviewer built and checked, when `push_mode` is `confirm`. `/flow push back <pr>` returns one PR, `/flow push drop` all of them. |
 | `/flow hold <target>` / `/flow release <target>` | Keeps a deploy target from deploying, or lets it go again. |
