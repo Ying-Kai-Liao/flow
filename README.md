@@ -87,14 +87,18 @@ flow works with no setup. Most people set a few things in `.claude/flow.json` at
 }
 ```
 
-- `test_command`: what workers run to test their change.
-- `full_check_command`: what the reviewer runs once before it pushes a batch of merges.
-- `deploy_targets`: where the reviewer deploys, in order. Give a target `"mode": "confirm"` to make production wait for your OK. Leave it out and nothing deploys.
-- `merge_mode`: `auto` merges handed-over PRs; `confirm` waits for your `/flow approve`.
-- `worker_model`, `worker_model_small`, `worker_model_normal`, `manager_model`, `reviewer_model`, `conflict_model`, `explore_model`, `max_managers`, `max_workers`: models and limits.
+| Setting | Set it when |
+|---|---|
+| `test_command` | your repo has a test command workers should run for the files they change |
+| `full_check_command` | you have a full check (lint, build, the whole suite) the reviewer should run once per batch |
+| `deploy_targets` | you want the reviewer to deploy after merging. For one target, `deploy_command` is the shortcut |
+| `merge_mode` | you want to approve each handed-over PR yourself (`confirm`) instead of merging automatically |
+| `push_mode` | you want to approve each batch before it is pushed (`confirm`) |
+| `release` | you want each merged batch to bump the version and cut a changelog section |
+| `manager_model`, `worker_model`, `max_workers` | you want other models for managers or workers, or more or fewer parallel workers |
 
-Anything you leave out is skipped and reported. flow never guesses a command. The full list, with
-defaults, is in the [reference](docs/reference.md).
+Anything you leave out is skipped and reported. flow never guesses a command. Everything else,
+with defaults, is in the [reference](docs/reference.md).
 
 ## Learn more
 

@@ -6,57 +6,67 @@ Settings, tools, the test lock, guard tests, state on disk and how to develop th
 
 Most options are under `/config` → flow:. Every option can also be set in a settings file (`.claude/flow.json`, or the personal `.git/flow/config.json`, see Settings per repo); the ones marked "file only" have no `/config` field.
 
+### Core settings
+
+The ones most repos set. Everything else is under Advanced settings.
+
 | Option | Default | Set in | Used by |
 |---|---|---|---|
 | `test_command` | tests covering the changed files | `/config`, file | workers |
 | `full_check_command` | none (the reviewer says so) | `/config`, file | the reviewer, once per batch |
-| `deploy_command` | none (no deploy) | `/config`, file | the reviewer, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
 | `deploy_targets` | none | file only | the reviewer: ordered deploy targets, each with an optional `mode` of `auto` (default) or `confirm` (see Deploying). A JSON array or a JSON string; wins over `deploy_command` |
-| `state_file` | none | file only | the reviewer: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
-| `reviewer` | on | `/config`, file | off: managers merge themselves with `merge_method` |
-| `merge_method` | `squash` | `/config`, file | managers, when there is no reviewer |
+| `deploy_command` | none (no deploy) | `/config`, file | the reviewer, after pushing. Same as one target `{name: "default", deploy: [deploy_command]}` |
 | `merge_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` holds every handed-over PR until you run `/flow approve <n>` (see Merge mode) |
 | `push_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` makes the reviewer stop after the full check and the release, and waits for your `/flow push` (see Push gate) |
+| `release` | `off` | `/config`, file | `on`: release at merge, the reviewer bumps the version once per batch (see Releases) |
+| `manager_model` | `opus` | `/config`, file | managers |
+| `worker_model` | `sonnet[1m]` | `/config`, file | workers of size `large`, and workers whose brief has no `Size:` line (see Model routing). Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
+| `max_workers` | 3 | `/config`, file | workers per manager at a time |
+
+### Advanced settings
+
+| Option | Default | Set in | Used by |
+|---|---|---|---|
+| `reviewer` | on | `/config`, file | off: managers merge themselves with `merge_method` |
+| `merge_method` | `squash` | `/config`, file | managers, when there is no reviewer |
 | `preflight` | `on` | `/config`, file | `off`: managers are not gated and no round is sent (see Pre-flight) |
 | `preflight_wait` | 10 | `/config`, file | minutes the main session waits for managers to file before sending the round |
-| `release` | `off` | `/config`, file | `on`: release at merge, the reviewer bumps the version once per batch (see Releases) |
+| `state_file` | none | file only | the reviewer: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
 | `release_files` | none (`package.json` at the repo root when there is one) | file only | repo-relative JSON or TOML files whose version the release bumps, a list; the first one gives the current version |
 | `release_github` | `off` | `/config`, file | `on` (with `release` on): after the release push the reviewer tags `v<x.y.z>`, pushes the tag and creates a GitHub Release from the changelog section; needs `gh` authenticated with repo write |
 | `changelog_file` | `CHANGELOG.md` | `/config`, file | the changelog the release cuts and workers add their lines to |
-| `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
-| `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
-| `max_workers` | 3 | `/config`, file | workers per manager at a time |
-| `test_slots` | 1 | `/config`, file | how many heavy test runs may run at once across all agents (minimum 1) |
-| `worker_model` | `sonnet[1m]` | `/config`, file | workers of size `large`, and workers whose brief has no `Size:` line (see Model routing). Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
-| `worker_model_small` | `haiku` | `/config`, file | workers whose brief says `Size: small` |
-| `worker_model_normal` | `sonnet` | `/config`, file | workers whose brief says `Size: normal` |
-| `manager_model` | `opus` | `/config`, file | managers |
 | `reviewer_model` | `sonnet` | `/config`, file | the reviewer |
 | `conflict_model` | `opus` | `/config`, file | the sub-agent the reviewer starts for mechanical conflicts in code files and for fixes to PRs that break only in combination |
 | `explore_model` | `haiku` | `/config`, file | an Explore sub-agent that a flow agent (manager, worker, reviewer) starts without its own model. Main's own Explore spawns are untouched |
+| `worker_model_small` | `haiku` | `/config`, file | workers whose brief says `Size: small` |
+| `worker_model_normal` | `sonnet` | `/config`, file | workers whose brief says `Size: normal` |
+| `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
+| `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
+| `test_slots` | 1 | `/config`, file | how many heavy test runs may run at once across all agents (minimum 1) |
 | `language` | `English` | `/config`, file | the language agents write reports and PR text in |
-| `big_files` | none | file only | files workers grep and never read whole (a list) |
-| `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
-| `migrations_dir` | none | file only | the directory of migrations: workers number new ones after the highest on the base branch, and the reviewer renumbers a clash (see Reviewer rules) |
-| `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |
-| `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
-| `verify_paths` | none | file only | path globs (a list): a handover's `verify_command` runs only when the PR changes a matching file, e.g. only PRs touching migrations or code with outbound effects; otherwise the check stays open for a person. Unset: the command always runs (see Person checks) |
-| `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
-| `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
-| `flaky_tests` | none | file only | test files known to fail now and then: when they are the only failures of the full check, the reviewer reruns them once (a list) |
-| `guard_tests` | none | file only | path globs mapped to repo-wide tests a worker must run when its diff touches a matching path, e.g. `{"src/routes/**": ["test/admin.test.ts"]}` (see Guard tests) |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
 | `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
 | `context_warn_tokens` | 0 | `/config`, file | an optional cap in tokens over both percents; the lower applies. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
 | `handoff` | on | `/config`, file | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
-| `base_branch` | the remote's default branch | `/config`, file | everyone |
-| `main_checkout_guard` | on | `/config`, file | every agent and the main session: writes to the main checkout are refused (see Guards) |
-| `cleanup` | `auto` | `/config`, file | `auto`: the plugin removes finished, clean worktrees and branches after each merge and when the reviewer ends (see Cleanup). `off`: only `/flow clean --yes` |
 | `worker_harness` | `agent` | `/config`, file | managers: `agent` starts `flow:worker` agents; a harness name (`codex`, …) starts every worker in a terminal instead (see Workers in other harnesses) |
 | `session_host` | `auto` | `/config`, file | where session workers run: `auto` (Orca when it runs, else tmux), `orca`, `tmux` |
 | `harnesses` | the four built-ins | `/config` (JSON string), file | harness name to a start line or `{start, resume?, program?, quota?, digest?}`, over the built-ins; `""` removes one |
 | `min_quota` | 10 | `/config`, file | a session worker whose harness has a `quota` is refused below this percent left; 0 = never |
+| `base_branch` | the remote's default branch | `/config`, file | everyone |
+| `cleanup` | `auto` | `/config`, file | `auto`: the plugin removes finished, clean worktrees and branches after each merge and when the reviewer ends (see Cleanup). `off`: only `/flow clean --yes` |
+| `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
+| `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
+| `flaky_tests` | none | file only | test files known to fail now and then: when they are the only failures of the full check, the reviewer reruns them once (a list) |
+| `verify_paths` | none | file only | path globs (a list): a handover's `verify_command` runs only when the PR changes a matching file, e.g. only PRs touching migrations or code with outbound effects; otherwise the check stays open for a person. Unset: the command always runs (see Person checks) |
+| `big_files` | none | file only | files workers grep and never read whole (a list) |
+| `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
+| `migrations_dir` | none | file only | the directory of migrations: workers number new ones after the highest on the base branch, and the reviewer renumbers a clash (see Reviewer rules) |
+| `main_checkout_guard` | on | `/config`, file | every agent and the main session: writes to the main checkout are refused (see Guards) |
 | `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
+| `guard_tests` | none | file only | path globs mapped to repo-wide tests a worker must run when its diff touches a matching path, e.g. `{"src/routes/**": ["test/admin.test.ts"]}` (see Guard tests) |
+| `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |
+| `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
+
 
 `decision_phrases` (deprecated in favour of `mcp__flow__ask`, still honoured; the settings loader warns): a report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it.
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- README lists the handful of settings most repos set in a short table, and docs/reference.md splits its Settings section into Core settings and Advanced settings. No setting or default changed.
+
 ## [0.6.15] - 2026-10-11
 
 ### Fixed
