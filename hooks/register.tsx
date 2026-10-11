@@ -1069,9 +1069,10 @@ function spawnIoOf($: EngineInterface): SpawnIo {
 function jevOf($: EngineInterface, settings: { sizeModel?: string; jevModel?: string }): SizeJev | undefined {
   if (settings.sizeModel !== 'jev') return undefined
   return async prompt => {
-    const home = process.env.HOME
+    const g = globalThis as unknown as { process: { env: Record<string, string | undefined> }; fetch: FetchLike }
+    const home = g.process.env.HOME
     const file = home === undefined ? undefined : await $.fs.read(`${home}/${JEV_ENV_FILE}`).catch(() => undefined)
-    return askJev(fetch as unknown as FetchLike, jevConfig(process.env, file), settings.jevModel ?? 'jev-latest', prompt)
+    return askJev(g.fetch, jevConfig(g.process.env, file), settings.jevModel ?? 'jev-latest', prompt)
   }
 }
 

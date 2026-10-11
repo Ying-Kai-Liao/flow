@@ -7,6 +7,9 @@ export const JEV_DEFAULT_URL = 'https://api.typesafe.ai'
 export const JEV_TIMEOUT_MS = 5000
 export const JEV_MIN_CONFIDENCE = 0.5
 export const JEV_STATE_MAX = 8000
+// The project's tsconfig has no node or DOM libs, so the timer globals are typed here.
+const g = globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown; clearTimeout: (t: unknown) => void }
+
 export const JEV_ENV_FILE = '.config/jev/env'
 
 // KEY=value lines; tolerates `export `, quotes and comments.
@@ -68,7 +71,7 @@ export type FetchLike = (url: string, init: { method: string; headers: Record<st
 export async function askJev(fetchFn: FetchLike, cfg: { key?: string; baseUrl: string }, model: string, prompt: string, timeoutMs = JEV_TIMEOUT_MS): Promise<JevAnswer> {
   if (cfg.key === undefined) return { note: 'jev unavailable: no key' }
   const ac = new AbortController()
-  const timer = setTimeout(() => ac.abort(), timeoutMs)
+  const timer = g.setTimeout(() => ac.abort(), timeoutMs)
   try {
     const res = await fetchFn(`${cfg.baseUrl}/v1/systemone`, {
       method: 'POST',
@@ -83,7 +86,7 @@ export async function askJev(fetchFn: FetchLike, cfg: { key?: string; baseUrl: s
   } catch {
     return { note: ac.signal.aborted ? 'jev unavailable: timeout' : 'jev unavailable: network error' }
   } finally {
-    clearTimeout(timer)
+    g.clearTimeout(timer)
   }
 }
 
