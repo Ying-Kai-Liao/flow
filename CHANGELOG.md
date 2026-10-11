@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.60] - 2026-10-12
+
 ### Changed
 
 - The plugin description (plugin.json, marketplace.json) is simplified to "Claude Code agents that work like a company, with Jev-assisted routing to keep cost down"
