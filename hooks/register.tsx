@@ -19,6 +19,7 @@ import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo,
 import { addStep, addTurn, baseName, entriesOfBranch, setIdentity } from './cost'
 import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
 import type { CostIo } from './cost-run'
+import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
 import { backNote } from './routing'
 import { checkAttachments, CONTINUE_LINE, continuingCount, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
 import type { Routed, SpawnIo } from './spawn'
@@ -1470,6 +1471,21 @@ async function warnMain($: EngineInterface, settings: ReturnType<typeof settings
   return main.window
 }
 
+// The usage module's io: closures over the activity atom, the roster and the wrap-up senders.
+function usageIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, mainWarn: { warned: boolean }, held: Pick<UsageIo, 'mainModel' | 'setMainModel' | 'mainWindow' | 'setMainWindow'>): UsageIo {
+  return {
+    ...held,
+    cost: costIoOf($),
+    now: () => $.clock.now(),
+    activity: () => read($, activity),
+    updateActivity: async fn => { await update($, activity, fn) },
+    agents: () => $.agent.list(),
+    toast: text => { void $.ui.toast(text) },
+    sendWrapUp: (me, percent, limit) => sendWrapUp($, me, percent, limit),
+    warnMain: () => warnMain($, settings, mainWarn),
+  }
+}
+
 // One gh call at a time: the timer and a status call may meet.
 let fetching: Promise<void> | undefined
 function fetchPrs($: EngineInterface): Promise<void> {
@@ -2165,78 +2181,19 @@ export const register: Register = (on, options) => {
   const mainWarn = { warned: false }
 
   // Context used by a subagent: the input side of its latest step. Observe only; the step passes untouched.
+  // Main's model and window live in this closure; the usage module reads and sets them through these.
+  const mainHeld = {
+    mainModel: () => mainModel,
+    setMainModel: (m: string | undefined) => { mainModel = m },
+    mainWindow: () => mainWindow,
+    setMainWindow: (w: number) => { mainWindow = w },
+  }
   on('turn.step', async function* ($, e, next) {
     // The agent is running now: texts held for it ride along.
     if (e.agentId !== undefined) await flushAgent($, e.agentId).catch(() => undefined)
     const r = yield* next(e)
-    try {
-      const id = e.agentId
-      if (id === undefined) {
-        mainModel = e.model
-      } else if (r?.usage) {
-        const tokens = r.usage.input_tokens + r.usage.cache_creation_input_tokens + r.usage.cache_read_input_tokens
-        // The API's id usually lacks `[1m]`; keep the engine's when it has it, or the window is guessed at 200k.
-        const model = e.model.includes('[1m]') ? e.model : r.usage.model || e.model
-        const t = await $.clock.now()
-        const spawned = (await read($, activity))[id]?.spawnWindow
-        const window = windowOf(model, mainModel, mainWindow, tokens, spawned)
-        await update($, activity, acts => {
-          const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
-          return { ...acts, [id]: { ...a, usage: { tokens, model, ...(spawned !== undefined && { window }) } } }
-        })
-        // Tell a worker or manager once when it reaches the threshold. Marked before it is sent, so a
-        // send that fails (the agent already ended) is not retried every step. Below it again (the
-        // agent compacted) the mark clears, so a later crossing tells it again.
-        const percent = Math.min(100, Math.round(tokens / window * 100))
-        const past = tokens >= thresholdOf(settings, window)
-        const was = (await read($, activity))[id]
-        if (settings.handoff && !past && was?.handoffNotifiedAt !== undefined) {
-          await update($, activity, acts => {
-            const a = acts[id]
-            if (a === undefined) return acts
-            const { handoffNotifiedAt: _n, handoffPercent: _p, remindedPercent: _r, callsPastLimit: _k, ...rest } = a
-            return { ...acts, [id]: rest }
-          })
-        }
-        if (settings.handoff && past && was?.handoffNotifiedAt === undefined) {
-          const me = (await $.agent.list()).find(a => a.id === id)
-          if ((me && WORKERS.has(me.type)) || me?.type === MANAGER) {
-            await update($, activity, acts => {
-              const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
-              return { ...acts, [id]: { ...a, handoffNotifiedAt: t, handoffPercent: percent, remindedPercent: percent, callsPastLimit: 0, remindersSent: a.remindersSent ?? 0 } }
-            })
-            void $.ui.toast(`${ROLE[me.type]} ${labelOf(me)}: past ${limitLabel(settings, window)} context, handing off`)
-            // For an agent between turns; one in a turn reads the reminder on its next tool call.
-            await sendWrapUp($, me, percent, limitLabel(settings, window))
-          }
-        }
-      }
-      if (id === undefined) mainWindow = (await warnMain($, settings, mainWarn)) ?? mainWindow
-    } catch {
-      // The meter is cosmetic: never fail the agent's step over it.
-    }
-    try {
-      if (r?.usage) {
-        const key = e.agentId ?? await mainKey($)
-        const model = r.usage.model || e.model
-        await loadLedger($)
-        // A step that arrives before its spawn was seen takes its identity from the roster.
-        let who: { role: Role; name: string; manager?: string; branch?: string } | undefined
-        if (e.agentId !== undefined && (await read($, ledger))[key] === undefined) {
-          const all = await $.agent.list()
-          const me = all.find(a => a.id === e.agentId)
-          if (me) {
-            const role = (ROLE[me.type] ?? 'other') as Role
-            const parent = all.find(a => a.id === me.parentId)
-            const name = labelOf(me)
-            who = { role, name, ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }), ...(role === 'worker' && { branch: `flow/${name}` }) }
-          }
-        }
-        await changeLedger($, (l, now) => addStep(l, key, model, r.usage, who, now))
-      }
-    } catch {
-      // The ledger is best-effort: the step passes untouched.
-    }
+    await meterStep(usageIoOf($, settings, mainWarn, mainHeld), settings, e, r)
+    await countStep(usageIoOf($, settings, mainWarn, mainHeld), e, r)
     return r
   })
 
@@ -2244,18 +2201,7 @@ export const register: Register = (on, options) => {
   const countedTurns = new Set<string>()
   on('turn.complete', async ($, e, next) => {
     const id = e.agentId
-    try {
-      const turnId = (e as { turnId?: string }).turnId
-      const key = id ?? await mainKey($)
-      const once = turnId === undefined || !countedTurns.has(`${key}:${turnId}`)
-      if (turnId !== undefined) countedTurns.add(`${key}:${turnId}`)
-      if (once) {
-        await loadLedger($)
-        await changeLedger($, (l, now) => addTurn(l, key, now))
-      }
-    } catch {
-      // The ledger is best-effort: the turn passes untouched.
-    }
+    await countTurn(costIoOf($), countedTurns, id, (e as { turnId?: string }).turnId)
     if (id !== undefined) {
       const t = await $.clock.now()
       await update($, activity, acts => {
