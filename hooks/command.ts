@@ -14,6 +14,7 @@ import type { PushAct } from './pushgate-run'
 import type { PushState } from './pushgate'
 import type { Hold } from './deploy'
 import { mirror, PANE } from './core'
+import { LITE_USAGE, liteStartPrompt } from './lite'
 
 type Settings = ReturnType<typeof settingsOf>
 
@@ -146,6 +147,15 @@ export async function flowCommand(
         return { text: `The Flow pane stayed open: ${err instanceof Error ? err.message : String(err)}` }
       }
       return { text: 'Flow pane closed.' }
+    }
+    if (arg === 'lite' || arg.startsWith('lite ')) {
+      const task = arg.slice(4).trim()
+      if (task === '') return { text: LITE_USAGE }
+      // Like /flow resume: a command starts no agent, so a short prompt is submitted once it has returned.
+      io.after(0, () => {
+        void io.submit(liteStartPrompt(task)).catch(() => undefined)
+      })
+      return { text: 'Starting a lite manager (manager and workers only, no pre-flight, no reviewer agent).' }
     }
     if (arg === 'resume') {
       const found = await io.gatherLeftovers(settings.base, resumed)

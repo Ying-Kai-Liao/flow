@@ -34,10 +34,12 @@ import {
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
-  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, isSkip, markDelivered, normalizePreflight,
+  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, isLite, isSkip, markDelivered, normalizePreflight,
   recordSpawn, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
+import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, recordLite, releaseToolAccess, reviewerToolAccess, withLiteRules } from './lite'
+import type { LiteState, ToolCaller } from './lite'
 import {
   addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, paneChecksLine, parseNeeds, renderChecksTable,
   SKIP_NOTE, versionInSteps,
@@ -52,7 +54,7 @@ import { agentView, archiveView, card as cardTo, cardView, graphModeView, inboxV
 import type { InboxCtx, PaneCtx, Usage } from './pane-view'
 import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
 import {
-  fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT,
+  fill, LITE_MARK, LITE_RULES, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT,
 } from './prompts'
 import type { Settings } from './prompts'
 import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
@@ -150,6 +152,8 @@ const seenAgents = atom({ plugin: 'flow', key: 'seen-agents' } as const, {} as R
 const inbox = atom({ plugin: 'flow', key: 'inbox' } as const, EMPTY_INBOX as Inbox)
 // Pre-flight records, mirrored from <state dir>/preflight.json.
 const preflight = atom({ plugin: 'flow', key: 'preflight' } as const, EMPTY_PREFLIGHT as Preflight)
+// Managers started in lite mode (lite.ts), mirrored from <state dir>/lite.json.
+const lite = atom({ plugin: 'flow', key: 'lite' } as const, EMPTY_LITE as LiteState)
 const checks = atom({ plugin: 'flow', key: 'checks' } as const, EMPTY_CHECKS as Checks)
 // Tokens spent per agent and model, mirrored (throttled) to <state dir>/ledger.json. Never forgets an ended agent.
 const ledger = atom({ plugin: 'flow', key: 'ledger' } as const, {} as Ledger)
@@ -304,6 +308,7 @@ const handoverIoOf = ($: EngineInterface, options: Record<string, unknown>): Han
   toast: text => { void $.ui.toast(text) },
   refresh: () => refresh($),
   ensureQueue: () => ensureQueue($),
+  liteManager: agentId => liteManagerOf($, agentId),
 })
 
 const planIoOf = ($: EngineInterface): PlanIo => ({
@@ -691,11 +696,51 @@ async function preflightGate($: EngineInterface, agentId: string | undefined): P
   return g === undefined ? undefined : denyText(g)
 }
 
-// A manager main just started joins the open round, or opens one with a timer for the wait.
-async function recordManager($: EngineInterface, name: string, prompt: string): Promise<void> {
+// Lite records change one after another, like pre-flight's. A lite manager must survive a plugin restart.
+let liteChain: Promise<unknown> = Promise.resolve()
+
+function withLite<T>($: EngineInterface, fn: (cur: LiteState) => { state: LiteState; out: T }): Promise<T> {
+  const run = async (): Promise<T> => {
+    const dir = await stateDir($)
+    const cur = dir === undefined ? await read($, lite) : normalizeLite(await readJson($, `${dir}/lite.json`))
+    const { state, out } = fn(cur)
+    if (state !== cur) {
+      if (dir !== undefined) {
+        await $.process.run(['mkdir', '-p', dir])
+        await writeJsonAtomic($, `${dir}/lite.json`, state)
+      }
+      await update($, lite, () => state)
+    }
+    return out
+  }
+  const result = liteChain.then(run, run)
+  liteChain = result.catch(() => undefined)
+  return result
+}
+
+// The lite manager an agent is (by its roster name), else undefined.
+async function liteManagerOf($: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
+  if (agentId === undefined) return undefined
+  const me = (await $.agent.list()).find(a => a.id === agentId)
+  return me?.type === MANAGER && me.name !== undefined && isLiteName(await read($, lite), me.name) ? me.name : undefined
+}
+
+// Who is calling a reviewer-side tool: main, the reviewer, a lite manager or anyone else.
+async function toolCallerOf($: EngineInterface, agentId: string | undefined): Promise<ToolCaller> {
+  if (agentId === undefined) return { kind: 'main' }
+  const me = (await $.agent.list()).find(a => a.id === agentId)
+  // Only a manager or a worker is refused. An id the roster no longer lists (the host drops agents) is a reviewer's, as before.
+  if (me === undefined || isReviewer(me.type)) return { kind: 'reviewer' }
+  const name = await liteManagerOf($, agentId)
+  if (name !== undefined) return { kind: 'lite', name }
+  return me.type === MANAGER || WORKERS.has(me.type) ? { kind: 'other' } : { kind: 'reviewer' }
+}
+
+// A manager main just started joins the open round, or opens one with a timer for the wait. A lite one is skipped.
+async function recordManager($: EngineInterface, name: string, prompt: string, liteMode: boolean): Promise<void> {
   const t = await $.clock.now()
   const opened = await withPreflight($, cur => {
-    const next = recordSpawn(cur, name, isSkip(prompt), t, mirror.preflightWaitMs)
+    const next = recordSpawn(cur, name, isSkip(prompt) || liteMode, t, mirror.preflightWaitMs)
     return { state: next, out: next.rounds.length > cur.rounds.length }
   })
   if (opened) $.clock.after(mirror.preflightWaitMs, () => void refresh($).catch(() => undefined))
@@ -1624,6 +1669,12 @@ export const register: Register = (on, options) => {
       // A released or rebuilding batch left by a session that ended gets its reviewer.
       queueDue = queueDue || (disk.batch !== undefined && disk.batch.state !== 'ready')
     })
+    await best($, 'loading lite managers', async () => {
+      const dir = await stateDir($)
+      if (dir === undefined) return
+      const disk = normalizeLite(await readJson($, `${dir}/lite.json`))
+      await update($, lite, () => disk)
+    })
     await best($, 'loading pre-flight', async () => {
       const dir = await stateDir($)
       if (dir === undefined) return
@@ -1669,8 +1720,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and the decisions agents made (/flow inbox decisions lists them all, /flow inbox <id> shows one in full), /flow ok keeps every open decision (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] undoes a decision, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (alias /flow drop) turns down a handover that awaits approval or is pending, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox [all|archive [all]|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|resume|approve <pr>|reject <pr> [reason]|push [back <pr>|drop]|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and the decisions agents made (/flow inbox decisions lists them all, /flow inbox <id> shows one in full), /flow ok keeps every open decision (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] undoes a decision, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow lite <task> runs one task as just a manager and its workers (no pre-flight, no reviewer agent) to save tokens, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (alias /flow drop) turns down a handover that awaits approval or is pending, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox [all|archive [all]|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|lite <task>|resume|approve <pr>|reject <pr> [reason]|push [back <pr>|drop]|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -1769,6 +1820,12 @@ export const register: Register = (on, options) => {
       if ('deny' in checked) return { deny: checked.deny }
       if (checked.prompt !== e.prompt) e = { ...e, prompt: checked.prompt }
     }
+    // Lite mode: a `Mode: lite` line (or an earlier spawn of this manager's task) puts the LITE rules in front of the prompt.
+    let liteMode = false
+    if (e.subagentType === MANAGER) {
+      liteMode = isLite(e.prompt) || isLiteName(await read($, lite), (e as { name?: string }).name ?? e.description)
+      if (liteMode) e = { ...e, prompt: withLiteRules(e.prompt, fill(LITE_RULES, settings), LITE_MARK) }
+    }
     if (await fableDenied(spawnIoOf($), e)) return { deny: FABLE_DENY }
     // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
     let routed: Routed | undefined
@@ -1852,13 +1909,16 @@ export const register: Register = (on, options) => {
           ...(routed !== undefined && { size: routed.size }),
         }, now))
       })
-      if (routed !== undefined) {
+      if (liteMode) await best($, 'recording a lite manager', async () => { const at = await $.clock.now(); await withLite($, cur => ({ state: recordLite(cur, (e as { name?: string }).name ?? e.description, at), out: undefined })) })
+      // A lite task files no size decisions: not for its manager, not for its workers. The routing itself still happens.
+      const liteOwner = e.subagentType === WORKER && routed !== undefined && isLiteName(await read($, lite), (await $.agent.list()).find(a => a.id === e.parentAgentId)?.name)
+      if (routed !== undefined && !liteMode && !liteOwner) {
         const r = routed
         if (e.subagentType === MANAGER) await best($, 'filing a manager-size decision', () => fileManagerSizeFyi(spawnIoOf($), options, (e as { name?: string }).name ?? e.description, id, r))
         else await best($, 'filing a worker-size decision', () => fileSizeFyi(spawnIoOf($), options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
       }
       if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
-        await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt))
+        await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt, liteMode))
       }
       if (FLOW_TYPES.has(e.subagentType)) {
         await best($, 'logging a spawn', async () => {
@@ -1940,9 +2000,18 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'mcp__flow__handover' }, ($, e) => handoverTool(handoverIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 
-  on('tool.call', { tool: 'mcp__flow__release' }, ($, e) => releaseTool(releaseIoOf($), settings, e as unknown as Record<string, unknown>)).catch(toolCatch)
+  // The reviewer's tools: main, the reviewer, and a lite manager for its own PRs. A manager or worker otherwise is refused.
+  on('tool.call', { tool: 'mcp__flow__release' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const refused = releaseToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
+    return refused !== undefined ? { result: refused } : releaseTool(releaseIoOf($), settings, input)
+  }).catch(toolCatch)
 
-  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, ($, e) => reviewerToolRun(reviewerIoOf($, settings.base), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const refused = reviewerToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
+    return refused !== undefined ? { result: refused } : reviewerToolRun(reviewerIoOf($, settings.base), settings, input, e.agentId)
+  }).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__plan' }, ($, e) => planTool(planIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 
@@ -2014,6 +2083,8 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__flow__deploy' }, async ($, e) => {
     const isMain = e.agentId === undefined
     const caller = isMain ? 'main' : await ownerNameOf($, e.agentId!)
+    const refused = deployToolAccess(await toolCallerOf($, e.agentId), e as unknown as Record<string, unknown>, await read($, handovers))
+    if (refused !== undefined) return { result: refused }
     return { result: await deployTool($, options, e as unknown as Record<string, unknown>, isMain, caller) }
   }).catch(toolCatch)
 

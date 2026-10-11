@@ -54,7 +54,7 @@ add login-redirect  after: csv-export
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
-  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow checks` lists the after-deploy checks that need a person (see Person checks), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you and `/flow reject <n> [reason]` (alias `/flow drop`) turns one down (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
+  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow checks` lists the after-deploy checks that need a person (see Person checks), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you and `/flow reject <n> [reason]` (alias `/flow drop`) turns one down (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow lite <task>` runs one task as a manager and its workers only (see Lite mode), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
   `c` collapses or expands the highlighted card, `q` the Reviewer section. In an agent's detail, `b` goes back and `m` starts a message.
@@ -112,9 +112,43 @@ interruptions come before you leave.
   follow as "Pre-flight (late): ...".
 - `/flow preflight` shows the open or latest round; `mcp__flow__status` shows the phase.
 - **Skip**: a line `Pre-flight: skip` in a manager's prompt exempts it (the main session uses it
-  for a single small change). With `preflight` off, nothing is gated.
+  for a single small change). A `Mode: lite` line implies it (see Lite mode). With `preflight` off, nothing is gated.
 - Settings: `preflight` (`on`/`off`, default on) and `preflight_wait` (minutes, default 10).
   State is in `<git-common-dir>/flow/preflight.json`.
+
+## Lite mode
+
+A task can run lite: one `flow:manager` and its workers, nothing else. It saves the pre-flight round,
+the size decisions main would otherwise handle, the manager's large model and the separate reviewer
+agent. Use it for a single clear task with no fan-out and no risky change; keep the full flow for
+several tasks at once, work that depends on other tasks, and anything touching migrations, deploys,
+auth or data.
+
+- **Start**: `/flow lite <task>` (no text prints the usage), or a line `Mode: lite` on a `flow:manager`
+  prompt that main starts. It is per task; there is no global switch. `/flow lite` submits a short prompt
+  to main, which starts the manager with that line.
+- **What changes for a lite manager**: it is recorded in `<git-common-dir>/flow/lite.json` (it stays lite
+  after a restart, and a successor `x-2` of lite `x` is lite too) and the plugin puts a LITE block in front of
+  its prompt. It is skipped in pre-flight like `Pre-flight: skip` and never waits in a round. The plugin files
+  no `manager-size` or `worker-size` decision for it or its workers (the routing itself still sets their
+  models); other decisions and questions it files go through. Its model is chosen as for any manager
+  (`manager_model`, or a `Size:` line on its prompt).
+- **No reviewer agent**: `mcp__flow__handover` for a lite manager's PR still checks the PR and its
+  `## Verification` section, then records the PR as `taken` by the manager (marked `lite`) and starts no
+  reviewer. It answers with the steps to merge the PR itself, in the reviewer's order, for this repo's
+  settings: the full check in a clean worktree on the merged head, the release cut (release on), the push
+  after a fetch (rebase and recheck when the base moved), the release publish, the deploy gates, then
+  `reviewer` action `done` (which fast-forwards the main checkout and deletes the branch) and `clean`. With
+  `push_mode` confirm it saves the batch with `reviewer` action `ready` instead of pushing, and `/flow push`
+  handles it like a reviewer-built batch.
+- **Falls back to the reviewer**: when `merge_mode` is `confirm`, or the PR is risky (migrations, data
+  rewrites, deploy, CI or infra, auth or secrets, deletions), the lite manager hands over with
+  `mode: "confirm"` and a normal reviewer takes it after `/flow approve`. The manager says so in its report.
+- **Tool access**: a lite manager may call `release` (cut and publish), `reviewer` `ready` and `done`, and
+  `deploy` `gate`, `deployed` and `env-applied` for its own lite PRs only. A manager that is not lite and every
+  worker are refused those calls. `deploy` `hold` and `release`, and `push`, stay main's.
+- **Short report**: a few lines: the PR, merged / ready for `/flow push` / handed over, the check result,
+  the released version.
 
 ## Questions and the inbox
 

@@ -258,6 +258,7 @@ export function fill(text: string, s: Settings): string {
     .replaceAll('{{RELEASE_PUBLISH}}', s.release && s.releaseGithub ? `\n   - Only after the push succeeded (never after a rejected or failed one) and only when this batch was released: call \`mcp__flow__release\` with action "publish" and dir = your worktree. It tags v<version>, pushes the tag and creates the GitHub Release from the changelog section. If it answers "Not published: ...", put "github release: failed: <why>" in your report; that never sends a PR back or fails the batch. Call it once; a repeat is a no-op.` : '')
     .replaceAll('{{PUSH_GATE}}', s.pushMode === 'confirm' ? pushGate(s) : '')
     .replaceAll('{{PUSH_RUN}}', s.pushMode === 'confirm' ? pushRun(s) : '')
+    .replaceAll('{{LITE_STEPS}}', liteSteps(s))
     .replaceAll('{{STATE_STEP}}', stateStep(s.stateFile))
     .replaceAll('{{DEPLOY}}', deploySection(s))
     .replaceAll('{{MERGE_METHOD}}', s.mergeMethod)
@@ -469,3 +470,42 @@ Never hold the reviewer for one PR: a PR that waits on a decision or fails on it
 ## After a batch
 
 After every batch, call \`mcp__flow__clean\` with apply true: it removes the merged PRs' worktrees and local branches, or runs dry when cleanup is off and says so. The main checkout is brought up to date by the plugin, not by you: when you call "done" it fast-forwards the main checkout (only when it is clean apart from untracked files, on {{BASE}}, and something was pushed) and the result starts with a line "main checkout fast-forwarded to <sha>" or "main checkout not updated: <reason>". Copy that exact line into your final report. Never run git against the main checkout yourself (worktree isolation refuses it). When nothing was pushed (every PR was sent back), there is no line from "done": say "main checkout not updated: nothing pushed". Then call action "list" again: PRs may have arrived meanwhile. When it is empty, end with a short report: merged, commit, per-target deploy result, after_deploy results and "needs a person" lines, "pending decisions: PR #<n>: …" lines, what you sent back, what the cleanup kept, and the main checkout: "main checkout fast-forwarded to <sha>", or "main checkout not updated: <dirty | on branch X | ff failed | nothing pushed>". The report is your last message, written after your last tool call. The plugin starts a fresh reviewer when the next PR is handed over. The plugin removes your own worktree after you end, so leave it clean: no stray files.`
+
+
+// Lite mode (lite.ts): a manager that merges its own PR instead of handing it to a reviewer agent. The steps are the
+// reviewer's order for one PR, condensed; the handover tool answers with the same text for the repo's settings.
+export function liteSteps(s: Settings): string {
+  const confirmPush = s.pushMode === 'confirm'
+  const steps = [
+    `Build the merge in a clean worktree, not in the main checkout: \`git fetch origin && git worktree add --detach /tmp/lite-<n> origin/${s.base}\`, then in it \`git merge --no-ff <PR head sha> -m "Merge PR #<n>: <title>"\`. A conflict is not yours to edit: \`git merge --abort\` and have a worker rebase the PR's branch (Continue on branch), then hand it over again.`,
+    `Full check in that worktree: ${s.fullCheck || 'none configured (say so in the report, never improvise one)'}. Call \`mcp__flow__test_slot\` action "acquire" (label "full check") before it and "release" after it, also on a failure (result "pass" or "fail", failed_tests on a failure). A failure: do not push; have a worker fix the PR and hand it over again.`,
+  ]
+  if (s.release) {
+    steps.push(`Release: call \`mcp__flow__release\` with dir = that worktree (absolute) and prs = [<n>]. It cuts ${changelogOf(s)} and bumps the version, and tells you the commit command: run it (\`git commit -am "Release x.y.z"\`, plus your attribution lines). Once only: "already released" means the release commit is already in HEAD.`)
+  }
+  if (confirmPush) {
+    steps.push(`Push gate (push_mode is confirm): do not push, publish or deploy. \`SHA=$(git rev-parse HEAD)\`, \`git update-ref refs/flow/push/\${SHA:0:8} HEAD\`, then \`mcp__flow__reviewer\` action "ready" with prs [<n>], sha (the full $SHA), base_sha (the full sha of origin/${s.base} you built on), check (one line: the full check result)${s.release ? ' and version (the released version)' : ''}. Do not call "done": the PR stays "ready" until the user's /flow push. Remove the worktree, then end with the short report: ready, awaits /flow push.`)
+  } else {
+    steps.push(`Push: \`git fetch origin\`; if origin/${s.base} moved past the commit you built on (a reviewer may be merging too), merge it into your worktree and run the full check again. Then \`git push origin HEAD:${s.base}\`, never forced. Rejected as a non-fast-forward: fetch, merge origin/${s.base}, check again, push again. Branch protection or a lasting server error: do not retry for good, report it. Never delete a remote branch yourself; the plugin does when you call "done".`)
+    if (s.release && s.releaseGithub) steps.push(`Only after a successful push of a released PR: \`mcp__flow__release\` action "publish" with dir = that worktree (once; "Not published" goes in the report and fails nothing).`)
+    steps.push(`Deploy: ${deploySection(s)}`)
+    steps.push(`Call \`mcp__flow__reviewer\` action "done" with pr, sha (short) and a one-line report ("full check: <result> | deployed: <per target, or none>${s.release ? ' | released: <version>' : ''}"). Copy the main checkout line it answers into your report. Then remove the worktree and call \`mcp__flow__clean\` with apply true.`)
+  }
+  return steps.map((t, i) => `${i + 1}. ${t}`).join('\n')
+}
+
+// A PR that waits for the user (merge_mode confirm, or judged risky) is not merged by the lite manager.
+export const LITE_CONFIRM_RULE = `Do not merge it yourself when merge_mode is confirm, or when the PR is risky: it adds or changes migrations, rewrites data, touches deploy, CI or infra, touches auth or secrets, or deletes things. Call \`mcp__flow__handover\` with mode "confirm" instead: a reviewer takes it after the user's /flow approve. Say in your report that it was handed over and why.`
+
+export const LITE_MARK = '## LITE MODE'
+
+// Prepended to a lite manager's prompt by the spawn hook. It overrides the long manager prompt where they differ.
+export const LITE_RULES = `${LITE_MARK} (overrides the manager rules below where they differ)
+
+This task runs lite: you and your workers are the whole team, to save tokens. There is no pre-flight and no reviewer agent.
+- Do not call \`mcp__flow__preflight\`; start workers at once. Do not file decisions about worker or manager size (\`mcp__flow__fyi\`); other decisions and questions still go through.
+- Usually one worker is enough. Brief it and review its PR as usual.
+- When its PR is approved, call \`mcp__flow__handover\`. It starts no reviewer: after the PR's ## Verification section passes as usual, it answers with the steps to merge the PR yourself (repeated below). ${LITE_CONFIRM_RULE}
+- To merge it yourself, in this order:
+{{LITE_STEPS}}
+- The final report is a few lines at most: the PR number, merged / ready for /flow push / handed over, the full check result, the released version if any. No recap of the work.`

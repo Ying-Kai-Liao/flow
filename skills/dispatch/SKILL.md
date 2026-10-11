@@ -179,6 +179,13 @@ and hand it over with `mcp__flow__handover`. Never edit the main checkout for it
 small change may instead go to one manager whose prompt has the line `Pre-flight: skip`.
 Neither path is gated by pre-flight.
 
+**Lite mode** supersedes `Pre-flight: skip` for most of these. For a single clear task with no
+fan-out and no risky change (no migrations, data rewrites, deploy/CI/infra, auth or secrets, or
+deletions), start one `flow:manager` whose prompt has the line `Mode: lite` (or the user types
+`/flow lite <task>`, which asks you to do exactly that). A lite manager skips pre-flight and size decisions, and merges its own PR instead of starting a reviewer,
+with a short final report. Use the normal flow for several tasks, tasks that depend on each other,
+or risky changes.
+
 ## Settings
 
 The test command, the full check, the deploy command, the merge method, whether there is a
