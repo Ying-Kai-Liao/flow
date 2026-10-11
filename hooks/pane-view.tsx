@@ -696,7 +696,6 @@ export function inboxView(x: InboxCtx) {
       )}
       {hotRow === undefined && <Text dimColor>Nothing to answer.</Text>}
       {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
-      <Box flexGrow={1} />
       {Input !== undefined && <Input key="inbox-answer" label="answer " placeholder="your own words (r), or what instead (n)" value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
       {nOpts > 0 && <Box flexDirection="row" gap={1}>
         {Array.from({ length: Math.min(nOpts, 8) }, (_, k) => (
@@ -967,7 +966,6 @@ export function cardView(x: InboxCtx & { id: string | null }) {
       {!open && !isFyi(q) && <Text color="success">Answered: {q.answer ?? ''} (by {archiveWho(q)}{q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). Nothing more to answer.</Text>}
       {open && x.id !== null && protectedWhy(q) !== undefined && <Text dimColor>Needs an explicit choice: y never answers it.</Text>}
       {note !== '' && <Text color="suggestion">{note}</Text>}
-      <Box flexGrow={1} />
       {open && Input !== undefined && <Input key="card-answer" label={isFyi(q) ? 'instead ' : 'answer '} placeholder={isFyi(q) ? 'what instead (n, or Enter): undoes the decision' : 'your own words, then Enter'} value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
       {open && (
         <Box flexDirection="row" gap={1}>
