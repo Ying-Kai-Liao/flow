@@ -24,10 +24,10 @@ export type Settings = {
   workerModelSmall?: string
   workerModelNormal?: string
   exploreModel?: string
-  // Optional size classifier (jev.ts): "jev" lets TypeSafe's Jev pick the size at spawn; absent or "off" never touches the network.
-  sizeModel?: string
+  // Optional decision API (decide.ts), used to pick the size at spawn: "jev" or "openai"; absent or "off" never touches the network.
+  decisionApi?: 'off' | 'jev' | 'openai'
   jevModel?: string
-  sizeModelOpenai?: string
+  openaiModel?: string
   conflictModel?: string
   managerModel: string
   managerModelSmall?: string

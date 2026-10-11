@@ -9,8 +9,9 @@ import { baseName } from './cost'
 import { addQuestions, fyiAsked, isFyi } from './inbox'
 import type { Question } from './inbox'
 import { effectiveSize, floorFrom, generation, isSuccessorName, managerDecision, managerModelFor, MANAGER_FYI_WHY, modelFor, parseSize } from './routing'
+import { isSize } from './routing'
 import type { Size, SizeModels } from './routing'
-import { sizeTag } from './jev'
+import type { Decision, Question as DecideQuestion } from './decide'
 import { isFable } from './settings'
 import { autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
 import type { AutoHits, StandingIo } from './standing-run'
@@ -162,10 +163,33 @@ export async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev:
 // escalation leaves the spawn as the manager wrote it.
 export type Routed = { size: Size; reason: string; model: string; escalated: boolean; jev?: string }
 
-// Asks the optional size classifier; only given when size_model is jev.
-// `source` names the classifier in the decision text (jev, openai <model>); no confidence means the provider gave none.
+// The one question sizing asks the decision API (decide.ts): the same criteria the Size line is written by.
+export const SIZE_QUESTION: DecideQuestion = {
+  id: 'size',
+  type: 'choice',
+  instructions: 'How big is this coding task for an agent?',
+  criteria: {
+    small: 'docs, a one-file fix, a rename or a mechanical change',
+    normal: 'an ordinary change in a few files with clear scope',
+    large: 'cross-cutting work, big files, unclear scope, or needs long context',
+  },
+}
+
+// How the decision text says where the size came from; no confidence (an answer without logprobs) leaves the number out.
+export const sizeTag = (source: string, confidence: number | undefined, brief: Size | undefined, size: Size): string =>
+  `${source}${confidence === undefined ? '' : ` ${confidence.toFixed(2)}`}${brief !== undefined && brief !== size ? `; brief said ${brief}` : ''}`
+
+// Asks the decision API for the size; only given when decision_api is not off.
+// `source` names the provider in the decision text (jev, openai <model>).
 export type SizeAnswer = { size: Size; confidence?: number; source?: string } | { note: string }
 export type SizeJev = (prompt: string) => Promise<SizeAnswer>
+
+// Sizing is the decision API's only caller: ask SIZE_QUESTION through `run` (a decide() bound to its settings).
+export const sizeWith = (run: (text: string, q: DecideQuestion) => Promise<Decision>, source: string): SizeJev => async prompt => {
+  const d = await run(prompt, SIZE_QUESTION)
+  if ('note' in d) return d
+  return isSize(d.answer) ? { size: d.answer, ...(d.confidence !== undefined && { confidence: d.confidence }), source } : { note: `${source.split(' ')[0]} unavailable: unknown choice` }
+}
 
 // The brief's size, or Jev's when it answers. A failed Jev leaves the brief's size and a note for the decision text.
 async function declaredWith(e: AgentSpawnInput, jev: SizeJev | undefined): Promise<{ declared: { size: Size; reason: string } | undefined; tag?: string }> {

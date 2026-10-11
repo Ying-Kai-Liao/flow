@@ -22,10 +22,10 @@ import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
 import { backNote } from './routing'
 import { checkAttachments, CONTINUE_LINE, continuingCount, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
+import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
-import { askJev, JEV_ENV_FILE, jevConfig } from './jev'
-import type { FetchLike } from './jev'
-import { askOpenai, openaiConfig, OPENAI_DEFAULT_MODEL } from './openai-size'
+import { decide, sourceOf } from './decide'
+import type { DecideSettings, FetchLike } from './decide'
 import type { Routed, SpawnIo } from './spawn'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
@@ -1066,23 +1066,12 @@ function spawnIoOf($: EngineInterface): SpawnIo {
   }
 }
 
-// The optional size classifier (size_model jev or openai); undefined when off, so nothing touches the network.
-function jevOf($: EngineInterface, settings: { sizeModel?: string; jevModel?: string; sizeModelOpenai?: string }): SizeJev | undefined {
-  if (settings.sizeModel === 'openai') {
-    const model = settings.sizeModelOpenai ?? OPENAI_DEFAULT_MODEL
-    return async prompt => {
-      const g = globalThis as unknown as { process: { env: Record<string, string | undefined> }; fetch: FetchLike }
-      const a = await askOpenai(g.fetch, openaiConfig(g.process.env), model, prompt)
-      return 'note' in a ? a : { ...a, source: `openai ${model}` }
-    }
-  }
-  if (settings.sizeModel !== 'jev') return undefined
-  return async prompt => {
-    const g = globalThis as unknown as { process: { env: Record<string, string | undefined> }; fetch: FetchLike }
-    const home = g.process.env.HOME
-    const file = home === undefined ? undefined : await $.fs.read(`${home}/${JEV_ENV_FILE}`).catch(() => undefined)
-    return askJev(g.fetch, jevConfig(g.process.env, file), settings.jevModel ?? 'jev-latest', prompt)
-  }
+// The decision API for sizing (decision_api jev or openai); undefined when off, so nothing touches the network.
+function jevOf($: EngineInterface, settings: DecideSettings): SizeJev | undefined {
+  if (settings.decisionApi === undefined || settings.decisionApi === 'off') return undefined
+  const g = globalThis as unknown as { process: { env: Record<string, string | undefined> }; fetch: FetchLike }
+  const io = { env: g.process.env, fetch: g.fetch, readFile: (path: string) => $.fs.read(path) }
+  return sizeWith((text, q) => decide(io, settings, text, q), sourceOf(settings))
 }
 
 // Starts a reviewer unless one is live. The reviewer drains every pending handover, then ends;

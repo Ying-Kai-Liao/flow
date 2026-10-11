@@ -1,15 +1,21 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 
-import { askJev, jevBody, jevConfig, jevState, parseEnvFile, parseJev } from '../hooks/jev'
-import type { FetchLike } from '../hooks/jev'
-import { routeManager, routeWorker } from '../hooks/spawn'
+import { decisionText } from '../hooks/decide'
+import type { FetchLike, Question } from '../hooks/decide'
+import { askJev as askJevQ, jevBody as jevBodyQ, jevConfig, parseEnvFile, parseJev as parseJevQ } from '../hooks/jev'
+import { routeManager, routeWorker, SIZE_QUESTION, sizeWith } from '../hooks/spawn'
 import type { SpawnIo } from '../hooks/spawn'
 import type { Ledger } from '../types'
 
 const MODELS = { small: 'haiku', normal: 'sonnet', large: 'sonnet[1m]' }
 const answer = (choice: unknown, confidence: unknown) => ({ answers: { size: { type: 'choice', choice, confidence } } })
 const ok = (json: unknown): FetchLike => async () => ({ ok: true, status: 200, json: async () => json })
+const jevState = decisionText
+const jevBody = (p: string, m: string) => jevBodyQ(p, m, SIZE_QUESTION)
+const parseJev = (j: unknown) => parseJevQ(j, SIZE_QUESTION)
+// The sizing call as spawn makes it: the fixed question through the Jev provider.
+const askJev = (f: FetchLike, c: { key?: string; baseUrl: string }, m: string, p: string, t?: number) => sizeWith((text, q: Question) => askJevQ(f, c, m, text, q, t), 'jev')(p)
 const cfg = { key: 'fake-key', baseUrl: 'https://jev.example' }
 
 function ioWith(ledger: Ledger = {}): SpawnIo {
@@ -35,8 +41,8 @@ test('the state drops the Size line and is capped at 8000 chars', () => {
 })
 
 test('parseJev accepts a confident known choice and rejects the rest', () => {
-  expect(parseJev(answer('small', 0.98))).toEqual({ size: 'small', confidence: 0.98 })
-  expect(parseJev(answer('small', 0.5))).toEqual({ size: 'small', confidence: 0.5 })
+  expect(parseJev(answer('small', 0.98))).toEqual({ answer: 'small', confidence: 0.98 })
+  expect(parseJev(answer('small', 0.5))).toEqual({ answer: 'small', confidence: 0.5 })
   expect(parseJev(answer('small', 0.49))).toEqual({ note: 'jev unavailable: low confidence 0.49' })
   expect(parseJev(answer('huge', 1))).toEqual({ note: 'jev unavailable: unknown choice' })
   expect(parseJev(answer('small', 'high'))).toEqual({ note: 'jev unavailable: bad response' })
@@ -47,7 +53,7 @@ test('parseJev accepts a confident known choice and rejects the rest', () => {
 test('askJev sends the key and body, and names each failure kind without leaking the key', async () => {
   let seen: { url: string; auth: string; body: string } | undefined
   const spy: FetchLike = async (url, init) => { seen = { url, auth: init.headers.Authorization!, body: init.body }; return { ok: true, status: 200, json: async () => answer('normal', 0.9) } }
-  expect(await askJev(spy, cfg, 'jev-latest', 'Size: small\nhello')).toEqual({ size: 'normal', confidence: 0.9 })
+  expect(await askJev(spy, cfg, 'jev-latest', 'Size: small\nhello')).toEqual({ size: 'normal', confidence: 0.9, source: 'jev' })
   expect(seen?.url).toBe('https://jev.example/v1/systemone')
   expect(seen?.auth).toBe('Bearer fake-key')
   expect(JSON.parse(seen!.body).state).toBe('hello')
