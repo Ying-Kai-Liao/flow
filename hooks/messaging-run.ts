@@ -156,9 +156,9 @@ async function linkedEscalation(io: MessagingIo, q: Question, answer: string, by
 }
 
 // The pane's inbox rows, read fresh.
-export async function paneInboxRowsTo(io: MessagingIo, expanded = false): Promise<{ rows: PaneRow[]; now: number }> {
+export async function paneInboxRowsTo(io: MessagingIo, folds: Record<string, boolean> = {}): Promise<{ rows: PaneRow[]; now: number }> {
   const [box, now, rows, seen] = await Promise.all([io.inbox(), io.now(), io.agents(), io.seen()])
-  return { rows: paneRows(box, endedOwners(rows, seen), expanded), now }
+  return { rows: paneRows(box, endedOwners(rows, seen), folds), now }
 }
 
 // A message for the manager that owns a PR: sent when it is alive, else noted for it and sent to main.

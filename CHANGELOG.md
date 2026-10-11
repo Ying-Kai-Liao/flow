@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The pane's inbox draws each owner as a collapsible card like the tree's agents (chevron, round border, "owner · N decisions", one clipped line per item); the routine decisions are a collapsed card; c (or x) and the chevron fold a card, and a pane too short for all cards draws all but the hot one collapsed. The decision card's header is "id · owner · age".
+
 ## [0.6.57] - 2026-10-12
 
 ### Added
