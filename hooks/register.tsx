@@ -60,6 +60,8 @@ import type { ReleaseIo } from './release-run'
 import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, needLines, normText, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
 import type { Forwarded, RouteIo } from './reviewer-route'
 import { reviewerToolRun, startQueue } from './reviewer-run'
+import { reconcileStale } from './stale-handovers'
+import type { StaleIo } from './stale-handovers'
 import type { QueueIo, ReviewerIo } from './reviewer-run'
 import { handoverTool } from './handover-run'
 import type { HandoverIo } from './handover-run'
@@ -335,7 +337,8 @@ const migrationsIoOf = ($: EngineInterface): MigrationsIo => ({
   runCmd: argv => runCmd($, argv),
 })
 
-const statusIoOf = ($: EngineInterface, options: Record<string, unknown>): StatusIo => ({
+const statusIoOf = ($: EngineInterface, options: Record<string, unknown>, base: string): StatusIo => ({
+  reconcile: agentId => reconcileStale(staleIoOf($, base), agentId),
   now: () => $.clock.now(),
   handovers: () => read($, handovers),
   readLog: () => readLog($),
@@ -1240,7 +1243,33 @@ function ensureQueue($: EngineInterface): Promise<string> {
   return run
 }
 
-const reviewerIoOf = ($: EngineInterface): ReviewerIo => ({
+// Reconciling stale handovers: the git and gh calls stay local to this closure set.
+const staleIoOf = ($: EngineInterface, base: string): StaleIo => ({
+  now: () => $.clock.now(),
+  handovers: () => read($, handovers),
+  agents: () => $.agent.list(),
+  isAncestor: async head => {
+    const r = await runCmd($, ['git', 'merge-base', '--is-ancestor', head, `origin/${base}`])
+    return r.exitCode === 0 ? true : r.exitCode === 1 ? false : undefined
+  },
+  mergedPrs: async () => {
+    const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'merged', '--limit', '50', '--json', 'number,mergeCommit'])
+    if (r.exitCode !== 0) return undefined
+    try {
+      return new Map((JSON.parse(r.stdout) as { number: number; mergeCommit?: { oid?: string } | null }[]).map(p => [p.number, p.mergeCommit?.oid ?? '']))
+    } catch { return undefined }
+  },
+  save: async h => {
+    await update($, handovers, hs => ({ ...hs, [String(h.pr)]: h }))
+    await best($, 'saving a handover', async () => {
+      await saveHandover($, h)
+      if (h.status === 'done') await appendLog($, { event: 'done', owner: h.reportTo, pr: h.pr, branch: h.branch, text: h.report })
+    })
+  },
+})
+
+const reviewerIoOf = ($: EngineInterface, base: string): ReviewerIo => ({
+  reconcile: agentId => reconcileStale(staleIoOf($, base), agentId),
   run: argv => $.process.run(argv),
   handovers: () => read($, handovers),
   putHandover: async (pr, h) => { await update($, handovers, hs => ({ ...hs, [pr]: h })) },
@@ -1994,7 +2023,7 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'mcp__flow__release' }, ($, e) => releaseTool(releaseIoOf($), settings, e as unknown as Record<string, unknown>))
 
-  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, ($, e) => reviewerToolRun(reviewerIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId))
+  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, ($, e) => reviewerToolRun(reviewerIoOf($, settings.base), settings, e as unknown as Record<string, unknown>, e.agentId))
 
   on('tool.call', { tool: 'mcp__flow__plan' }, ($, e) => planTool(planIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId))
 
@@ -2087,7 +2116,7 @@ export const register: Register = (on, options) => {
     return { result: 'Unknown action: use list, push, send-back or drop.' }
   })
 
-  on('tool.call', { tool: 'mcp__flow__status' }, ($, e) => statusTool(statusIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__status' }, ($, e) => statusTool(statusIoOf($, options, settings.base), settings, e as unknown as Record<string, unknown>, e.agentId))
   // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
   // Re-armed when usage drops back below the threshold (after a /compact).
   const mainWarn = { warned: false }
