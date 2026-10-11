@@ -11,6 +11,8 @@ export type StaleIo = {
   isAncestor: (head: string) => Promise<boolean | undefined>
   // PR number -> merge commit ('' when unknown) for the recent merged PRs; undefined when gh failed.
   mergedPrs: () => Promise<Map<number, string> | undefined>
+  // PR numbers closed without a merge on GitHub (gh's closed state); undefined when gh failed.
+  closedPrs: () => Promise<Set<number> | undefined>
   // Saves the handover, mirrors it and appends the log event.
   save: (h: Handover) => Promise<void>
 }
@@ -18,15 +20,16 @@ export type StaleIo = {
 const MIN_GAP_MS = 60_000
 let lastFetchAt = -Infinity
 let lastMerged: Map<number, string> | undefined
+let lastClosed: Set<number> | undefined
 
-export const resetStaleThrottle = (): void => { lastFetchAt = -Infinity; lastMerged = undefined }
+export const resetStaleThrottle = (): void => { lastFetchAt = -Infinity; lastMerged = undefined; lastClosed = undefined }
 
-// Pending/taken handovers whose PR was merged by someone else become done; a taken one whose reviewer
+// Pending/awaiting/taken handovers whose PR was merged by someone else become done, and those whose PR was closed on GitHub become returned; a taken one whose reviewer
 // died goes back to pending. Never throws: on a gh or git failure the records stay as they are.
 // A taken record is freed only when no reviewer is live at all: the caller may be mid-work on its own.
 export async function reconcileStale(io: StaleIo): Promise<void> {
   try {
-    const open = Object.values(await io.handovers()).filter(h => h.status === 'pending' || h.status === 'taken')
+    const open = Object.values(await io.handovers()).filter(h => h.status === 'pending' || h.status === 'taken' || h.status === 'awaiting')
     if (open.length === 0) return
     const merged = new Map<number, string>()
     const rest: Handover[] = []
@@ -39,6 +42,7 @@ export async function reconcileStale(io: StaleIo): Promise<void> {
       if (now - lastFetchAt > MIN_GAP_MS) {
         lastFetchAt = now
         lastMerged = await io.mergedPrs()
+        lastClosed = await io.closedPrs()
       }
       for (const h of rest) {
         const sha = lastMerged?.get(h.pr)
@@ -49,10 +53,12 @@ export async function reconcileStale(io: StaleIo): Promise<void> {
     for (const h of open) {
       // Re-read: a concurrent call or the reviewer may have moved it on.
       const cur = (await io.handovers())[String(h.pr)]
-      if (cur === undefined || (cur.status !== 'pending' && cur.status !== 'taken')) continue
+      if (cur === undefined || (cur.status !== 'pending' && cur.status !== 'taken' && cur.status !== 'awaiting')) continue
       const sha = merged.get(h.pr)
       if (sha !== undefined) {
         await io.save({ ...cur, status: 'done', sha, report: `merged elsewhere (${sha})` })
+      } else if (lastClosed?.has(h.pr) === true) {
+        await io.save({ ...cur, status: 'returned', reason: 'PR closed on GitHub' })
       } else if (cur.status === 'taken') {
         reviewerAlive ??= (await io.agents()).some(a => isReviewer(a.type) && (LIVE.has(a.status) || a.status === 'idle'))
         if (!reviewerAlive) await io.save({ ...cur, status: 'pending' })

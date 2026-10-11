@@ -677,7 +677,7 @@ export function treeView(c: TreeCtx) {
       {breakerNote !== undefined && <Text color="warning" wrap="truncate-end">{'    '}⚠ {breakerNote}</Text>}
       {queueOpen && prs.slice(0, 5).map(ho => (
         <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} color={ho.status === 'awaiting' || ho.status === 'ready' ? 'warning' : undefined} wrap="truncate-end">
-          {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}` : ho.status === 'ready' ? 'ready, awaiting your push: /flow push' : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
+          {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}, or /flow reject ${ho.pr}` : ho.status === 'ready' ? 'ready, awaiting your push: /flow push' : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
         </Text>
       ))}
       {deployLines.map(l => <Text key={`deploy-${l}`} dimColor wrap="truncate-end">{'  '}⏸ {l}</Text>)}

@@ -53,6 +53,9 @@ export type CommandIo = {
   holdTarget: (name: string, until: Hold['until'], by: string, reason: string | undefined) => Promise<string>
   releaseTarget: (name: string) => Promise<string>
   refreshBehind: () => Promise<void>
+  closeReturnedEnv: (h: Handover) => Promise<void>
+  settleBatch: () => Promise<void>
+  tellManager: (name: string, text: string) => Promise<void>
 }
 
 export async function flowCommand(
@@ -197,6 +200,32 @@ export async function flowCommand(
       await io.refresh()
       return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
     }
+    if (words[0] === 'reject' || words[0] === 'drop') {
+      // Only a person's command turns a handover down; the GitHub PR and branch are left alone.
+      const n = Number((words[1] ?? '').replace(/^#/, ''))
+      if (!Number.isInteger(n) || n <= 0) return { text: 'Usage: /flow reject <pr> [reason] (alias: /flow drop)' }
+      const h0 = (await io.handovers())[String(n)]
+      if (h0 === undefined) return { text: `No handover for PR #${n}.` }
+      if (h0.status !== 'awaiting' && h0.status !== 'pending') {
+        return { text: `PR #${n} is ${h0.status}, not awaiting approval or pending.${h0.status === 'taken' || h0.status === 'ready' ? ' The reviewer owns it now.' : ''}` }
+      }
+      // Re-read just before writing: the reviewer or the stale sweep may have moved it on.
+      const h = (await io.handovers())[String(n)]
+      if (h === undefined || (h.status !== 'awaiting' && h.status !== 'pending')) return { text: `PR #${n} is ${h?.status ?? 'gone'}, not awaiting approval or pending.` }
+      const why = words.slice(2).join(' ')
+      const reason = `declined by the user${why === '' ? '' : `: ${why}`}`
+      const next: Handover = { ...h, status: 'returned', reason }
+      await io.putHandover(String(n), next)
+      await io.best('saving a handover', async () => {
+        await io.saveHandover(next)
+        await io.appendLog({ event: 'back', owner: next.reportTo, pr: n, branch: next.branch, text: reason })
+      })
+      await io.closeReturnedEnv(next)
+      await io.settleBatch()
+      void io.toast(`PR #${n} returned: ${reason}`)
+      await io.tellManager(next.reportTo, `flow: PR #${n} was declined by the user${why === '' ? '' : `: ${why}`}. Its GitHub PR and branch are untouched. Decide what to do with it, and hand it over again when it is ready.`)
+      return { text: `Rejected PR #${n} (${reason}). Its GitHub PR and branch are untouched.` }
+    }
     if (words[0] === 'push') {
       // Only a person's command releases a ready batch (or main, on the user's word, with the push tool).
       const usage = 'Usage: /flow push (push the ready batch), /flow push back <pr> (send one PR back), /flow push drop (return them all)'
@@ -216,7 +245,7 @@ export async function flowCommand(
       await io.refreshBehind()
       return { text }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and the decisions agents made, /flow ok keeps decisions, /flow no <id> undoes one, /flow answer <id> <choice> answers a question, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and the decisions agents made, /flow ok keeps decisions, /flow no <id> undoes one, /flow answer <id> <choice> answers a question, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (or /flow drop) turns a handover down, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
     await io.open()
     return { text: 'Flow pane opened.' }
 }
