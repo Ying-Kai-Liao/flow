@@ -180,15 +180,18 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   const q = findItem(inbox, wanted)
   const id = q?.id ?? wanted
   if (q === undefined) return { kind: 'unknown' }
-  if (q.state === 'answered') return { kind: 'answered', q }
+  // A decision the decision API kept stays undoable: any answer but Keep takes it back. Keep itself changes nothing.
+  const retake = q.state === 'answered' && q.auto !== undefined && isFyi(q) && choice !== null && parseChoice(q.options, choice).text !== KEEP
+  if (q.state === 'answered' && !retake) return { kind: 'answered', q }
   // Main may also answer any decision: the user overrides what a manager has not looked at.
   if (rule === undefined && !user && !isAddressee(q, by) && !(isFyi(q) && by === 'main') && !(q.viaQ !== undefined && by === 'main')) return { kind: 'refused', q }
   const answer = choice === null ? q.default : parseChoice(q.options, choice).text
   if (answer === '') return { kind: 'empty', q }
   // Answering with the default's text counts as the default, however it was typed.
   const isDefault = answer === q.default
+  const { auto: _kept, ...rest } = q
   const done: Question = {
-    ...q, state: 'answered', answer, answeredBy: by, answeredAt: now, delivered: rule !== undefined,
+    ...rest, state: 'answered', answer, answeredBy: by, answeredAt: now, delivered: rule !== undefined,
     ...(rule !== undefined ? { rule } : {}),
   }
   return { kind: 'ok', inbox: { ...inbox, items: inbox.items.map(x => (x.id === id ? done : x)) }, q: done, answer, isDefault }
@@ -247,6 +250,11 @@ const DAY = 86_400_000
 export const recentAuto = (inbox: Inbox | undefined, now: number): Question[] =>
   (inbox?.items ?? []).filter(q => q.state === 'answered' && q.rule !== undefined && now - (q.answeredAt ?? 0) <= DAY)
     .sort((a, b) => (b.answeredAt ?? 0) - (a.answeredAt ?? 0)).slice(0, 10)
+
+// The decisions the decision API kept in the last 24 h and nobody has answered since, newest first.
+export const recentKept = (inbox: Inbox | undefined, now: number): Question[] =>
+  (inbox?.items ?? []).filter(q => q.state === 'answered' && q.auto !== undefined && now - (q.answeredAt ?? 0) <= DAY)
+    .sort((a, b) => (b.answeredAt ?? 0) - (a.answeredAt ?? 0))
 
 // --- The person's view (/flow inbox) and the commands behind it (/flow ok, no, answer). ---
 // Everything that decides what is grouped, collapsed or refused is a pure function here, so the Flow pane can reuse it.
@@ -442,9 +450,15 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?:
     `Auto-answered (last 24 h, ${auto.length} shown; to revoke a rule, ask main to remove it):`,
     ...auto.map(q => `  ${q.id} ${q.owner}: ${clip(q.question)} -> ${clip(q.answer ?? '', 60)} (rule ${q.rule ?? '?'})`),
   ]
+  const kept = recentKept(inbox, now)
+  const keptLines = kept.length === 0 ? [] : [
+    '',
+    `Kept by the decision API (last 24 h, ${kept.length}; undo: /flow no <id> <what instead>):`,
+    ...kept.slice(0, 10).map(q => `  ${q.id} ${q.owner}: ${clip(q.question)} -> kept by ${autoWho(q)}`),
+  ]
   const archived = archiveOf(inbox).length
   const archiveLine = archived === 0 ? [] : [`Archive: ${plural(archived, 'answered item')} (/flow inbox archive).`]
-  if (open.length === 0 && allDecisions.length === 0) return ['No open questions.', ...archiveLine, ...autoLines].join('\n')
+  if (open.length === 0 && allDecisions.length === 0) return ['No open questions.', ...archiveLine, ...autoLines, ...keptLines].join('\n')
   const lines = [summary(inbox)]
   if (open.length > 0) {
     lines.push('', 'Questions')
@@ -461,7 +475,7 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?:
     ...(open.length > 0 ? ['Answer a question: /flow answer q1 <letter or your own words>; its default: /flow ok q1 (not for NEEDS YOU items).'] : []),
   ]
   lines.push('', ...cmds, ...archiveLine)
-  return [...lines, ...autoLines].join('\n')
+  return [...lines, ...autoLines, ...keptLines].join('\n')
 }
 
 // The archive: answered questions and kept or undone decisions, newest answer first.
@@ -470,19 +484,23 @@ export const archiveOf = (inbox: Inbox | undefined): Question[] =>
 
 export const ARCHIVE_SHOWN = 50
 
-export const archiveWho = (q: Question): string => (q.rule !== undefined ? `standing answer ${q.rule}` : q.answeredBy ?? '?')
+export const archiveWho = (q: Question): string => (q.rule !== undefined ? `standing answer ${q.rule}` : q.auto !== undefined ? autoWho(q) : q.answeredBy ?? '?')
+// "jev (0.93)": the decision API that kept it and how sure it was.
+export const autoWho = (q: Question): string => `${q.auto?.by ?? '?'} (${(q.auto?.confidence ?? 0).toFixed(2)})`
 
 // One archived item as a line: id, answer, who and when, then the question.
 // A decision's answer read as a statement: Keep (or its default) is kept, anything else is what to do instead.
 export const decisionOutcome = (q: Question): string => {
   const a = (q.answer ?? '').trim()
-  if (a === '' || a.toLowerCase() === KEEP.toLowerCase() || a === q.default) return 'Kept'
+  if (a === '' || a.toLowerCase() === KEEP.toLowerCase() || a === q.default) return q.auto !== undefined ? `Kept by ${autoWho(q)}` : 'Kept'
   return a.toLowerCase() === OVERTURN.toLowerCase() ? 'Undone' : `Undone: ${a}`
 }
 export const decisionOutcomeText = (q: Question, now: number): string =>
+  q.auto !== undefined ? `${decisionOutcome(q)}${q.answeredAt === undefined ? '' : ` (${age(now - q.answeredAt)} ago)`}` :
   `${decisionOutcome(q)} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`
 
 export const archiveRowText = (q: Question, now: number): string =>
+  isFyi(q) && q.auto !== undefined ? `${q.id} ${clip(decisionOutcome(q), 40)} (${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(q.question, 80)}` :
   isFyi(q) ? `${q.id} ${clip(decisionOutcome(q), 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(q.question, 80)}` :
   `${q.id} ${clip(q.answer ?? '', 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(q.question, 80)}`
 
@@ -527,13 +545,17 @@ export function inboxHead(inbox: Inbox | undefined, now = Date.now()): string[] 
   const fyi = fyisOf(inbox).length
   const auto = recentAuto(inbox, now).length
   const autoLine = auto === 0 ? [] : [`Inbox: ${auto} auto-answered by standing answers in the last 24 h (/flow inbox).`]
+  const kept = recentKept(inbox, now)
+  const keptBy = [...new Set(kept.map(q => q.auto?.by ?? '?'))].join(', ')
+  const keptLine = kept.length === 0 ? [] : [`Inbox: ${plural(kept.length, 'decision')} kept by ${keptBy} (undo with mcp__flow__answer).`]
   const fyiLine = fyi === 0 ? [] : [`Inbox: ${plural(fyi, 'decision')} (made by agents, non-blocking; /flow inbox lists them, mcp__flow__answer defaults true keeps them).`]
-  if (open.length === 0) return [...fyiLine, ...autoLine]
+  if (open.length === 0) return [...fyiLine, ...keptLine, ...autoLine]
   const blocking = open.filter(q => q.blocking).length
   return [
     `Inbox: ${open.length} open${blocking ? `, ${blocking} blocking` : ''} (/flow inbox shows them with options):`,
     ...open.map(q => `  ${q.id} ${q.blocking ? 'BLOCKING ' : ''}${q.owner}: ${q.question.slice(0, 140)}`),
     ...fyiLine,
+    ...keptLine,
     ...autoLine,
   ]
 }

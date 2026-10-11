@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `decide_inbox`: with `decision_api` jev or openai, a recorded decision (`mcp__flow__fyi`) the provider confidently calls routine is kept by flow, shown as "kept by jev (0.93)" in the inbox, status and archive, and still undoable with `mcp__flow__answer`. Default off
+- `decide_handoff`: at a worker's handoff the provider's confident lean (split or continue) is sent to the manager as advice, or appended to the `max_continues` split message; `max_continues` itself is unchanged. Default off
+- `decide_min_confidence` (default 0.8): the shared threshold for both; every call is logged as a `decide` event in `log.jsonl`
+
 ## [0.6.56] - 2026-10-12
 
 ### Changed

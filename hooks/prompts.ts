@@ -33,6 +33,10 @@ export type Settings = {
   jevBaseUrl?: string
   openaiApiKey?: string
   openaiBaseUrl?: string
+  // The other uses of the decision API (decide-use.ts), each off unless its toggle is on; decideMinConfidence is their shared threshold.
+  decideInbox?: boolean
+  decideHandoff?: boolean
+  decideMinConfidence?: number
   conflictModel?: string
   managerModel: string
   managerModelSmall?: string

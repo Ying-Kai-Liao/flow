@@ -2,6 +2,9 @@
 // register.tsx builds an InboxIo of closures (inboxIoOf) and the atom-backed helpers reach this module that way.
 import type { AgentRow } from '../types'
 import { cardsNotice, cardsOn } from './askcards'
+import type { DecideIo } from './decide'
+import { autoKeepFyis } from './decide-use'
+import type { DecideUseSettings } from './decide-use'
 import { MANAGER } from './core'
 import type { DeliverOptions } from './deliver'
 import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, linkEscalations, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
@@ -24,6 +27,8 @@ export type InboxIo = {
   preflightTick: (rows: AgentRow[]) => Promise<void>
   // Fire-and-forget: submit the text as a prompt on the next tick.
   submitLater: (text: string) => void
+  // The decision API's fetch and timer (decide.ts), for decide_inbox.
+  net: DecideIo
 }
 
 export async function askTool(io: InboxIo, options: Record<string, unknown>, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
@@ -79,7 +84,7 @@ export async function askTool(io: InboxIo, options: Record<string, unknown>, inp
   }
 }
 
-export async function fyiTool(io: InboxIo, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
+export async function fyiTool(io: InboxIo, input: Record<string, unknown>, agentId: string | undefined, decideSettings: DecideUseSettings = {}): Promise<{ result: string }> {
   if (agentId === undefined) return { result: 'Refused: main cannot record a decision; just decide.' }
   const parsed = parseFyi(input)
   if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error}` }
@@ -95,6 +100,8 @@ export async function fyiTool(io: InboxIo, input: Record<string, unknown>, agent
   })
   // Quiet by design: a log line, no message or toast.
   await io.standing.best('logging a decision', () => io.standing.appendLog({ event: 'fyi', owner: noteKey(name), agent: name, text: added.map(a => a.q.id).join(' ') }))
+  // decide_inbox: after recording, so the result below is the same either way; at most the 5 s timeout of the call.
+  await autoKeepFyis(io.net, io.standing, decideSettings, added.filter(a => a.fresh).map(a => a.q.id)).catch(() => undefined)
   return { result: `Recorded ${added.map(a => a.q.id).join(', ')}. Carry on; you get a message only if it is undone.` }
 }
 
