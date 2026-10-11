@@ -1,11 +1,14 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
-import { askBright, cols } from '../hooks/pane'
+import { askBright } from '../hooks/pane'
 import type { TestBody } from 'claude-code/testing'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
+
+// Every glyph on the pane is one column, so a line's width is its length in characters.
+const cols = (s: string): number => [...s].length
 
 const DIR = '/r/.git/flow'
 const ok = (stdout = '') => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -89,7 +92,7 @@ test('the inbox view opens with i, lists blocking first with the addressee, move
   await ask($, 'm1', [{ ...SOFT, question: 'Ship it?' }])
   await fyi($, 'w1', [F(1)])
   const ui = await mount($)
-  expect(await ui.find({ text: /📬 \? 3 questions \(1 blocking\) · 1 decision · i/ })).toBeDefined()
+  expect(await ui.find({ text: /▤ \? 3 questions \(1 blocking\) · 1 decision · i/ })).toBeDefined()
   await open(ui)
   expect(await ui.find({ text: /Inbox/ })).toBeDefined()
   // Blocking first; the worker's question is for its manager.
@@ -347,7 +350,7 @@ test('the tree lines are buttons that open the card; Back returns to the tree; d
   const ui = await mount($)
   // Decisions get no tree rows; they fold into the one Inbox line.
   expect(await ui.find({ text: /d1 decision/ })).toBeUndefined()
-  expect(await ui.find({ text: /📬 \? 1 question \(1 blocking\) · 2 decisions · i/ })).toBeDefined()
+  expect(await ui.find({ text: /▤ \? 1 question \(1 blocking\) · 2 decisions · i/ })).toBeDefined()
   await ui.press({ key: 'open-q1' })
   expect(await ui.find({ text: /q1 · csv-worker · / })).toBeDefined()
   expect(await ui.find({ text: /^question/ })).toBeDefined()
@@ -361,7 +364,7 @@ test('a tree with only decisions shows just the Inbox line, singular and plural'
   world(on)
   await fyi($, 'm1', [F(1)])
   const ui = await mount($)
-  expect(await has(ui, /📬 1 decision · i/)).toBe(true)
+  expect(await has(ui, /▤ 1 decision · i/)).toBe(true)
   expect(await ui.find({ text: /question/ })).toBeUndefined()
   expect(await ui.find({ text: /d1 decision/ })).toBeUndefined()
   await ui.unmount()
@@ -594,7 +597,7 @@ test('with only a folded group the hot row shows its hint in the nav row; the ke
   await open(ui)
   const lines = linesOf((await ui.drawn()) as El)
   expect(lines.length).toBeLessThanOrEqual(20)
-  expect(lines.some(l => /j next/.test(l) && /y keeps all 3 · c expands/.test(l))).toBe(true)
+  expect(lines.some(l => /j next/.test(l) && /c expand · y keeps all 3/.test(l))).toBe(true)
   expect(lines.some(l => /y keep/.test(l) && /i back/.test(l))).toBe(true)
   await ui.unmount()
 })
@@ -602,20 +605,20 @@ test('with only a folded group the hot row shows its hint in the nav row; the ke
 // The tree's top lines at 60 columns, as drawn until the main card.
 const topOf = (lines: string[]) => lines.slice(0, lines.findIndex(l => /^╭/.test(l)))
 
-test('the tree\'s top lines carry icons, fit 60 columns counting emoji as 2, and the footer stays', async ($, on) => {
+test('the tree\'s top lines carry icons, fit 60 columns counting characters, and the footer stays', async ($, on) => {
   await cardsWorld($, on)
   const ui = await mount($, 30, 60)
   const lines = await rendered(ui)
   const top = topOf(lines)
-  expect(top[0]).toMatch(/^👥 3 agents · 3 live/)
-  expect(top.some(l => /^📬 \? 1 question · 11 decisions · i$/.test(l))).toBe(true)
+  expect(top[0]).toMatch(/^≡ 3 agents · 3 live/)
+  expect(top.some(l => /^▤ \? 1 question · 11 decisions · i$/.test(l))).toBe(true)
   for (const l of lines) expect(cols(l)).toBeLessThanOrEqual(60)
   expect(lines.some(l => /i inbox/.test(l))).toBe(true)
-  expect(cols('📬 ?')).toBe(4)
+  expect(cols('▤ ?')).toBe(3)
   await ui.unmount()
 })
 
-test('the inbox icon is the open mailbox with something open and the empty one without', async ($, on) => {
+test('the inbox icon is warning-coloured text with something open', async ($, on) => {
   world(on)
   const ui = await mount($, 30, 60)
   await ui.unmount()
@@ -623,19 +626,19 @@ test('the inbox icon is the open mailbox with something open and the empty one w
   const only = await mount($, 30, 60)
   await open(only)
   const lines = await rendered(only)
-  expect(lines[0]).toMatch(/^📬 Inbox 0 questions, 1 decision$/)
+  expect(lines[0]).toMatch(/^▤ Inbox 0 questions, 1 decision$/)
   expect(lines[0]).not.toMatch(/\?/)
   await only.unmount()
 })
 
-test('an empty inbox shows the empty mailbox and no question mark', async ($, on) => {
+test('an empty inbox shows the dim inbox glyph and no question mark', async ($, on) => {
   world(on)
   await fyi($, 'm1', [F(1)])
   await cmd($, 'ok')
   const ui = await mount($, 30, 60)
   await open(ui)
   const lines = await rendered(ui)
-  expect(lines[0]).toMatch(/^📭 Inbox Nothing open\.$/)
+  expect(lines[0]).toMatch(/^▤ Inbox Nothing open\.$/)
   await ui.unmount()
 })
 
@@ -675,7 +678,18 @@ test('with no question waiting (decisions only) there is no question mark and th
   const a = await line()
   await w.clock.advance(1000)
   await $.tool.call({ tool: 'mcp__flow__status' } as never)
-  expect(a).toEqual(['📬 1 decision · i'])
+  expect(a).toEqual(['▤ 1 decision · i'])
   expect(await line()).toEqual(a)
+  await ui.unmount()
+})
+
+// The render helper stacked a Box that names no direction, which put the chevron above the agent. Ink
+// defaults to a row, so on screen it was a helper artifact; naming the row keeps both in agreement.
+test('a collapsed agent\'s chevron and its title share one line', async ($, on) => {
+  await cardsWorld($, on)
+  const ui = await mount($, 30, 60)
+  const lines = await rendered(ui)
+  expect(lines.some(l => /^▸ ● ctx-init-tip  manager$/.test(l))).toBe(true)
+  expect(lines.some(l => /^▸ *$/.test(l))).toBe(false)
   await ui.unmount()
 })

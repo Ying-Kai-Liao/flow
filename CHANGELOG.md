@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A logo: an f drawn as three parallel lanes with one green crossbar. It is the new plugin icon and appears at the top of the README. Logo files, a social preview image and usage notes are in `docs/brand/`.
 
+### Changed
+
+- The pane's status-line and inbox icons are plain one-column text glyphs (≡ agents, ▤ inbox, ☰ checks, ⌫ leftovers) coloured by the theme, not emoji. A collapsed inbox card's hint reads "c expand · y keeps all 3".
+
 ## [0.6.66] - 2026-10-12
 
 ### Fixed

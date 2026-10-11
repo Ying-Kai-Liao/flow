@@ -132,7 +132,7 @@ export function card(c: CardCtx, a: AgentRow, depth: number, full: boolean, bord
     ? <Text color={asks ? 'warning' : undefined} dimColor={!asks}>{doing.slice(0, 60)}</Text>
     : <Text dimColor>{a.description.slice(0, 60)}</Text>
   return (
-    <Box key={`row-${a.id}`} paddingLeft={bordered ? depth * 2 : depth * 2 + 1}>
+    <Box key={`row-${a.id}`} flexDirection="row" paddingLeft={bordered ? depth * 2 : depth * 2 + 1}>
       {collapsed !== undefined && (
         <Button key={`fold-${a.id}`} plain dimColor={dim} onPress={() => c.toggleFold(a, collapsed)}>{collapsed ? '▸ ' : '▾ '}</Button>
       )}
@@ -625,7 +625,7 @@ export function inboxView(x: InboxCtx) {
   return (
     <Box flexDirection="column" height={rows}>
       <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
-      <Text bold>{irows.length === 0 ? ICON.inboxEmpty : ICON.inboxOpen} Inbox{nQ > 0 && <Text> {askMark(Text, x.now)}</Text>} <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
+      <Text bold><Text color={irows.length === 0 ? undefined : 'warning'} dimColor={irows.length === 0}>{ICON.inbox}</Text> Inbox{nQ > 0 && <Text> {askMark(Text, x.now)}</Text>} <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
       {iAbove > 0 && <Text dimColor>  ↑ {iAbove} above</Text>}
       {sv.rows.map(sg => {
         const g = sg.g
@@ -712,10 +712,15 @@ export function inboxView(x: InboxCtx) {
       <Box flexDirection="row" gap={2}>
         <Button key="inbox-next" plain dimColor hotkey="j" onPress={move(1)}>j next</Button>
         <Button key="inbox-prev" plain dimColor hotkey="k" onPress={move(-1)}>k prev</Button>
-        {hasGroup && <Button key="inbox-fold" plain dimColor hotkey="c" onPress={foldHot}>{hotRow?.group?.expanded ? 'c collapse' : 'c expand'}</Button>}
+        {/* The hint joins the c button, so a hot collapsed card reads "c expand · y keeps all 3". */}
+        {hasGroup && (
+          <Box flexDirection="row" gap={1}>
+            <Button key="inbox-fold" plain dimColor hotkey="c" onPress={foldHot}>{hotRow?.group?.expanded ? 'c collapse' : 'c expand'}</Button>
+            {hotRow?.q === undefined && hotRow?.group !== undefined && <Text dimColor>{fit(`· ${groupHint(hotRow.group)}`, Math.max(8, W - 32))}</Text>}
+          </Box>
+        )}
         {/* x stays as an alias of c, unlabelled. */}
         {hasGroup && <Button key="inbox-fold-x" plain hotkey="x" onPress={foldHot}>{''}</Button>}
-        {hotRow?.q === undefined && hotRow?.group !== undefined && <Text dimColor>{fit(groupHint(hotRow.group), Math.max(8, W - 32))}</Text>}
       </Box>
       <Box flexDirection="row" gap={2}>
         <Button key="inbox-yes" plain dimColor hotkey="y" onPress={takeDefault}>{hq !== undefined && !isFyi(hq) ? 'y default' : 'y keep'}</Button>
@@ -797,7 +802,7 @@ export function treeView(c: TreeCtx) {
       {c.openItems.length > 5 && <Text dimColor>and {c.openItems.length - 5} more</Text>}
       {(openQs.length > 0 || fyiCount > 0) && (
         <Text dimColor wrap="truncate-end">
-          {ICON.inboxOpen} {openQs.length > 0 && askMark(Text, c.t)}{openQs.length > 0 && ' '}{[
+          <Text color="warning" dimColor={false}>{ICON.inbox}</Text> {openQs.length > 0 && askMark(Text, c.t)}{openQs.length > 0 && ' '}{[
             ...(openQs.length > 0 ? [`${openQs.length} question${openQs.length === 1 ? '' : 's'}${openQs.some(q => q.blocking) ? ` (${openQs.filter(q => q.blocking).length} blocking)` : ''}`] : []),
             ...(fyiCount > 0 ? [`${fyiCount} decision${fyiCount === 1 ? '' : 's'}`] : []),
           ].join(' · ')} · i
