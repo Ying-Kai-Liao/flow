@@ -39,10 +39,10 @@ The ones most repos set. Everything else is under Advanced settings.
 | `reviewer_model` | `sonnet` | `/config`, file | the reviewer |
 | `conflict_model` | `opus` | `/config`, file | the sub-agent the reviewer starts for mechanical conflicts in code files and for fixes to PRs that break only in combination |
 | `explore_model` | `haiku` | `/config`, file | an Explore sub-agent that a flow agent (manager, worker, reviewer) starts without its own model. Main's own Explore spawns are untouched |
-| `decision_api` | unset (`off`) | `/config`, file | `off`: the brief's `Size:` line picks the size. `jev`: TypeSafe's Jev decides it at spawn. `openai`: an OpenAI chat model decides it. The brief text is sent to the provider (see Model routing) |
+| `decision_api` | `auto` (unset) | `/config`, file | `auto`: not set, `size_model` applies if set, else `off`. `off`: the brief's `Size:` line picks the size. `jev`: TypeSafe's Jev decides it at spawn. `openai`: an OpenAI chat model decides it. The brief text is sent to the provider (see Model routing) |
 | `jev_model` | `jev-latest` | `/config`, file | the Jev model name used when `decision_api` is `jev` |
 | `openai_model` | `gpt-4.1-mini` | `/config`, file | the OpenAI chat model used when `decision_api` is `openai`; it must support structured outputs and logprobs (not a gpt-5 or other reasoning model) |
-| `size_model` | `off` | `/config`, file | deprecated alias of `decision_api` (`jev` or `openai`), read only while `decision_api` is unset; an explicit `decision_api`, `off` included, always wins |
+| `size_model` | `off` | `/config`, file | deprecated alias of `decision_api` (`jev` or `openai`), read only while `decision_api` is `auto` or unset; an explicit `decision_api`, `off` included, always wins |
 | `manager_model_small` | `sonnet` | `/config`, file | managers whose prompt says `Size: small` (see Model routing) |
 | `worker_model_small` | `haiku` | `/config`, file | workers whose brief says `Size: small` |
 | `worker_model_normal` | `sonnet` | `/config`, file | workers whose brief says `Size: normal` |
