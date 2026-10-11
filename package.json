@@ -1,6 +1,7 @@
 {
   "name": "flow",
   "private": true,
+  "license": "MIT",
   "description": "Development tooling for the flow Claude Code plugin; the plugin itself has no runtime dependencies.",
   "scripts": {
     "typecheck": "sh scripts/typecheck.sh",

@@ -5,6 +5,10 @@
   "author": {
     "name": "Ying-Kai Liao"
   },
+  "homepage": "https://github.com/Ying-Kai-Liao/flow",
+  "repository": "https://github.com/Ying-Kai-Liao/flow",
+  "license": "MIT",
+  "keywords": ["orchestration", "agents", "worktrees", "parallel", "pull-requests", "code-review", "deploy"],
   "types": "./types/index.d.ts",
   "userConfig": {
     "test_command": {
