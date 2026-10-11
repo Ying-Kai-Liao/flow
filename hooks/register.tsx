@@ -64,6 +64,7 @@ import type { BreakerIo, QueueIo, ReviewerIo } from './reviewer-run'
 import { breakerLine, EMPTY_BREAKER, normalizeBreaker, REVIEWER_KIND } from './reviewer-breaker'
 import { handoverTool } from './handover-run'
 import type { HandoverIo } from './handover-run'
+import { answerQuestionTo, noteText, paneInboxRowsTo, sizeBackNoteTo, tellMainTo, tellManagerTo, type MessagingIo } from './messaging-run'
 import { askTool, answerTool, fyiTool, preflightTool } from './inbox-run'
 import type { InboxIo } from './inbox-run'
 import { checkTool } from './checks-run'
@@ -791,66 +792,32 @@ async function recordManager($: EngineInterface, name: string, prompt: string): 
 
 const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOString().slice(0, 10)
 
-// The one way a question gets answered: marks it, tells the asker when that is needed, notes the decision.
-// choice null takes the question's default. Returns one result line.
-// user: the person answering from the pane or a /flow command, who may answer any question, a manager's included.
-async function answerQuestion($: EngineInterface, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> {
-  const at = await $.clock.now()
-  // A decision filed before decisions had d-ids is also found by its old q-id.
-  const id = findItem(await read($, inbox), wanted)?.id ?? wanted.trim().toLowerCase()
-  const marked = await withInbox($, (cur): { inbox: Inbox; out: Marked | { kind: 'escalated'; q: Question } } => {
-    // A standing rule made this the user's decision: only main answers it.
-    const held = cur.items.find(x => x.id === id)
-    if (held !== undefined && held.state === 'open' && held.escalated !== undefined && by !== 'main') return { inbox: cur, out: { kind: 'escalated', q: held } }
-    const m = markAnswered(cur, id, choice, by, at, undefined, user)
-    return { inbox: m.kind === 'ok' ? m.inbox : cur, out: m }
-  })
-  if (marked.kind === 'escalated') return `${id}: refused, standing rule ${marked.q.escalated} makes this the user's decision. It is in main's inbox as ${id}; main answers it directly and the asker gets the answer. Don't answer or re-ask it.`
-  if (marked.kind === 'unknown') return `${id}: no such question.`
-  if (marked.kind === 'answered') return `${id}: already answered ("${marked.q.answer ?? ''}" by ${marked.q.answeredBy ?? '?'}).`
-  if (marked.kind === 'refused') return `${id}: refused, it is addressed to ${marked.q.addressee}, not ${by}.`
-  if (marked.kind === 'empty') return `${id}: refused, the choice is empty.`
-  const { q, answer, isDefault } = marked
-  // The user over a manager's head: the asker hears "the user", and the manager learns the question is closed.
-  const over = user && overridesManager(q)
-  const who = over ? 'the user' : by
-  const deployNote = q.kind === 'deploy' ? await onDeployAnswer($, q, answer) : q.kind === ENV_KIND ? await onEnvAnswer($, q, answer) : q.kind === PUSH_KIND ? await onPushAnswer($, q, answer, by) : q.kind === REVIEWER_KIND ? await onReviewerAnswer($, answer, by) : ''
-  let delivered = true
-  let hint = ''
-  if (needsMessage(q, isDefault)) {
-    const asker = q.askerId === undefined ? undefined : (await $.agent.list()).find(a => a.id === q.askerId)
-    delivered = false
-    const alive = (a: AgentInfo | undefined): a is AgentInfo => a !== undefined && (LIVE.has(a.status) || a.status === 'idle')
-    if (alive(asker)) {
-      delivered = await deliver($, asker.id, answerMessage(q, answer, who, isDefault), { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
-    } else if (isFyi(q) && q.addressee !== 'main') {
-      // A finished owner cannot act on an undo: its manager (the notes owner) gets it, naming the owner.
-      const mgr = (await $.agent.list()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && alive(a))
-      if (mgr !== undefined) {
-        delivered = await deliver($, mgr.id, `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s decision; ${q.owner} is no longer running, so act on it yourself or with a new worker.)`, { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
-      }
-    }
-    if (!delivered) hint = `; ${q.owner} is gone: main should relay it to ${noteKey(q.owner)}-2`
-  }
-  await withInbox($, cur => ({
-    inbox: { ...cur, items: cur.items.map(x => (x.id === id ? { ...x, delivered } : x)) }, out: undefined,
-  }))
-  if (over) {
-    const mgr = (await $.agent.list()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && (LIVE.has(a.status) || a.status === 'idle'))
-    if (mgr !== undefined) {
-      await deliver($, mgr.id, `flow: the user answered ${q.id}, which ${q.owner} asked you: ${answer}. It is closed; don't answer it.`, { urgent: false, onGone: () => undefined }).catch(() => false)
-    }
-  }
-  if (!(isFyi(q) && isDefault)) await appendNote($, notesOwner(q), `- ${await today($)} decision: "${q.id} ${noteText(q)}: ${isFyi(q) ? `undone, ${answer}` : answer}"`)
-  const guard = q.guard !== undefined && answer === ADD_OPTION ? ` ${await addGuardTest(standingIoOf($), options, q.guard.glob, q.guard.test)}` : ''
-  return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.${guard}${deployNote}`
-}
+const messagingIoOf = ($: EngineInterface): MessagingIo => ({
+  inbox: () => read($, inbox),
+  withInbox: fn => withInbox($, fn),
+  now: () => $.clock.now(),
+  today: () => today($),
+  agents: () => $.agent.list(),
+  seen: () => read($, seenAgents),
+  deliver: (id, text, opts) => deliver($, id, text, opts),
+  appendNote: (name, line) => appendNote($, name, line),
+  best: (what, fn) => best($, what, fn),
+  toMain: text => toMain($, text),
+  markResumable: id => { resumable.add(id) },
+  managerFinished: (ids, name, rows) => managerFinished($, ids, name, rows),
+  addGuardTest: (options, glob, test) => addGuardTest(standingIoOf($), options, glob, test),
+  onDeployAnswer: (q, answer) => onDeployAnswer($, q, answer),
+  onEnvAnswer: (q, answer) => onEnvAnswer($, q, answer),
+  onPushAnswer: (q, answer, by) => onPushAnswer($, q, answer, by),
+  onReviewerAnswer: (answer, by) => onReviewerAnswer($, answer, by),
+  loadLedger: () => loadLedger($),
+  ledger: () => read($, ledger),
+})
 
-// The pane's inbox rows, read fresh.
-async function paneInboxRows($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> {
-  const [box, now] = await Promise.all([read($, inbox), $.clock.now()])
-  return { rows: paneRows(box), now }
-}
+// The one way a question gets answered (messaging-run.ts): marks it, tells the asker, notes the decision.
+const answerQuestion = ($: EngineInterface, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> =>
+  answerQuestionTo(messagingIoOf($), wanted, choice, by, options, user)
+const paneInboxRows = ($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> => paneInboxRowsTo(messagingIoOf($))
 
 // Pane presses run one after another, so a second press sees the first one's answer and highlight.
 let paneChain: Promise<unknown> = Promise.resolve()
@@ -859,9 +826,6 @@ const paneSerial = <T,>(fn: () => Promise<T>): Promise<T> => {
   paneChain = run.catch(() => undefined)
   return run
 }
-
-// The question as a notes line: an env change names the variable, never its value.
-const noteText = (q: Question): string => (q.env === undefined ? q.question : `env ${q.env.name} on ${q.env.target} (${q.env.role})`)
 
 // ---- the deploy gate (deploy.ts, deploy-run.ts) ----
 
@@ -909,47 +873,9 @@ const closeReturnedEnv = ($: EngineInterface, h: Handover): Promise<void> => clo
 
 // ---- the push gate (pushgate.ts) ----
 
-// A message for the manager that owns a PR: sent when it is alive, else noted for it and sent to main.
-async function tellManager($: EngineInterface, name: string, text: string): Promise<void> {
-  const live = (await $.agent.list()).find(a => a.name === name && (LIVE.has(a.status) || a.status === 'idle'))
-  // Urgent: tellManager carries push-gate send-backs and report fallbacks, which the manager acts on now.
-  // A failed send has already gone through onGone.
-  if (live !== undefined) await deliver($, live.id, text, { urgent: true, onGone: t => tellMain($, name, t) }).catch(() => undefined)
-  else {
-    const wake = await wakeTarget($, name)
-    if (wake !== undefined) {
-      resumable.add(wake)
-      await deliver($, wake, text, { urgent: true, onGone: t => tellMain($, name, t) }).catch(() => undefined)
-    } else await tellMain($, name, text)
-  }
-}
-
-// A manager that ended its turn (completed, or dropped from the roster) but still has work: its id, so a
-// message resumes it. Undefined when it is finished, was killed or failed, or its id is not known.
-async function wakeTarget($: EngineInterface, name: string): Promise<string | undefined> {
-  const rows = await $.agent.list()
-  const row = rows.find(a => a.name === name && a.type === MANAGER)
-  const seen = row === undefined ? (await read($, seenAgents))[name] : undefined
-  const id = row === undefined ? seen?.id : row.status === 'completed' ? row.id : undefined
-  if (id === undefined || seen?.status === 'failed' || seen?.status === 'killed') return undefined
-  return (await managerFinished($, [id], name, rows)) ? undefined : id
-}
-
-async function tellMain($: EngineInterface, name: string, text: string): Promise<void> {
-  await best($, 'noting a report', async () => void (await appendNote($, name, `- ${await today($)} ${text}`)))
-  toMain($, `${text} (${name} is not running; relay it or start a manager.)`)
-}
-
-// The line a returned PR's message carries when its worker ran below large (routing.ts backNote).
-async function sizeBackNote($: EngineInterface, branch: string): Promise<string | undefined> {
-  try {
-    await loadLedger($)
-    return backNote(entriesOfBranch(await read($, ledger), branch), branch)
-  } catch {
-    return undefined
-  }
-}
-
+const tellManager = ($: EngineInterface, name: string, text: string): Promise<void> => tellManagerTo(messagingIoOf($), name, text)
+const tellMain = ($: EngineInterface, name: string, text: string): Promise<void> => tellMainTo(messagingIoOf($), name, text)
+const sizeBackNote = ($: EngineInterface, branch: string): Promise<string | undefined> => sizeBackNoteTo(messagingIoOf($), branch)
 
 const pushIoOf = ($: EngineInterface): PushIo => ({
   stateDir: () => stateDir($),
