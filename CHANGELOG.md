@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.34] - 2026-10-11
+
 ### Added
 
 - Pane cards show the model each agent runs on (opus, sonnet, sonnet[1m], haiku; the harness name for sessions), in the collapsed line, the card and the detail view, and next to main in the header. It is the first thing dropped when the pane is narrow.
