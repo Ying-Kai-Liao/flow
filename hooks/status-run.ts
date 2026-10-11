@@ -24,6 +24,7 @@ import { MANAGER, mirror, WORKERS } from './core'
 export type Unhanded = { pr: number; title: string; branch: string; note: string }
 
 export type StatusIo = {
+  reconcile: () => Promise<void>
   now: () => Promise<number>
   handovers: () => Promise<Record<string, Handover>>
   readLog: () => Promise<LogEvent[]>
@@ -85,6 +86,7 @@ export async function statusTool(io: StatusIo, settings: Settings, input: Record
       }
     }
     if (mirror.queueOn && (await io.now()) - (await io.prCache()).fetchedAt > PR_MIN_GAP_MS) await io.fetchPrs()
+    await io.reconcile()
     const [allRows, acts, allHs] = await Promise.all([io.refresh(), io.activity(), io.handovers()])
     // What the caller needs, so the result it keeps in its context stays small: a manager sees its own
     // subtree and PRs, a worker itself and its manager. Main, the reviewer (it works the whole queue) and

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The reviewer's worklist and `status` now mark handovers whose PR was merged elsewhere as done ("merged elsewhere (<sha>)") and put a taken handover back to pending when its reviewer is gone, so stale records no longer cause needless restarts.
+
 ## [0.6.28] - 2026-10-11
 
 ### Changed
