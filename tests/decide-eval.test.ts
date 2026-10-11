@@ -3,11 +3,11 @@ import { test } from './support'
 
 import type { DecideIo, FetchLike } from '../hooks/decide'
 import { decide } from '../hooks/decide'
-import { conflictData, exportJson, handoffData, inboxData, loadDatasets, parseExport, parseLog, recordedSize, reportText, routeBaselines, routeData, runEval, sizeBaselines, sizeData, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
+import { conflictData, exportJson, handoffData, inboxData, loadDatasets, parseExport, parseLog, formatRoute, recordedSize, reportText, routeBaselines, routeData, runEval, sizeBaselines, sizeData, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
 import type { Ask, LogLine, TranscriptEvent } from '../hooks/decide-eval'
 import { decideEvalTool } from '../hooks/decide-eval-run'
 import { parseJev } from '../hooks/jev'
-import { INBOX_ROUTINE_QUESTION } from '../hooks/decide-questions'
+import { INBOX_ROUTINE_QUESTION, ROUTE_QUESTION } from '../hooks/decide-questions'
 
 const item = (id: string, over: Record<string, unknown>) => ({ id, owner: 'w', question: `q ${id}`, options: ['Keep', 'Overturn'], state: 'answered', ...over })
 
@@ -299,7 +299,9 @@ test('route scoring: agreement, under- and over-shaped are separate; main maps l
   expect(rows['always manager+n']).toMatchObject({ agree: 2, under: 0, over: n - 2 })
   const main = rows['main (lite = direct)']!
   expect(main.agree + main.under + main.over).toBe(n)
-  expect(main.agree).toBe(5)
+  expect(main.agree).toBe(7)
+  expect(main.usd).toBe(main.actualUsd)
+  expect(main.over).toBe(2)
   expect(Math.abs(rows['always manager+n']!.usd - rows['always manager+n']!.actualUsd)).toBeLessThan(0.0001)
   expect(rows['always direct']!.usd).toBeGreaterThan(rows['always direct']!.actualUsd)
 })
@@ -313,4 +315,17 @@ test('route replay: Jev answers score live, an error falls back to manager+1; th
   expect(r!.route!.rows.find(x => x.router === 'jev, else manager+1')!.n).toBe(d.records.length)
   expect(JSON.stringify(r)).not.toContain('do the thing')
   expect(reportText({ provider: 'jev', at: 'now', features: [r!] })).toContain('under-shaped')
+})
+
+test('route: the collapsed table counts needless-manager and wrongly-direct apart, and the answer keys with a plus sign parse', () => {
+  const { d } = routed()
+  const rows = Object.fromEntries(routeBaselines(d.records).rows.map(r => [r.router, r]))
+  expect(rows['always direct']).toMatchObject({ agree2: 3, needless: 0, wronglyDirect: d.records.length - 3 })
+  expect(rows['always manager+1']).toMatchObject({ agree2: d.records.length - 3, needless: 3, wronglyDirect: 0 })
+  expect(rows['main (lite = direct)']!.usd2).toBe(rows['main (lite = direct)']!.actualUsd)
+  expect(formatRoute(routeBaselines(d.records))).toContain('direct vs any manager')
+  for (const choice of ['direct', 'manager+1', 'manager+n']) {
+    expect(parseJev({ answers: { route: { choice, confidence: 0.9 } } }, ROUTE_QUESTION)).toEqual({ answer: choice, confidence: 0.9 })
+  }
+  expect(parseJev({ answers: { route: { choice: 'manager', confidence: 0.9 } } }, ROUTE_QUESTION)).toEqual({ note: 'jev unavailable: unknown choice' })
 })

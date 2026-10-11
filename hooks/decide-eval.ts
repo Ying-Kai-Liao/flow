@@ -551,16 +551,16 @@ export function routeData(src: RouteSource): Dataset {
       `manager families in the ledger: ${families.length}; labelable: ${records.length + excluded}; unlabelable ${JSON.stringify(skip)} (no worker = shipped already or died before starting one, its own bucket); excluded by the hard rule: ${excluded} ${JSON.stringify(hard)} (first signal only); scored: ${records.length}; labels ${JSON.stringify(dist)}; other-direct-condition failures (a family can have several) ${JSON.stringify(disq)}`,
       'label rule: manager+n = two or more distinct workers (a -N worker successor counts); else direct = exactly one merged PR, no blocking question (mcp__flow__ask or pre-flight), no reviewer back event, no plan DAG nodes, no successor manager; else manager+1; unlabelable = no prompt, no worker or no merged PR',
       'hard rule: never direct for migrations, auth/permissions, secrets, deploy/CI/infra config, data rewrites or deletions; detected from the prompt text, the merged PR files, and a confirm-mode handover or approve event; those tasks are removed from scoring for every router',
-      `evidence gaps: ${prefixOwned} worker ledger rows had no manager field and were matched by name prefix; ${liteUnknown} families had no lite state or Mode: lite line, so main's choice there is manager+1 (lite state unknown, not false); main's router cannot tell manager+1 from manager+n, so every non-lite choice is scored as manager+1; plan nodes and blocking asks are read from transcripts (${planKnown ? 'present' : 'absent: counted as none'}), the inbox and preflight.json; the main router sees managers only, a flow:worker started by main with no manager has no record`,
+      `evidence gaps: ${prefixOwned} worker ledger rows had no manager field and were matched by name prefix; ${liteUnknown} families had no lite state or Mode: lite line, so main's choice there is manager+1 (lite state unknown, not false); main only chose manager or lite, never a worker count: a non-lite choice agrees with manager+1 and manager+n alike (under/over count only across the direct/manager boundary), and the main row costs the real M+W (its choice is what ran, so vs as run is $0); plan nodes and blocking asks are read from transcripts (${planKnown ? 'present' : 'absent: counted as none'}), the inbox and preflight.json; the main router sees managers only, a flow:worker started by main with no manager has no record`,
       'rule routers: direct = Size: small or docs-only, manager+n = Size: large or two listed packages (Package/Part/WP lines), else manager+1; "docs PR" variant peeks at the outcome (the merged PRs\' files), so it is not usable at spawn; "Size small | docs prompt" uses the prompt alone',
     ],
   }
 }
 
 // ---- route scoring ----
-export type RouterRow = { router: string; n: number; agree: number; under: number; over: number; usd: number; actualUsd: number; fellThrough?: number }
+export type RouterRow = { router: string; n: number; agree: number; under: number; over: number; usd: number; actualUsd: number; agree2: number; needless: number; wronglyDirect: number; usd2: number; fellThrough?: number }
 export type RouteReport = { rows: RouterRow[]; model: string }
-const ROUTE_COST_MODEL = `Cost model: the family's real spend from the ledger at hooks/cost.ts list prices (M = manager rows, W = worker rows); "as run" is M+W. Router answers priced by (answer, label): answer direct on a direct label = W + R, where R is a main PR review (main's average per-turn ledger cost x ${REVIEW_TURNS} turns) and the manager's spend is saved; answer direct on a manager label (under-shaped) = M + 2W + R (the rerun under a manager plus the failed direct attempt); answer manager+1 on a manager+n label (under-shaped) = M+W plus a successor manager, estimated as M again; an over-shaped answer (manager+1 or +n on a lighter label) costs M+W, as run (the wasted manager or workers are already in the ledger); the right class costs as run, except direct = W + R. "vs as run" is the router's total minus the real M+W over the same records (negative = cheaper). Under-shaped = picked a lower class than the label (lost review, or a successor or extra workers needed); over-shaped = picked a higher class (wasted manager or workers); both are shares of all scored records.`
+const ROUTE_COST_MODEL = `Cost model: the family's real spend from the ledger at hooks/cost.ts list prices (M = manager rows, W = worker rows); "as run" is M+W. Router answers priced by (answer, label): answer direct on a direct label = W + R, where R is a main PR review (main's average per-turn ledger cost x ${REVIEW_TURNS} turns) and the manager's spend is saved; answer direct on a manager label (under-shaped) = M + 2W + R (the rerun under a manager plus the failed direct attempt); answer manager+1 on a manager+n label (under-shaped) = M+W plus a successor manager, estimated as M again; an over-shaped answer (manager+1 or +n on a lighter label) costs M+W, as run (the wasted manager or workers are already in the ledger); the right class costs as run, except direct = W + R. "vs as run" is the router's total minus the real M+W over the same records (negative = cheaper). The direct-vs-any-manager table below it prices the same way with manager+1 and +n merged. The main row costs the real M+W. Under-shaped = picked a lower class than the label (lost review, or a successor or extra workers needed); over-shaped = picked a higher class (wasted manager or workers); both are shares of all scored records.`
 
 export const costOfRoute = (m: RouteMeta, answer: RouteLabel): number => {
   if (answer === 'direct') return m.label === 'direct' ? m.workerUsd + m.reviewUsd : m.managerUsd + 2 * m.workerUsd + m.reviewUsd
@@ -568,14 +568,25 @@ export const costOfRoute = (m: RouteMeta, answer: RouteLabel): number => {
   return m.managerUsd + m.workerUsd
 }
 
-function scoreRouter(router: string, recs: { meta: RouteMeta; answer: RouteLabel }[], fellThrough?: number): RouterRow {
-  const row: RouterRow = { router, n: recs.length, agree: 0, under: 0, over: 0, usd: 0, actualUsd: 0, ...(fellThrough !== undefined ? { fellThrough } : {}) }
+// `asRun`: the main row. Main's choice is what ran, so its cost is the real M+W for every record, and since main only chose
+// manager or lite (never a worker count) a non-lite choice agrees with both manager+1 and manager+n: under/over only count
+// across the direct/manager boundary.
+function scoreRouter(router: string, recs: { meta: RouteMeta; answer: RouteLabel }[], fellThrough?: number, asRun = false): RouterRow {
+  const row: RouterRow = { router, n: recs.length, agree: 0, under: 0, over: 0, usd: 0, actualUsd: 0, agree2: 0, needless: 0, wronglyDirect: 0, usd2: 0, ...(fellThrough !== undefined ? { fellThrough } : {}) }
   for (const { meta, answer } of recs) {
-    if (answer === meta.label) row.agree++
+    const actual = meta.managerUsd + meta.workerUsd
+    const lenient = asRun && answer === 'manager+1' && meta.label !== 'direct'
+    if (answer === meta.label || lenient) row.agree++
     else if (shape(answer) < shape(meta.label)) row.under++
     else row.over++
-    row.usd += costOfRoute(meta, answer)
-    row.actualUsd += meta.managerUsd + meta.workerUsd
+    row.usd += asRun ? actual : costOfRoute(meta, answer)
+    row.actualUsd += actual
+    // The collapsed view: direct against any manager.
+    const said = answer === 'direct', was = meta.label === 'direct'
+    if (said === was) row.agree2++
+    else if (said) row.wronglyDirect++
+    else row.needless++
+    row.usd2 += asRun ? actual : said ? (was ? meta.workerUsd + meta.reviewUsd : meta.managerUsd + 2 * meta.workerUsd + meta.reviewUsd) : actual
   }
   return row
 }
@@ -592,7 +603,7 @@ export function routeReport(records: EvalRecord[], results: Result[]): RouteRepo
   const all = (answer: (m: RouteMeta) => RouteLabel) => withMeta.map(({ meta }) => ({ meta, answer: answer(meta) }))
   const rule = (m: RouteMeta, docs: boolean): RouteLabel => (m.sizeSmall || docs ? 'direct' : m.sizeLarge || m.multiPackage ? 'manager+n' : 'manager+1')
   const rows: RouterRow[] = [
-    scoreRouter('main (lite = direct)', all(m => m.main)),
+    scoreRouter('main (lite = direct)', all(m => m.main), undefined, true),
     scoreRouter('always direct', all(() => 'direct')),
     scoreRouter('always manager+1', all(() => 'manager+1')),
     scoreRouter('always manager+n', all(() => 'manager+n')),
@@ -616,6 +627,12 @@ export function formatRoute(r: RouteReport): string {
   const lines = ['router                           n    agree        under-shaped over-shaped  $ total   vs as run   fell-through']
   for (const x of r.rows) {
     lines.push(`${x.router.padEnd(32)} ${String(x.n).padEnd(4)} ${`${pc(x.agree, x.n)} (${x.agree})`.padEnd(12)} ${`${pc(x.under, x.n)} (${x.under})`.padEnd(12)} ${`${pc(x.over, x.n)} (${x.over})`.padEnd(12)} ${`$${x.usd.toFixed(2)}`.padEnd(9)} ${`${x.usd - x.actualUsd >= 0 ? '+' : '-'}$${Math.abs(x.usd - x.actualUsd).toFixed(2)}`.padEnd(11)} ${x.fellThrough ?? ''}`)
+  }
+  lines.push('')
+  lines.push('direct vs any manager (the original question: is a manager needed at all)')
+  lines.push('router                           n    agree        needless-mgr wrongly-direct $ total   vs as run')
+  for (const x of r.rows) {
+    lines.push(`${x.router.padEnd(32)} ${String(x.n).padEnd(4)} ${`${pc(x.agree2, x.n)} (${x.agree2})`.padEnd(12)} ${`${pc(x.needless, x.n)} (${x.needless})`.padEnd(12)} ${`${pc(x.wronglyDirect, x.n)} (${x.wronglyDirect})`.padEnd(14)} ${`$${x.usd2.toFixed(2)}`.padEnd(9)} ${`${x.usd2 - x.actualUsd >= 0 ? '+' : '-'}$${Math.abs(x.usd2 - x.actualUsd).toFixed(2)}`}`)
   }
   lines.push('* the docs-PR rule peeks at the outcome (merged PR files); the other rule and the rest use only what was known at spawn')
   lines.push(r.model)
