@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.37] - 2026-10-11
+
 ### Added
 
 - `mcp__flow__ask` takes `for: "<qid>"` for managers: it escalates a worker's open question to main. Main's answer to either question closes both and reaches the worker and the manager; no hand relay.
