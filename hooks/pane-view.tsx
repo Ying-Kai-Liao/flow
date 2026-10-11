@@ -13,6 +13,9 @@ import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, clip, envLab
 import type { Inbox, PaneRow, Question } from './inbox'
 import { MANAGER } from './core'
 import type { PushState } from './pushgate'
+import type { PushAct } from './pushgate-run'
+import { prCardRows } from './prcard'
+import type { CardRow, DetailsEntry } from './prcard'
 import type { Unhanded } from './status-run'
 import { noteKey } from './state'
 import { ago, runsOutIn, SESSION } from './sessions'
@@ -211,6 +214,9 @@ export type TreeCtx = PaneCtx & {
   openInbox: () => Promise<void>
   // Opens the inbox at one item's card; Back returns to the tree.
   openCard: (id: string) => Promise<void>
+  // Opens the PR card of a handover (read-only unless it awaits approval), and the ready push batch's card.
+  openPr: (pr: number) => Promise<void>
+  openBatch: () => Promise<void>
 }
 
 type InputProps = { key: string; label: string; placeholder: string; value: string; onInput: (v: string) => void; onSubmit: (v: string) => void }
@@ -639,7 +645,9 @@ export function treeView(c: TreeCtx) {
   return (
     <Box flexDirection="column" height={rows}>
       {gate !== undefined && gate.state === 'ready' && (
-        <Text color="warning" bold wrap="truncate-end">⇪ Batch {gate.id} ready to push: {gate.prs.map(n => `#${n}`).join(' ')}{gate.version === undefined ? '' : ` (${gate.version})`} · check: {gate.check}</Text>
+        <Button key="batch-open" plain onPress={c.openBatch}>
+          <Text color="warning" bold wrap="truncate-end">⇪ Batch {gate.id} ready to push: {gate.prs.map(n => `#${n}`).join(' ')}{gate.version === undefined ? '' : ` (${gate.version})`} · check: {gate.check}</Text>
+        </Button>
       )}
       {gate !== undefined && gate.state === 'ready' && <Text color="warning" wrap="truncate-end">  /flow push · /flow push back {'<pr>'} · /flow push drop</Text>}
       {gate !== undefined && gate.state !== 'ready' && (
@@ -690,15 +698,21 @@ export function treeView(c: TreeCtx) {
           <Button key={`fold-${c.mergeQueueKey}`} plain dimColor onPress={toggleQueue}>{queueOpen ? '  ▾ ' : '  ▸ '}</Button>
           <Text bold>Reviewer</Text>
           {!queueOpen && <Text dimColor>  {queueSummary}</Text>}
-          {!queueOpen && awaiting > 0 && <Text color="warning"> · {awaiting} awaiting approval</Text>}
+          {!queueOpen && awaiting > 0 && (
+            <Button key="await-open" plain onPress={() => c.openPr(prs.find(p => p.status === 'awaiting')!.pr)}>
+              <Text color="warning"> · {awaiting} awaiting approval</Text>
+            </Button>
+          )}
           {!queueOpen && returned > 0 && <Text color="warning"> · {returned} returned</Text>}
         </Box>
       )}
       {breakerNote !== undefined && <Text color="warning" wrap="truncate-end">{'    '}⚠ {breakerNote}</Text>}
       {queueOpen && prs.slice(0, 5).map(ho => (
-        <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} color={ho.status === 'awaiting' || ho.status === 'ready' ? 'warning' : undefined} wrap="truncate-end">
-          {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}, or /flow reject ${ho.pr}` : ho.status === 'ready' ? 'ready, awaiting your push: /flow push' : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
-        </Text>
+        <Button key={`pr-${ho.pr}`} plain onPress={() => c.openPr(ho.pr)}>
+          <Text dimColor={ho.status === 'done'} color={ho.status === 'awaiting' || ho.status === 'ready' ? 'warning' : undefined} wrap="truncate-end">
+            {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: press to review, /flow approve ${ho.pr} or /flow reject ${ho.pr}` : ho.status === 'ready' ? 'ready, awaiting your push: /flow push' : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
+          </Text>
+        </Button>
       ))}
       {deployLines.map(l => <Text key={`deploy-${l}`} dimColor wrap="truncate-end">{'  '}⏸ {l}</Text>)}
       {(list.length > 0 || anyOpen || prs.length > 0) && <Box flexGrow={1} />}
@@ -874,6 +888,170 @@ export function archiveView(x: InboxCtx) {
         })}>o open</Button>
         <Button key="arch-back" plain dimColor hotkey="b" onPress={() => void io.serial(async () => { await io.acted(); await io.leave('inbox') })}>b back</Button>
       </Box>
+    </Box>
+  )
+}
+
+// --- The PR card and the batch card (Reviewer section). ---
+
+type PrIo = {
+  acted: () => Promise<void>
+  serial: <T>(fn: () => Promise<T>) => Promise<T>
+  // Both re-read the handover and refuse when it is no longer in the right state (prcard.ts).
+  approve: (pr: number) => Promise<string>
+  reject: (pr: number, why: string) => Promise<string>
+  openUrl: (pr: number) => Promise<string>
+  setNote: (v: string) => Promise<unknown>
+  readDraft: () => Promise<string>
+  setDraft: (v: string) => Promise<unknown>
+  toast: (text: string) => void
+  leave: () => Promise<void>
+}
+export type PrCardCtx = {
+  els: Els
+  Input: ((p: InputProps) => null) | undefined
+  rows: number
+  pr: number | null
+  h: Handover | undefined
+  entry: DetailsEntry | undefined
+  mergeMode: string
+  now: number
+  draft: string
+  note: string
+  io: PrIo
+}
+
+const toneOf = (r: CardRow): string | undefined => r.tone
+
+// One handed-over PR in full. Approve and Reject only on an awaiting one; every press runs the
+// shared functions, which read the handover fresh, so a double press or a reviewer that took it
+// meanwhile changes nothing.
+export function prCardView(x: PrCardCtx) {
+  const { Input, io, rows, draft, note } = x
+  // Not named h: that is the JSX factory.
+  const ho = x.h
+  const { Box, Text, Button } = x.els
+  const back = () => io.serial(async () => { await io.acted(); await io.leave() })
+  const backBtn = <Button key="pr-back" hotkey="b" onPress={back}>Back</Button>
+  if (ho === undefined) {
+    return (
+      <Box flexDirection="column" height={rows}>
+        <Box flexDirection="row" gap={1}>{backBtn}</Box>
+        <Text dimColor>PR #{x.pr ?? '?'} is not handed over any more.</Text>
+      </Box>
+    )
+  }
+  const awaiting = ho.status === 'awaiting'
+  const act = (run: () => Promise<string>) => () => void io.serial(async () => {
+    await io.acted()
+    const text = await run()
+    await io.setNote(text)
+    io.toast(clip(text, 120))
+  })
+  const approve = act(() => io.approve(ho.pr))
+  // The reason is what is typed now (or what Enter submitted), read fresh at the press.
+  const reject = (typed?: string) => act(async () => {
+    const text = await io.reject(ho.pr, (typed ?? await io.readDraft()).trim())
+    await io.setDraft('')
+    return text
+  })()
+  const body = prCardRows(ho, { entry: x.entry, mergeMode: x.mergeMode, now: x.now })
+  // The back row, the button row, the note and the input take what the body does not.
+  const room = Math.max(3, rows - 3 - (note === '' ? 0 : 1) - (awaiting && Input !== undefined ? 1 : 0))
+  const shown = body.length > room ? body.slice(0, room - 1) : body
+  return (
+    <Box flexDirection="column" height={rows}>
+      <Box flexDirection="row" gap={1}>{backBtn}</Box>
+      {shown.map((r, i) => <Text key={`pr-row-${i}`} bold={r.bold} dimColor={r.dim} color={toneOf(r)} wrap="truncate-end">{r.text === '' ? ' ' : r.text}</Text>)}
+      {body.length > shown.length && <Text dimColor>+{body.length - shown.length} more lines</Text>}
+      <Box flexGrow={1} />
+      {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
+      {awaiting && Input !== undefined && <Input key="pr-reason" label="reason " placeholder="why you reject it (optional), then Enter" value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={(v: string) => reject(v)} />}
+      <Box flexDirection="row" gap={1}>
+        {awaiting && <Button key="pr-approve" hotkey="a" onPress={approve}>Approve</Button>}
+        {awaiting && <Button key="pr-reject" hotkey="r" onPress={() => reject()}>Reject</Button>}
+        <Button key="pr-open" hotkey="g" onPress={act(() => io.openUrl(ho.pr))}>Open on GitHub</Button>
+      </Box>
+    </Box>
+  )
+}
+
+export type BatchCtx = {
+  els: Els
+  rows: number
+  batch: PushState['batch']
+  hs: Record<string, Handover>
+  note: string
+  // The PR picked to be sent back, awaiting the confirming press.
+  pick: number | null
+  now: number
+  io: {
+    acted: () => Promise<void>
+    serial: <T>(fn: () => Promise<T>) => Promise<T>
+    // The same io.pushAct /flow push calls, as the person.
+    act: (act: PushAct) => Promise<string>
+    openPr: (pr: number) => Promise<void>
+    setPick: (pr: number | null) => Promise<unknown>
+    setNote: (v: string) => Promise<unknown>
+    toast: (text: string) => void
+    leave: () => Promise<void>
+  }
+}
+
+// The ready push batch: its PRs (each opens its own card) and Push, Send one back, Drop.
+export function batchCardView(x: BatchCtx) {
+  const { io, rows, batch, hs, note, pick } = x
+  const { Box, Text, Button } = x.els
+  const back = () => io.serial(async () => { await io.acted(); await io.leave() })
+  const backBtn = <Button key="batch-back" hotkey="b" onPress={back}>Back</Button>
+  if (batch === undefined) {
+    return (
+      <Box flexDirection="column" height={rows}>
+        <Box flexDirection="row" gap={1}>{backBtn}</Box>
+        <Text dimColor>No batch is waiting for a push.</Text>
+        {note !== '' && <Text color="suggestion">{note}</Text>}
+      </Box>
+    )
+  }
+  const ready = batch.state === 'ready'
+  const run = (a: PushAct) => () => void io.serial(async () => {
+    await io.acted()
+    await io.setPick(null)
+    const text = await io.act(a)
+    await io.setNote(text)
+    io.toast(clip(text, 120))
+  })
+  const titleOf = (n: number) => batch.items.find(i => i.pr === n)?.title ?? hs[String(n)]?.title ?? ''
+  return (
+    <Box flexDirection="column" height={rows}>
+      <Box flexDirection="row" gap={1}>{backBtn}</Box>
+      <Text bold color="warning">Batch {batch.id}{batch.version === undefined ? '' : ` (${batch.version})`} <Text dimColor>{ready ? 'ready to push' : batch.state}</Text></Text>
+      <Text dimColor wrap="truncate-end">checked {age(x.now - batch.createdAt)} ago · check: {batch.check === '' ? '(none recorded)' : batch.check}</Text>
+      {!ready && <Text color="suggestion">Not waiting for you: {batch.state === 'pushing' ? 'a reviewer is pushing it' : `it is being rebuilt${batch.reason === undefined ? '' : ` (${batch.reason})`}`}.</Text>}
+      <Text> </Text>
+      {batch.prs.map(n => (
+        <Box key={`batch-row-${n}`} flexDirection="row" gap={1}>
+          <Button key={`batch-pr-${n}`} plain onPress={() => void io.serial(async () => { await io.acted(); await io.openPr(n) })}>
+            <Text wrap="truncate-end">#{n} {titleOf(n)}{hs[String(n)] === undefined ? '' : ` · ${hs[String(n)]!.status}`}</Text>
+          </Button>
+          {ready && <Button key={`batch-pick-${n}`} plain dimColor onPress={() => void io.serial(async () => { await io.acted(); await io.setPick(n) })}>send back</Button>}
+        </Box>
+      ))}
+      {ready && pick !== null && batch.prs.includes(pick) && (
+        <Box flexDirection="row" gap={1}>
+          <Text color="warning">Send #{pick} back to its manager?</Text>
+          <Button key="batch-back-yes" hotkey="y" onPress={run({ kind: 'back', pr: pick })}>Yes, send back</Button>
+          <Button key="batch-back-no" hotkey="n" onPress={() => void io.serial(async () => { await io.acted(); await io.setPick(null) })}>No</Button>
+        </Box>
+      )}
+      <Box flexGrow={1} />
+      {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
+      {ready && (
+        <Box flexDirection="row" gap={1}>
+          <Button key="batch-push" hotkey="p" onPress={run({ kind: 'push' })}>Push</Button>
+          <Button key="batch-drop" hotkey="d" onPress={run({ kind: 'drop' })}>Drop</Button>
+        </Box>
+      )}
     </Box>
   )
 }

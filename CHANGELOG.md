@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Flow pane: the Reviewer section's PR lines, and the "N awaiting approval" summary, open a PR card with the title, status, branch, head, who handed it over and why it awaits you, the verified line, pending decisions, evidence, env changes and the changed files (from `gh pr view`, fetched in the background and cached per PR and head for 5 minutes). An awaiting PR has Approve (`a`), Reject (`r`, the input is the reason) and Open on GitHub (`g`); they run the same code as `/flow approve` and `/flow reject`, which now share their functions with the pane. The ready push batch line opens a batch card with Push (`p`), Send back and Drop (`d`), which call the same push gate as `/flow push`.
+
 ## [0.6.39] - 2026-10-12
 
 ### Added

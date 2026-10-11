@@ -439,7 +439,13 @@ declare module 'claude-code' {
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots
-      viewMode: 'tree' | 'graph' | 'inbox' | 'card' | 'archive'
+      viewMode: 'tree' | 'graph' | 'inbox' | 'card' | 'archive' | 'pr' | 'batch'
+      // The PR card: the PR shown and where Back goes; the PR picked to send back from the batch card.
+      prShown: number | null
+      prBack: 'tree' | 'batch'
+      batchPick: number | null
+      // The gh details of a PR card by "<pr>@<head>" (prcard.ts), fetched in the background.
+      prDetails: Record<string, { fetchedAt: number; fetching?: true; error?: string; details?: { url: string; additions: number; deletions: number; files: { path: string; additions: number; deletions: number }[]; labels: string[]; headRefOid?: string } }>
       cardBack: 'tree' | 'inbox' | 'archive'
       inboxExpanded: boolean
       inboxCursor: string | null
