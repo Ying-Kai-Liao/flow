@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.36] - 2026-10-11
+
 ### Added
 
 - `/flow reject <pr> [reason]` (alias `/flow drop`) turns down an awaiting or pending handover; handovers whose PR was closed on GitHub are returned automatically, including awaiting ones.
