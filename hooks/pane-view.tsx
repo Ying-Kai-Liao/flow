@@ -9,7 +9,7 @@ import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELL
 import { COLOR, GLYPH, handoffOf, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
-import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
+import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
 import type { Inbox, PaneRow, Question } from './inbox'
 import { MANAGER } from './core'
 import type { PushState } from './pushgate'
@@ -546,7 +546,8 @@ export function inboxView(x: InboxCtx) {
     if (to !== undefined) await io.setCursor(to.key)
   })
   const back = io.back
-  const nOpts = hq?.options.length ?? 0
+  // A decision is kept or undone with y and n; only a question has options to pick.
+  const nOpts = hq === undefined || isFyi(hq) ? 0 : hq.options.length
   const nQ = ibox.items.filter(x => x.state === 'open' && !isFyi(x)).length
   const nF = ibox.items.filter(x => x.state === 'open' && isFyi(x)).length
   const archived = archiveOf(ibox).length
@@ -564,8 +565,9 @@ export function inboxView(x: InboxCtx) {
         <Box flexDirection="column">
           <Text bold>{hq.id} {isFyi(hq) ? 'decision' : 'question'} {tagsOf(hq)}</Text>
           <Text>{hq.question}</Text>
-          {hq.options.map((o, k) => <Text key={`opt-${k}`}>  {String.fromCharCode(97 + k)}) {o}{o === hq.default ? ' (default)' : ''}</Text>)}
+          {!isFyi(hq) && hq.options.map((o, k) => <Text key={`opt-${k}`}>  {String.fromCharCode(97 + k)}) {o}{o === hq.default ? ' (default)' : ''}</Text>)}
           {hq.context && <Text dimColor>why: {clip(hq.context, 200)}</Text>}
+          {isFyi(hq) && hq.alternative && <Text dimColor>instead could: {clip(hq.alternative, 200)}</Text>}
         </Box>
       )}
       {hotRow === undefined && <Text dimColor>Nothing to answer.</Text>}
@@ -656,7 +658,7 @@ export function treeView(c: TreeCtx) {
       <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PR${prs.length === 1 ? '' : 's'} with the reviewer` : ''}{list.length > 0 ? ' · press an agent to open it' : ''}</Text>
       {c.openItems.slice(0, 5).map(q => (
         <Button key={`open-${q.id}`} plain onPress={() => c.openCard(q.id)}>
-          <Text color={q.blocking ? 'warning' : undefined} dimColor={isFyi(q)} wrap="truncate-end">{q.id}{isFyi(q) ? ' decision' : ''} {q.owner}: {q.question}</Text>
+          <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{q.id} {q.owner}: {q.question}</Text>
         </Button>
       ))}
       {c.openItems.length > 5 && <Text dimColor>and {c.openItems.length - 5} more</Text>}
@@ -664,8 +666,8 @@ export function treeView(c: TreeCtx) {
         <Text dimColor wrap="truncate-end">
           Inbox: {[
             ...(openQs.length > 0 ? [`${openQs.length} question${openQs.length === 1 ? '' : 's'} for you${openQs.some(q => q.blocking) ? ` (${openQs.filter(q => q.blocking).length} blocking)` : ''}`] : []),
-            ...(fyiCount > 0 ? [`${fyiCount} decision${fyiCount === 1 ? '' : 's'} agents made`] : []),
-          ].join(', ')}. Press i to answer or keep them.
+            ...(fyiCount > 0 ? [`${fyiCount} decision${fyiCount === 1 ? '' : 's'} to keep or undo`] : []),
+          ].join(', ')} · i
         </Text>
       )}
       {checksLine !== undefined && <Text dimColor wrap="truncate-end">{checksLine}</Text>}
@@ -808,9 +810,9 @@ export function cardView(x: InboxCtx & { id: string | null }) {
         {open && <Button key="card-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
         {open && <Button key="card-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
       </Box>
-      <Text bold>{q.id} {kindOf(q)}{q.alias === undefined ? '' : <Text dimColor> (earlier id {q.alias})</Text>}</Text>
+      <Text bold>{q.id} {kindOf(q)}{isFyi(q) ? <Text dimColor> · from {who} · {age(now - q.askedAt)} ago</Text> : ''}{q.alias === undefined ? '' : <Text dimColor> (earlier id {q.alias})</Text>}</Text>
       {(tags !== '' || (isFyi(q) && q.topic)) && <Text color={q.blocking ? 'warning' : undefined}>{tags}{isFyi(q) && q.topic ? ` [${q.topic}]` : ''}</Text>}
-      <Text dimColor>from {who} · {age(now - q.askedAt)} ago{q.escalated !== undefined ? ' · escalated to you' : ''}</Text>
+      {!isFyi(q) && <Text dimColor>from {who} · {age(now - q.askedAt)} ago{q.escalated !== undefined ? ' · escalated to you' : ''}</Text>}
       {agent !== undefined && <Text dimColor>{q.owner} is {agent.status}</Text>}
       {agent === undefined && <Text dimColor>{q.owner} is not in the roster</Text>}
       {linked !== undefined && <Text>escalated from {linked.owner}'s {linked.id}: {linked.question}</Text>}
@@ -819,8 +821,9 @@ export function cardView(x: InboxCtx & { id: string | null }) {
       <Text> </Text>
       <Text>{q.question}</Text>
       {q.context && <Text dimColor>why: {q.context}</Text>}
+      {isFyi(q) && q.alternative && <Text dimColor>instead could: {q.alternative}</Text>}
       <Text> </Text>
-      {q.options.map((o, k) => {
+      {!isFyi(q) && q.options.map((o, k) => {
         return open ? (
           <Button key={`card-opt-${k}`} hotkey={k < 9 ? String(k + 1) : undefined} onPress={pick(k)}>
             {k + 1}) {o}{o === q.default ? ' (default)' : ''}
@@ -829,17 +832,18 @@ export function cardView(x: InboxCtx & { id: string | null }) {
           <Text key={`card-opt-${k}`} bold={o === q.answer}>{o === q.answer ? '> ' : '  '}{k + 1}) {o}{o === q.default ? ' (default)' : ''}</Text>
         )
       })}
-      {!open && <Text color="success">Answered: {q.answer ?? ''} (by {archiveWho(q)}{q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). Nothing more to answer.</Text>}
+      {!open && isFyi(q) && <Text color="success">{decisionOutcomeText(q, now)}</Text>}
+      {!open && !isFyi(q) && <Text color="success">Answered: {q.answer ?? ''} (by {archiveWho(q)}{q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). Nothing more to answer.</Text>}
       {open && x.id !== null && protectedWhy(q) !== undefined && <Text dimColor>Needs an explicit choice: y never answers it.</Text>}
       {note !== '' && <Text color="suggestion">{note}</Text>}
       <Box flexGrow={1} />
       {open && Input !== undefined && <Input key="card-answer" label={isFyi(q) ? 'instead ' : 'answer '} placeholder={isFyi(q) ? 'what instead (n, or Enter): undoes the decision' : 'your own words, then Enter'} value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
       {open && (
         <Box flexDirection="row" gap={1}>
-          <Button key="card-yes" plain dimColor hotkey="y" onPress={() => void answerWith(null)}>y {isFyi(q) ? 'keep' : 'default'}</Button>
-          {isFyi(q) && <Button key="card-no" plain dimColor hotkey="n" onPress={undo}>n undo</Button>}
+          <Button key="card-yes" plain dimColor hotkey="y" onPress={() => void answerWith(null)}>{isFyi(q) ? 'y Keep' : 'y default'}</Button>
+          {isFyi(q) && <Button key="card-no" plain dimColor hotkey="n" onPress={undo}>n Undo (say what instead)</Button>}
           {/* b is Back here, so the second option's letter is left out; its digit and button work. */}
-          {Array.from({ length: Math.min(q.options.length, 8) }, (_, k) => String.fromCharCode(97 + k)).filter(l => l !== 'b').map(l => (
+          {Array.from({ length: isFyi(q) ? 0 : Math.min(q.options.length, 8) }, (_, k) => String.fromCharCode(97 + k)).filter(l => l !== 'b').map(l => (
             <Button key={`card-pick-${l}`} plain dimColor hotkey={l} onPress={pick(l.charCodeAt(0) - 97)}>{l}</Button>
           ))}
           {Input !== undefined && <Button key="card-reply" plain dimColor hotkey="r" onPress={() => void io.focus('card-answer')}>r reply</Button>}

@@ -242,6 +242,8 @@ export type Question = {
   default: string
   blocking: boolean
   context?: string
+  // Only on a decision: what the agent would otherwise have done. Older decisions folded it into context.
+  alternative?: string
   topic?: string
   askedAt: number
   state: 'open' | 'answered'

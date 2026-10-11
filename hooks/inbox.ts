@@ -17,6 +17,7 @@ export type AskedQuestion = {
   default: string
   blocking: boolean
   context?: string
+  alternative?: string
   topic?: string
   guard?: { glob: string; test: string }
   // The worker's open question this one escalates to main (validated by the ask handler).
@@ -104,7 +105,8 @@ export function parseFyi(input: unknown): { items: AskedFyi[] } | { error: strin
 // A decision as a stored question: the decision is the text, the why the context; Keep is the default.
 export const fyiAsked = (f: AskedFyi): AskedQuestion => ({
   question: f.decision, options: [KEEP, OVERTURN], default: KEEP, blocking: false,
-  context: f.alternative === undefined ? f.why : `${f.why} (otherwise: ${f.alternative})`,
+  context: f.why,
+  ...(f.alternative !== undefined ? { alternative: f.alternative } : {}),
   ...(f.topic !== undefined ? { topic: f.topic } : {}),
 })
 
@@ -471,7 +473,17 @@ export const ARCHIVE_SHOWN = 50
 export const archiveWho = (q: Question): string => (q.rule !== undefined ? `standing answer ${q.rule}` : q.answeredBy ?? '?')
 
 // One archived item as a line: id, answer, who and when, then the question.
+// A decision's answer read as a statement: Keep (or its default) is kept, anything else is what to do instead.
+export const decisionOutcome = (q: Question): string => {
+  const a = (q.answer ?? '').trim()
+  if (a === '' || a.toLowerCase() === KEEP.toLowerCase() || a === q.default) return 'Kept'
+  return a.toLowerCase() === OVERTURN.toLowerCase() ? 'Undone' : `Undone: ${a}`
+}
+export const decisionOutcomeText = (q: Question, now: number): string =>
+  `${decisionOutcome(q)} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`
+
 export const archiveRowText = (q: Question, now: number): string =>
+  isFyi(q) ? `${q.id} ${clip(decisionOutcome(q), 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(q.question, 80)}` :
   `${q.id} ${clip(q.answer ?? '', 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(q.question, 80)}`
 
 // /flow inbox archive: the newest answered items; all: every one.
@@ -497,6 +509,7 @@ export function renderItem(inbox: Inbox | undefined, id: string, now: number): s
     `${q.id} ${kind}${tags === '' ? '' : ` ${tags}`}${isFyi(q) && q.topic ? ` [${q.topic}]` : ''} (from ${q.owner}, for ${q.addressee}, ${age(now - q.askedAt)} ago)${q.alias === undefined ? '' : ` (earlier id ${q.alias})`}`,
     q.question,
     ...(q.context ? ['', `why: ${q.context}`] : []),
+    ...(q.alternative ? [`instead could: ${q.alternative}`] : []),
     '',
     ...optionLines(q, '  '),
   ]
