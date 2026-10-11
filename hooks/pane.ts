@@ -14,13 +14,12 @@ export const COLOR: Record<string, string> = {
 }
 export const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [CONTINUE]: 'worker', [SESSION]: 'worker', [REVIEWER]: 'reviewer', [QUEUE]: 'reviewer' }
 export const ROOT_GLYPH = '◆'
-// Icons on the pane's status lines. Emoji are two columns wide: measure with `cols`, never `.length`.
+// Icons on the pane's status lines: single-column text glyphs (no emoji, which terminals draw two
+// columns wide and in colour). The theme colours them where they are drawn.
 export const ICON = {
-  agents: '👥', inboxOpen: '📬', inboxEmpty: '📭', checks: '📋', leftover: '🧹',
+  agents: '≡', inbox: '▤', checks: '☰', leftover: '⌫',
   ask: '?',
 } as const
-// Terminal columns of a line: emoji take two, a variation selector or joiner none.
-export const cols = (s: string): number => [...s].reduce((n, ch) => n + (/\p{Emoji_Presentation}/u.test(ch) ? 2 : /[\u200d\ufe0e\ufe0f]/.test(ch) ? 0 : 1), 0)
 // The waiting "?" pulses bright and dim once a second. The phase comes from the clock (like
 // hooks/shimmer.ts), so a redraw never restarts it.
 export const askBright = (now: number): boolean => Math.floor(now / 1000) % 2 === 0

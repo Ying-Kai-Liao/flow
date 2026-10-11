@@ -461,7 +461,7 @@ export function paneRowText(r: PaneRow): string {
 }
 
 // What y and c do on a collapsed card's row; the pane's key line shows it while that row is hot.
-export const groupHint = (g: PaneGroup): string => g.count > 0 ? `y keeps all ${g.count} · c expands` : 'c expands to answer its questions'
+export const groupHint = (g: PaneGroup): string => g.count > 0 ? `y keeps all ${g.count}` : 'expand to answer its questions'
 
 // Why `y`, `w` and a group keep refuse an item, and the explicit way. undefined: the item may be answered by default.
 export function protectedWhy(q: Question): string | undefined {

@@ -460,7 +460,7 @@ test('paneRows: a collapsed owner is one row holding its decisions; questions on
   expect(rows[0]!.ids).toEqual([])
   expect(rows[1]!.ids).toEqual(['d2', 'd1'])
   expect(paneRowText(rows[1]!)).toBe('▸ mgr-a · 2 decisions')
-  expect(groupHint(rows[1]!.group!)).toBe('y keeps all 2 · c expands')
+  expect(groupHint(rows[1]!.group!)).toBe('y keeps all 2')
   // a fold key of a group that is gone does nothing
   expect(paneRows(box, undefined, { 'grp:nobody': false }).length).toBe(3)
 })
