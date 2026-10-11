@@ -17,7 +17,7 @@ register('data:text/javascript,' + encodeURIComponent(
 ))
 
 const root = join(dirname(new URL(import.meta.url).pathname), '..')
-const { EXPORT_FILE, exportJson, formatSize, loadDatasets, sizeBaselines } = await import(pathToFileURL(join(root, 'hooks/decide-eval.ts')).href)
+const { EXPORT_FILE, exportJson, formatRoute, formatSize, loadDatasets, routeBaselines, sizeBaselines } = await import(pathToFileURL(join(root, 'hooks/decide-eval.ts')).href)
 
 const argv = process.argv.slice(2)
 const opt = (name, dflt) => { const i = argv.indexOf(`--${name}`); return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : dflt }
@@ -54,9 +54,14 @@ async function transcriptEvents() {
   const out = []
   for (const file of files) {
     const list = []
+    let fileAgent
     const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity })
     for await (const line of rl) {
-      if (!/CONFLICT \(|"name":"(Agent|Edit|Write|Bash)"|\(fail\)|\d+ pass\b/.test(line)) continue
+      if (fileAgent === undefined && list.length === 0 && /"role":"user"/.test(line)) {
+        const m = /Your name:\s*([\w.-]+)/.exec(line)
+        if (m) { fileAgent = m[1]; list.push({ t: 'owner', name: m[1] }) }
+      }
+      if (!/CONFLICT \(|"name":"(Agent|Edit|Write|Bash|mcp__flow__plan|mcp__flow__ask|mcp__flow__preflight)"|\(fail\)|\d+ pass\b/.test(line)) continue
       let j
       try { j = JSON.parse(line) } catch { continue }
       const c = j.message?.content
@@ -64,7 +69,11 @@ async function transcriptEvents() {
       for (const b of c) {
         if (b.type === 'tool_use') {
           if (b.name === 'Agent') list.push({ t: 'agent', model: String(b.input?.model ?? ''), type: String(b.input?.subagent_type ?? ''), prompt: String(b.input?.prompt ?? '').slice(0, 12000), ...(typeof b.input?.name === 'string' ? { name: b.input.name } : {}) })
-          else if (b.name === 'Edit' || b.name === 'Write') list.push({ t: 'edit' })
+          else if (b.name === 'mcp__flow__plan' && b.input?.action === 'add') list.push({ t: 'flow', tool: 'plan', ...(fileAgent ? { owner: fileAgent } : {}), ids: (b.input.nodes ?? []).map(n => String(n.id)) })
+          else if (b.name === 'mcp__flow__ask' || b.name === 'mcp__flow__preflight') {
+            const owner = typeof b.input?.from === 'string' ? b.input.from : fileAgent
+            if ((b.input?.questions ?? []).some(q => q.blocking === true)) list.push({ t: 'flow', tool: 'ask', ...(owner ? { owner } : {}), blocking: true })
+          } else if (b.name === 'Edit' || b.name === 'Write') list.push({ t: 'edit' })
           else if (b.name === 'Bash' && isEdit(String(b.input?.command ?? ''))) list.push({ t: 'edit' })
         } else if (b.type === 'tool_result') list.push({ t: 'result', id: b.tool_use_id, text: textBlocks(b.content) })
       }
@@ -74,8 +83,16 @@ async function transcriptEvents() {
   return out
 }
 
+// Handover records (mode confirm marks a risky PR), one json per PR.
+function handoverFiles() {
+  try {
+    const dir = join(flowDir, 'handovers')
+    return readdirSync(dir).filter(n => n.endsWith('.json')).map(n => JSON.parse(readFileSync(join(dir, n), 'utf8'))).map(h => ({ branch: h.branch, mode: h.mode }))
+  } catch { return [] }
+}
+
 const rd = async path => { try { return readFileSync(path, 'utf8') } catch { return undefined } }
-const { datasets, units } = await loadDatasets({ read: rel => rd(join(flowDir, rel)), readAbs: rd, maxContinues: MAX_CONTINUES, transcripts: await transcriptEvents(), prs: pullRequests() })
+const { datasets, units } = await loadDatasets({ read: rel => rd(join(flowDir, rel)), readAbs: rd, maxContinues: MAX_CONTINUES, transcripts: await transcriptEvents(), prs: pullRequests(), handovers: handoverFiles() })
 console.log(`flow dir: ${flowDir}\ntranscripts: ${transcriptDir}`)
 for (const d of datasets) {
   const labels = {}
@@ -83,6 +100,7 @@ for (const d of datasets) {
   console.log(`\n== ${d.key}: ${d.records.length} records${d.guard ? ` (+${d.guard.length} must-not-auto-answer)` : ''}; labels ${JSON.stringify(labels)}`)
   for (const note of d.notes) console.log(`   ${note}`)
   if (d.key === 'size') console.log(formatSize(sizeBaselines(d.records)))
+  if (d.key === 'route') console.log(formatRoute(routeBaselines(d.records)))
   for (const r of d.records.slice(0, samples)) console.log(`--- sample ${r.id} (actual: ${r.label}) ---\n${r.text.slice(0, 1200)}${r.text.length > 1200 ? '\n[...]' : ''}`)
 }
 

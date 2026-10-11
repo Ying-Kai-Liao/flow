@@ -3,11 +3,11 @@ import { test } from './support'
 
 import type { DecideIo, FetchLike } from '../hooks/decide'
 import { decide } from '../hooks/decide'
-import { conflictData, exportJson, handoffData, inboxData, loadDatasets, parseExport, parseLog, recordedSize, reportText, runEval, sizeBaselines, sizeData, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
+import { conflictData, exportJson, handoffData, inboxData, loadDatasets, parseExport, parseLog, formatRoute, recordedSize, reportText, routeBaselines, routeData, runEval, sizeBaselines, sizeData, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
 import type { Ask, LogLine, TranscriptEvent } from '../hooks/decide-eval'
 import { decideEvalTool } from '../hooks/decide-eval-run'
 import { parseJev } from '../hooks/jev'
-import { INBOX_ROUTINE_QUESTION } from '../hooks/decide-questions'
+import { INBOX_ROUTINE_QUESTION, ROUTE_QUESTION } from '../hooks/decide-questions'
 
 const item = (id: string, over: Record<string, unknown>) => ({ id, owner: 'w', question: `q ${id}`, options: ['Keep', 'Overturn'], state: 'answered', ...over })
 
@@ -165,7 +165,7 @@ test('decide_eval loads decide-eval-data.json when present and says so; parseExp
 test('loadDatasets and parseLog tolerate missing and torn files', async () => {
   expect(parseLog('{"event":"a"}\nnot json\n').length).toBe(1)
   const { datasets } = await loadDatasets({ read: async () => undefined, readAbs: async () => undefined, maxContinues: 2 })
-  expect(datasets.map(d => d.records.length)).toEqual([0, 0, 0, 0, 0])
+  expect(datasets.map(d => d.records.length)).toEqual([0, 0, 0, 0, 0, 0])
 })
 
 // ---- size ----
@@ -238,4 +238,94 @@ test('decide_eval size: dry run says labelable of total and the key-free sizers;
   expect(out).toContain('size: 7 records')
   expect(out).toContain('labelable with a recoverable prompt: 7')
   expect(out).toContain('always normal')
+})
+
+// ---- route ----
+const mgrPrompt = (name: string, extra = '') => `Your name: ${name}\n${extra}do the thing`
+const mgr = (name: string) => ({ role: 'manager', name, models: tok(1_000_000) })
+const wk = (name: string, manager: string) => ({ role: 'worker', name, manager, branch: `flow/${name}`, models: tok(1_000_000) })
+const mdPr = { state: 'MERGED', files: [{ path: 'docs/a.md', additions: 1, deletions: 0 }] }
+const codePr = { state: 'MERGED', files: [{ path: 'hooks/a.ts', additions: 1, deletions: 0 }] }
+const mgrEv = (n: string, extra = ''): TranscriptEvent => ({ t: 'agent', model: 'opus', type: 'flow:manager', prompt: mgrPrompt(n, extra) })
+const routeSrc = () => ({
+  ledger: {
+    ...Object.fromEntries(['d', 'one', 'two', 'ask', 'back', 'plan', 'succ', 'succ-2', 'mig', 'conf', 'lite', 'docs', 'nopr'].map(n => [`m-${n}`, mgr(n)])),
+    w1: wk('d-a', 'd'), w2: wk('one-a', 'one'), w3: wk('two-a', 'two'), w4: wk('two-b', 'two'), w5: wk('ask-a', 'ask'), w6: wk('back-a', 'back'), w7: wk('plan-a', 'plan'),
+    w8: wk('succ-a', 'succ'), w9: wk('mig-a', 'mig'), w10: wk('conf-a', 'conf'), w11: wk('lite-a', 'lite'), w12: wk('docs-a', 'docs'), w13: wk('nopr-a', 'nopr'), w14: wk('one-a-2', 'one'),
+  },
+  inbox: [item('q9', { owner: 'ask', blocking: true })],
+  transcripts: [
+    [{ t: 'owner', name: 'plan' }, { t: 'flow', tool: 'plan', owner: 'plan', ids: ['plan-a'] }] as TranscriptEvent[],
+    ...['d', 'one', 'two', 'ask', 'back', 'plan', 'succ', 'conf', 'nopr'].map(n => [mgrEv(n)]),
+    [mgrEv('mig', 'add a migration\n')], [mgrEv('docs', 'Size: small - docs\n')], [mgrEv('lite', 'Mode: lite\n')],
+  ],
+  prs: { 'flow/d-a': codePr, 'flow/one-a': codePr, 'flow/one-a-2': codePr, 'flow/two-a': codePr, 'flow/two-b': codePr, 'flow/ask-a': codePr, 'flow/back-a': codePr, 'flow/plan-a': codePr, 'flow/succ-a': codePr, 'flow/mig-a': codePr, 'flow/conf-a': codePr, 'flow/lite-a': codePr, 'flow/docs-a': mdPr, 'flow/nopr-a': { state: 'OPEN', files: [] } } as Record<string, { state: string; files: { path: string; additions: number; deletions: number }[] }>,
+})
+const routeLog: LogLine[] = [{ event: 'back', owner: 'back', pr: 1, branch: 'flow/back-a' }, { event: 'approve', owner: 'conf', pr: 2, branch: 'flow/conf-a' }]
+const routed = (src = routeSrc()) => { const d = routeData({ ...src, log: routeLog, lite: { lite: { name: 'lite', at: 0 } } }); return { d, by: Object.fromEntries(d.records.map(r => [r.id, r.label])) } }
+
+test('route label: one worker with every direct condition is direct; each disqualifier makes it manager+1; two workers is manager+n', () => {
+  const { by } = routed()
+  expect(by['r-d']).toBe('direct')
+  expect(by['r-two']).toBe('manager+n')
+  // a -N worker successor counts as a second worker
+  expect(by['r-one']).toBe('manager+n')
+  // a blocking inbox question, a back event, a plan node and a successor manager each disqualify
+  expect(by['r-ask']).toBe('manager+1')
+  expect(by['r-back']).toBe('manager+1')
+  expect(by['r-plan']).toBe('manager+1')
+  expect(by['r-succ']).toBe('manager+1')
+})
+
+test('route: no merged PR is unlabelable; the hard rule removes migration prompts, confirm-mode tasks and risky files, and counts them', () => {
+  const { d, by } = routed()
+  expect(by['r-nopr']).toBeUndefined()
+  expect(by['r-mig']).toBeUndefined()
+  expect(by['r-conf']).toBeUndefined()
+  expect(d.notes[0]).toContain('"no merged PR":1')
+  expect(d.notes[0]).toContain('excluded by the hard rule: 2 {"prompt":1,"files":0,"confirm":1}')
+  const src = routeSrc()
+  src.prs['flow/d-a'] = { state: 'MERGED', files: [{ path: '.github/workflows/ci.yml', additions: 1, deletions: 0 }] }
+  const r = routed(src)
+  expect(r.by['r-d']).toBeUndefined()
+  expect(r.d.notes[0]).toContain('"files":1')
+})
+
+test('route scoring: agreement, under- and over-shaped are separate; main maps lite to direct; a wrong direct costs more than as run', () => {
+  const { d } = routed()
+  const rows = Object.fromEntries(routeBaselines(d.records).rows.map(r => [r.router, r]))
+  const n = d.records.length
+  expect(rows['always direct']).toMatchObject({ n, agree: 3, under: n - 3, over: 0 })
+  expect(rows['always manager+n']).toMatchObject({ agree: 2, under: 0, over: n - 2 })
+  const main = rows['main (lite = direct)']!
+  expect(main.agree + main.under + main.over).toBe(n)
+  expect(main.agree).toBe(7)
+  expect(main.usd).toBe(main.actualUsd)
+  expect(main.over).toBe(2)
+  expect(Math.abs(rows['always manager+n']!.usd - rows['always manager+n']!.actualUsd)).toBeLessThan(0.0001)
+  expect(rows['always direct']!.usd).toBeGreaterThan(rows['always direct']!.actualUsd)
+})
+
+test('route replay: Jev answers score live, an error falls back to manager+1; the report holds no prompt text', async () => {
+  const { d } = routed()
+  const ask: Ask = async text => (text.includes('Your name: d\n') ? { answer: 'direct', confidence: 0.9 } : { note: 'jev unavailable: timeout' })
+  const [r] = await runEval(ask, [d], unitCosts(ledger), { features: ['route'] })
+  const jev = r!.route!.rows.find(x => x.router === 'jev (answered only)')!
+  expect(jev).toMatchObject({ n: 1, agree: 1, fellThrough: d.records.length - 1 })
+  expect(r!.route!.rows.find(x => x.router === 'jev, else manager+1')!.n).toBe(d.records.length)
+  expect(JSON.stringify(r)).not.toContain('do the thing')
+  expect(reportText({ provider: 'jev', at: 'now', features: [r!] })).toContain('under-shaped')
+})
+
+test('route: the collapsed table counts needless-manager and wrongly-direct apart, and the answer keys with a plus sign parse', () => {
+  const { d } = routed()
+  const rows = Object.fromEntries(routeBaselines(d.records).rows.map(r => [r.router, r]))
+  expect(rows['always direct']).toMatchObject({ agree2: 3, needless: 0, wronglyDirect: d.records.length - 3 })
+  expect(rows['always manager+1']).toMatchObject({ agree2: d.records.length - 3, needless: 3, wronglyDirect: 0 })
+  expect(rows['main (lite = direct)']!.usd2).toBe(rows['main (lite = direct)']!.actualUsd)
+  expect(formatRoute(routeBaselines(d.records))).toContain('direct vs any manager')
+  for (const choice of ['direct', 'manager+1', 'manager+n']) {
+    expect(parseJev({ answers: { route: { choice, confidence: 0.9 } } }, ROUTE_QUESTION)).toEqual({ answer: choice, confidence: 0.9 })
+  }
+  expect(parseJev({ answers: { route: { choice: 'manager', confidence: 0.9 } } }, ROUTE_QUESTION)).toEqual({ note: 'jev unavailable: unknown choice' })
 })
