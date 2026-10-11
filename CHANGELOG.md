@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Plugin and marketplace description now reads "Jev-assisted agent orchestration for Claude Code" (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`)
+
 ## [0.6.54] - 2026-10-12
 
 ### Changed
