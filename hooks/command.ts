@@ -1,7 +1,7 @@
 import type { AgentRow, Handover, LogEvent } from '../types'
 import type { settingsOf } from './settings'
 import type { Inbox } from './inbox'
-import { expandOk, findItem, isFyi, OVERTURN, renderInbox, renderItem, stillOpen } from './inbox'
+import { expandOk, findItem, isFyi, OVERTURN, renderArchive, renderInbox, renderItem, stillOpen } from './inbox'
 import { termWidth } from './table'
 import { CHECKS_USAGE, closeChecks, inboxChecksSection, renderCheckDetail, renderChecksTable, resumeChecksLines } from './checks'
 import type { Checks } from './checks'
@@ -22,6 +22,8 @@ type Settings = ReturnType<typeof settingsOf>
 export type CommandIo = {
   now: () => Promise<number>
   inbox: () => Promise<Inbox>
+  // The noteKeys of agents that are over, to fold their decisions in /flow inbox.
+  endedOwners?: () => Promise<Set<string>>
   checks: () => Promise<Checks>
   answerQuestion: (wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user: boolean) => Promise<string>
   withChecks: <T>(fn: (cur: Checks) => { checks: Checks; out: T }) => Promise<T>
@@ -68,10 +70,14 @@ export async function flowCommand(
       const box = await io.inbox()
       const now = await io.now()
       if (w.length === 1 && /^[qd]\d+$/i.test(w[0]!)) return { text: renderItem(box, w[0]!, now) }
+      if (w[0] === 'archive') {
+        if (w.length > 2 || (w.length === 2 && w[1] !== 'all')) return { text: 'Usage: /flow inbox archive [all]' }
+        return { text: renderArchive(box, now, w[1] === 'all') }
+      }
       // `all` is the older spelling of `decisions`: both list every decision.
-      if (w.length > 1 || (w.length === 1 && w[0] !== 'all' && w[0] !== 'decisions')) return { text: 'Usage: /flow inbox, /flow inbox decisions (every decision), /flow inbox <id> (one item in full)' }
+      if (w.length > 1 || (w.length === 1 && w[0] !== 'all' && w[0] !== 'decisions')) return { text: 'Usage: /flow inbox, /flow inbox decisions (every decision), /flow inbox archive [all] (answered items), /flow inbox <id> (one item in full)' }
       const sec = inboxChecksSection(await io.checks(), installed)
-      return { text: [renderInbox(box, now, { all: w.length === 1, width: termWidth() }), ...sec].join('\n') }
+      return { text: [renderInbox(box, now, { all: w.length === 1, width: termWidth(), ended: await io.endedOwners?.() }), ...sec].join('\n') }
     }
     if (/^(ok|no|answer)(\s|$)/.test(arg)) {
       const [verb = ''] = arg.split(/\s+/)

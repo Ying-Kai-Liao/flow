@@ -140,7 +140,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   env and guard items tagged NEEDS YOU) with the options on one line (default marked) and age, the decisions
   as one flat table (id, from, headline, age; newest first, the newest 15 and a `+M more` line, `/flow inbox decisions`
   lists all), then what standing answers did. Rows never wrap and headlines are cut with an ellipsis;
-  `/flow inbox <id>` prints one item in full, with its why. Nothing is grouped or folded away, and nothing expires or is acked by itself. `status` and the Flow pane show the open inbox first. An agent
+  `/flow inbox <id>` prints one item in full, with its why. Routine decisions (topics `worker-size`, `manager-size`) and those of agents that are over are folded into one line (`/flow inbox decisions` lists them, `/flow ok` keeps them with the rest); nothing expires or is acked by itself. `/flow inbox archive` lists what was answered, newest first (50; `archive all` for every one). `status` and the Flow pane show the open inbox first. An agent
   with an open blocking question shows as asking in the pane, the toasts and the task graph.
 - You answer from the prompt: `/flow ok` keeps every open decision, `/flow ok d10 d11` or `/flow ok <owner|topic>`
   keeps those (an ordinary question named by id takes its default), `/flow no d12 <what instead>` undoes
@@ -155,7 +155,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   and `why:`. Keys: `j`/`k` move, `1`-`9` or `a`-`h` pick that option of the highlighted item, `y` takes a
   question's default or keeps a decision, `w` keeps all open decisions, `n` undoes the
   highlighted decision (with what you typed in the answer field as "what instead"), `r` types a free-text answer
-  (Enter sends), `i` goes back. Deploy, env, push and guard items are never
+  (Enter sends), `x` folds or expands the group of routine decisions, `v` opens the archive, `i` goes back. Pressing a row opens the item as a large card (also from an open question or decision listed in the tree): full text and why, who asked and for whom, the asker's status, every option as a button (digits and `a`-`h` except `b`, which is Back), the input for your own words (a decision's input is "what instead"), `y`, `n`, `j`/`k`; after an answer the next card opens. The archive's cards are read-only. Deploy, env, push and guard items are never
   answered by `y` or `w`: only their own digit or letter, or free text, answers them. Every answer
   goes through the same path as the `/flow` commands.
   The addressee answers with `mcp__flow__answer` (you, from the prompt or the pane, may answer anything): your main session for managers' questions (tell it "defaults", "1 b,

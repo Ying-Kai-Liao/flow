@@ -96,7 +96,7 @@ test('the manager answers: the worker is told, the decision is noted, the inbox 
   expect(msg?.text).toContain('Which format?')
   expect(msg?.text).toContain('tsv')
   expect(notes(w.files)).toContain('decision: "q1 Which format?: tsv"')
-  expect(await inbox($)).toBe('No open questions.')
+  expect(await inbox($)).toBe('No open questions.\nArchive: 1 answered item (/flow inbox archive).')
 })
 
 test('main answers a manager\'s questions with defaults; a non-blocking default sends no message', async ($, on) => {
@@ -159,7 +159,7 @@ test('a decision is recorded quietly, listed, and acked with defaults without a 
   expect(text).toMatch(/d1 +csv-worker +Use a 30 s timeout +0 min/)
   expect(await answer($, 'm1', { defaults: true })).toContain('d1: Keep (default)')
   expect(w.sent).toEqual([])
-  expect(await inbox($)).toBe('No open questions.')
+  expect(await inbox($)).toBe('No open questions.\nArchive: 1 answered item (/flow inbox archive).')
 })
 
 test('undoing a decision messages the owner; with the owner gone, its manager', async ($, on) => {
@@ -351,7 +351,7 @@ test('main answers the manager question: the worker question is answered and bot
   expect(await answer($, null, { answers: [{ id: 'q2', choice: 'tsv' }] })).toContain('q2: tsv')
   expect(w.sent.find(s => s.to === 'w1')?.text).toContain('main (via csv-export) answered q1')
   expect(w.sent.find(s => s.to === 'm1')?.text).toContain('q2')
-  expect(await inbox($)).toBe('No open questions.')
+  expect(await inbox($)).toBe('No open questions.\nArchive: 2 answered items (/flow inbox archive).')
   w.sent.length = 0
   expect(await answer($, null, { answers: [{ id: 'q1', choice: 'csv' }] })).toContain('already answered')
   expect(w.sent).toEqual([])
@@ -376,7 +376,7 @@ test('the manager may still answer its escalated worker question: it closes the 
   expect(r).not.toContain('refused')
   await w.clock.advance(5)
   expect(w.submitted.join('\n')).toContain('closes its escalation q2')
-  expect(await inbox($)).toBe('No open questions.')
+  expect(await inbox($)).toBe('No open questions.\nArchive: 2 answered items (/flow inbox archive).')
 })
 
 test('for must name an open question addressed to the asking manager; the batch is refused whole', async ($, on) => {
