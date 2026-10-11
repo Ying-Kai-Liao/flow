@@ -26,7 +26,7 @@ import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fil
 import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
 import { decide, sourceOf } from './decide'
-import type { DecideSettings, FetchLike } from './decide'
+import type { DecideIo, DecideSettings, FetchLike } from './decide'
 import type { Routed, SpawnIo } from './spawn'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
@@ -49,8 +49,10 @@ import type { Check, Checks } from './checks'
 import type { Inbox, Marked, Question } from './inbox'
 import { addGuardTest, loadRules, offerSeedsOnce, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
+import { decideEvalTool } from './decide-eval-run'
+import type { DecideEvalIo } from './decide-eval-run'
 import { DEMO_TOOL, SETTINGS_TOOL } from './init-tools'
-import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
+import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
 import { detect as initDetect, firstRun, HINT as INIT_HINT, settingsTool, writeMarker } from './init'
 import type { InitIo } from './init'
 import { advance as demoAdvance, answer as demoAnswer, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
@@ -1281,10 +1283,25 @@ function spawnIoOf($: EngineInterface): SpawnIo {
 // The decision API for sizing (decision_api jev or openai); undefined when off, so nothing touches the network.
 function jevOf($: EngineInterface, settings: DecideSettings): SizeJev | undefined {
   if (settings.decisionApi === undefined || settings.decisionApi === 'off') return undefined
+  const io = decideIoOf($)
+  return sizeWith((text, q) => decide(io, settings, text, q), sourceOf(settings))
+}
+
+// The engine's fetch and timer as the decision API takes them.
+function decideIoOf($: EngineInterface): DecideIo {
   const fetch: FetchLike = (url, init) => $.http.fetch(url, { method: init.method, headers: init.headers, body: init.body })
     .then(r => ({ ok: r.ok, status: r.status, json: async () => JSON.parse(r.text) as unknown }))
-  const io = { fetch, after: (ms: number, fn: () => void) => $.clock.after(ms, fn) }
-  return sizeWith((text, q) => decide(io, settings, text, q), sourceOf(settings))
+  return { fetch, after: (ms: number, fn: () => void) => $.clock.after(ms, fn) }
+}
+
+function decideEvalIoOf($: EngineInterface): DecideEvalIo {
+  return {
+    stateDir: () => stateDir($),
+    readFile: path => $.fs.read(path).then(String, () => undefined),
+    writeFile: async (path, text) => { await $.fs.write(path, text) },
+    decideIo: decideIoOf($),
+    now: () => $.clock.now(),
+  }
 }
 
 // Starts a reviewer unless one is live. The reviewer drains every pending handover, then ends;
@@ -1957,6 +1974,7 @@ export const register: Register = (on, options) => {
     await $.tool.register(SESSION_TOOL)
     await $.tool.register(SETTINGS_TOOL)
     await $.tool.register(DEMO_TOOL)
+    await $.tool.register(DECIDE_EVAL_TOOL)
 
     $.clock.every(POLL_MS, () => {
       void refresh($)
@@ -2282,6 +2300,8 @@ export const register: Register = (on, options) => {
   }).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__settings' }, ($, e) => settingsTool(initIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+
+  on('tool.call', { tool: 'mcp__flow__decide_eval' }, async ($, e) => ({ result: await decideEvalTool(decideEvalIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId) })).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__demo' }, ($, e) => demoTool($, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 

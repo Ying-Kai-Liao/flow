@@ -10,12 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Inbox list: every row is one line of the pane width (single "…"), decisions sit under a dim "owner · N" header with a dim id, the folded group reads "▸ 5 routine (labels)" with its keys hint in the footer, the preview and card get a dim rule, a header line and dim labels, and the footer is a nav row plus a keys row that are always visible (`hooks/pane-view.tsx`, `hooks/inbox.ts`)
+## [0.6.56] - 2026-10-12
+
+### Changed
+
+- Decision-API eval: four questions and a replay tool (decide_eval) (#145)
 
 ## [0.6.55] - 2026-10-12
 
 ### Changed
 
 - Plugin and marketplace description now reads "Jev-assisted agent orchestration for Claude Code" (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`)
+### Added
+
+- `hooks/decide-questions.ts`: four decision-API questions (`inbox_routine`, `test_failure`, `merge_conflict`, `handoff_next`) with pure text builders; `hooks/decide-eval.ts` replays real flow history through them; the main-only deferred tool `decide_eval` runs that replay with the `decision_api` key from /config and reports agreement, fall-through, confidence and estimated savings per question (no key, no record text in its output file); `scripts/decide-eval.mjs` is its dry run. `decide()` takes an optional `minConfidence`. Nothing is wired into the plugin yet
 
 ## [0.6.54] - 2026-10-12
 
