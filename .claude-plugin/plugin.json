@@ -150,6 +150,19 @@
       "default": "haiku",
       "options": ["haiku", "sonnet", "opus"]
     },
+    "size_model": {
+      "type": "string",
+      "title": "Size model",
+      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev classifier decides the size at spawn (the brief text is sent to api.typesafe.ai; key from JEV_API_KEY or ~/.config/jev/env); the Size line is the fallback if Jev is unavailable.",
+      "default": "off",
+      "options": ["off", "jev"]
+    },
+    "jev_model": {
+      "type": "string",
+      "title": "Jev model",
+      "description": "Advanced: Jev model name used when size_model is jev.",
+      "default": "jev-latest"
+    },
     "conflict_model": {
       "type": "string",
       "title": "Conflict model",

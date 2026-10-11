@@ -22,6 +22,9 @@ import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
 import { backNote } from './routing'
 import { checkAttachments, CONTINUE_LINE, continuingCount, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
+import type { SizeJev } from './spawn'
+import { askJev, JEV_ENV_FILE, jevConfig } from './jev'
+import type { FetchLike } from './jev'
 import type { Routed, SpawnIo } from './spawn'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
@@ -1062,6 +1065,16 @@ function spawnIoOf($: EngineInterface): SpawnIo {
   }
 }
 
+// The optional size classifier (size_model jev); undefined when off, so nothing touches the network.
+function jevOf($: EngineInterface, settings: { sizeModel?: string; jevModel?: string }): SizeJev | undefined {
+  if (settings.sizeModel !== 'jev') return undefined
+  return async prompt => {
+    const home = process.env.HOME
+    const file = home === undefined ? undefined : await $.fs.read(`${home}/${JEV_ENV_FILE}`).catch(() => undefined)
+    return askJev(fetch as unknown as FetchLike, jevConfig(process.env, file), settings.jevModel ?? 'jev-latest', prompt)
+  }
+}
+
 // Starts a reviewer unless one is live. The reviewer drains every pending handover, then ends;
 // the next handover, or a reviewer that ended with work left, starts a fresh one.
 // Calls run one after another: handovers arriving back to back must not each see "no queue yet".
@@ -1740,11 +1753,11 @@ export const register: Register = (on, options) => {
     // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
     let routed: Routed | undefined
     if (e.subagentType === WORKER) {
-      const r = await routeWorker(spawnIoOf($), e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel })
+      const r = await routeWorker(spawnIoOf($), e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel }, jevOf($, settings))
       e = r.e
       routed = r.routed
     } else if (e.subagentType === MANAGER) {
-      const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModel)
+      const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModel, jevOf($, settings))
       e = r.e
       routed = r.routed
     } else if (e.subagentType === 'Explore' && e.model === undefined && e.parentAgentId !== undefined) {
