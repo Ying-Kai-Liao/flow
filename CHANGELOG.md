@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The pane's answer input and hotkey row (inbox, question card, tree, archive, PR and batch cards) are pinned to the bottom of the visible pane and always shown; long content is clipped above them instead of pushing them off screen.
+
 ### Added
 
 - A logo: an f drawn as three parallel lanes with one green crossbar. It is the new plugin icon and appears at the top of the README. Logo files, a social preview image and usage notes are in `docs/brand/`.
