@@ -104,6 +104,24 @@ An unknown key, bad JSON or a wrong type is a warning (shown as a toast) and the
 
 The files are checked every few seconds by modification time. New settings apply to agents started afterwards; running agents keep their prompts.
 
+### /flow init
+
+`/flow init` is a re-runnable onboarding for a new repo: a short walkthrough of the roles and commands, a demo, and the Core settings. Running it again shows the current settings and lets you change them.
+
+- `/flow init`: walkthrough, then the demo (skippable), then settings. `/flow init settings` jumps to the settings, `/flow init demo` starts the replay, `/flow init demo live` runs the real demo, `/flow init demo stop` ends the replay. Any part writes the marker file.
+- The command returns the detected facts as text and hidden instructions for the main session, then submits a short prompt so the main session follows the `flow:init` skill. The replay itself needs no model turn.
+- **Detected, never guessed:** test and check command candidates from `package.json` scripts (`test`, `check`, `lint`, `typecheck`, `build`; the package manager from the lockfile: pnpm, yarn, bun or npm), Makefile targets (`test`, `check`), `pyproject.toml` (`pytest`), `Cargo.toml` (`cargo test`) and `go.mod` (`go test ./...`); the base branch; whether the repo has a remote; whether `gh` is installed and logged in; and the value of each Core key in every settings layer. Candidates are suggestions: nothing is written unless you choose it.
+- **The demo replay is free.** It draws canned manager, worker and reviewer cards in the Flow pane (labelled DEMO), with a question and a decision you answer on the pane's own large card, a PR handed over and merged, and a report. No agent starts, no model is called, nothing is written, and none of it mixes with real handovers or inbox items. Keys: `m` next step, `x` stop. Its state is one in-memory atom: stopping, finishing or restarting the session clears it.
+- **The real demo uses tokens.** `/flow init demo live` (the skill offers it after the replay) starts a real manager `flow-demo` and worker `flow-demo-hello`, which commit a one-line `flow-demo.md` on their own branch in their own worktree. Nothing is pushed, no PR is opened, there is no handover and so no reviewer step, and the base branch is not touched. The skill then removes the worktree and the `flow/flow-demo*` branch with the `demo` tool. With `gh` logged in and a remote, it can also offer a draft PR titled "flow demo (safe to close)", closed and deleted afterwards.
+- **Marker and hint:** `<git-common-dir>/flow/init-done` records that init ran in this repo. While neither settings file exists and the marker is missing, a new session shows one line: "New to flow? Run /flow init for a walkthrough, a demo and settings."
+
+Tools (main only, both deferred; load with ToolSearch, e.g. `select:mcp__flow__settings,mcp__flow__demo`):
+
+- `settings`: action `show` lists what init detected and the Core settings in each layer. Action `write` takes `layer` (`repo`: `.claude/flow.json`, committed and shared; `personal`: `<git-common-dir>/flow/config.json`, uncommitted) and `values` (setting names to values; `null` removes a key). It merges into the existing file, keeps other keys, and writes 2-space JSON. It refuses (and writes nothing for the whole call) unknown keys, values of the wrong kind, values outside a setting's allowed choices, nested settings (`deploy_targets`, `guard_tests`, ...: edit those by hand), Fable models, and anything that looks like a key or secret: API keys stay in env or `~/.config` files, never in settings. A file that is not valid JSON is shown and never overwritten. The files are reloaded within a few seconds, as for a hand edit. Commit the repo file to share it.
+- `demo`: action `start` / `stop` for the replay, `status`, and `cleanup` (after a real demo: removes its worktree and `flow/flow-demo*` branches only, refused while a demo agent is running).
+
+Advanced settings are only mentioned by init, with a pointer here: `size_model` and the decision API (keys in env, never in settings), `deploy_targets`, `guard_tests`, and standing answers.
+
 ## Without Orca
 
 Orca is an optional place to run session workers; flow does not need it. Nothing here changes setting names or defaults.
@@ -263,7 +281,8 @@ stops a tool call.
   lite.json                managers started in lite mode (see Lite mode)
   checks.json              person checks and their follow-ups (see Person checks)
   ledger.json              tokens spent per agent and model (see Cost meter)
-  config.json              not state: the settings loader's file, never touched by flow
+  config.json              not state: the settings loader's file, written only by the settings tool (/flow init)
+  init-done                marker: /flow init was run in this repo (silences the first-run hint)
 ```
 
 - `handovers/<pr>.json`: `{version: 1, pr, title, head, branch, reportTo, verified, pending,

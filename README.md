@@ -38,7 +38,11 @@ In a Claude Code session:
 
 ## Your first run
 
-Ask for work in your main session:
+Run `/flow init`. It walks you through how flow works, shows a demo (a free replay in the Flow pane,
+or a real run that uses tokens) and sets the few settings that matter, detecting your test command
+and base branch for you. Run it again any time to see or change your settings.
+
+Then ask for work in your main session:
 
 ```
 Add CSV export to the reports page, and fix the login redirect loop.
@@ -60,6 +64,7 @@ fix X" is enough.
 
 | Command | What it does |
 |---|---|
+| `/flow init` | A walkthrough, a demo and your settings. `/flow init settings` and `/flow init demo` jump to a part (the replay is free; `/flow init demo live` runs it for real and uses tokens). |
 | `/flow` | Opens the pane: managers, workers, and what needs you first. |
 | `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the decisions agents made as one flat table (newest 15; routine `worker-size` / `manager-size` decisions and those of finished agents are folded into one line; `/flow inbox decisions` lists all, `/flow inbox d12` one item in full) and what standing answers did. `/flow inbox archive` lists the answered questions and kept or undone decisions, newest first (50; `/flow inbox archive all` lists every one). |
 | `/flow ok [d10 d11 \| owner \| topic]` | Keeps decisions (no words: every open decision) or takes the default of an ordinary question. Never answers a deploy, push, env or guard item. |

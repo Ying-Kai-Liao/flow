@@ -465,6 +465,8 @@ declare module 'claude-code' {
       // A control pressed once that needs a second press: "<session>:<action>", and when.
       armed: { key: string; at: number } | null
       forwarded: { keys: Record<string, string[]>; lines: Record<string, string[]> }
+      // The /flow init demo replay (hooks/demo-replay.ts); null when none runs. Never persisted.
+      demo: { step: number; answers: Record<string, string>; askedAt: Record<string, number>; gen: number; startedAt: number } | null
     }
   }
 }
