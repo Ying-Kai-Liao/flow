@@ -1,4 +1,4 @@
-import type { Activity, AgentRow, Handover, Ledger, LogEvent, Leftovers, OpenPr, PrCache, TestSlots } from '../types'
+import type { Activity, AgentRow, Breaker, Handover, Ledger, LogEvent, Leftovers, OpenPr, PrCache, TestSlots } from '../types'
 import type { Settings } from './prompts'
 import { phaseOf } from './preflight'
 import type { Preflight } from './preflight'
@@ -10,6 +10,7 @@ import { leftoverLine } from './clean'
 import { behindLines } from './deploy'
 import type { Deploys } from './deploy'
 import { renderBatch } from './pushgate'
+import { breakerLine } from './reviewer-breaker'
 import type { PushState } from './pushgate'
 import { baseName, prCost, reportSuffix } from './cost'
 import { evidenceSummary } from './evidence'
@@ -41,6 +42,7 @@ export type StatusIo = {
   slots: () => Promise<TestSlots>
   offerSeeds: () => Promise<string[]>
   pushState: () => Promise<PushState>
+  breaker: () => Promise<Breaker>
   deploys: () => Promise<Deploys>
   behind: () => Promise<Record<string, number>>
   limitsLine: (rows: AgentRow[], workers: number) => string
@@ -126,6 +128,7 @@ export async function statusTool(io: StatusIo, settings: Settings, input: Record
     const slots = scope === 'worker' ? '' : slotLine(await io.slots(), settings.testSlots, await io.now())
     const seeds = agentId === undefined ? await io.offerSeeds() : []
     const gate = scope === 'all' ? (await io.pushState()).batch : undefined
+    const breaker = scope === 'worker' ? undefined : breakerLine(await io.breaker(), await io.now())
     const batchLines = gate?.state === 'ready' ? renderBatch(gate) : []
     const pushing = gate !== undefined && gate.state !== 'ready' ? renderBatch(gate) : []
     return {
@@ -142,6 +145,7 @@ export async function statusTool(io: StatusIo, settings: Settings, input: Record
           list.length ? 'Handed-over PRs:' : 'No PRs handed over.',
           ...shown.map(h => `${handoverLine(h, FINISHED_REPORT_MAX)}${h.report?.includes('| cost:') ? '' : reportSuffix(prCost(led, h.branch))}`),
           ...(hidden > 0 ? [`+${hidden} earlier finished PRs (mcp__flow__status pr:<n> for one)`] : []),
+          ...(breaker === undefined ? [] : [breaker]),
         ]),
         ...(unhanded.length ? [
           'Needs attention:', ...unhanded.map(u => `  ${unhandedLine(u)}`),

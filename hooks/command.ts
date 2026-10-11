@@ -34,6 +34,8 @@ export type CommandIo = {
   close: () => Promise<unknown>
   open: () => Promise<unknown>
   gatherLeftovers: (base: string, resumed: Set<string>) => Promise<Gathered>
+  // Ends a reviewer halt or back-off (true when it was halted).
+  releaseReviewerHalt: () => Promise<boolean>
   pushState: () => Promise<PushState>
   after: (ms: number, fn: () => void) => void
   submit: (text: string) => Promise<unknown>
@@ -138,9 +140,12 @@ export async function flowCommand(
     }
     if (arg === 'resume') {
       const found = await io.gatherLeftovers(settings.base, resumed)
+      // A fresh attempt for a reviewer that kept failing to start.
+      const halted = await io.releaseReviewerHalt()
+      if (halted) void io.ensureQueue().catch(() => undefined)
       // A batch the user has not pushed yet comes first; no manager is started for it.
       const batchLines = pushLines(await io.pushState())
-      const waiting = batchLines.length === 0 ? [] : ['Needs you (a checked batch awaits your push; no manager is started for it):', ...batchLines]
+      const waiting = [...(halted ? ['Reviewer halt cleared: a reviewer starts if handovers are pending.'] : []), ...(batchLines.length === 0 ? [] : ['Needs you (a checked batch awaits your push; no manager is started for it):', ...batchLines])]
       if (found.error !== undefined && found.items.length === 0) return { text: [...waiting, found.error].join('\n') }
       const lines = (kind: Leftover['kind'], title: string) => {
         const rows = found.items.filter(i => i.kind === kind)

@@ -1,4 +1,4 @@
-import type { AgentRow, Check, Deploys, Handover, Inbox, LogEvent } from '../types'
+import type { AgentRow, Breaker, Check, Deploys, Handover, Inbox, LogEvent } from '../types'
 import { evidenceText } from './evidence'
 import { deleteMergedBranch } from './branchdelete'
 import { noteWork, serialFastForward } from './mainff'
@@ -9,6 +9,8 @@ import type { PushState } from './pushgate'
 import { envSummary, itemViewOf } from './deploy'
 import { SKIP_NOTE } from './checks'
 import { withFailed, withFlaky } from './testfail'
+import { CAP_ERROR, clearHalt, decide, endRun, isRetry, normalizeBreaker, openHaltItem, REVIEWER_KIND, startRun } from './reviewer-breaker'
+import type { RunEnd } from './reviewer-breaker'
 import { isReviewer, mirror, REVIEWER } from './core'
 import { LIVE } from './deliver'
 import type { Ran } from './session-run'
@@ -141,6 +143,94 @@ export type QueueIo = {
   runs: () => Promise<number>
   setRuns: (n: number) => Promise<unknown>
   spawn: (input: { subagentType: string; name: string; description: string; prompt: string }) => Promise<{ deny?: string }>
+  breaker: BreakerIo
+  // Calls ensureQueue again after ms (one timer at a time; the caller dedupes).
+  wait: (ms: number) => void
+}
+
+// What the respawn circuit breaker (reviewer-breaker.ts) works through: its state file, the clock and the inbox.
+export type BreakerIo = {
+  stateDir: () => Promise<string | undefined>
+  readJson: (path: string) => Promise<unknown>
+  writeJson: (path: string, obj: unknown) => Promise<unknown>
+  mkdir: (dir: string) => Promise<unknown>
+  get: () => Promise<Breaker>
+  set: (b: Breaker) => Promise<void>
+  now: () => Promise<number>
+  withInbox: <T>(fn: (cur: Inbox) => { inbox: Inbox; out: T }) => Promise<T>
+  toast: (text: string) => void
+}
+
+// Breaker changes run one after another, like the push state's.
+let breakerChain: Promise<unknown> = Promise.resolve()
+export function withBreaker<T>(io: BreakerIo, fn: (cur: Breaker) => { breaker: Breaker; out: T }): Promise<T> {
+  const run = async (): Promise<T> => {
+    const dir = await io.stateDir()
+    const cur = dir === undefined ? await io.get() : normalizeBreaker(await io.readJson(`${dir}/reviewer-breaker.json`))
+    const { breaker: next, out } = fn(cur)
+    if (next !== cur) {
+      if (dir !== undefined) {
+        await io.mkdir(dir)
+        await io.writeJson(`${dir}/reviewer-breaker.json`, next)
+      }
+      await io.set(next)
+    }
+    return out
+  }
+  const result = breakerChain.then(run, run)
+  breakerChain = result.catch(() => undefined)
+  return result
+}
+
+// A reviewer ended. When it was the run the plugin started and it counts as a failure, the breaker records it; the
+// third short run in a row halts the queue and puts one item in front of main.
+export async function noteReviewerEnd(io: BreakerIo, e: Omit<RunEnd, 'now'>): Promise<void> {
+  const now = await io.now()
+  const halted = await withBreaker(io, cur => {
+    const r = endRun(cur, { ...e, now })
+    return { breaker: r.breaker, out: r.halted ? r.breaker.halt : undefined }
+  })
+  if (halted === undefined) return
+  await announceHalt(io, halted.error, now)
+}
+
+// One inbox item for a halt, whatever caused it; an item still open is reused, and the breaker remembers its id.
+async function announceHalt(io: BreakerIo, error: string, now: number): Promise<void> {
+  const q = await io.withInbox(cur => {
+    const open = cur.items.find(x => x.state === 'open' && x.kind === REVIEWER_KIND)
+    if (open !== undefined) return { inbox: cur, out: open }
+    const r = openHaltItem(cur, error, now)
+    return { inbox: r.inbox, out: r.q }
+  })
+  await withBreaker(io, cur => (cur.halt === undefined || cur.halt.qid === q.id ? { breaker: cur, out: undefined } : { breaker: { ...cur, halt: { ...cur.halt, qid: q.id } }, out: undefined }))
+  io.toast(`Reviewer halted: ${error}. ${q.id} in /flow inbox.`)
+}
+
+// Retry, /flow resume and a new session: the halt and the wait end, and its open item with them. Returns whether
+// the queue was halted.
+export async function releaseHalt(io: BreakerIo, by: string): Promise<boolean> {
+  const was = await withBreaker(io, cur => ({ breaker: cur.halt === undefined && cur.endedAt === undefined ? cur : clearHalt(cur), out: cur.halt !== undefined }))
+  const at = await io.now()
+  await io.withInbox(cur => {
+    const open = cur.items.filter(x => x.state === 'open' && x.kind === REVIEWER_KIND)
+    if (open.length === 0) return { inbox: cur, out: undefined }
+    const ids = new Set(open.map(x => x.id))
+    return { inbox: { ...cur, items: cur.items.map(x => (ids.has(x.id) ? { ...x, state: 'answered' as const, answer: 'cleared', answeredBy: by, answeredAt: at, delivered: true } : x)) }, out: undefined }
+  })
+  return was
+}
+
+// The answer to the halt item: "retry" starts a reviewer if work is pending; anything else leaves the queue halted.
+export async function onReviewerAnswer(io: BreakerIo, ensureQueue: () => Promise<string>, answer: string, by: string): Promise<string> {
+  if (!isRetry(answer)) {
+    // Still halted: a fresh item keeps the retry in front of main (like the push item's "not yet").
+    const b = await currentBreaker(io)
+    if (b.halt === undefined) return ''
+    await announceHalt(io, b.halt.error, await io.now())
+    return ' The queue stays halted; the item is asked again, and /flow resume or a new session also retries.'
+  }
+  await releaseHalt(io, by)
+  return ` ${await ensureQueue()}`
 }
 
 // Starts a reviewer unless one is live (register.tsx's ensureQueue serialises the calls).
@@ -157,6 +247,19 @@ export async function startQueue(io: QueueIo): Promise<string> {
   if (pending.length === 0 && dueTargets.length === 0 && !pushDue) {
     return batch === undefined ? 'Nothing pending.' : `Batch ${batch.id} awaits the user's /flow push; new handovers wait behind it.`
   }
+  // The respawn circuit breaker: a halted queue waits for main, and a start soon after a failed one waits its turn.
+  const now = await io.breaker.now()
+  const d = decide(await currentBreaker(io.breaker), now)
+  if (d.kind === 'halt') return 'The reviewer is halted after repeated failed starts; handovers wait for the retry (see the inbox or /flow resume).'
+  if (d.kind === 'cap') {
+    await withBreaker(io.breaker, cur => (cur.halt !== undefined ? { breaker: cur, out: undefined } : { breaker: { ...cur, halt: { at: now, error: CAP_ERROR } }, out: undefined }))
+    await announceHalt(io.breaker, CAP_ERROR, now)
+    return `The reviewer is halted: ${CAP_ERROR}; handovers wait for the retry.`
+  }
+  if (d.kind === 'wait') {
+    io.wait(d.ms)
+    return `Backing off: the next reviewer starts in ${Math.ceil(d.ms / 1000)}s.`
+  }
   const n = (await io.runs()) + 1
   await io.setRuns(n)
   const started = await io.spawn({
@@ -166,5 +269,12 @@ export async function startQueue(io: QueueIo): Promise<string> {
     prompt: `Pending handovers: ${batch !== undefined ? 'wait behind the batch' : pending.length === 0 ? 'none' : pending.map(h => `#${h.pr}`).join(', ')}.${dueTargets.length === 0 ? '' : ` Deploy-only work due: ${dueTargets.join(', ')}.`}${batch === undefined ? '' : batch.state === 'ready' ? ` Batch ${batch.id} awaits the user's push: leave it alone.` : ` ${batch.state === 'pushing' ? 'Push run' : 'Rebuild run'} for batch ${batch.id}: see "Push run" in your instructions.`} Start with mcp__flow__deploy action "list" and mcp__flow__reviewer action "list".`,
   })
   if (started.deny !== undefined) return `Could not start a reviewer: ${started.deny}`
+  await withBreaker(io.breaker, cur => ({ breaker: startRun(cur, `reviewer-${n}`, now), out: undefined }))
   return `Started reviewer reviewer-${n}.`
+}
+
+// The breaker as the disk has it (the atom when there is no state dir).
+async function currentBreaker(io: BreakerIo): Promise<Breaker> {
+  const dir = await io.stateDir()
+  return dir === undefined ? io.get() : normalizeBreaker(await io.readJson(`${dir}/reviewer-breaker.json`))
 }

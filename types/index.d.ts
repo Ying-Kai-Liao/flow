@@ -226,7 +226,8 @@ export type Question = {
   // 'env' asks the user about one env/secret change on a deploy target (or a step they do themselves);
   // like 'deploy', only a rule that names the kind answers it.
   // 'push' asks the user to push one ready batch (hooks/pushgate.ts); standing answers never answer it.
-  kind?: 'question' | 'fyi' | 'deploy' | 'env' | 'push'
+  // 'reviewer' asks main to retry a reviewer that kept failing to start (hooks/reviewer-breaker.ts); standing answers never answer it.
+  kind?: 'question' | 'fyi' | 'deploy' | 'env' | 'push' | 'reviewer'
   // Only on kind 'env': which part of an env change this item is. 'change' asks to set NAME=value, 'secret' asks
   // the user to set a secret themselves, 'login' is a step they do first, 'apply' asks them to apply an approved
   // value themselves (the target has no env_command). Never carries a secret value (there is none).
@@ -348,6 +349,22 @@ export type ReadyBatch = {
 }
 export type PushState = { batch?: ReadyBatch }
 
+// The reviewer respawn circuit breaker's state (hooks/reviewer-breaker.ts), kept in <state dir>/reviewer-breaker.json.
+export type Breaker = {
+  // Failed or short-lived reviewers in a row; a good run resets it. Survives a restart, so a second
+  // immediate failure halts sooner.
+  streak: number
+  // The reviewer in flight, by name, and when the plugin started it.
+  run?: { name: string; startedAt: number }
+  // When the last reviewer ended, and why that counted as a failure.
+  endedAt?: number
+  error?: string
+  // Set while the queue is halted; qid is the inbox item asking main (absent until it is opened).
+  halt?: { at: number; error: string; qid?: string }
+  // When recent reviewers were started (the last hour only); a retry keeps them, so the hourly cap holds.
+  starts?: number[]
+}
+
 export type Filing = {
   summary: string
   workers?: number
@@ -411,6 +428,8 @@ declare module 'claude-code' {
       behind: Record<string, number>
       // The ready batch awaiting the user's push, mirrored from <state dir>/push.json.
       push: PushState
+      // The reviewer respawn circuit breaker, mirrored from <state dir>/reviewer-breaker.json.
+      reviewerBreaker: Breaker
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots
