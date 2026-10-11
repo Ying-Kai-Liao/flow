@@ -132,13 +132,13 @@ test('tool access: a lite manager reaches the reviewer tools for its own PRs onl
   expect(deployToolAccess({ kind: 'main' }, { action: 'hold' }, hs)).toBeUndefined()
 })
 
-test('a lite manager is recorded, gets the LITE block and the small model, and survives in lite.json', async ($, on) => {
+test('a lite manager is recorded, gets the LITE block and the normal manager model, and survives in lite.json', async ($, on) => {
   const w = world(on)
   await manager($, 'csv-fix', 'Mode: lite\nfix the csv header')
   const m = w.spawned[0]!
   expect(m.prompt.startsWith('## LITE MODE')).toBe(true)
   expect(m.prompt).toContain('fix the csv header')
-  expect(m.model).toBe('sonnet')
+  expect(m.model).toBeUndefined()
   const stored = JSON.parse(w.files.get(`${DIR}/lite.json`) ?? '{}') as Record<string, { name: string }>
   expect(stored['csv-fix']!.name).toBe('csv-fix')
   // A restarted manager of the same task (no Mode line on its prompt) is still lite, and the block is not doubled.
@@ -148,7 +148,7 @@ test('a lite manager is recorded, gets the LITE block and the small model, and s
   expect(w.spawned[2]!.prompt.match(/## LITE MODE/g)!.length).toBe(1)
 })
 
-test('Size: large on a lite manager runs on the big manager model; a plain manager has no block', async ($, on) => {
+test('normal manager size routing applies unchanged to a lite manager; a plain manager has no block', async ($, on) => {
   const w = world(on)
   await manager($, 'big', 'Mode: lite\nSize: large - wide change\nrework')
   expect(w.spawned[0]!.model).not.toBe('sonnet')

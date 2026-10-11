@@ -3,7 +3,7 @@ import { noteKey } from './state'
 
 // Lite mode, the pure half: one task run as just a manager and its workers. A manager spawned with a
 // `Mode: lite` line (preflight.ts isLite) is recorded here, gets the LITE rules block (prompts.ts), skips
-// pre-flight and size decisions, runs on the small manager model and merges its own PR instead of handing it
+// pre-flight and size decisions and merges its own PR instead of handing it
 // to a reviewer agent. The disk half is in register.tsx.
 
 export type LiteState = Record<string, { name: string; at: number }>

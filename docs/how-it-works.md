@@ -131,8 +131,8 @@ auth or data.
   after a restart, and a successor `x-2` of lite `x` is lite too) and the plugin puts a LITE block in front of
   its prompt. It is skipped in pre-flight like `Pre-flight: skip` and never waits in a round. The plugin files
   no `manager-size` or `worker-size` decision for it or its workers (the routing itself still sets their
-  models); other decisions and questions it files go through. It runs on `manager_model_small` (default
-  `sonnet`) unless its prompt has `Size: large`.
+  models); other decisions and questions it files go through. Its model is chosen as for any manager
+  (`manager_model`, or a `Size:` line on its prompt).
 - **No reviewer agent**: `mcp__flow__handover` for a lite manager's PR still checks the PR and its
   `## Verification` section, then records the PR as `taken` by the manager (marked `lite`) and starts no
   reviewer. It answers with the steps to merge the PR itself, in the reviewer's order, for this repo's

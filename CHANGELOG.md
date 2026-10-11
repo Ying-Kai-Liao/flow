@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Lite mode: `/flow lite <task>`, or a `Mode: lite` line on a manager's prompt, runs one task as just a manager and its workers to save tokens. A lite manager is skipped in pre-flight, files no manager-size or worker-size decisions, runs on `manager_model_small` unless the prompt says `Size: large`, and merges its own PR (full check, release, push, deploy gates, `reviewer` done) instead of starting a reviewer agent, then reports in a few lines. A PR under `merge_mode` confirm or judged risky is handed over with `mode: "confirm"` and goes to a normal reviewer. Only a lite manager's own PRs open the `release`, `reviewer` ready/done and `deploy` gate tools to it; other managers and workers are refused them.
+- Lite mode: `/flow lite <task>`, or a `Mode: lite` line on a manager's prompt, runs one task as just a manager and its workers to save tokens. A lite manager is skipped in pre-flight, files no manager-size or worker-size decisions, and merges its own PR (full check, release, push, deploy gates, `reviewer` done) instead of starting a reviewer agent, then reports in a few lines. A PR under `merge_mode` confirm or judged risky is handed over with `mode: "confirm"` and goes to a normal reviewer. Only a lite manager's own PRs open the `release`, `reviewer` ready/done and `deploy` gate tools to it; other managers and workers are refused them.
 
 ## [0.6.38] - 2026-10-11
 

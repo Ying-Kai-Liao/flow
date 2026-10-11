@@ -1836,7 +1836,7 @@ export const register: Register = (on, options) => {
       e = r.e
       routed = r.routed
     } else if (e.subagentType === MANAGER) {
-      const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModel, jevOf($, settings), liteMode)
+      const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModel, jevOf($, settings))
       e = r.e
       routed = r.routed
     } else if (e.subagentType === 'Explore' && e.model === undefined && e.parentAgentId !== undefined) {
