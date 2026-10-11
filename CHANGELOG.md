@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A `Continue on branch:` worker spawn no longer fails with "a hook's subagentType 'flow:continue' names no agent this call can dispatch". The host checks a rewrite against the offer as listed, and replays that refusal to a second `next` of the same spawn, so the 0.3.23 fallback could not recover. `flow:continue` is now always offered (a model's own spawn of it is denied), and if the host still refuses, the plain `flow:worker` is started as a spawn of its own, in a new worktree, with the claim given back.
+
 ## [0.6.38] - 2026-10-11
 
 ### Added

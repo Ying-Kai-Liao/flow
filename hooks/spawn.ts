@@ -142,19 +142,13 @@ export async function prepareContinue(io: SpawnIo, e: AgentSpawnInput): Promise<
   }
 }
 
-// How many rewritten flow:continue spawns are in the host's hands: the agent.offer hook offers the type then.
-let continuing = 0
-export const continuingCount = (): number => continuing
-// Dispatches a spawn; a flow:continue one counts while it runs and a refusal comes back as a deny.
+// Dispatches a spawn; a refusal of a flow:continue rewrite comes back as a deny, for the caller's fallback.
 export async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev: AgentSpawnInput): Promise<R | { deny: string }> {
   if (ev.subagentType !== CONTINUE) return next(ev)
-  continuing++
   try {
     return await next(ev)
   } catch (err) {
     return { deny: String((err as Error).message) }
-  } finally {
-    continuing--
   }
 }
 

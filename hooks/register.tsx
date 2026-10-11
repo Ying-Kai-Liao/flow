@@ -21,7 +21,7 @@ import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as
 import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
 import { backNote } from './routing'
-import { checkAttachments, CONTINUE_LINE, continuingCount, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
+import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
 import type { SizeJev } from './spawn'
 import { askJev, JEV_ENV_FILE, jevConfig } from './jev'
 import type { FetchLike } from './jev'
@@ -1742,12 +1742,15 @@ export const register: Register = (on, options) => {
     return { text: `Picking tasks${args ? ` from ${args}` : ''}.` }
   })
 
-  // The plugin starts flow:continue itself; the model is never offered it. It is offered only while
-  // the spawn hook below dispatches its own rewrite, since the host checks the offer for a rewrite too.
-  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: continuingCount() > 0 }))
+  // The plugin starts flow:continue itself through a rewrite. The host checks a rewrite's type against the
+  // offer as listed (a hook that is offered only while it dispatches is too late for that check, and the host
+  // then replays the refusal to a second next), so the type stays offered; a model's own spawn of it is denied below.
+  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: true }))
 
   on('agent.spawn', async ($, input, next) => {
     let e = input
+    // Only the plugin's own rewrite below starts flow:continue: it needs the old worktree as cwd.
+    if (e.subagentType === CONTINUE) return { deny: 'flow: flow:continue is started by the plugin only; spawn a flow:worker with "Continue on branch: <branch>" in the brief.' }
     // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
     const plans = await read($, plan)
     if (Object.keys(plans).length > 0 && e.name !== undefined) {
@@ -1828,7 +1831,15 @@ export const register: Register = (on, options) => {
       const note = `The previous worker's worktree ${path} is kept, and ${branch} may be checked out there: if \`git checkout -B\` fails, work on a local branch and push \`HEAD:${branch}\`.`
       ev = { ...plain, subagentType: WORKER, prompt: ev.prompt.replace(/\n\nYou continue in the same worktree [^\n]*/, `\n\n${note}`) }
       await best($, 'logging a continuation fallback', async () => appendLog($, { event: 'continue', agent: name, owner: await ownerNameOf($, e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
-      ;({ ev, started } = await go(ev))
+      try {
+        ;({ ev, started } = await go(ev))
+      } catch (err) {
+        // The host replays its first refusal to a second next for the same spawn. Start the plain worker as a
+        // spawn of its own instead, so the manager never sees the flow:continue refusal.
+        const { tool_use_id: _u, provider: _p, parentAgentId: _a, ...args } = ev as AgentSpawnInput & Record<string, unknown>
+        const again = await $.agent.spawn(args as never).catch(() => ({ deny: String((err as Error).message) }))
+        started = again as typeof started
+      }
     }
     if ('agentId' in started && started.agentId !== undefined) {
       const t = await $.clock.now()
