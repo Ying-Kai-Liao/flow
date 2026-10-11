@@ -374,12 +374,12 @@ export const GUARD_TESTS_TOOL: ToolSpec = {
 
 export const DECIDE_EVAL_TOOL: ToolSpec = {
   name: 'decide_eval',
-  description: 'Main only. Replays flow\'s history (inbox decisions, test failures, merge conflicts, handoffs) through the decision API; reports agreement, fall-through, confidence and estimated savings per question. Uses the configured decision_api and its /config key; writes ids, labels and confidences (no texts, no key) to decide-eval.json in the flow state dir. Refused when decision_api is off, unless dry_run (sizes and samples, no network).',
+  description: 'Main only. Replays flow\'s history (inbox decisions, test failures, merge conflicts, handoffs, and model sizing at spawn) through the decision API; reports agreement, fall-through, confidence and estimated savings per question. Uses the configured decision_api and its /config key; writes ids, labels and confidences (no texts, no key) to decide-eval.json in the flow state dir. Refused when decision_api is off, unless dry_run (sizes and samples, no network).',
   inputSchema: {
     type: 'object',
     properties: {
       provider: { type: 'string', enum: ['jev', 'openai'], description: 'Default: the configured decision_api' },
-      features: { type: 'array', items: { type: 'string', enum: ['inbox', 'test', 'conflict', 'handoff'] }, description: 'Default: all four' },
+      features: { type: 'array', items: { type: 'string', enum: ['inbox', 'test', 'conflict', 'handoff', 'size'] }, description: 'Default: all five. size compares Jev, the brief\'s Size line and always-normal on spawn sizing; it needs the decide-eval-data.json export of scripts/decide-eval.mjs (briefs come from transcripts)' },
       limit: { type: 'number', description: 'Newest N records per feature (default all)' },
       dry_run: { type: 'boolean', description: 'Dataset sizes and one sample text each; no network' },
     },

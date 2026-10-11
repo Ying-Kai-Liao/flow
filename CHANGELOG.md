@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `decide_eval` gets a `size` feature: replays spawn sizing (worker and manager briefs from transcripts, labelled under/ok/over from successors, handoffs, undone size decisions and PR size) and compares Jev, the brief's `Size:` line and always-normal on agreement, under-size rate, over-size rate and estimated cost; `scripts/decide-eval.mjs` prints the key-free part
+
 ## [0.6.57] - 2026-10-12
 
 ### Added

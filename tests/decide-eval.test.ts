@@ -3,7 +3,7 @@ import { test } from './support'
 
 import type { DecideIo, FetchLike } from '../hooks/decide'
 import { decide } from '../hooks/decide'
-import { conflictData, exportJson, handoffData, inboxData, loadDatasets, parseExport, parseLog, reportText, runEval, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
+import { conflictData, exportJson, handoffData, inboxData, loadDatasets, parseExport, parseLog, recordedSize, reportText, runEval, sizeBaselines, sizeData, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
 import type { Ask, LogLine, TranscriptEvent } from '../hooks/decide-eval'
 import { decideEvalTool } from '../hooks/decide-eval-run'
 import { parseJev } from '../hooks/jev'
@@ -165,5 +165,77 @@ test('decide_eval loads decide-eval-data.json when present and says so; parseExp
 test('loadDatasets and parseLog tolerate missing and torn files', async () => {
   expect(parseLog('{"event":"a"}\nnot json\n').length).toBe(1)
   const { datasets } = await loadDatasets({ read: async () => undefined, readAbs: async () => undefined, maxContinues: 2 })
-  expect(datasets.map(d => d.records.length)).toEqual([0, 0, 0, 0])
+  expect(datasets.map(d => d.records.length)).toEqual([0, 0, 0, 0, 0])
+})
+
+// ---- size ----
+const tok = (n: number) => ({ 'claude-sonnet-5-5': { input: n, write5m: 0, write1h: 0, read: 0, output: 0 } })
+const brief = (name: string, size?: string) => `Your name: ${name}\n${size ? `Size: ${size} - why\n` : ''}do the thing`
+const agentEv = (name: string, type: string, size?: string): TranscriptEvent => ({ t: 'agent', model: 'sonnet', type, prompt: brief(name, size) })
+const pr = (state: string, ...lines: number[]) => ({ state, files: [...lines.map((n, i) => ({ path: `hooks/f${i}.ts`, additions: n, deletions: 0 })), { path: 'CHANGELOG.md', additions: 500, deletions: 0 }] })
+const w = (name: string, spawnModel: string, extra: Record<string, unknown> = {}) => ({ role: 'worker', name, manager: 'mgr', branch: `flow/${name}`, spawnModel, models: tok(1_000_000), ...extra })
+const sizeSrc = () => ({
+  log: [{ event: 'spawn', agent: 'big', text: 'size large -> sonnet[1m]' }, { event: 'handoff', agent: 'hand', branch: 'flow/hand' }, { event: 'handoff', agent: 'bigho', branch: 'flow/bigho' }] as LogLine[],
+  ledger: {
+    a: w('ok1', 'sonnet'), b: w('hand', 'sonnet'), c: w('twice', 'sonnet'), d: w('twice-2', 'sonnet[1m]'), e: w('big', 'sonnet[1m]'),
+    f: w('bigho', 'sonnet[1m]'), g: w('noprompt', 'sonnet'), h: w('nopr', 'sonnet'), i: w('undone', 'haiku'), j: { role: 'manager', name: 'mgr', spawnModel: 'opus', models: tok(2_000_000) },
+  },
+  inbox: [item('d9', { kind: 'fyi', topic: 'worker-size', question: 'undone runs small -> haiku (jev 0.81): x', answer: 'Overturn' }), item('d8', { kind: 'fyi', topic: 'worker-size', question: 'ok1 runs normal -> sonnet (jev 0.70): x', answer: 'Keep' })],
+  transcripts: [['ok1', 'hand', 'twice', 'big', 'bigho', 'nopr', 'undone'].map(n => agentEv(n, 'flow:worker', 'normal')), [agentEv('mgr', 'flow:manager', 'large'), agentEv('reviewer-1', 'flow:reviewer'), agentEv('x', 'general-purpose')]],
+  prs: { 'flow/ok1': pr('MERGED', 300), 'flow/hand': pr('MERGED', 300), 'flow/twice': pr('MERGED', 10), 'flow/twice-2': pr('MERGED', 50), 'flow/big': pr('MERGED', 40, 20), 'flow/bigho': pr('MERGED', 500), 'flow/undone': pr('MERGED', 200) },
+})
+
+test('size data: under by successor, handoff or undone decision; a large worker is over when trivial; no prompt or PR is skipped', () => {
+  const d = sizeData(sizeSrc())
+  const by = Object.fromEntries(d.records.map(r => [r.id, r]))
+  expect(Object.fromEntries(d.records.map(r => [r.id, r.label]))).toEqual({ 'w-ok1': 'ok', 'w-hand': 'under', 'w-twice': 'under', 'w-big': 'over', 'w-bigho': 'ok', 'w-undone': 'under', 'm-mgr': 'ok' })
+  expect(by['w-hand']?.size?.right).toBe('large')
+  expect(by['w-big']?.size).toMatchObject({ used: 'large', right: 'normal', lines: 60 })
+  // a handoff of a worker that already ran large is context exhaustion, not under-sizing
+  expect(by['w-bigho']?.size?.used).toBe('large')
+  expect(by['w-twice']?.size?.rerunUsd).toBeGreaterThan(0)
+  expect(by['w-ok1']?.size?.recorded).toEqual({ size: 'normal', confidence: 0.7 })
+  expect(by['w-undone']?.size?.recorded).toEqual({ size: 'small', confidence: 0.81 })
+  expect(d.notes[0]).toContain('labelable with a recoverable prompt: 7')
+  expect(d.notes[0]).toContain('"no prompt":1')
+  expect(d.notes[0]).toContain('"no merged PR":1')
+})
+
+test('recordedSize reads the decision-API tag; an unavailable one is not an answer', () => {
+  expect(recordedSize('x runs normal -> sonnet (jev 0.76): r')).toMatchObject({ name: 'x', size: 'normal', confidence: 0.76, answered: true })
+  expect(recordedSize('x runs small -> haiku (jev unavailable: low confidence 0.38): r')?.answered).toBe(false)
+  expect(recordedSize('x runs small -> haiku: r')?.answered).toBe(false)
+  expect(recordedSize('not a size decision')).toBeUndefined()
+})
+
+test('size scoring: Size line and always-normal need no key; Jev falls back to the Size line below its threshold; the rerun is priced in', async () => {
+  const d = sizeData(sizeSrc())
+  const base = sizeBaselines(d.records).rows
+  const asRun = base.find(r => r.sizer === 'as run')!
+  expect(asRun.n).toBe(7)
+  expect(asRun.under).toBe(3)
+  expect(asRun.over).toBe(1)
+  expect(asRun.usd).toBe(asRun.actualUsd)
+  const ask: Ask = async text => (text.includes('Your name: hand') ? { answer: 'large', confidence: 0.9 } : text.includes('Your name: big\n') ? { answer: 'normal', confidence: 0.6 } : { note: 'jev unavailable: timeout' })
+  const [r] = await runEval(ask, [d], unitCosts(ledger), { features: ['size'] })
+  const rows = r!.size!.rows
+  const jev = rows.find(x => x.sizer === 'jev (answered only)')!
+  expect(jev.n).toBe(2)
+  expect(jev.fellThrough).toBe(5)
+  // at 0.8 only 'hand' (large, 0.9) is Jev's; 'big' at 0.6 is its Size line (normal) so it stays under the right normal? no: it agrees
+  const at8 = rows.find(x => x.sizer === 'jev >= 0.8, else Size line')!
+  expect(at8.n).toBe(7)
+  expect(at8.fellThrough).toBe(6)
+  expect(r!.labels).toEqual({ ok: 3, under: 3, over: 1 })
+  expect(JSON.stringify(r)).not.toContain('do the thing')
+})
+
+test('decide_eval size: dry run says labelable of total and the key-free sizers; the export carries the metadata', async () => {
+  const data = exportJson([sizeData(sizeSrc())], unitCosts(ledger), '1970-01-01T00:00:00.000Z', 4000)
+  expect(parseExport(data)?.datasets[0]?.records[0]?.size?.role).toBe('worker')
+  const all: Record<string, string> = { ...files, '/s/decide-eval-data.json': data }
+  const out = await decideEvalTool({ ...toolIo(jevFetch(0.9)), readFile: async p => all[p] }, { ...settings, decisionApi: 'off' as never }, { dry_run: true, features: ['size'] }, undefined)
+  expect(out).toContain('size: 7 records')
+  expect(out).toContain('labelable with a recoverable prompt: 7')
+  expect(out).toContain('always normal')
 })

@@ -3,22 +3,26 @@
 // read by the caller, the provider is an injected `ask`, so tests need no network and no disk. The live run is the
 // main-only `decide_eval` tool (register.tsx); scripts/decide-eval.mjs builds the same datasets for a dry run.
 // A results object holds record ids, labels, answers and confidences, never a record's text.
-import { costOf } from './cost'
+// The fifth question, `size`, is the one use the decision API already has (spawn.ts sizing): see sizeData for its labels.
+import { baseName, costOf } from './cost'
 import type { Decision, Question } from './decide'
+import { generation, isSize, parseSize } from './routing'
+import type { Size } from './routing'
+import { SIZE_QUESTION } from './spawn'
 import { HANDOFF_QUESTION, INBOX_ROUTINE_QUESTION, MERGE_CONFLICT_QUESTION, TEST_FAILURE_QUESTION, textOfConflict, textOfHandoff, textOfInbox, textOfTestFailure } from './decide-questions'
 
-export type FeatureKey = 'inbox' | 'test' | 'conflict' | 'handoff'
-export const FEATURES: FeatureKey[] = ['inbox', 'test', 'conflict', 'handoff']
+export type FeatureKey = 'inbox' | 'test' | 'conflict' | 'handoff' | 'size'
+export const FEATURES: FeatureKey[] = ['inbox', 'test', 'conflict', 'handoff', 'size']
 export const THRESHOLDS = [0.5, 0.7, 0.8, 0.9]
-export const QUESTIONS: Record<FeatureKey, Question> = { inbox: INBOX_ROUTINE_QUESTION, test: TEST_FAILURE_QUESTION, conflict: MERGE_CONFLICT_QUESTION, handoff: HANDOFF_QUESTION }
+export const QUESTIONS: Record<FeatureKey, Question> = { inbox: INBOX_ROUTINE_QUESTION, test: TEST_FAILURE_QUESTION, conflict: MERGE_CONFLICT_QUESTION, handoff: HANDOFF_QUESTION, size: SIZE_QUESTION }
 
 export type LogLine = { ts?: string; event: string; owner?: string; agent?: string; branch?: string; pr?: number; text?: string }
-export type EvalRecord = { id: string; text: string; label: string; baseline?: string; agent?: boolean }
+export type EvalRecord = { id: string; text: string; label: string; baseline?: string; agent?: boolean; size?: SizeMeta }
 export type Dataset = { key: FeatureKey; records: EvalRecord[]; guard?: EvalRecord[]; notes: string[] }
 
 // Light events of one transcript, in order (scripts/decide-eval.mjs extracts them; the tool has none).
 export type TranscriptEvent =
-  | { t: 'agent'; model: string; type: string; prompt: string }
+  | { t: 'agent'; model: string; type: string; prompt: string; name?: string }
   | { t: 'edit' }
   | { t: 'result'; id: string; text: string }
 
@@ -174,7 +178,7 @@ export async function handoffData(log: LogLine[], maxContinues: number, readNote
 
 // ---- savings: the ledger's average cost of one turn by role, at hooks/cost.ts list prices ----
 export type Unit = { usd: number; tokens: number; basis: string }
-type LedgerRow = { role?: string; turns?: number; models?: Record<string, { input: number; write5m: number; write1h: number; read: number; output: number }> }
+type LedgerRow = { role?: string; name?: string; manager?: string; branch?: string; spawnModel?: string; size?: string; turns?: number; models?: Record<string, { input: number; write5m: number; write1h: number; read: number; output: number }> }
 export function unitCosts(ledger: Record<string, LedgerRow>): Record<FeatureKey, Unit> {
   const acc: Record<string, { usd: number; tokens: number; turns: number; entries: number }> = {}
   for (const e of Object.values(ledger)) {
@@ -192,7 +196,227 @@ export function unitCosts(ledger: Record<string, LedgerRow>): Record<FeatureKey,
   // A conflict sub-agent is a whole agent run, not one turn: priced as the average "other" agent (sub-agents).
   const o = acc.other
   const sub: Unit = o ? { usd: o.usd / o.entries, tokens: o.tokens / o.entries, basis: `other: average of ${o.entries} sub-agent runs` } : { usd: 0, tokens: 0, basis: 'other: no data' }
-  return { inbox: per('main'), test: per('reviewer'), conflict: sub, handoff: per('manager') }
+  return { inbox: per('main'), test: per('reviewer'), conflict: sub, handoff: per('manager'), size: { usd: 0, tokens: 0, basis: 'size: priced per spawn from its own tokens (see the size notes)' } }
+}
+
+
+// ---- size: model sizing at spawn (spawn.ts routeWorker / routeManager) ----
+// One record per package (a worker's `x`, a manager's task), scored at its FIRST spawn; a `x-2` successor is the same
+// package and is the under-size signal. The text is the spawn prompt, which is exactly what sizeWith hands to
+// SIZE_QUESTION. Label rule (what the right size turned out to be, judged by what happened after):
+//   under  = the package needed a rerun at a bigger size: a `<name>-N` successor, a `continue` or `handoff` event on its
+//            branch, or its worker-size / manager-size inbox decision undone (answered anything but Keep). Right size:
+//            one up from the one it ran at. A worker that already ran large cannot be under-sized (no bigger model);
+//            its handoffs are context exhaustion, not evidence about the model choice, so they never label it under.
+//   over   = it ran large (opus for a manager) and its PRs are trivial: at most OVER_LINES changed lines outside
+//            CHANGELOG.md, plugin.json, package and marketplace files. Right size: one down (a manager has two classes,
+//            small and opus, so one down is small). Only large is judged over: nothing shows that a normal-sized
+//            package would also have worked at small, so a sizer that picks small is only ever penalised for under.
+//   ok     = merged with no successor and not over. Right size: the size it ran at.
+//   unlabelable = no PR merged (aborted, still running, no PR), or the model it ran on is unknown. Skipped; counted in notes.
+// A sizer that picks below the right size is counted as under-sized, above it as over-sized.
+// 100: in flow's own history the smallest PRs of large workers are 81 and 100 lines, then 164 and up, so the cap sits at the
+// break before the first ordinary-sized one.
+export const OVER_LINES = 100
+export const MANAGER_OVER_LINES = 150
+export type PrStat = { state: string; files: { path: string; additions: number; deletions: number }[] }
+export type SizeRole = 'worker' | 'manager'
+export type SizeMeta = {
+  role: SizeRole
+  used: Size
+  right: Size
+  brief?: Size
+  // The size recorded in the inbox decision when a decision-API tag is in its text; absent when none (large is never filed).
+  recorded?: { size: Size; confidence?: number }
+  tokens: { input: number; write5m: number; write1h: number; read: number; output: number }
+  // The real USD of the successors, when the package needed a rerun and they are in the ledger.
+  rerunUsd?: number
+  lines?: number
+}
+
+// Which model a size runs on, with the defaults of settings.ts: worker small/normal/large = haiku/sonnet/sonnet[1m];
+// manager small = the cheap model (sonnet), normal and large = opus.
+export const modelOfSize = (role: SizeRole, s: Size): string => (role === 'worker' ? (s === 'small' ? 'haiku' : 'sonnet') : s === 'small' ? 'sonnet' : 'opus')
+// Managers have two classes, so normal and large are the same answer for them.
+export const sizeClass = (role: SizeRole, s: Size): number => (role === 'manager' ? (s === 'small' ? 0 : 1) : ['small', 'normal', 'large'].indexOf(s))
+const SIZE_ORDER: Size[] = ['small', 'normal', 'large']
+const down = (s: Size): Size => SIZE_ORDER[Math.max(0, SIZE_ORDER.indexOf(s) - 1)]!
+const up = (s: Size): Size => SIZE_ORDER[Math.min(2, SIZE_ORDER.indexOf(s) + 1)]!
+
+export const prLines = (pr: PrStat): number => pr.files.filter(f => !isTrivialFile(f.path)).reduce((n, f) => n + f.additions + f.deletions, 0)
+const usedOf = (role: SizeRole, model: string | undefined, logSize: string | undefined, ledgerSize: string | undefined): Size | undefined => {
+  if (isSize(logSize)) return logSize
+  if (isSize(ledgerSize)) return ledgerSize
+  if (model === undefined) return undefined
+  // No Size line and no floor: the spawn ran as the manager wrote it. A manager on opus is large for this purpose.
+  if (role === 'worker') return /haiku/.test(model) ? 'small' : /1m|opus/.test(model) ? 'large' : /sonnet/.test(model) ? 'normal' : undefined
+  return /opus/.test(model) ? 'large' : /sonnet|haiku/.test(model) ? 'small' : undefined
+}
+// "(jev 0.76)" in a recorded size decision: Jev (or openai) answered; "(jev unavailable: ...)" means it did not.
+export function recordedSize(question: string): { name: string; size: Size; confidence?: number; answered: boolean } | undefined {
+  const m = /^(\S+) runs (small|normal|large) ->/.exec(question)
+  if (m === null) return undefined
+  const tag = /\((jev|openai)\b([^)]*)\)/.exec(question)
+  const c = tag === null ? undefined : /\b(\d(?:\.\d+)?)\b/.exec(tag[2]!.replace(/;.*/, ''))
+  const answered = tag !== null && !/unavailable/.test(tag[2]!)
+  return { name: m[1]!, size: m[2] as Size, ...(answered && c ? { confidence: Number(c[1]) } : {}), answered }
+}
+
+const sumTokens = (rows: LedgerRow[]): SizeMeta['tokens'] => {
+  const t = { input: 0, write5m: 0, write1h: 0, read: 0, output: 0 }
+  for (const r of rows) for (const b of Object.values(r.models ?? {})) { t.input += b.input; t.write5m += b.write5m; t.write1h += b.write1h; t.read += b.read; t.output += b.output }
+  return t
+}
+const usdOfRows = (rows: LedgerRow[]): number => rows.reduce((n, r) => n + Object.entries(r.models ?? {}).reduce((m, [model, b]) => m + (costOf(model, b) ?? 0), 0), 0)
+
+export type SizeSource = { log: LogLine[]; ledger: Record<string, LedgerRow>; inbox: InboxItem[]; transcripts?: TranscriptEvent[][]; prs?: Record<string, PrStat> }
+
+export function sizeData(src: SizeSource): Dataset {
+  const rows = Object.values(src.ledger).filter(r => r.name !== undefined)
+  // The spawn prompt of each flow agent by name (the first line of a brief is "Your name: <slug>"); the first sighting wins.
+  const prompts = new Map<string, string>()
+  for (const evs of src.transcripts ?? []) {
+    for (const e of evs) {
+      if (e.t !== 'agent' || (e.type !== 'flow:worker' && e.type !== 'flow:manager')) continue
+      const name = /^\s*Your name:\s*(\S+)/m.exec(e.prompt)?.[1] ?? e.name
+      if (name !== undefined && !prompts.has(`${e.type}|${name}`)) prompts.set(`${e.type}|${name}`, e.prompt)
+    }
+  }
+  const spawnText = new Map<string, string>()
+  for (const l of src.log) if (l.event === 'spawn' && l.agent !== undefined && l.text !== undefined && !spawnText.has(l.agent)) spawnText.set(l.agent, l.text)
+  const decisions = new Map<string, InboxItem>()
+  for (const i of src.inbox) {
+    const r = recordedSize(i.question ?? '')
+    if ((i.topic === 'worker-size' || i.topic === 'manager-size') && r !== undefined && !decisions.has(`${i.topic}|${r.name}`)) decisions.set(`${i.topic}|${r.name}`, i)
+  }
+  const prOf = (branch: string | undefined): PrStat | undefined => (branch === undefined ? undefined : src.prs?.[branch])
+  const records: EvalRecord[] = []
+  const skip: Record<string, number> = { 'no prompt': 0, 'model unknown': 0, 'no merged PR': 0 }
+  let total = 0
+  const roleCount = { worker: 0, manager: 0 }
+  const why = { successor: 0, 'continue/handoff': 0, undone: 0 }
+  for (const role of ['worker', 'manager'] as SizeRole[]) {
+    const mine = rows.filter(r => r.role === role)
+    const firsts = [...new Map(mine.filter(r => generation(r.name!) === 1).map(r => [r.name!, r])).values()]
+    for (const first of firsts) {
+      const name = first.name!
+      total++
+      roleCount[role]++
+      const text = prompts.get(`flow:${role}|${name}`)
+      if (text === undefined) { skip['no prompt']!++; continue }
+      const used = usedOf(role, first.spawnModel, /^size (\w+) ->/.exec(spawnText.get(name) ?? '')?.[1], first.size)
+      if (used === undefined) { skip['model unknown']!++; continue }
+      const own = mine.filter(r => r.name === name)
+      const successors = mine.filter(r => baseName(r.name!) === name && generation(r.name!) > 1)
+      const dec = decisions.get(`${role}-size|${name}`)
+      const undone = dec !== undefined && dec.state === 'answered' && typeof dec.answer === 'string' && dec.answer.trim() !== '' && dec.answer.trim() !== 'Keep'
+      const onBranch = role === 'worker' && src.log.some(l => (l.event === 'continue' || l.event === 'handoff') && l.branch !== undefined && l.branch === first.branch)
+      // The package's pull requests: a worker's branch (and its successors' branches), a manager's workers' branches.
+      const workers = role === 'worker' ? [first] : rows.filter(r => r.role === 'worker' && r.manager !== undefined && baseName(r.manager) === name)
+      const prs = [...new Set([...workers.map(w => w.branch), ...successors.map(s => s.branch)])].map(prOf).filter((p): p is PrStat => p !== undefined)
+      const merged = prs.filter(p => p.state === 'MERGED')
+      const rerun = successors.length > 0 || onBranch || undone
+      // A handoff or successor of a worker that ran large says nothing about the model choice.
+      const under = used !== 'large' && rerun
+      if (under) { if (successors.length > 0) why.successor++; else if (onBranch) why['continue/handoff']++; else why.undone++ }
+      const lines = merged.reduce((n, p) => n + prLines(p), 0)
+      const cap = role === 'worker' ? OVER_LINES : MANAGER_OVER_LINES
+      let label: string
+      let right: Size
+      if (under) { label = 'under'; right = up(used) }
+      else if (merged.length === 0) { skip['no merged PR']!++; continue }
+      else if (used === 'large' && lines <= cap && !rerun) { label = 'over'; right = role === 'manager' ? 'small' : down(used) }
+      else { label = 'ok'; right = used }
+      const brief = parseSize(text)?.size
+      const rec = dec === undefined ? undefined : recordedSize(dec.question ?? '')
+      const meta: SizeMeta = {
+        role, used, right, ...(brief !== undefined ? { brief } : {}),
+        ...(rec?.answered ? { recorded: { size: rec.size, ...(rec.confidence !== undefined ? { confidence: rec.confidence } : {}) } } : {}),
+        tokens: sumTokens(own), ...(under && successors.length > 0 ? { rerunUsd: usdOfRows(successors) } : {}), lines,
+      }
+      records.push({ id: `${role === 'worker' ? 'w' : 'm'}-${name}`, text, label, size: meta })
+    }
+  }
+  const dist: Record<string, number> = {}
+  for (const r of records) dist[r.label] = (dist[r.label] ?? 0) + 1
+  return {
+    key: 'size', records,
+    notes: [
+      `spawn packages (first spawns of ${roleCount.worker} workers and ${roleCount.manager} managers in the ledger): ${total}; labelable with a recoverable prompt: ${records.length}; skipped ${JSON.stringify(skip)}; labels ${JSON.stringify(dist)}; under by first signal ${JSON.stringify(why)}`,
+      `label rule: under = a -N successor, a continue/handoff event on the branch (not for a worker that ran large: context exhaustion says nothing about the model) or an undone size decision; over = ran large and its merged PRs changed <= ${OVER_LINES} lines (manager: <= ${MANAGER_OVER_LINES}) outside changelog/version/package files; ok = merged otherwise; else unlabelable`,
+      'the right size: under = one up, over = one down (a manager: small), ok = the size it ran at. A Size-line sizer without a Size line = what spawn.ts leaves: the spawn as the manager wrote it (the size it ran at)',
+    ],
+  }
+}
+
+// ---- size scoring ----
+export type SizerRow = { sizer: string; n: number; agree: number; under: number; over: number; usd: number; actualUsd: number; fellThrough?: number }
+export type SizeReport = { rows: SizerRow[]; model: string }
+const COST_MODEL = 'Cost model: the package\'s first-spawn tokens are priced at the model a size runs on (hooks/cost.ts list prices; worker small/normal/large = haiku/sonnet/sonnet, manager small = sonnet, normal/large = opus); a size below the right one adds the rerun (the real successors\' cost when in the ledger, else the same tokens at the right size); a size at or above it costs one attempt. "as run" is the same formula at the size it ran at; "vs as run" is the sizer\'s total minus the as-run total over the same records (negative = cheaper). Tokens are not rescaled by model.'
+
+const attemptUsd = (m: SizeMeta, s: Size): number => costOf(modelOfSize(m.role, s), m.tokens) ?? 0
+export const costAtSize = (m: SizeMeta, s: Size): number => attemptUsd(m, s) + (sizeClass(m.role, s) < sizeClass(m.role, m.right) ? m.rerunUsd ?? attemptUsd(m, m.right) : 0)
+
+function scoreSizer(sizer: string, recs: { meta: SizeMeta; answer: Size }[], fellThrough?: number): SizerRow {
+  let agree = 0
+  let under = 0
+  let over = 0
+  let usd = 0
+  let actualUsd = 0
+  for (const { meta, answer } of recs) {
+    const a = sizeClass(meta.role, answer)
+    const r = sizeClass(meta.role, meta.right)
+    if (a === r) agree++
+    else if (a < r) under++
+    else over++
+    usd += costAtSize(meta, answer)
+    actualUsd += costAtSize(meta, meta.used)
+  }
+  return { sizer, n: recs.length, agree, under, over, usd, actualUsd, ...(fellThrough !== undefined ? { fellThrough } : {}) }
+}
+
+// `results` are the replay answers. Jev@T falls back to the Size line below confidence T (and on an error), like the plugin
+// does with decide_min_confidence (default 0.8).
+export function sizeReport(records: EvalRecord[], results: Result[]): SizeReport {
+  const byId = new Map(results.map(r => [r.id, r]))
+  const withMeta = records.filter(r => r.size !== undefined).map(r => ({ meta: r.size!, id: r.id }))
+  const line = (m: SizeMeta): Size => m.brief ?? m.used
+  const jevAt = (min: number | undefined) => withMeta.map(({ meta, id }) => {
+    const r = byId.get(id)
+    const ok = r?.answer !== undefined && isSize(r.answer) && (min === undefined || (r.confidence ?? 1) >= min)
+    return { meta, answer: ok ? (r!.answer as Size) : line(meta), live: ok }
+  })
+  const rows: SizerRow[] = [
+    scoreSizer('as run', withMeta.map(({ meta }) => ({ meta, answer: meta.used }))),
+    scoreSizer('always normal', withMeta.map(({ meta }) => ({ meta, answer: 'normal' as Size }))),
+    scoreSizer('Size line', withMeta.map(({ meta }) => ({ meta, answer: line(meta) }))),
+  ]
+  if (results.length > 0) {
+    const live = jevAt(undefined).filter(x => x.live)
+    rows.push(scoreSizer('jev (answered only)', live, withMeta.length - live.length))
+    for (const t of [0.7, 0.8]) {
+      const all = jevAt(t)
+      rows.push(scoreSizer(`jev >= ${t}, else Size line`, all, all.filter(x => !x.live).length))
+    }
+  }
+  const rec = withMeta.filter(x => x.meta.recorded !== undefined)
+  rows.push(scoreSizer('recorded jev tag (no network)', rec.map(x => ({ meta: x.meta, answer: x.meta.recorded!.size }))))
+  rows.push(scoreSizer('Size line, same records', rec.map(x => ({ meta: x.meta, answer: line(x.meta) }))))
+  rows.push(scoreSizer('always normal, same records', rec.map(x => ({ meta: x.meta, answer: 'normal' as Size }))))
+  return { rows, model: COST_MODEL }
+}
+
+// The key-free part (Size line, always-normal, recorded tags) for the dry run.
+export const sizeBaselines = (records: EvalRecord[]): SizeReport => sizeReport(records, [])
+
+export function formatSize(r: SizeReport): string {
+  const pc = (a: number, b: number): string => (b === 0 ? '-' : `${Math.round((100 * a) / b)}%`)
+  const lines = ['sizer                            n    agree        under-sized  over-sized   $ total   vs as run   fell-through']
+  for (const x of r.rows) {
+    lines.push(`${x.sizer.padEnd(32)} ${String(x.n).padEnd(4)} ${`${pc(x.agree, x.n)} (${x.agree})`.padEnd(12)} ${`${pc(x.under, x.n)} (${x.under})`.padEnd(12)} ${`${pc(x.over, x.n)} (${x.over})`.padEnd(12)} ${`$${x.usd.toFixed(2)}`.padEnd(9)} ${`${x.usd - x.actualUsd >= 0 ? '+' : '-'}$${Math.abs(x.usd - x.actualUsd).toFixed(2)}`.padEnd(11)} ${x.fellThrough ?? ''}`)
+  }
+  lines.push(r.model)
+  return lines.join('\n')
 }
 
 // ---- scoring ----
@@ -220,7 +444,7 @@ export async function replay(ask: Ask, records: EvalRecord[], q: Question, limit
 }
 
 export type Row = { threshold: number; answered: number; fellThrough: number; agree: number; savedDecisions: number; savedCorrect: number; savedUsd: number; savedUsdCorrect: number; savedTokens: number; savedTokensCorrect: number }
-export type FeatureReport = { key: FeatureKey; n: number; labels: Record<string, number>; unit: Unit; rows: Row[]; histogram: Record<string, number>; results: Result[]; notes: string[]; errors: string[]; mustNotAutoAnswer?: { threshold: number; wronglyAnswered: number; of: number }[]; baseline?: { agree: number; n: number; nonTrivialFiles: number; agentStarted: number } }
+export type FeatureReport = { key: FeatureKey; n: number; labels: Record<string, number>; unit: Unit; rows: Row[]; histogram: Record<string, number>; results: Result[]; notes: string[]; errors: string[]; mustNotAutoAnswer?: { threshold: number; wronglyAnswered: number; of: number }[]; baseline?: { agree: number; n: number; nonTrivialFiles: number; agentStarted: number }; size?: SizeReport }
 
 // An answer without a confidence (openai without logprobs) counts as certain: the plugin would act on it.
 const conf = (r: Result): number => r.confidence ?? 1
@@ -252,6 +476,13 @@ const pct = (a: number, b: number): string => (b === 0 ? '-' : `${Math.round((10
 const usd = (n: number): string => `$${n.toFixed(2)}`
 
 export function formatFeature(f: FeatureReport): string {
+  if (f.size) {
+    const lines = [`== ${f.key}  (n=${f.n}; actual labels ${JSON.stringify(f.labels)}; sizers scored against the implied right size)`, formatSize(f.size)]
+    lines.push(`confidence histogram: ${BUCKETS.map(b => `${b}:${f.histogram[b]}`).join('  ')}`)
+    if (f.errors.length > 0) lines.push(`errors (count as fall-through): ${f.errors.join('; ')}`)
+    for (const note of f.notes) lines.push(`   ${note}`)
+    return lines.join('\n')
+  }
   const lines = [`== ${f.key}  (n=${f.n}; actual labels ${JSON.stringify(f.labels)}; unit ${usd(f.unit.usd)} / ${Math.round(f.unit.tokens / 1000)}k tokens, ${f.unit.basis})`]
   lines.push('threshold  answered  fell-through  agreement  saved decisions  saved (all)  saved (correct only)')
   for (const r of f.rows) {
@@ -277,11 +508,17 @@ export async function runEval(ask: Ask, datasets: Dataset[], units: Record<Featu
   for (const ds of datasets.filter(d => opts.features.includes(d.key))) {
     const q = QUESTIONS[ds.key]
     const records = keep(ds.records)
-    const results = await replay(ask, records, q, conc)
+    // A size record replays against its implied right size; the label (under/over/ok) is reported with the sizers.
+    const results = await replay(ask, ds.key === 'size' ? records.map(r => ({ ...r, label: r.size?.right ?? r.label })) : records, q, conc)
     const report = summarize(ds, results, units[ds.key], ds.key === 'conflict' ? r => r.answer === 'trivial' : undefined)
     if (ds.guard) {
       const g = await replay(ask, keep(ds.guard), q, conc)
       report.mustNotAutoAnswer = THRESHOLDS.map(threshold => ({ threshold, wronglyAnswered: g.filter(r => r.answer !== undefined && r.answer !== 'ask_main' && conf(r) >= threshold).length, of: g.length }))
+    }
+    if (ds.key === 'size') {
+      report.size = sizeReport(records, results)
+      report.labels = {}
+      for (const r of records) report.labels[r.label] = (report.labels[r.label] ?? 0) + 1
     }
     if (ds.key === 'conflict') {
       const nonTrivial = records.filter(r => r.baseline === 'needs_agent')
@@ -294,7 +531,7 @@ export async function runEval(ask: Ask, datasets: Dataset[], units: Record<Featu
 
 // The datasets of a flow state dir. `read` gives a file's text by its path relative to .git/flow (undefined when absent);
 // transcripts are optional because the engine's file API cannot read files over 4 MiB.
-export type FlowSource = { read: (rel: string) => Promise<string | undefined>; readAbs: (path: string) => Promise<string | undefined>; maxContinues: number; transcripts?: TranscriptEvent[][] }
+export type FlowSource = { read: (rel: string) => Promise<string | undefined>; readAbs: (path: string) => Promise<string | undefined>; maxContinues: number; transcripts?: TranscriptEvent[][]; prs?: Record<string, PrStat> }
 export const parseLog = (raw: string | undefined): LogLine[] => {
   const out: LogLine[] = []
   for (const line of (raw ?? '').split('\n')) {
@@ -307,7 +544,7 @@ export async function loadDatasets(src: FlowSource): Promise<{ datasets: Dataset
   const log = parseLog(await src.read('log.jsonl'))
   const inbox = await json<{ items?: InboxItem[] }>('inbox.json', {})
   const ledger = await json<Record<string, LedgerRow>>('ledger.json', {})
-  const datasets = [inboxData(inbox.items ?? []), testData(log, src.transcripts), conflictData(log, src.transcripts), await handoffData(log, src.maxContinues, src.readAbs)]
+  const datasets = [inboxData(inbox.items ?? []), testData(log, src.transcripts), conflictData(log, src.transcripts), await handoffData(log, src.maxContinues, src.readAbs), sizeData({ log, ledger, inbox: inbox.items ?? [], ...(src.transcripts ? { transcripts: src.transcripts } : {}), ...(src.prs ? { prs: src.prs } : {}) })]
   return { datasets, units: unitCosts(ledger) }
 }
 
