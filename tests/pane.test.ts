@@ -2,7 +2,7 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
-import { summarizeCall } from '../hooks/pane'
+import { shortModel, summarizeCall } from '../hooks/pane'
 import { elapsed, tokensDown } from '../hooks/meter'
 
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const
@@ -547,4 +547,39 @@ test('the pane draws a Reviewer row for every handover status', async ($, on) =>
     expect(await ui.find({ text: /Export CSV/ })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('shortModel keeps the family and a [1m] suffix, and clips what it does not know', () => {
+  expect(shortModel('claude-opus-4-5')).toBe('opus')
+  expect(shortModel('claude-sonnet-5-5[1m]')).toBe('sonnet[1m]')
+  expect(shortModel('haiku')).toBe('haiku')
+  expect(shortModel('some-very-long-model-name')).toBe('some-very-lon…')
+  expect(shortModel('')).toBeUndefined()
+  expect(shortModel(undefined)).toBeUndefined()
+})
+
+test('a card and the detail view show the model the agent runs on', async ($, on) => {
+  await setup($, on, 84_000)
+  // The ledger keeps the model a spawn asked for.
+  await $.agent.spawn({ prompt: 'brief', description: 'Fix the login bug', subagentType: 'flow:worker', model: 'sonnet' } as never)
+  const ui = await mount($, 40)
+  expect(await ui.find({ type: 'Text', text: /· sonnet/ })).toBeDefined()
+  await ui.press({ key: 'w1' })
+  expect(await ui.find({ type: 'Text', text: /sonnet · running/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('at 40 columns a card drops the model before it shortens a long name', async ($, on) => {
+  // TREE is shared by the tests of this file, so the long name is put back at the end.
+  const short = TREE[1]!.name
+  TREE[1]!.name = 'fix-the-login-redirect-loop-bug'
+  try {
+  await setup($, on, 84_000)
+  await $.agent.spawn({ prompt: 'brief', description: 'Fix the login bug', subagentType: 'flow:worker', model: 'sonnet' } as never)
+  const ui = await $.ui.mount({ plugin: 'flow', surface: 'terminal', ...PANE, viewport: { columns: 40, rows: 40 } } as never)
+  await ui.press({ key: 'fold-m1' })
+  expect(await ui.find({ type: 'Text', text: /fix-the-login-redirect-loop-bug/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /· sonnet/ })).toBeUndefined()
+  await ui.unmount()
+  } finally { TREE[1]!.name = short }
 })
