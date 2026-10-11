@@ -241,27 +241,60 @@ test('pressing a row opens its large card: tags, who, agent status, every option
   await ui.unmount()
 })
 
-// The Box that holds the answer Input, found in the drawn tree. A flexGrow child in that Box would push the answer row to the pane bottom.
-const answerBox = (e: El): { children?: El[]; props?: { flexGrow?: number } } | undefined => {
-  if (typeof e === 'string' || !e) return undefined
-  const kids = e.children ?? []
-  if (kids.some(c => typeof c === 'object' && c && c.props?.label === 'answer ')) return e as never
-  for (const c of kids) { const hit = answerBox(c); if (hit) return hit }
-  return undefined
+// The pane's footer is a sticky bottom block: the root column holds a clipped content box (overflow hidden) and a
+// footer box that never shrinks. The terminal gives the footer its rows and cuts the content to what is left; this
+// does the same on the drawn tree, so a test sees the lines that are on screen.
+type Node = Exclude<El, string | null | undefined | false>
+const boxesOf = (root: El): Node[] => (typeof root === 'object' && root ? root.children ?? [] : []).filter((c): c is Node => typeof c === 'object' && !!c)
+const visible = (root: El, rows: number): { lines: string[]; footer: string[]; content: string[] } => {
+  const kids = boxesOf(root)
+  const content = kids.filter(c => c.props?.overflow === 'hidden').flatMap(linesOf)
+  const footer = kids.filter(c => c.props?.flexShrink === 0).flatMap(linesOf)
+  return { lines: [...content.slice(0, Math.max(0, rows - footer.length)), ...footer], footer, content }
 }
-const growing = (box: { children?: El[] } | undefined) => (box?.children ?? []).some(c => typeof c === 'object' && c && c.props?.flexGrow === 1)
+const longText = 'word '.repeat(30)
 
-test('the answer row sits right under the content of the inbox and of a question card, not at the pane bottom', async ($, on) => {
+test('the inbox and a question card pin the answer input and hotkeys to the pane bottom, whatever the content length', async ($, on) => {
+  world(on)
+  await ask($, 'w1', [{ ...Q, question: 'Line one?\n' + Array.from({ length: 30 }, (_, i) => `detail ${i}`).join('\n'), context: Array.from({ length: 20 }, (_, i) => `ctx ${i}`).join('\n') }, ...Array.from({ length: 12 }, (_, i) => ({ ...SOFT, question: `Soft ${i}?` }))])
+  const ui = await mount($, 12, 100)
+  await open(ui)
+  let v = visible((await ui.drawn()) as El, 12)
+  expect(v.footer.some(l => /answer /.test(l)) && v.footer.some(l => /y default/.test(l)) && v.footer.some(l => /r reply/.test(l))).toBe(true)
+  expect(v.lines.length).toBeLessThanOrEqual(12)
+  expect(v.lines.slice(-v.footer.length)).toEqual(v.footer)
+  await ui.press({ key: 'row-q1' })
+  v = visible((await ui.drawn()) as El, 12)
+  expect(v.content.length).toBeGreaterThan(12)
+  expect(v.footer.some(l => /answer /.test(l)) && v.footer.some(l => /y default/.test(l)) && v.footer.some(l => /r reply/.test(l))).toBe(true)
+  expect(v.lines.length).toBeLessThanOrEqual(12)
+  await ui.unmount()
+})
+
+test('a short card keeps its footer in a box at the bottom, not right after the content', async ($, on) => {
   world(on)
   await ask($, 'w1', [Q])
   const ui = await mount($, 40, 100)
-  await open(ui)
-  expect(answerBox((await ui.drawn()) as El)).toBeDefined()
-  expect(growing(answerBox((await ui.drawn()) as El))).toBe(false)
+  await ui.press({ key: 'nav-inbox' })
   await ui.press({ key: 'row-q1' })
-  expect(answerBox((await ui.drawn()) as El)).toBeDefined()
-  expect(growing(answerBox((await ui.drawn()) as El))).toBe(false)
-  expect(await has(ui, /y default/)).toBe(true)
+  const root = (await ui.drawn()) as { props?: { height?: number } }
+  expect(root.props?.height).toBe(40)
+  const boxes = boxesOf(root as El)
+  // Content grows and clips; the footer is last and never shrinks.
+  expect(boxes[0]!.props).toMatchObject({ flexGrow: 1, flexShrink: 1, overflow: 'hidden' })
+  expect(boxes[boxes.length - 1]!.props).toMatchObject({ flexShrink: 0 })
+  expect(plain(boxes[boxes.length - 1]!)).toMatch(/y default/)
+  await ui.unmount()
+})
+
+test('many inbox rows in a short pane still show the footer within the pane height', async ($, on) => {
+  world(on)
+  await ask($, 'w1', Array.from({ length: 25 }, (_, i) => ({ ...SOFT, question: `Soft ${i} ${longText}` })))
+  const ui = await mount($, 12, 100)
+  await open(ui)
+  const v = visible((await ui.drawn()) as El, 12)
+  expect(v.footer.some(l => /y default/.test(l))).toBe(true)
+  expect(v.lines.length).toBeLessThanOrEqual(12)
   await ui.unmount()
 })
 
@@ -440,7 +473,7 @@ test('a highlight answered meanwhile answers nothing: the highlight moves and th
 
 // What the pane draws, as lines of text: a column stacks its children, a row sets them side by side with its gap
 // (a child of several lines beside the next one), a border adds its two columns and rows.
-type El = string | { type?: string; props?: { flexDirection?: string; flexGrow?: number; gap?: number; label?: string; borderStyle?: string; paddingX?: number; width?: number; wrap?: string }; children?: El[] } | null | undefined | false
+type El = string | { type?: string; props?: { flexDirection?: string; flexGrow?: number; flexShrink?: number; overflow?: string; gap?: number; label?: string; borderStyle?: string; paddingX?: number; width?: number; wrap?: string }; children?: El[] } | null | undefined | false
 const plain = (e: El): string => (typeof e === 'string' ? e : e ? (e.children === undefined && e.props?.label !== undefined ? e.props.label : (e.children ?? []).map(plain).join('')) : '')
 const padCols = (l: string, w: number) => l + ' '.repeat(Math.max(0, w - cols(l)))
 const linesOf = (e: El): string[] => {

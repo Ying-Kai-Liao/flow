@@ -624,6 +624,7 @@ export function inboxView(x: InboxCtx) {
   })
   return (
     <Box flexDirection="column" height={rows}>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Text bold>{irows.length === 0 ? ICON.inboxEmpty : ICON.inboxOpen} Inbox{nQ > 0 && <Text> {askMark(Text, x.now)}</Text>} <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
       {iAbove > 0 && <Text dimColor>  ↑ {iAbove} above</Text>}
       {sv.rows.map(sg => {
@@ -695,6 +696,8 @@ export function inboxView(x: InboxCtx) {
         </Box>
       )}
       {hotRow === undefined && <Text dimColor>Nothing to answer.</Text>}
+      </Box>
+      <Box flexDirection="column" flexShrink={0}>
       {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
       {Input !== undefined && <Input key="inbox-answer" label="answer " placeholder="your own words (r), or what instead (n)" value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
       {nOpts > 0 && <Box flexDirection="row" gap={1}>
@@ -721,6 +724,7 @@ export function inboxView(x: InboxCtx) {
         <Button key="inbox-reply" plain dimColor hotkey="r" onPress={reply}>r reply</Button>
         <Button key="inbox-archive" plain dimColor hotkey="v" onPress={() => io.serial(async () => { await io.acted(); await io.leave('archive') })}>v archive{archived > 0 ? ` (${archived})` : ''}</Button>
         <Button key="inbox-back" plain dimColor hotkey="i" onPress={back}>i back</Button>
+      </Box>
       </Box>
     </Box>
   )
@@ -774,6 +778,7 @@ export function treeView(c: TreeCtx) {
   }
   return (
     <Box flexDirection="column" height={rows}>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       {gate !== undefined && gate.state === 'ready' && (
         <Button key="batch-open" plain onPress={c.openBatch}>
           <Text color="warning" bold wrap="truncate-end">⇪ Batch {gate.id} ready to push: {gate.prs.map(n => `#${n}`).join(' ')}{gate.version === undefined ? '' : ` (${gate.version})`} · check: {gate.check}</Text>
@@ -845,9 +850,9 @@ export function treeView(c: TreeCtx) {
         </Button>
       ))}
       {deployLines.map(l => <Text key={`deploy-${l}`} dimColor wrap="truncate-end">{'  '}⏸ {l}</Text>)}
-      {(list.length > 0 || anyOpen || prs.length > 0) && <Box flexGrow={1} />}
+      </Box>
       {(list.length > 0 || anyOpen || prs.length > 0) && (
-        <Box flexDirection="row" gap={1}>
+        <Box flexDirection="row" gap={1} flexShrink={0}>
           {list.length > 0 && <Button key="nav-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
           {list.length > 0 && <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
           {list.length > 0 && <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>}
@@ -933,6 +938,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
   const who = isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`
   return (
     <Box flexDirection="column" height={rows}>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Box flexDirection="row" gap={1}>
         {backBtn}
         {open && <Button key="card-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
@@ -965,6 +971,8 @@ export function cardView(x: InboxCtx & { id: string | null }) {
       {!open && isFyi(q) && <Text color="success">{decisionOutcomeText(q, now)}</Text>}
       {!open && !isFyi(q) && <Text color="success">Answered: {q.answer ?? ''} (by {archiveWho(q)}{q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). Nothing more to answer.</Text>}
       {open && x.id !== null && protectedWhy(q) !== undefined && <Text dimColor>Needs an explicit choice: y never answers it.</Text>}
+      </Box>
+      <Box flexDirection="column" flexShrink={0}>
       {note !== '' && <Text color="suggestion">{note}</Text>}
       {open && Input !== undefined && <Input key="card-answer" label={isFyi(q) ? 'instead ' : 'answer '} placeholder={isFyi(q) ? 'what instead (n, or Enter): undoes the decision' : 'your own words, then Enter'} value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
       {open && (
@@ -978,6 +986,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
           {Input !== undefined && <Button key="card-reply" plain dimColor hotkey="r" onPress={() => void io.focus('card-answer')}>r reply</Button>}
         </Box>
       )}
+      </Box>
     </Box>
   )
 }
@@ -1000,6 +1009,7 @@ export function archiveView(x: InboxCtx) {
   })
   return (
     <Box flexDirection="column" height={rows}>
+<Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Text bold>Archive <Text dimColor>{all.length === 0 ? 'Nothing answered yet.' : `${plural(all.length, 'answered item')}, newest first`}</Text></Text>
       {win.top > 0 && <Text dimColor>  ↑ {win.top} above</Text>}
       {win.rows.map(q => (
@@ -1009,8 +1019,8 @@ export function archiveView(x: InboxCtx) {
       ))}
       {items.length - win.top - win.rows.length > 0 && <Text dimColor>  ↓ {items.length - win.top - win.rows.length} more</Text>}
       {all.length > items.length && <Text dimColor>  +{all.length - items.length} older: /flow inbox archive all</Text>}
-      <Box flexGrow={1} />
-      <Box flexDirection="row" gap={1}>
+      </Box>
+      <Box flexDirection="row" gap={1} flexShrink={0}>
         <Button key="arch-next" plain dimColor hotkey="j" onPress={move(1)}>j next</Button>
         <Button key="arch-prev" plain dimColor hotkey="k" onPress={move(-1)}>k prev</Button>
         <Button key="arch-open" plain dimColor hotkey="o" onPress={() => void io.serial(async () => {
@@ -1094,16 +1104,19 @@ export function prCardView(x: PrCardCtx) {
   const shown = body.length > room ? body.slice(0, room - 1) : body
   return (
     <Box flexDirection="column" height={rows}>
+<Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Box flexDirection="row" gap={1}>{backBtn}</Box>
       {shown.map((r, i) => <Text key={`pr-row-${i}`} bold={r.bold} dimColor={r.dim} color={toneOf(r)} wrap="truncate-end">{r.text === '' ? ' ' : r.text}</Text>)}
       {body.length > shown.length && <Text dimColor>+{body.length - shown.length} more lines</Text>}
-      <Box flexGrow={1} />
+      </Box>
+      <Box flexDirection="column" flexShrink={0}>
       {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
       {awaiting && Input !== undefined && <Input key="pr-reason" label="reason " placeholder="why you reject it (optional), then Enter" value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={(v: string) => reject(v)} />}
       <Box flexDirection="row" gap={1}>
         {awaiting && <Button key="pr-approve" hotkey="a" onPress={approve}>Approve</Button>}
         {awaiting && <Button key="pr-reject" hotkey="r" onPress={() => reject()}>Reject</Button>}
         <Button key="pr-open" hotkey="g" onPress={act(() => io.openUrl(ho.pr))}>Open on GitHub</Button>
+      </Box>
       </Box>
     </Box>
   )
@@ -1160,6 +1173,7 @@ export function batchCardView(x: BatchCtx) {
   const titleOf = (n: number) => batch.items.find(i => i.pr === n)?.title ?? hs[String(n)]?.title ?? ''
   return (
     <Box flexDirection="column" height={rows}>
+<Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Box flexDirection="row" gap={1}>{backBtn}</Box>
       <Text bold color="warning">Batch {batch.id}{batch.version === undefined ? '' : ` (${batch.version})`} <Text dimColor>{ready ? 'ready to push' : batch.state}</Text></Text>
       <Text dimColor wrap="truncate-end">checked {age(x.now - batch.createdAt)} ago · check: {batch.check === '' ? '(none recorded)' : batch.check}</Text>
@@ -1187,7 +1201,8 @@ export function batchCardView(x: BatchCtx) {
           <Button key="batch-drop-no" hotkey="n" onPress={() => void io.serial(async () => { await io.acted(); await io.setPick(null) })}>No</Button>
         </Box>
       )}
-      <Box flexGrow={1} />
+      </Box>
+      <Box flexDirection="column" flexShrink={0}>
       {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
       {ready && (
         <Box flexDirection="row" gap={1}>
@@ -1195,6 +1210,7 @@ export function batchCardView(x: BatchCtx) {
           <Button key="batch-drop" hotkey="d" onPress={() => void io.serial(async () => { await io.acted(); await io.setPick(DROP_PICK) })}>Drop</Button>
         </Box>
       )}
+      </Box>
     </Box>
   )
 }
