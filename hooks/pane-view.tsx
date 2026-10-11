@@ -1,12 +1,20 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Activity, AgentRow, Limit } from '../types'
+import type { Activity, AgentRow, Handover, Limit, Session } from '../types'
 import { shimmerParts } from './shimmer'
 import { asksQuestion } from './dag'
+import type { Plan } from './dag'
 import { ENDED } from './deliver'
-import { cells, elapsed, labelOf, limitTokens, meterColor, METER_CELLS, tokensDown } from './meter'
-import { COLOR, GLYPH, handoffOf, handoffText, ROLE } from './pane'
-import { runsOutIn } from './sessions'
+import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELLS, tokensDown } from './meter'
+import { COLOR, GLYPH, handoffOf, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
+import { graphNodes, layoutGraph, moveFocus } from './graph'
+import type { GNode, Seg } from './graph'
+import { clip, isFyi, OVERTURN, paneRowText, protectedWhy, tagsOf } from './inbox'
+import type { Inbox, PaneRow, Question } from './inbox'
+import { MANAGER } from './core'
+import type { PushState } from './pushgate'
+import type { Unhanded } from './status-run'
+import { ago, runsOutIn, SESSION } from './sessions'
 import type { WarnSettings } from './settings'
 
 // The pane's builders. The render hook resolves the elements and passes them in as plain values,
@@ -122,6 +130,555 @@ export function card(c: CardCtx, a: AgentRow, depth: number, full: boolean, bord
         <Button key={a.id} plain dimColor={dim} onPress={() => c.open(a.id)}>
           {head}{u !== undefined && <Text color={meterColor(u.percent, c.warnOf(u.window))}> {u.percent}%</Text>}
         </Button>
+      )}
+    </Box>
+  )
+}
+
+// What the views below need from the render hook: plain values and closures (the handlers call
+// `$` there, so `$` never crosses this import).
+export type PaneCtx = {
+  els: Els
+  list: AgentRow[]
+  acts: Record<string, Activity>
+  plans: Plan
+  rows: number
+  columns: number
+  t: number
+  gfocus: string | null
+  shown: boolean
+  sessionMap: Record<string, Session>
+  arm: { key: string; at: number } | null
+  armMs: number
+  askers: string[]
+  decisionPhrases: string[]
+  toggle: JSX.Element
+  card: (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot?: boolean, collapsed?: boolean) => JSX.Element
+  runTime: (act: Activity | undefined, isEnded: boolean) => string
+  control: (name: string, input: Record<string, unknown>, confirm?: string) => () => Promise<void>
+  acted: () => Promise<void>
+  open: (id: string) => Promise<void>
+  back: (parentId: string | null) => Promise<void>
+  fill: (text: string) => unknown
+  toast: (text: string) => void
+  readFocus: () => Promise<string | null>
+  setFocus: (id: string) => Promise<unknown>
+}
+
+export type TreeCtx = PaneCtx & {
+  hs: Record<string, Handover>
+  fold: Record<string, boolean>
+  cur: string | null
+  unhanded: Unhanded[]
+  leftover: string | undefined
+  limits: Limit[]
+  openQs: Question[]
+  fyiCount: number
+  anyOpen: boolean
+  checksLine: string | undefined
+  gate: PushState['batch']
+  breakerNote: string | undefined
+  inboxRows: number
+  deployLines: string[]
+  mainU: Usage | undefined
+  mainTime: string
+  mergeQueueKey: string
+  warnOf: (window: number) => number
+  meter: (u: Usage | undefined, dim: boolean, time: string) => ReturnType<typeof meter>
+  toggleFold: (a: AgentRow, shown: boolean) => Promise<void>
+  toggleQueue: () => Promise<void>
+  readCursor: () => Promise<string | null>
+  setCursor: (id: string) => Promise<unknown>
+  focusRow: (id: string) => Promise<unknown>
+  openInbox: () => Promise<void>
+}
+
+type InputProps = { key: string; label: string; placeholder: string; value: string; onInput: (v: string) => void; onSubmit: (v: string) => void }
+export type InboxCtx = {
+  els: Els
+  Input: ((p: InputProps) => null) | undefined
+  rows: number
+  ibox: Inbox
+  icur: string | null
+  draft: string
+  note: string
+  irows: PaneRow[]
+  io: {
+    acted: () => Promise<void>
+    rows: () => Promise<PaneRow[]>
+    readInbox: () => Promise<Inbox>
+    readCursor: () => Promise<string | null>
+    setCursor: (key: string | null) => Promise<unknown>
+    readDraft: () => Promise<string>
+    setDraft: (v: string) => Promise<unknown>
+    setNote: (v: string) => Promise<unknown>
+    answer: (id: string, choice: string | null) => Promise<string>
+    serial: <T>(fn: () => Promise<T>) => Promise<T>
+    toast: (text: string) => void
+    focus: (key: string) => Promise<unknown>
+    back: () => Promise<void>
+  }
+}
+
+// The graph of one level: the plan's nodes (waiting ones have no agent yet) and the agents the
+// plan does not know. `spare` is the rows the rest of the pane takes.
+export function graphView(c: PaneCtx, owner: string, level: AgentRow[], spare: number) {
+  const { Box, Text, Button } = c.els
+  const { list, plans, gfocus, rows, acted, toggle } = c
+  const children = Object.fromEntries(level.map(a => [a.id, list.filter(c => c.parentId === a.id).length]))
+  const raw = graphNodes(plans[owner], level, { children })
+  // The glyph is part of the label so the layout counts its columns.
+  const nodes: GNode[] = raw.map(n => ({ ...n, label: `${nodeGlyph(n)} ${n.label}` }))
+  const layout = layoutGraph(nodes, Math.max(10, c.columns - 2))
+  const hot = gfocus !== null && layout.order.includes(gfocus) ? gfocus : layout.order[0]
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]))
+  const press = (key: 'h' | 'j' | 'k' | 'l') => async () => {
+    await acted()
+    const cur = await c.readFocus()
+    const next = moveFocus(layout, nodes, cur !== null && layout.order.includes(cur) ? cur : hot, key)
+    if (next !== undefined) await c.setFocus(next)
+  }
+  const openNode = async (id: string | undefined) => {
+    const n = id === undefined ? undefined : byId[id]
+    if (n === undefined) return
+    await acted()
+    if (n.agentId !== undefined) return c.open(n.agentId)
+    const waiting = n.after.filter(d => byId[d] !== undefined && byId[d]!.state !== 'done').map(d => raw.find(r => r.id === d)?.label ?? d)
+    c.toast(`${raw.find(r => r.id === id)?.label ?? id} is ${n.state}${waiting.length ? `, waiting on ${waiting.join(', ')}` : ''}`)
+  }
+  const hint = (
+    <Box flexDirection="row" gap={1}>
+      <Button key="g-h" plain dimColor hotkey="h" onPress={press('h')}>h</Button>
+      <Button key="g-j" plain dimColor hotkey="j" onPress={press('j')}>j</Button>
+      <Button key="g-k" plain dimColor hotkey="k" onPress={press('k')}>k</Button>
+      <Button key="g-l" plain dimColor hotkey="l" onPress={press('l')}>l</Button>
+      <Text dimColor>move ·</Text>
+      <Button key="g-open" plain dimColor hotkey="o" onPress={() => openNode(hot)}>o open</Button>
+      <Text dimColor>·</Text>
+      {toggle}
+    </Box>
+  )
+  if (nodes.length === 0) {
+    return <Box flexDirection="column"><Text dimColor>No plan yet. Managers declare one with mcp__flow__plan.</Text>{hint}</Box>
+  }
+  const seg = (s: Seg, i: number) => {
+    if (s.node === undefined) return <Text key={`s${i}`} dimColor={s.dim}>{s.text}</Text>
+    const n = byId[s.node]!
+    const dim = n.state === 'done' || n.state === 'completed' || (n.agentId === undefined && n.state === 'waiting')
+    return (
+      <Button key={`n-${s.node}`} plain dimColor={dim} onPress={() => openNode(s.node)}>
+        <Text color={nodeColor(n)} inverse={s.node === hot} bold={s.node === hot}>{s.text}</Text>
+      </Button>
+    )
+  }
+  const line = (l: number) => <Box key={`l${l}`} flexDirection="row">{layout.lines[l]!.map(seg)}</Box>
+  const hotLine = hot === undefined ? 0 : layout.at[hot] ?? 0
+  const size = Math.max(0, rows - spare)
+  if (size < 4) return <Box flexDirection="column">{line(hotLine)}{hint}</Box>
+  const clipped = layout.lines.length > size
+  const win = clipped ? viewOf(layout.lines.map((_, i) => i), hotLine, size - 2) : { top: 0, rows: layout.lines.map((_, i) => i) }
+  const below = layout.lines.length - win.top - win.rows.length
+  return (
+    <Box flexDirection="column">
+      {win.top > 0 && <Text dimColor>↑ {win.top} more</Text>}
+      {win.rows.map(line)}
+      {below > 0 && <Text dimColor>↓ {below} more</Text>}
+      {hint}
+    </Box>
+  )
+}
+
+export function managerGraphView(c: PaneCtx, agent: AgentRow, owner: string) {
+  const { Box, Text, Button } = c.els
+  const { list } = c
+  const parent = list.find(a => a.id === agent.parentId)
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" gap={1}>
+        <Button key="back" hotkey="b" onPress={() => c.back(parent?.id ?? null)}>Back</Button>
+      </Box>
+      <Text bold color={COLOR[agent.status]}>{GLYPH[agent.status] ?? '?'} {labelOf(agent)} <Text dimColor>{ROLE[agent.type]} · {agent.status}</Text></Text>
+      {graphView(c, owner, list.filter(a => a.parentId === agent.id), 5)}
+    </Box>
+  )
+}
+
+export function agentView(c: PaneCtx, agent: AgentRow) {
+  const { Box, Text, Button } = c.els
+  const { list, acts, rows, t, shown, sessionMap, arm } = c
+  const act = acts[agent.id]
+  const answer = (act?.answer ?? '').trim()
+  const children = list.filter(a => a.parentId === agent.id).sort((a, b) => rankOf(a, acts) - rankOf(b, acts))
+  const fullChildren = children.length * CARD_ROWS <= rows - 15
+  const room = Math.max(3, rows - 12 - (fullChildren ? children.length * (CARD_ROWS - 1) : 0))
+  // The parent chain is the history: Back climbs one level, an orphan or top-level agent goes to the tree.
+  const parent = list.find(a => a.id === agent.parentId)
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" gap={1}>
+        <Button key="back" hotkey="b" onPress={() => c.back(parent?.id ?? null)}>Back</Button>
+        {agent.type === MANAGER && c.toggle}
+        <Button key="msg" hotkey="m" onPress={() => c.fill(
+          agent.type === SESSION
+            ? `Send to session "${labelOf(agent)}" with mcp__flow__session action "send": `
+            : `Send a message to ${ROLE[agent.type] ?? 'agent'} "${labelOf(agent)}": `,
+        )}>Message</Button>
+      </Box>
+      <Text bold color={COLOR[agent.status]}>
+        {GLYPH[agent.status] ?? '?'} {labelOf(agent)} <Text dimColor>{ROLE[agent.type] ?? agent.type} · {agent.status}
+        {act ? ` · ${c.runTime(act, ENDED.has(agent.status))} · last active ${ago(t - act.lastAt)} ago` : ''}{children.length ? ` · ${children.length} under it` : ''}</Text>
+      </Text>
+      <Text dimColor>{agent.description}</Text>
+      {agent.type === SESSION && sessionMap[agent.name ?? ''] !== undefined && (() => {
+        const ss = sessionMap[agent.name ?? '']!
+        const name = ss.name
+        const live = ss.status !== 'exited' && ss.status !== 'stopped'
+        const armedFor = arm !== null && t - arm.at <= c.armMs && arm.key.startsWith(`${name}:`) ? arm.key.slice(name.length + 1) : undefined
+        const key = (k: string, label: string, keys: string) => (
+          <Button key={`key-${k}`} plain hotkey={k} onPress={c.control(name, { action: 'keys', keys })}>{label}</Button>
+        )
+        const dg = ss.digest
+        return (
+          <Box flexDirection="column">
+            <Text dimColor wrap="truncate-end">
+              {ss.host === 'tmux' ? `tmux attach -t ${ss.handle}` : `orca ${ss.handle}`} · {ss.worktree} · {ss.branch}
+            </Text>
+            {live && (
+              <Box flexDirection="row" gap={1}>
+                <Text dimColor>keys</Text>
+                {key('1', '1', '1')}{key('2', '2', '2')}{key('3', '3', '3')}{key('y', 'y', 'y')}{key('n', 'n', 'n')}
+                {key('e', 'e ⏎', 'enter')}{key('z', 'z esc', 'escape')}{key('i', 'i ^C', 'interrupt')}
+              </Box>
+            )}
+            <Box flexDirection="row" gap={1}>
+              <Text dimColor>do</Text>
+              <Button key="ctl-restart" plain hotkey="r" onPress={c.control(name, { action: 'restart' }, 'restart')}>
+                {armedFor === 'restart' ? 'r again to restart' : 'r restart'}
+              </Button>
+              {live && <Button key="ctl-stop" plain hotkey="x" onPress={c.control(name, { action: 'stop' }, 'stop')}>
+                {armedFor === 'stop' ? 'x again to stop' : 'x stop'}
+              </Button>}
+            </Box>
+            {armedFor !== undefined && <Text color="warning">Press {armedFor === 'restart' ? 'r' : 'x'} again within {c.armMs / 1000}s to {armedFor} {name}.</Text>}
+            {dg !== undefined && dg.actions.length > 0 && <Text wrap="truncate-end"><Text dimColor>did    </Text>{dg.actions.join(' → ')}</Text>}
+            {dg?.at !== undefined && <Text dimColor>active {ago(t - dg.at)} ago{dg.turnDone !== undefined ? ' · turn ended' : ''}</Text>}
+            {dg?.lastWords !== undefined && <Text wrap="truncate-end"><Text dimColor>said   </Text>{dg.lastWords.replace(/\s+/g, ' ').slice(-160)}</Text>}
+            {ss.screenText !== undefined && ss.screenText.trim() !== '' && <Text bold>Screen</Text>}
+            {ss.screenText !== undefined && ss.screenText.trim() !== '' && (
+              ss.screenText.trimEnd().split('\n').slice(-Math.max(3, Math.min(12, rows - 22))).map((l, i) => (
+                <Text key={`scr-${i}`} dimColor wrap="truncate-end">{l || ' '}</Text>
+              ))
+            )}
+          </Box>
+        )
+      })()}
+      {act?.handoffNotifiedAt !== undefined && <Text color="warning">
+        Handoff: told {ago(t - act.handoffNotifiedAt)} ago{act.handoffPercent === undefined ? '' : ` at ${act.handoffPercent}%`}, {act.remindersSent ?? 0} reminders
+      </Text>}
+      {shown && <Text dimColor>To see its chat: ← then pick {labelOf(agent)}</Text>}
+      {children.length > 0 && <Text bold>Under it</Text>}
+      {children.map(ch => c.card(ch, 0, fullChildren, true))}
+      <Text bold>Activity</Text>
+      {(act?.log ?? []).length === 0 && <Text dimColor>Nothing seen yet.</Text>}
+      {(act?.log ?? []).slice(-room).map(line => <Text wrap="truncate-end">{line}</Text>)}
+      {answer !== '' && <Text bold color={asksQuestion(answer, c.decisionPhrases) || c.askers.includes(agent.name ?? '') ? 'warning' : undefined}>
+        {asksQuestion(answer, c.decisionPhrases) || c.askers.includes(agent.name ?? '') ? 'Asks' : 'Last report'}
+      </Text>}
+      {answer !== '' && <Text>{answer.length > 1200 ? '…' + answer.slice(-1200) : answer}</Text>}
+    </Box>
+  )
+}
+
+export function graphModeView(c: PaneCtx) {
+  const { Box, Text } = c.els
+  const { list } = c
+  const live = list.filter(a => !ENDED.has(a.status)).length
+  const ids = new Set(list.map(a => a.id))
+  return (
+    <Box flexDirection="column">
+      <Text dimColor>{list.length} agents · {live} live · graph</Text>
+      {graphView(c, 'main', list.filter(a => a.parentId === undefined || !ids.has(a.parentId)), 3)}
+    </Box>
+  )
+}
+
+export function inboxView(x: InboxCtx) {
+    const { Input, ibox, icur, draft, note, irows, io } = x
+  const { Box, Text, Button } = x.els
+  const rows = x.rows
+  const ihot = Math.max(0, irows.findIndex(r => r.key === icur))
+  const hotRow = irows[ihot]
+  const hq = hotRow?.q
+  const detail = hq !== undefined ? 2 + hq.options.length + (hq.context ? 1 : 0) : 1
+  const size = Math.max(2, rows - 1 - detail - 4 - 2)
+  const win = viewOf(irows, ihot, size)
+  const iBelow = irows.length - win.top - win.rows.length
+  // Every press reads the inbox fresh (never the row drawn), so it acts on what is open now.
+  // strict: a highlight that is no longer in the list (answered meanwhile, or folded away) answers nothing;
+  // the highlight moves to the first row and the person presses again.
+  const here = async (strict = true) => {
+    await io.acted()
+    const fresh = await io.rows()
+    const c = await io.readCursor()
+    const at = fresh.findIndex(r => r.key === c)
+    if (strict && c !== null && at < 0) {
+      const was = (await io.readInbox()).items.find(x => x.id === c)
+      const by = was?.state === 'answered' ? ` (by ${was.answeredBy ?? '?'})` : ''
+      await io.setCursor(fresh[0]?.key ?? null)
+      await io.setNote(`${c} ${was?.state === 'answered' ? 'was answered meanwhile' : 'moved out of the list'}${by}; the highlight moved, press again.`)
+      return undefined
+    }
+    const i = Math.max(0, at)
+    return { fresh, i, row: fresh[i] }
+  }
+  // After an answer the highlight goes to the next row (else the one before), and the result is shown.
+  const done = async (lines: string[], fresh: PaneRow[], i: number) => {
+    const next = fresh[i + 1] ?? fresh[i - 1]
+    await io.setCursor(next?.key ?? null)
+    const text = lines.join(' ')
+    await io.setNote(text)
+    io.toast(clip(text, 120))
+  }
+  const say = (text: string) => io.setNote(text)
+  const answerRow = (id: string, choice: string | null) => io.answer(id, choice)
+  const pickOption = (n: number) => () => io.serial(async () => {
+    const h = await here()
+    if (h === undefined) return
+    const { fresh, i, row } = h
+    if (row?.q === undefined) return say('Move to a question or a decision first.')
+    if (n >= row.q.options.length) return
+    await done([await answerRow(row.q.id, row.q.options[n]!)], fresh, i)
+  })
+  const takeDefault = () => io.serial(async () => {
+    const h = await here()
+    if (h === undefined) return
+    const { fresh, i, row } = h
+    if (row === undefined) return
+    const lines: string[] = []
+    let refused = 0
+    for (const id of row.ids) {
+      const q = (await io.readInbox()).items.find(x => x.id === id)
+      const why = q === undefined ? undefined : protectedWhy(q)
+      if (why !== undefined) { lines.push(why); refused++; continue }
+      lines.push(await answerRow(id, null))
+    }
+    // A refusal leaves the highlight where it is.
+    if (refused === lines.length) return say(lines.join(' '))
+    await done(lines, fresh, i)
+  })
+  const keepAll = () => io.serial(async () => {
+    const h = await here(false)
+    if (h === undefined) return
+    const { fresh, i } = h
+    const open = (await io.readInbox()).items.filter(x => x.state === 'open' && isFyi(x) && protectedWhy(x) === undefined)
+    if (open.length === 0) return say('No open decisions to keep.')
+    const lines: string[] = []
+    for (const q of open) lines.push(await answerRow(q.id, null))
+    const kept = lines.filter(l => l.includes(': Keep (default)')).length
+    await done([`Kept ${kept} decision${kept === 1 ? '' : 's'}.`, ...lines.filter(l => !l.includes(': Keep (default)'))], fresh, i)
+  })
+  const undo = () => io.serial(async () => {
+    const h = await here()
+    if (h === undefined) return
+    const { fresh, i, row } = h
+    if (row?.q === undefined || !isFyi(row.q)) return say('n undoes one decision: move to it first.')
+    const text = (await io.readDraft()).trim()
+    await io.setDraft('')
+    await done([await answerRow(row.q.id, text === '' ? OVERTURN : text)], fresh, i)
+  })
+  const reply = () => io.serial(async () => {
+    await io.acted()
+    await say('Type your answer and press Enter.')
+    void io.focus('inbox-answer')
+  })
+  const submit = (value: string) => void io.serial(async () => {
+    const text = value.trim()
+    if (text === '') return
+    const h = await here()
+    if (h === undefined) return
+    const { fresh, i, row } = h
+    if (row?.q === undefined) return say('Move to a question or a decision first.')
+    await io.setDraft('')
+    await done([await answerRow(row.q.id, text)], fresh, i)
+  })
+  const move = (d: number) => () => io.serial(async () => {
+    const h = await here(false)
+    if (h === undefined) return
+    const { fresh, i } = h
+    const to = fresh[Math.min(fresh.length - 1, Math.max(0, i + d))]
+    if (to !== undefined) await io.setCursor(to.key)
+  })
+  const back = io.back
+  const nOpts = hq?.options.length ?? 0
+  const nQ = ibox.items.filter(x => x.state === 'open' && !isFyi(x)).length
+  const nF = ibox.items.filter(x => x.state === 'open' && isFyi(x)).length
+  return (
+    <Box flexDirection="column" height={rows}>
+      <Text bold>Inbox <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
+      {win.top > 0 && <Text dimColor>  ↑ {win.top} above</Text>}
+      {win.rows.map(r => (
+        <Button key={`row-${r.key}`} plain onPress={() => void io.serial(async () => { await io.acted(); await io.setCursor(r.key) })}>
+          <Text inverse={r.key === hotRow?.key} color={r.q.blocking ? 'warning' : undefined} wrap="truncate-end">{r.key === hotRow?.key ? '> ' : '  '}{paneRowText(r)}</Text>
+        </Button>
+      ))}
+      {iBelow > 0 && <Text dimColor>  ↓ {iBelow} more</Text>}
+      {hq !== undefined && (
+        <Box flexDirection="column">
+          <Text bold>{hq.id} {isFyi(hq) ? 'decision' : 'question'} {tagsOf(hq)}</Text>
+          <Text>{hq.question}</Text>
+          {hq.options.map((o, k) => <Text key={`opt-${k}`}>  {String.fromCharCode(97 + k)}) {o}{o === hq.default ? ' (default)' : ''}</Text>)}
+          {hq.context && <Text dimColor>why: {clip(hq.context, 200)}</Text>}
+        </Box>
+      )}
+      {hotRow === undefined && <Text dimColor>Nothing to answer.</Text>}
+      {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
+      <Box flexGrow={1} />
+      {Input !== undefined && <Input key="inbox-answer" label="answer " placeholder="your own words (r), or what instead (n)" value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
+      <Box flexDirection="row" gap={1}>
+        {Array.from({ length: Math.min(nOpts, 8) }, (_, k) => (
+          <Button key={`pick-${String.fromCharCode(97 + k)}`} plain dimColor hotkey={String.fromCharCode(97 + k)} onPress={pickOption(k)}>{String.fromCharCode(97 + k)}</Button>
+        ))}
+        {Array.from({ length: Math.min(nOpts, 9) }, (_, k) => (
+          <Button key={`pick-${k + 1}`} plain dimColor hotkey={String(k + 1)} onPress={pickOption(k)}>{k + 1}</Button>
+        ))}
+        {nOpts > 0 && <Text dimColor>pick</Text>}
+      </Box>
+      <Box flexDirection="row" gap={1}>
+        <Button key="inbox-next" plain dimColor hotkey="j" onPress={move(1)}>j next</Button>
+        <Button key="inbox-prev" plain dimColor hotkey="k" onPress={move(-1)}>k prev</Button>
+        <Button key="inbox-yes" plain dimColor hotkey="y" onPress={takeDefault}>y default/keep</Button>
+        <Button key="inbox-all" plain dimColor hotkey="w" onPress={keepAll}>w keep all decisions</Button>
+        <Button key="inbox-no" plain dimColor hotkey="n" onPress={undo}>n undo</Button>
+        <Button key="inbox-reply" plain dimColor hotkey="r" onPress={reply}>r reply</Button>
+        <Button key="inbox-back" plain dimColor hotkey="i" onPress={back}>i back</Button>
+      </Box>
+    </Box>
+  )
+}
+
+export function treeView(c: TreeCtx) {
+  const { Box, Text, Button } = c.els
+  const { list, fold, acts, hs, rows, limits, anyOpen, unhanded, leftover, inboxRows, deployLines, cur, gate, openQs, fyiCount, checksLine, breakerNote, mainU, mainTime, toggle, card } = c
+  const { toggleFold, toggleQueue, open } = c
+  // The tree: each agent under the one that started it, what needs a person first.
+  const first = treeItems(list, fold, undefined, false, acts).items[0]?.a.id
+  const prs = Object.values(hs).sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+  const live = list.filter(a => !ENDED.has(a.status)).length
+  // Header, the PR lines and the hint row are fixed; the root and the agents share what is left.
+  // Full cards if all fit, else the crowded tree (compact rows, folded but for the highlight's
+  // path) in a window that follows the highlight.
+  const queueOpen = fold[c.mergeQueueKey] === false
+  const prRows = prs.length > 0 ? 1 + (queueOpen ? Math.min(prs.length, 5) : 0) : 0
+  const usageRows = rows >= 20 ? Math.min(4, limits.length) : 0
+  const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 || anyOpen || Object.keys(hs).length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows - deployLines.length
+  const wide = treeItems(list, fold, cur ?? first, false, acts)
+  const fullTree = CARD_ROWS + wide.items.reduce((n, i) => n + (i.collapsed ? 1 : CARD_ROWS), 0) <= avail
+  const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
+  const rootFull = fullTree || avail >= CARD_ROWS + items.length
+  const left = avail - (rootFull ? CARD_ROWS : 1)
+  const cut = !fullTree && items.length > left
+  const hotIdx = Math.max(0, items.findIndex(i => i.a.id === at))
+  // Two rows of the window go to the "above" and "more" lines.
+  const view = cut ? viewOf(items, hotIdx, Math.max(1, left - 2)) : { top: 0, rows: items }
+  const below = items.length - view.top - view.rows.length
+  const hotId = items[hotIdx]?.a.id
+  const countOf = (s: Handover['status']) => prs.filter(p => p.status === s).length
+  const returned = countOf('returned')
+  const awaiting = countOf('awaiting')
+  const queueSummary = (['pending', 'taken', 'done'] as const).map(s => `${countOf(s)} ${s}`).join(' · ')  + (countOf('ready') > 0 ? ` · ${countOf('ready')} ready to push` : '')
+  // Keys read the state fresh, so rapid presses each count once.
+  const step = (d: number) => async () => {
+    if (items.length === 0) return
+    await c.acted()
+    const curId = (await c.readCursor()) ?? hotId
+    const i = Math.min(items.length - 1, Math.max(0, items.findIndex(x => x.a.id === curId) + d))
+    const id = items[i]!.a.id
+    await c.setCursor(id)
+    // Moves the focus ring too; it waits for the next drawing, so it is not awaited.
+    void c.focusRow(id)
+  }
+  const hotItem = async () => {
+    await c.acted()
+    const curId = (await c.readCursor()) ?? hotId
+    return items.find(x => x.a.id === curId) ?? items[hotIdx]
+  }
+  return (
+    <Box flexDirection="column" height={rows}>
+      {gate !== undefined && gate.state === 'ready' && (
+        <Text color="warning" bold wrap="truncate-end">⇪ Batch {gate.id} ready to push: {gate.prs.map(n => `#${n}`).join(' ')}{gate.version === undefined ? '' : ` (${gate.version})`} · check: {gate.check}</Text>
+      )}
+      {gate !== undefined && gate.state === 'ready' && <Text color="warning" wrap="truncate-end">  /flow push · /flow push back {'<pr>'} · /flow push drop</Text>}
+      {gate !== undefined && gate.state !== 'ready' && (
+        <Text color="suggestion" wrap="truncate-end">⇪ Batch {gate.id} {gate.state === 'pushing' ? 'released, a reviewer is pushing it' : `is being rebuilt${gate.reason === undefined ? '' : ` (${gate.reason})`}`}: {gate.prs.map(n => `#${n}`).join(' ')}</Text>
+      )}
+      <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PR${prs.length === 1 ? '' : 's'} with the reviewer` : ''}{list.length > 0 ? ' · press an agent to open it' : ''}</Text>
+      {openQs.slice(0, 5).map(q => (
+        <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{q.id} {q.owner}: {q.question}</Text>
+      ))}
+      {openQs.length > 5 && <Text dimColor>and {openQs.length - 5} more</Text>}
+      {(openQs.length > 0 || fyiCount > 0) && (
+        <Text dimColor wrap="truncate-end">
+          Inbox: {[
+            ...(openQs.length > 0 ? [`${openQs.length} question${openQs.length === 1 ? '' : 's'} for you${openQs.some(q => q.blocking) ? ` (${openQs.filter(q => q.blocking).length} blocking)` : ''}`] : []),
+            ...(fyiCount > 0 ? [`${fyiCount} decision${fyiCount === 1 ? '' : 's'} agents made`] : []),
+          ].join(', ')}. Press i to answer or keep them.
+        </Text>
+      )}
+      {checksLine !== undefined && <Text dimColor wrap="truncate-end">{checksLine}</Text>}
+      {unhanded.length > 0 && (
+        <Text color="warning" wrap="truncate-end">
+          ⚠ {unhanded.length} PR{unhanded.length > 1 ? 's' : ''} nobody handed over: {unhanded.map(u => `#${u.pr}`).join(' ')}
+        </Text>
+      )}
+      {leftover && <Text dimColor wrap="truncate-end">{leftover}</Text>}
+      {rootFull ? (
+        <Box flexDirection="column" borderStyle="round" paddingX={1}>
+          <Text bold>{ROOT_GLYPH} main <Text dimColor> super manager</Text></Text>
+          {c.meter(mainU, false, mainTime)}
+          {limits.slice(0, usageRows).map(l => limitLine(c.els, c.t, l))}
+        </Box>
+      ) : (
+        <Text bold>{ROOT_GLYPH} main <Text dimColor>· super manager</Text>
+          {mainU !== undefined && <Text color={meterColor(mainU.percent, c.warnOf(mainU.window))}> {mainU.percent}%</Text>}
+        </Text>
+      )}
+      {!rootFull && limits.slice(0, usageRows).map(l => limitLine(c.els, c.t, l))}
+      {list.length === 0 && <Text dimColor>  Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
+      {view.top > 0 && <Text dimColor>  ↑ {view.top} above</Text>}
+      {view.rows.map(({ a, depth, kids, collapsed }) => card(
+        a, depth + 1, fullTree, depth === 0, a.id === hotId, collapsed,
+      ))}
+      {below > 0 && <Text dimColor>  +{below} more</Text>}
+      {prs.length > 0 && (
+        <Box flexDirection="row">
+          <Button key={`fold-${c.mergeQueueKey}`} plain dimColor onPress={toggleQueue}>{queueOpen ? '  ▾ ' : '  ▸ '}</Button>
+          <Text bold>Reviewer</Text>
+          {!queueOpen && <Text dimColor>  {queueSummary}</Text>}
+          {!queueOpen && awaiting > 0 && <Text color="warning"> · {awaiting} awaiting approval</Text>}
+          {!queueOpen && returned > 0 && <Text color="warning"> · {returned} returned</Text>}
+        </Box>
+      )}
+      {breakerNote !== undefined && <Text color="warning" wrap="truncate-end">{'    '}⚠ {breakerNote}</Text>}
+      {queueOpen && prs.slice(0, 5).map(ho => (
+        <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} color={ho.status === 'awaiting' || ho.status === 'ready' ? 'warning' : undefined} wrap="truncate-end">
+          {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}` : ho.status === 'ready' ? 'ready, awaiting your push: /flow push' : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
+        </Text>
+      ))}
+      {deployLines.map(l => <Text key={`deploy-${l}`} dimColor wrap="truncate-end">{'  '}⏸ {l}</Text>)}
+      {(list.length > 0 || anyOpen || prs.length > 0) && <Box flexGrow={1} />}
+      {(list.length > 0 || anyOpen || prs.length > 0) && (
+        <Box flexDirection="row" gap={1}>
+          {list.length > 0 && <Button key="nav-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
+          {list.length > 0 && <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
+          {list.length > 0 && <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>}
+          {list.length > 0 && <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
+            const i = await hotItem()
+            if (i) await toggleFold(i.a, i.collapsed)
+          }}>{items[hotIdx]?.collapsed ? 'c expand' : 'c collapse'}</Button>}
+          {prs.length > 0 && <Button key="nav-queue" plain dimColor hotkey="q" onPress={toggleQueue}>q reviewer</Button>}
+          {anyOpen && <Button key="nav-inbox" plain dimColor hotkey="i" onPress={c.openInbox}>i inbox</Button>}
+          {list.length > 0 && toggle}
+        </Box>
       )}
     </Box>
   )

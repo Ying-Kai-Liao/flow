@@ -211,6 +211,23 @@ async function end($: Dollar, w: W, id: string, afterMs: number, answer = '') {
   await w.clock.settle()
 }
 
+test('the pane shows the halt warning while the breaker is tripped', async ($, on) => {
+  const w = world(on)
+  await start($)
+  expect(await handover($, 7)).toContain('Started reviewer reviewer-1')
+  await end($, w, 'r1', 800)
+  await w.clock.advance(31_000)
+  await w.clock.settle()
+  await end($, w, 'r2', 800)
+  await w.clock.advance(61_000)
+  await w.clock.settle()
+  await end($, w, 'r3', 800)
+  expect(stored(w, 'reviewer-breaker').halt).toBeDefined()
+  const ui = await $.ui.mount({ plugin: 'flow', surface: 'terminal', component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' })
+  expect(await ui.find({ type: 'Text', text: /Reviewer halted/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('a reviewer that ends with no answer is not replaced at once; the next start waits 30s, then 1m, and the third failure halts', async ($, on) => {
   const w = world(on)
   await start($)
