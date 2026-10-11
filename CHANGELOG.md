@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.35] - 2026-10-11
+
 ### Added
 
 - Optional `size_model` setting (`off` by default): `jev` lets TypeSafe's Jev classifier pick the worker and manager size at spawn, falling back to the `Size:` line when Jev is unavailable. The brief text is sent to api.typesafe.ai when on.
