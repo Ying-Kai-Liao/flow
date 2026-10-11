@@ -236,7 +236,7 @@ export async function fileSizeFyi(io: SpawnIo, options: Record<string, unknown>,
 
 // A manager's model by the Size line main put on its prompt; a successor (`x-2`) runs one size up from the largest
 // size recorded for its predecessors. No size and no floor leaves the spawn alone.
-export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: string, base: string, jev?: SizeJev): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
+export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: string, normal: string, base: string, jev?: SizeJev): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
   const { declared, tag } = await declaredWith(e, jev)
   const name = (e as { name?: string }).name ?? e.description
   let floor: Size | undefined
@@ -248,7 +248,7 @@ export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: strin
   }
   const size = effectiveSize(declared?.size, floor)
   if (size === undefined) return { e }
-  const model = managerModelFor(size, small, base)
+  const model = managerModelFor(size, small, normal, base)
   return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size, ...(tag !== undefined && { jev: tag }) } }
 }
 

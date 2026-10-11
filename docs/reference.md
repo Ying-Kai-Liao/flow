@@ -19,7 +19,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `merge_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` holds every handed-over PR until you run `/flow approve <n>` (see Merge mode) |
 | `push_mode` | `auto` | `/config`, file | `auto` or `confirm` (unknown: `auto`): `confirm` makes the reviewer stop after the full check and the release, and waits for your `/flow push` (see Push gate) |
 | `release` | `off` | `/config`, file | `on`: release at merge, the reviewer bumps the version once per batch (see Releases) |
-| `manager_model` | `opus` | `/config`, file | managers, except those whose prompt says `Size: small` |
+| `manager_model` | `opus` | `/config`, file | managers whose prompt says `Size: large` or has no `Size:` line, and `Size: normal` unless `manager_model_normal` is set |
 | `worker_model` | `sonnet[1m]` | `/config`, file | workers of size `large`, and workers whose brief has no `Size:` line (see Model routing). Falls back to `sonnet` once, with a warning, if the engine refuses `[1m]` for sub-agents |
 | `max_workers` | 3 | `/config`, file | workers per manager at a time |
 
@@ -55,6 +55,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `openai_base_url` | empty (`https://api.openai.com/v1`) | `/config`, file | where the OpenAI request goes, for a compatible endpoint |
 | `size_model` | `off` | `/config`, file | deprecated alias of `decision_api` (`jev` or `openai`), read only while `decision_api` is `auto` or unset; an explicit `decision_api`, `off` included, always wins |
 | `manager_model_small` | `sonnet` | `/config`, file | managers whose prompt says `Size: small` (see Model routing) |
+| `manager_model_normal` | unset (follows `manager_model`) | `/config`, file | managers whose prompt says `Size: normal` (see Model routing) |
 | `worker_model_small` | `haiku` | `/config`, file | workers whose brief says `Size: small` |
 | `worker_model_normal` | `sonnet` | `/config`, file | workers whose brief says `Size: normal` |
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
@@ -91,7 +92,7 @@ An unset full check or deploy is a step that's skipped and reported, never impro
 
 The reviewer was called the merge queue before. For older setups the agent type `flow:queue`, the tool `mcp__flow__queue` and the settings `merge_queue` and `queue_model` still work as aliases of `flow:reviewer`, `mcp__flow__reviewer`, `reviewer` and `reviewer_model`; the old settings names are deprecated and warn once.
 
-Sub-agents don't run on Fable: a Fable model is refused in settings, for every model key above including `manager_model_small`, `worker_model_small`, `worker_model_normal`, `explore_model` and `conflict_model` (a warning, the default applies) and denied at spawn, for flow agents and for anything a flow agent starts.
+Sub-agents don't run on Fable: a Fable model is refused in settings, for every model key above including `manager_model_small`, `manager_model_normal`, `worker_model_small`, `worker_model_normal`, `explore_model` and `conflict_model` (a warning, the default applies) and denied at spawn, for flow agents and for anything a flow agent starts.
 
 ### Settings per repo
 
@@ -230,6 +231,7 @@ A manager picks a model per worker by size, not by name. It writes `Size: small 
 The `Size:` line wins over an explicit `model` parameter. Without one nothing changes: the `model` parameter or `worker_model` applies. An unknown size word is ignored.
 
 - **Escalation:** a successor worker (named `<name>-N`, or a brief with `Continue on branch: flow/<x>`) of a small or normal worker runs at least one size above its predecessor (small, then normal, then large), automatically. That covers a BLOCKED or failed worker, a context handoff, and a PR the reviewer sends back: the reviewer's back message for a small or normal worker's PR tells the manager to continue with a fresh `-N` worker.
+- **Managers:** a manager is routed the same way by the `Size:` line on its prompt: `small` -> `manager_model_small` (`sonnet`), `normal` -> `manager_model_normal` (unset: follows `manager_model`, so `opus` by default), `large` or no `Size:` line -> `manager_model`. A successor `<name>-2` of a normal manager runs on `manager_model`.
 - **Lite mode:** a manager started with `Mode: lite` is routed like any manager (`manager_model`, or its `Size:` line). It and its workers file no downgrade records; the models are still routed.
 - **Downgrade record:** a worker started below large makes the plugin file a non-blocking decision from the manager to the user, topic `worker-size`, e.g. "csv-docs runs small -> haiku: docs only". It is never a blocking ask and never silent. Undo it in `/flow inbox`: the manager is told and restarts the package at the size you chose. Standing answers (`mcp__flow__standing`, topic `worker-size`) can acknowledge recurring cases (see Standing answers).
 - **Jev (optional):** with `decision_api` set to `jev`, TypeSafe's Jev classifier picks the size for `flow:worker` and `flow:manager` spawns, even when the brief has no `Size:` line. The successor floor still applies on top. One call per spawn, with a 5 second wait. **The brief text (minus its `Size:` line, capped at 8000 characters) is sent to api.typesafe.ai: data leaves the machine.** The key is the `/config` option `jev_api_key` (sensitive, kept in secure storage); `jev_base_url` (default `https://api.typesafe.ai`) points it elsewhere. Neither the environment nor a file is read for it. Jev can also be reached through OpenRouter: with no `jev_api_key` and an `openrouter_api_key`, the same request goes to `openrouter_base_url` (default `https://openrouter.ai/api`, path `/v1/systemone`) with that key and the model `openrouter_jev_model`; the decision text then reads "jev via openrouter" and the host is openrouter.ai. `jev_api_key` wins when both are set. Jev's answer counts only when it is small, normal or large with confidence of at least `size_min_confidence` (default 0, so any). Anything else (no key, timeout, an HTTP error, a bad answer, low confidence) falls back silently to the `Size:` line and adds a short note to the downgrade record, e.g. "csv-docs runs small -> haiku (jev 0.98; brief said normal): docs only" or "(jev unavailable: HTTP 401)". The key and response bodies never appear in notes or logs. Off, the plugin makes no network call.
