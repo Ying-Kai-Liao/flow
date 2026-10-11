@@ -478,7 +478,7 @@ test('paneRows: one group row after the important items, its ids are every folde
   const rows = paneRows(box)
   expect(rows.map(r => r.key)).toEqual(['q2', 'q1', 'd3', FOLD_KEY])
   expect(rows[3]!.ids).toEqual(['d2', 'd1'])
-  expect(paneRowText(rows[3]!)).toBe('▸ 2 routine decisions (worker-size) - y keeps all of them, Enter expands')
+  expect(paneRowText(rows[3]!)).toBe('▸ 2 routine (worker-size)')
   const open = paneRows(box, undefined, true)
   expect(open.map(r => r.key)).toEqual(['q2', 'q1', 'd3', FOLD_KEY, 'd2', 'd1'])
   expect(paneRowText(open[3]!)).toContain('▾')
