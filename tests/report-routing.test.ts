@@ -57,8 +57,11 @@ function world(on: On) {
 const handover = ($: Dollar, agentId: string | undefined, extra: Record<string, unknown> = {}) =>
   $.tool.call({ tool: 'mcp__flow__handover', pr: 7, ...extra, ...(agentId === undefined ? {} : { agentId }) } as never).then(r => String(r.result))
 const list = ($: Dollar) => $.tool.call({ tool: 'mcp__flow__queue', action: 'list', agentId: 'q1' } as never).then(r => String(r.result))
+// A short-circuited SendMessage comes back as deny (the host refuses a string result from a built-in tool).
+const sendRaw = ($: Dollar, agentId: string | undefined, to: string, message: string) =>
+  $.tool.call({ tool: 'SendMessage', to, message, ...(agentId === undefined ? {} : { agentId }) } as never)
 const send = ($: Dollar, agentId: string | undefined, to: string, message: string) =>
-  $.tool.call({ tool: 'SendMessage', to, message, ...(agentId === undefined ? {} : { agentId }) } as never).then(r => String(r.result))
+  sendRaw($, agentId, to, message).then(r => String(('deny' in r ? r.deny : r.result) as unknown))
 const notes = (files: Map<string, string>) => files.get(`${DIR}/managers/csv-export/notes.md`) ?? ''
 
 test('report_to defaults to the caller: a manager by name, main for the main session', async ($, on) => {
@@ -261,6 +264,19 @@ test('a reviewer send to main that repeats forwarded lines is dropped; new text 
   await send($, 'q1', 'csv-export', 'PR #7 merged\nneeds a person: PR #7: look at the pane')
   expect(await send($, 'q1', 'main', 'needs a person: PR #7: look at the pane')).toContain('already has')
   expect(await send($, 'q1', 'main', 'needs a person: PR #7: look at the pane\nPR #8 waits')).toBe('sent')
+})
+
+test('a short-circuited reviewer SendMessage has no string result, so the host does not refuse it', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'completed'
+  const first = await sendRaw($, 'q1', 'csv-export', 'PR #7 merged')
+  expect('result' in first).toBe(false)
+  expect(String(first.deny)).toContain('Not sent')
+  await send($, 'q1', 'csv-export', 'PR #7 merged\nneeds a person: PR #7: look at the pane')
+  const main = await sendRaw($, 'q1', 'main', 'needs a person: PR #7: look at the pane')
+  expect('result' in main).toBe(false)
+  expect(String(main.deny)).toContain('already has')
+  expect(w.prompts.length).toBe(0)
 })
 
 test('the same manager and PR from two different reviewer runs is forwarded both times', async ($, on) => {
