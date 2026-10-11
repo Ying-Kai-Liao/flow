@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.69] - 2026-10-12
+
 ### Changed
 
 - Pane inbox: each decision and question is its own expandable card (collapsed to one line by default; click it, or press e on the hot one, to open text, why, instead-could and inline Keep/Undo or option buttons); the owner is a plain collapsible header. The ruled preview under the list is gone; o opens the full-screen card.
