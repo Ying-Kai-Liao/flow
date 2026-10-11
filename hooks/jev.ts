@@ -26,16 +26,16 @@ export function jevBody(text: string, model: string, q: Question): unknown {
   }
 }
 
-export function parseJev(json: unknown, q: Question): Decision {
+export function parseJev(json: unknown, q: Question, minConfidence = DECIDE_MIN_CONFIDENCE): Decision {
   const a = (json as { answers?: Record<string, { choice?: unknown; confidence?: unknown } | undefined> } | null)?.answers?.[q.id]
   if (a === undefined || a === null || typeof a !== 'object') return { note: 'jev unavailable: bad response' }
   if (typeof a.choice !== 'string' || !optionsOf(q).includes(a.choice)) return { note: 'jev unavailable: unknown choice' }
   if (typeof a.confidence !== 'number' || Number.isNaN(a.confidence)) return { note: 'jev unavailable: bad response' }
-  if (a.confidence < DECIDE_MIN_CONFIDENCE) return { note: `jev unavailable: low confidence ${a.confidence.toFixed(2)}` }
+  if (a.confidence < minConfidence) return { note: `jev unavailable: low confidence ${a.confidence.toFixed(2)}` }
   return { answer: a.choice, confidence: a.confidence }
 }
 
-export const askJev: Provider = async (io, cfg, model, text, q, timeoutMs = DECIDE_TIMEOUT_MS) => {
+export const askJev: Provider = async (io, cfg, model, text, q, timeoutMs = DECIDE_TIMEOUT_MS, minConfidence = DECIDE_MIN_CONFIDENCE) => {
   if (cfg.key === undefined) return { note: 'jev unavailable: no key' }
-  return post(io, 'jev', `${cfg.baseUrl}/v1/systemone`, cfg.key, jevBody(text, model, q), timeoutMs, json => parseJev(json, q))
+  return post(io, 'jev', `${cfg.baseUrl}/v1/systemone`, cfg.key, jevBody(text, model, q), timeoutMs, json => parseJev(json, q, minConfidence))
 }

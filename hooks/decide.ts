@@ -19,7 +19,7 @@ export type Decision = { answer: string; confidence?: number } | { note: string 
 
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>
 export type ProviderConfig = { key?: string; baseUrl: string }
-export type Provider = (io: DecideIo, cfg: ProviderConfig, model: string, text: string, q: Question, timeoutMs?: number) => Promise<Decision>
+export type Provider = (io: DecideIo, cfg: ProviderConfig, model: string, text: string, q: Question, timeoutMs?: number, minConfidence?: number) => Promise<Decision>
 
 export const optionsOf = (q: Question): string[] => (q.type === 'choice' ? Object.keys(q.criteria) : ['yes', 'no'])
 // Both providers get a yes/no as a choice between yes and no.
@@ -61,8 +61,9 @@ export type DecideSettings = { decisionApi?: DecisionApi; jevModel?: string; ope
 // How the decision text names the provider ("jev", "openai gpt-4.1-mini").
 export const sourceOf = (s: DecideSettings): string => (s.decisionApi === 'openai' ? `openai ${s.openaiModel ?? OPENAI_DEFAULT_MODEL}` : 'jev')
 
-export async function decide(io: DecideIo, s: DecideSettings, text: string, q: Question, timeoutMs = DECIDE_TIMEOUT_MS): Promise<Decision> {
-  if (s.decisionApi === 'openai') return askOpenai(io, openaiConfig(s), s.openaiModel ?? OPENAI_DEFAULT_MODEL, text, q, timeoutMs)
-  if (s.decisionApi === 'jev') return askJev(io, jevConfig(s), s.jevModel ?? JEV_DEFAULT_MODEL, text, q, timeoutMs)
+// `minConfidence` is the floor under which an answer comes back as a "low confidence" note; the eval lowers it to see every answer.
+export async function decide(io: DecideIo, s: DecideSettings, text: string, q: Question, timeoutMs = DECIDE_TIMEOUT_MS, minConfidence = DECIDE_MIN_CONFIDENCE): Promise<Decision> {
+  if (s.decisionApi === 'openai') return askOpenai(io, openaiConfig(s), s.openaiModel ?? OPENAI_DEFAULT_MODEL, text, q, timeoutMs, minConfidence)
+  if (s.decisionApi === 'jev') return askJev(io, jevConfig(s), s.jevModel ?? JEV_DEFAULT_MODEL, text, q, timeoutMs, minConfidence)
   return { note: 'decision api off' }
 }

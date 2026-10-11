@@ -372,6 +372,21 @@ export const GUARD_TESTS_TOOL: ToolSpec = {
   isDeferred: false,
 }
 
+export const DECIDE_EVAL_TOOL: ToolSpec = {
+  name: 'decide_eval',
+  description: 'Main only. Replays flow\'s history (inbox decisions, test failures, merge conflicts, handoffs) through the decision API; reports agreement, fall-through, confidence and estimated savings per question. Uses the configured decision_api and its /config key; writes ids, labels and confidences (no texts, no key) to decide-eval.json in the flow state dir. Refused when decision_api is off, unless dry_run (sizes and samples, no network).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      provider: { type: 'string', enum: ['jev', 'openai'], description: 'Default: the configured decision_api' },
+      features: { type: 'array', items: { type: 'string', enum: ['inbox', 'test', 'conflict', 'handoff'] }, description: 'Default: all four' },
+      limit: { type: 'number', description: 'Newest N records per feature (default all)' },
+      dry_run: { type: 'boolean', description: 'Dataset sizes and one sample text each; no network' },
+    },
+  },
+  isDeferred: true,
+}
+
 export const SESSION_TOOL: ToolSpec = {
   name: 'session',
   description: 'Workers outside this session: another harness (codex, gemini, opencode, claude, or your own command line) in an Orca terminal or tmux session the user can watch. "start" (name, brief, harness, host?, command?) makes a worktree on flow/<name> and starts the harness with the worker rules and the brief; its report comes back as a "flow session:" message. "send" (name, text), "keys" (name, keys), "read" (name, lines?), "restart" (name), "list", "stop" (name, remove_worktree?).',
