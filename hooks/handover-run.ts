@@ -8,6 +8,7 @@ import { isBump } from './release'
 import { parseEnvInput } from './deploy'
 import type { Draft } from './deploy'
 import { mirror } from './core'
+import { liteSteps } from './prompts'
 
 type Settings = ReturnType<typeof settingsOf>
 
@@ -26,6 +27,8 @@ export type HandoverIo = {
   toast: (text: string) => void
   refresh: () => Promise<unknown>
   ensureQueue: () => Promise<string>
+  // The name of the lite manager (lite.ts) this agent is, else undefined.
+  liteManager: (agentId: string | undefined) => Promise<string | undefined>
 }
 
 export async function handoverTool(io: HandoverIo, settings: Settings, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
@@ -81,6 +84,14 @@ export async function handoverTool(io: HandoverIo, settings: Settings, input: Re
     }
     const hold = effectiveMode(labels, h.mode, setMode) === 'confirm'
     if (hold) h.status = 'awaiting'
+    // A lite manager merges its own PR: recorded as taken by itself (so "ready" and "done" work as the reviewer's do and
+    // the stale check leaves it alone), no reviewer started. A PR that waits for the user falls back to the reviewer.
+    const lite = hold ? undefined : await io.liteManager(agentId)
+    if (lite !== undefined) {
+      h.status = 'taken'
+      h.lite = true
+      h.reportTo = lite
+    }
     const envNote = await io.openEnv(h, envParsed.drafts, (await io.handovers())[String(pr)]?.env ?? [], t)
     await io.putHandover(String(pr), h)
     await io.best('saving a handover', async () => {
@@ -91,6 +102,10 @@ export async function handoverTool(io: HandoverIo, settings: Settings, input: Re
       void io.toast(`PR #${pr} awaits your approval: /flow approve ${pr}`)
       await io.refresh()
       return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}, but it awaits the user's approval: the reviewer will not merge it until the user runs /flow approve ${pr}. Tell the user so in your report.${labelNote}${envNote}` }
+    }
+    if (lite !== undefined) {
+      await io.refresh()
+      return { result: `Lite mode: PR #${pr} (${info.headRefOid.slice(0, 8)}) is recorded and no reviewer was started. Merge it yourself, in this order:\n${liteSteps(settings)}\nIf the PR is risky or you are unsure, hand it over again with mode "confirm" instead of merging it.${labelNote}${envNote}` }
     }
     const queue = await io.ensureQueue()
     await io.refresh()

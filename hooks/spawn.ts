@@ -217,8 +217,11 @@ export async function fileSizeFyi(io: SpawnIo, options: Record<string, unknown>,
 
 // A manager's model by the Size line main put on its prompt; a successor (`x-2`) runs one size up from the largest
 // size recorded for its predecessors. No size and no floor leaves the spawn alone.
-export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: string, base: string, jev?: SizeJev): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
-  const { declared, tag } = await declaredWith(e, jev)
+// A lite manager (lite.ts) with no Size line of its own runs small, without asking the classifier; an explicit Size line,
+// `Size: large` included, is followed.
+export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: string, base: string, jev?: SizeJev, lite = false): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
+  const brief = lite ? parseSize(e.prompt) : undefined
+  const { declared, tag } = lite && brief === undefined ? { declared: { size: 'small' as Size, reason: 'lite mode' }, tag: undefined } : await declaredWith(e, jev)
   const name = (e as { name?: string }).name ?? e.description
   let floor: Size | undefined
   if (isSuccessorName(name)) {
