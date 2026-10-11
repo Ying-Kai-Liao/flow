@@ -46,7 +46,7 @@ import type { StandingIo } from './standing-run'
 import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
 import { agentView, card as cardTo, graphModeView, inboxView, managerGraphView, meter as meterTo, treeView } from './pane-view'
 import type { InboxCtx, PaneCtx, Usage } from './pane-view'
-import { describeCall, foldDefault, ROLE, summarizeCall } from './pane'
+import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
 import {
   fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT,
 } from './prompts'
@@ -2213,8 +2213,11 @@ export const register: Register = (on, options) => {
       await acted()
       await update($, folded, f => ({ ...f, [a.id]: !(f[a.id] ?? foldDefault(a) ?? shown) }))
     }
+    const spent = await read($, ledger)
+    const modelOf = (a: AgentRow) => a.type === SESSION ? sessionMap[a.name ?? '']?.harness : shortModel(spent[a.id]?.spawnModel)
+    const columns = e.viewport?.columns ?? 80
     const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, collapsed?: boolean) => cardTo({
-      els: { Box, Text, Button }, list, acts, askers, decisionPhrases: settings.decisionPhrases, t, usageOf, warnOf, meter, runTime, toggleFold, open,
+      els: { Box, Text, Button }, list, acts, askers, decisionPhrases: settings.decisionPhrases, t, usageOf, warnOf, meter, runTime, toggleFold, open, columns, modelOf,
     }, a, depth, full, bordered, hot, collapsed)
     const agent = list.find(a => a.id === pick)
 
@@ -2228,7 +2231,7 @@ export const register: Register = (on, options) => {
       await update($, folded, f => ({ ...f, [MERGE_QUEUE_KEY]: f[MERGE_QUEUE_KEY] === false }))
     }
     const ctx: PaneCtx = {
-      els: { Box, Text, Button }, list, acts, plans, rows, columns: e.viewport?.columns ?? 80, t, gfocus, shown, sessionMap, arm, armMs: ARM_MS,
+      els: { Box, Text, Button }, list, acts, plans, rows, columns, modelOf, t, gfocus, shown, sessionMap, arm, armMs: ARM_MS,
       askers, decisionPhrases: settings.decisionPhrases, toggle, card, runTime, control, acted, open,
       back: async parentId => { await acted(); await update($, selected, () => parentId) },
       fill: text => $.prompt.fill({ text, mode: 'replace' }),
@@ -2274,7 +2277,7 @@ export const register: Register = (on, options) => {
       : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
 
     return treeView({
-      ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, fyiCount, anyOpen, checksLine, gate, breakerNote, inboxRows, deployLines, mainU, mainTime,
+      ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, fyiCount, anyOpen, checksLine, gate, breakerNote, inboxRows, deployLines, mainU, mainModel: shortModel(mainModel), mainTime,
       mergeQueueKey: MERGE_QUEUE_KEY, warnOf, meter, toggleFold, toggleQueue,
       readCursor: () => read($, cursor),
       setCursor: id => update($, cursor, () => id),

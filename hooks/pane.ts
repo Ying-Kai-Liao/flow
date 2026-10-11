@@ -137,3 +137,12 @@ export function handoffText(h: NonNullable<ReturnType<typeof handoffOf>>): strin
     ? `handed off${h.to ? ` → ${h.to}` : ''}`
     : `wrapping up${h.percent === undefined ? '' : ` (told at ${h.percent}%)`}${h.reminders > 1 ? ` · ${h.reminders} reminders` : ''}`
 }
+
+// A model id as a short tag: the family, plus a [1m] suffix; anything unknown is passed through clipped.
+export function shortModel(model: string | undefined): string | undefined {
+  const m = model?.trim()
+  if (m === undefined || m === '') return undefined
+  const family = /opus|sonnet|haiku/i.exec(m)?.[0].toLowerCase()
+  if (family === undefined) return m.length > 14 ? m.slice(0, 13) + '…' : m
+  return /\[1m\]/i.test(m) ? `${family}[1m]` : family
+}
