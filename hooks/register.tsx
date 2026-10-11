@@ -69,6 +69,8 @@ import { askTool, answerTool, fyiTool, preflightTool } from './inbox-run'
 import type { InboxIo } from './inbox-run'
 import { checkTool } from './checks-run'
 import type { ChecksIo } from './checks-run'
+import { isManagerOf, liveManagers, planOwner, refreshTo, syncPlansTo } from './roster-run'
+import type { RosterIo } from './roster-run'
 import { planTool } from './plan-run'
 import type { PlanIo } from './plan-run'
 import { testSlotTool } from './slots-run'
@@ -401,151 +403,48 @@ const commandIoOf = ($: EngineInterface): CommandIo => ({
   refreshBehind: () => refreshBehind($),
 })
 
-// Managers whose end already freed a slot (and woke main), so a poll does not wake it twice.
-const freedSeen = new Set<string>()
-
-const isManagerOf = (owner: string, name: string | undefined) =>
-  name !== undefined && (name === owner || (name.startsWith(owner + '-') && /^\d+$/.test(name.slice(owner.length + 1))))
-
-// Whose graph an agent works on: its own name, or the manager it continues (`<name>-N`); main has none.
-function planOwner(plans: Plan, name: string | undefined): string {
-  if (name === undefined) return 'main'
-  if (plans[name]) return name
-  const m = /^(.+)-\d+$/.exec(name)
-  return m && plans[m[1]!] ? m[1]! : name
-}
-
-const liveManagers = (rows: AgentRow[]) => rows.filter(a => a.type === MANAGER && !ENDED.has(a.status))
-
-// Settles every plan against the roster and handovers in one update, then tells each owner once.
-// `edit` changes the plan first (the plan tool); `quietOwner` is the caller, who sees the outcome
-// in its own tool result and needs no message.
-async function syncPlans(
-  $: EngineInterface, rows: AgentRow[], edit?: (p: Plan) => Plan, quietOwner?: string,
-): Promise<Plan> {
-  // Marked before the first await, so two overlapping polls count an ended manager once.
-  const freed = rows.filter(a => a.type === MANAGER && ENDED.has(a.status) && !freedSeen.has(a.id))
-  for (const a of freed) freedSeen.add(a.id)
-  if (edit === undefined && Object.keys(await read($, plan)).length === 0) return {}
-  const [acts, hs] = await Promise.all([read($, activity), read($, handovers)])
-  const agents: AgentFact[] = rows.map(a => ({
-    id: a.id, name: a.name, status: a.status, answer: acts[a.id]?.answer,
-    children: rows.filter(c => c.parentId === a.id && LIVE_STATUS.has(c.status)).length,
-    at: acts[a.id]?.lastAt,
-    childAt: Math.max(0, ...rows.filter(c => c.parentId === a.id).map(c => acts[c.id]?.lastAt ?? 0)),
-  }))
-  const known = { ...(await read($, seenAgents)) }
-  const present = new Set(rows.map(a => a.name))
-  for (const a of agents) if (a.name !== undefined) known[a.name] = a
-  for (const [name, a] of Object.entries(known)) if (!present.has(name)) agents.push(a)
-  if (JSON.stringify(known) !== JSON.stringify(await read($, seenAgents))) await update($, seenAgents, () => known)
-  const owners = branchOwners(await readLog($))
-  const facts: Facts = {
-    agents, owners,
-    handovers: Object.values(hs),
-    phrases: mirror.decisionPhrases,
-    asking: askingNames(await read($, inbox)),
-  }
-  const slots = Math.max(0, mirror.maxManagers - liveManagers(rows).length)
-  let notices: Notice[] = []
-  let result: Plan = {}
-  await update($, plan, p => {
-    const r = settle(edit ? edit(p) : p, facts, { slots })
-    notices = r.notices
-    result = r.plan
-    // A slot freed while ready tasks wait: tell main again, once per ended manager.
-    const waiting = Object.values(r.plan['main'] ?? {}).filter(n => n.state === 'ready')
-    if (freed.length > 0 && slots > 0 && waiting.length > 0 && !notices.some(n => n.owner === 'main')) {
-      notices = [...notices, { owner: 'main', ready: waiting, blocked: [], done: [], slots }]
-    }
-    return r.plan
-  })
-  for (const n of notices) {
-    if (n.owner === quietOwner) continue
-    const text = noticeText(n)
-    if (n.owner === 'main') {
-      $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
-    } else {
-      const agent = agentFor(n.owner, rows.filter(a => !ENDED.has(a.status)))
-      if (agent) await deliver($, agent.id, text).catch(() => undefined)
-      else {
-        // The owner ended its turn to wait (the host reports it completed or drops it): a ready node means it
-        // has work left, so the notice wakes it. Only a manager that cannot be resumed sends it to main.
-        const gone = agentFor(n.owner, agents.filter(a => a.status !== 'failed' && a.status !== 'killed'))
-        if (gone?.id !== undefined) {
-          resumable.add(gone.id)
-          await deliver($, gone.id, text, { onGone: t => tellMain($, n.owner, t) }).catch(() => undefined)
-        } else if (agentFor(n.owner, agents) !== undefined) await tellMain($, n.owner, text)
-      }
-    }
-  }
-  return result
-}
-
 function limitsLine(rows: AgentRow[], workers: number): string {
   return `Limits: managers ${liveManagers(rows).length}/${mirror.maxManagers}, workers per manager ${workers}`
 }
 
-// The roster as the board shows it: every agent of the session, with its role.
-async function refresh($: EngineInterface): Promise<AgentRow[]> {
-  const [list, t, before, acts] = await Promise.all([
-    $.agent.list(), $.clock.now(), read($, roster), read($, activity),
-  ])
-  const rows: AgentRow[] = list.map(a => ({
-    id: a.id, name: a.name, description: a.description, type: a.type,
-    status: a.status, parentId: a.parentId,
-  }))
-  // Workers in other harnesses stand in the tree like agents, under the manager that started them.
-  rows.push(...Object.values(await read($, sessions)).map(sessionRow))
-  const was = new Map(before.map(a => [a.id, a.status]))
-  const ended: string[] = []
-  const askers = askingNames(await read($, inbox))
-  for (const a of rows) {
-    const prev = was.get(a.id)
-    // The reviewer's worktree (detached at the base) goes once the reviewer is gone, also when
-    // its ending was not seen as a transition (a reload left the roster record empty).
-    if (ENDED.has(a.status) && isReviewer(a.type) && (prev === undefined || (prev !== a.status && !ENDED.has(prev)))) autoSweep($)
-    if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
-    if (ENDED.has(a.status) && acts[a.id] !== undefined) ended.push(a.id)
-    if (ENDED.has(a.status) || a.status === 'idle') {
-      const asks = asksQuestion(acts[a.id]?.answer, mirror.decisionPhrases) || askers.includes(a.name ?? '')
-      const role = ROLE[a.type] ? `${ROLE[a.type]} ` : ''
-      void $.ui.toast(`${role}${labelOf(a)}: ${asks ? 'asks a question' : a.status === 'idle' ? 'finished its turn' : a.status}`)
-    }
-  }
-  if (ended.length > 0) {
-    await update($, activity, all => {
-      const next = { ...all }
-      for (const id of ended) if (next[id] !== undefined && next[id]!.endedAt === undefined) next[id] = { ...next[id]!, endedAt: t }
-      return next
-    })
-  }
-  if (JSON.stringify(rows) !== JSON.stringify(before)) await update($, roster, () => rows)
-  await update($, now, () => t)
-  // Free the test slots of ended agents and pass them on.
-  await settleSlots($, rows, t)
+const rosterIoOf = ($: EngineInterface): RosterIo => ({
+  list: () => $.agent.list(),
+  now: () => $.clock.now(),
+  plan: () => read($, plan),
+  updatePlan: fn => update($, plan, fn).then(() => undefined),
+  activity: () => read($, activity),
+  updateActivity: fn => update($, activity, fn).then(() => undefined),
+  handovers: () => read($, handovers),
+  seen: () => read($, seenAgents),
+  setSeen: known => update($, seenAgents, () => known).then(() => undefined),
+  log: () => readLog($),
+  inbox: () => read($, inbox),
+  roster: () => read($, roster),
+  setRoster: rows => update($, roster, () => rows).then(() => undefined),
+  setNow: t => update($, now, () => t).then(() => undefined),
+  sessions: () => read($, sessions),
+  testSlots: () => read($, testSlots),
+  toast: text => { void $.ui.toast(text) },
+  status: line => $.ui.status(line),
+  wakeMain: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
+  autoSweep: () => autoSweep($),
+  settleSlots: (rows, t) => settleSlots($, rows, t),
+  unhanded: async () => (await currentUnhanded($)).length,
+  preflightTick: rows => preflightTick($, rows),
+  deliver: (id, text, opts) => deliver($, id, text, opts),
+  tellMain: (name, text) => tellMain($, name, text),
+  markResumable: id => { resumable.add(id) },
+  decisionPhrases: () => mirror.decisionPhrases,
+  maxManagers: () => mirror.maxManagers,
+  slotLimit: () => mirror.slotLimit,
+})
 
-  const hs = Object.values(await read($, handovers))
-  const live = rows.filter(a => !ENDED.has(a.status))
-  const count = (type: string) => live.filter(a => a.type === type || (type === WORKER && WORKERS.has(a.type))).length
-  const queued = hs.filter(h => h.status === 'pending' || h.status === 'taken').length
-  const awaiting = hs.filter(h => h.status === 'awaiting').length
-  const parts = [
-    count(MANAGER) && `${count(MANAGER)} managers`,
-    count(WORKER) && `${count(WORKER)} workers`,
-    queued && `reviewer: ${queued} PR${queued > 1 ? 's' : ''}`,
-    awaiting && `${awaiting} awaiting approval`,
-  ].filter(Boolean)
-  const unhanded = (await currentUnhanded($)).length
-  if (unhanded) parts.push(`${unhanded} unhanded`)
-  const slots = await read($, testSlots)
-  const slotPart = slots.holders.length || slots.waiters.length ? ` · tests ${slots.holders.length}/${mirror.slotLimit}` : ''
-  $.ui.status(rows.length === 0 && hs.length === 0 && !unhanded ? undefined
-    : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`}${slotPart} · /flow`)
-  await syncPlans($, rows).catch(() => undefined)
-  await preflightTick($, rows).catch(() => undefined)
-  return rows
-}
+// Settles every plan against the roster and handovers in one update, then tells each owner once (roster-run.ts).
+const syncPlans = ($: EngineInterface, rows: AgentRow[], edit?: (p: Plan) => Plan, quietOwner?: string): Promise<Plan> =>
+  syncPlansTo(rosterIoOf($), rows, edit, quietOwner)
+
+// The roster as the board shows it: every agent of the session, with its role (roster-run.ts).
+const refresh = ($: EngineInterface): Promise<AgentRow[]> => refreshTo(rosterIoOf($))
 
 async function openPane($: EngineInterface): Promise<void> {
   const r = await $.ui.open({ id: PANE, title: 'Flow' })

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- syncPlans and refresh moved from hooks/register.tsx into hooks/roster-run.ts, with the pure plan-owner helpers. No behavior change.
+
 ## [0.6.32] - 2026-10-11
 
 ### Changed
