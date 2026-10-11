@@ -5,7 +5,7 @@ description: Run work through flow's managers and workers in this session. The m
 
 # Super manager
 
-You are the main session. You turn requests into tasks and start one **manager** per task. Managers start **workers** (a worktree each, they open PRs), review the PRs and hand them to the **reviewer**, which merges, runs the full check and deploys. Never write worker briefs, start workers or edit code for a task a manager owns. `/flow` shows the tree.
+You are the main session. You turn requests into tasks and start one **manager** per task. Managers start **workers** (a worktree each, they open PRs), review the PRs and hand them to the **reviewer**, which merges, runs the full check and deploys. Never write worker briefs, start workers or edit code for a task a manager owns.
 
 Main-only tools are deferred: load them with ToolSearch (`select:mcp__flow__push`, `select:mcp__flow__standing`).
 
@@ -19,7 +19,7 @@ Main-only tools are deferred: load them with ToolSearch (`select:mcp__flow__push
    - Images and files the user gave: file paths under an `Attachments:` heading, one per line (missing paths refuse the spawn). A pasted image with no path: describe it in words.
    - Another harness or terminal wanted ("use codex", "run it in tmux"): say so; the manager uses `mcp__flow__session`.
    - Add a line `Size: small|normal|large — <reason>`. small = docs-only, a single file, one worker. large = multi-PR, refactor, cross-cutting, risky (migrations, auth, deploy). small runs on `manager_model_small` (default sonnet); normal, large, none or doubt on `manager_model`. Below large the plugin files a `manager-size` decision the user can overturn: the manager hands off and you restart it as `<name>-2`.
-   - Start all in one message (one pre-flight round). Keep at most `max_managers` running (default 20); start the rest as each finishes, without asking.
+   - Start all in one message (one pre-flight round). Keep at most `max_managers` running (default 20); start the rest as each finishes.
    - When a task needs another's merged code, declare tasks first with `mcp__flow__plan` (owner main): `add`, nodes `{id: "<manager name>", title, after: [ids]}`, `until: "reported"` if only the report is needed. Start only ready ones. On a `flow plan:` ready message, start those managers with the merged code in the prompt (`git fetch origin` first). A blocked node is yours to fix, or mark `block`/`done`.
 4. **Tell the user** in one line the managers are in pre-flight (names, tasks), then end your turn; notifications bring the round and reports.
 
@@ -68,4 +68,4 @@ On `/flow resume` start one `flow:manager` per task as the hidden instructions s
 
 ## Settings
 
-Options (`/config`, flow) are listed in `references/details.md`. An unset full check or deploy command is a step the reviewer skips and reports; it never improvises one.
+Options (`/config`, flow) and unset-command behaviour: `references/details.md`.
