@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed local `h` variables and parameters in the .tsx hooks so the plugin directory's JSX check (MOD_CAPABILITY_USE_NOT_PLAIN) passes; no behaviour change
+
 ## [0.6.42] - 2026-10-12
 
 ### Changed
