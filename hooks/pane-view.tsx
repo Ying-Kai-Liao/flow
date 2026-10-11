@@ -9,11 +9,12 @@ import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELL
 import { COLOR, GLYPH, handoffOf, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
-import { clip, isFyi, OVERTURN, paneRowText, protectedWhy, tagsOf } from './inbox'
+import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
 import type { Inbox, PaneRow, Question } from './inbox'
 import { MANAGER } from './core'
 import type { PushState } from './pushgate'
 import type { Unhanded } from './status-run'
+import { noteKey } from './state'
 import { ago, runsOutIn, SESSION } from './sessions'
 import type { WarnSettings } from './settings'
 
@@ -187,6 +188,8 @@ export type TreeCtx = PaneCtx & {
   leftover: string | undefined
   limits: Limit[]
   openQs: Question[]
+  // What the tree lists under the summary: the open questions, then the decisions that are not folded.
+  openItems: Question[]
   fyiCount: number
   anyOpen: boolean
   checksLine: string | undefined
@@ -206,6 +209,8 @@ export type TreeCtx = PaneCtx & {
   setCursor: (id: string) => Promise<unknown>
   focusRow: (id: string) => Promise<unknown>
   openInbox: () => Promise<void>
+  // Opens the inbox at one item's card; Back returns to the tree.
+  openCard: (id: string) => Promise<void>
 }
 
 type InputProps = { key: string; label: string; placeholder: string; value: string; onInput: (v: string) => void; onSubmit: (v: string) => void }
@@ -218,6 +223,11 @@ export type InboxCtx = {
   draft: string
   note: string
   irows: PaneRow[]
+  // The roster and the clock, for the card's agent line and ages.
+  list: AgentRow[]
+  now: number
+  // Where Back goes from a card.
+  from: 'tree' | 'inbox' | 'archive'
   io: {
     acted: () => Promise<void>
     rows: () => Promise<PaneRow[]>
@@ -232,6 +242,11 @@ export type InboxCtx = {
     toast: (text: string) => void
     focus: (key: string) => Promise<unknown>
     back: () => Promise<void>
+    // The card of one item; the view Back returns to.
+    open: (id: string, from: 'tree' | 'inbox' | 'archive') => Promise<void>
+    leave: (to: 'tree' | 'inbox' | 'archive') => Promise<void>
+    // Expands or folds the group of routine decisions.
+    toggleFold: () => Promise<void>
   }
 }
 
@@ -528,13 +543,14 @@ export function inboxView(x: InboxCtx) {
   const nOpts = hq?.options.length ?? 0
   const nQ = ibox.items.filter(x => x.state === 'open' && !isFyi(x)).length
   const nF = ibox.items.filter(x => x.state === 'open' && isFyi(x)).length
+  const archived = archiveOf(ibox).length
   return (
     <Box flexDirection="column" height={rows}>
       <Text bold>Inbox <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
       {win.top > 0 && <Text dimColor>  ↑ {win.top} above</Text>}
       {win.rows.map(r => (
-        <Button key={`row-${r.key}`} plain onPress={() => void io.serial(async () => { await io.acted(); await io.setCursor(r.key) })}>
-          <Text inverse={r.key === hotRow?.key} color={r.q.blocking ? 'warning' : undefined} wrap="truncate-end">{r.key === hotRow?.key ? '> ' : '  '}{paneRowText(r)}</Text>
+        <Button key={`row-${r.key}`} plain onPress={() => void io.serial(async () => { await io.acted(); if (r.group !== undefined) { await io.setCursor(r.key); await io.toggleFold() } else await io.open(r.key, 'inbox') })}>
+          <Text inverse={r.key === hotRow?.key} color={r.q?.blocking ? 'warning' : undefined} wrap="truncate-end">{r.key === hotRow?.key ? '> ' : '  '}{paneRowText(r)}</Text>
         </Button>
       ))}
       {iBelow > 0 && <Text dimColor>  ↓ {iBelow} more</Text>}
@@ -566,6 +582,8 @@ export function inboxView(x: InboxCtx) {
         <Button key="inbox-all" plain dimColor hotkey="w" onPress={keepAll}>w keep all decisions</Button>
         <Button key="inbox-no" plain dimColor hotkey="n" onPress={undo}>n undo</Button>
         <Button key="inbox-reply" plain dimColor hotkey="r" onPress={reply}>r reply</Button>
+        {irows.some(r => r.group !== undefined) && <Button key="inbox-fold" plain dimColor hotkey="x" onPress={() => io.serial(async () => { await io.acted(); await io.toggleFold() })}>x fold/expand</Button>}
+        <Button key="inbox-archive" plain dimColor hotkey="v" onPress={() => io.serial(async () => { await io.acted(); await io.leave('archive') })}>v archive{archived > 0 ? ` (${archived})` : ''}</Button>
         <Button key="inbox-back" plain dimColor hotkey="i" onPress={back}>i back</Button>
       </Box>
     </Box>
@@ -628,10 +646,12 @@ export function treeView(c: TreeCtx) {
         <Text color="suggestion" wrap="truncate-end">⇪ Batch {gate.id} {gate.state === 'pushing' ? 'released, a reviewer is pushing it' : `is being rebuilt${gate.reason === undefined ? '' : ` (${gate.reason})`}`}: {gate.prs.map(n => `#${n}`).join(' ')}</Text>
       )}
       <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PR${prs.length === 1 ? '' : 's'} with the reviewer` : ''}{list.length > 0 ? ' · press an agent to open it' : ''}</Text>
-      {openQs.slice(0, 5).map(q => (
-        <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{q.id} {q.owner}: {q.question}</Text>
+      {c.openItems.slice(0, 5).map(q => (
+        <Button key={`open-${q.id}`} plain onPress={() => c.openCard(q.id)}>
+          <Text color={q.blocking ? 'warning' : undefined} dimColor={isFyi(q)} wrap="truncate-end">{q.id}{isFyi(q) ? ' decision' : ''} {q.owner}: {q.question}</Text>
+        </Button>
       ))}
-      {openQs.length > 5 && <Text dimColor>and {openQs.length - 5} more</Text>}
+      {c.openItems.length > 5 && <Text dimColor>and {c.openItems.length - 5} more</Text>}
       {(openQs.length > 0 || fyiCount > 0) && (
         <Text dimColor wrap="truncate-end">
           Inbox: {[
@@ -696,6 +716,162 @@ export function treeView(c: TreeCtx) {
           {list.length > 0 && toggle}
         </Box>
       )}
+    </Box>
+  )
+}
+
+// --- The inbox's large card (one item) and the archive. ---
+
+const kindOf = (q: Question): string =>
+  isFyi(q) ? 'decision' : q.kind === 'deploy' ? 'deploy approval' : q.kind === 'push' ? 'push' : q.kind === 'reviewer' ? 'reviewer retry' : q.kind === 'env' ? `env change${envLabel(q)}` : q.guard !== undefined ? 'guard test suggestion' : 'question'
+
+// One item in full: every option a Button, the Input for words of your own. An item answered meanwhile
+// shows its answer and answers nothing. Every press reads the inbox fresh.
+export function cardView(x: InboxCtx & { id: string | null }) {
+  const { Input, draft, note, io, rows, now, list, from } = x
+  const { Box, Text, Button } = x.els
+  const q = x.id === null ? undefined : findItem(x.ibox, x.id)
+  const back = () => io.serial(async () => { await io.acted(); await io.leave(from) })
+  const backBtn = <Button key="card-back" hotkey="b" onPress={back}>Back</Button>
+  if (q === undefined) {
+    return (
+      <Box flexDirection="column" height={rows}>
+        <Box flexDirection="row" gap={1}>{backBtn}</Box>
+        <Text dimColor>{x.id ?? 'That item'} is not in the inbox any more.</Text>
+      </Box>
+    )
+  }
+  const open = q.state === 'open'
+  const agent = list.find(a => a.name !== undefined && noteKey(a.name) === noteKey(q.owner))
+  // Where the next card comes from: the rows as they are after the answer, from this one on.
+  const answerWith = (choice: string | null) => io.serial(async () => {
+    await io.acted()
+    const before = (await io.rows()).filter(r => r.q !== undefined).map(r => r.q!.id)
+    const fresh = findItem(await io.readInbox(), q.id)
+    if (fresh === undefined) return
+    if (fresh.state === 'answered') {
+      const text = `${fresh.id} is already answered: ${fresh.answer ?? ''} (by ${archiveWho(fresh)}).`
+      await io.setNote(text)
+      io.toast(clip(text, 120))
+      return
+    }
+    if (choice === null) {
+      const why = protectedWhy(fresh)
+      if (why !== undefined) return void (await io.setNote(why))
+    }
+    const text = await io.answer(fresh.id, choice)
+    await io.setDraft('')
+    await io.setNote(text)
+    io.toast(clip(text, 120))
+    const after = (await io.rows()).filter(r => r.q !== undefined).map(r => r.q!.id)
+    const next = [...before.slice(before.indexOf(fresh.id) + 1), ...before].find(id => id !== fresh.id && after.includes(id))
+    if (next !== undefined) await io.open(next, from)
+    else await io.leave(from === 'tree' ? 'tree' : 'inbox')
+  })
+  const pick = (n: number) => () => void answerWith(q.options[n]!)
+  const step = (d: number) => () => io.serial(async () => {
+    await io.acted()
+    const ids = (await io.rows()).filter(r => r.q !== undefined).map(r => r.q!.id)
+    const at = ids.indexOf(q.id)
+    const to = ids[Math.min(ids.length - 1, Math.max(0, (at < 0 ? 0 : at) + d))]
+    if (to !== undefined && to !== q.id) await io.open(to, from)
+  })
+  const submit = (value: string) => {
+    const text = value.trim()
+    if (text !== '') void answerWith(text)
+  }
+  const undo = () => {
+    const text = draft.trim()
+    void answerWith(text === '' ? OVERTURN : text)
+  }
+  const tags = tagsOf(q)
+  const who = isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`
+  return (
+    <Box flexDirection="column" height={rows}>
+      <Box flexDirection="row" gap={1}>
+        {backBtn}
+        {open && <Button key="card-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
+        {open && <Button key="card-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
+      </Box>
+      <Text bold>{q.id} {kindOf(q)}{q.alias === undefined ? '' : <Text dimColor> (earlier id {q.alias})</Text>}</Text>
+      {(tags !== '' || (isFyi(q) && q.topic)) && <Text color={q.blocking ? 'warning' : undefined}>{tags}{isFyi(q) && q.topic ? ` [${q.topic}]` : ''}</Text>}
+      <Text dimColor>from {who} · {age(now - q.askedAt)} ago{q.escalated !== undefined ? ' · escalated to you' : ''}</Text>
+      {agent !== undefined && <Text dimColor>{q.owner} is {agent.status}</Text>}
+      {agent === undefined && <Text dimColor>{q.owner} is not in the roster</Text>}
+      {q.env !== undefined && <Text dimColor>PR #{q.env.pr}, target {q.env.target}</Text>}
+      {open && overridesManager(q) && <Text color="warning">It is for {q.addressee}: answering it overrides {q.addressee}, who is told.</Text>}
+      <Text> </Text>
+      <Text>{q.question}</Text>
+      {q.context && <Text dimColor>why: {q.context}</Text>}
+      <Text> </Text>
+      {q.options.map((o, k) => {
+        return open ? (
+          <Button key={`card-opt-${k}`} hotkey={k < 9 ? String(k + 1) : undefined} onPress={pick(k)}>
+            {k + 1}) {o}{o === q.default ? ' (default)' : ''}
+          </Button>
+        ) : (
+          <Text key={`card-opt-${k}`} bold={o === q.answer}>{o === q.answer ? '> ' : '  '}{k + 1}) {o}{o === q.default ? ' (default)' : ''}</Text>
+        )
+      })}
+      {!open && <Text color="success">Answered: {q.answer ?? ''} (by {archiveWho(q)}{q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). Nothing more to answer.</Text>}
+      {open && x.id !== null && protectedWhy(q) !== undefined && <Text dimColor>Needs an explicit choice: y never answers it.</Text>}
+      {note !== '' && <Text color="suggestion">{note}</Text>}
+      <Box flexGrow={1} />
+      {open && Input !== undefined && <Input key="card-answer" label={isFyi(q) ? 'instead ' : 'answer '} placeholder={isFyi(q) ? 'what instead (n, or Enter): undoes the decision' : 'your own words, then Enter'} value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
+      {open && (
+        <Box flexDirection="row" gap={1}>
+          <Button key="card-yes" plain dimColor hotkey="y" onPress={() => void answerWith(null)}>y {isFyi(q) ? 'keep' : 'default'}</Button>
+          {isFyi(q) && <Button key="card-no" plain dimColor hotkey="n" onPress={undo}>n undo</Button>}
+          {/* b is Back here, so the second option's letter is left out; its digit and button work. */}
+          {Array.from({ length: Math.min(q.options.length, 8) }, (_, k) => String.fromCharCode(97 + k)).filter(l => l !== 'b').map(l => (
+            <Button key={`card-pick-${l}`} plain dimColor hotkey={l} onPress={pick(l.charCodeAt(0) - 97)}>{l}</Button>
+          ))}
+          {Input !== undefined && <Button key="card-reply" plain dimColor hotkey="r" onPress={() => void io.focus('card-answer')}>r reply</Button>}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+// Answered questions and kept or undone decisions, newest first; pressing one opens its card (read-only).
+export function archiveView(x: InboxCtx) {
+  const { icur, io, rows, now } = x
+  const { Box, Text, Button } = x.els
+  const all = archiveOf(x.ibox)
+  const items = all.slice(0, ARCHIVE_SHOWN)
+  const at = Math.max(0, items.findIndex(q => q.id === icur))
+  const size = Math.max(2, rows - 5)
+  const win = viewOf(items, at, size)
+  const move = (d: number) => () => io.serial(async () => {
+    await io.acted()
+    const fresh = archiveOf(await io.readInbox()).slice(0, ARCHIVE_SHOWN)
+    const c = await io.readCursor()
+    const i = Math.min(fresh.length - 1, Math.max(0, Math.max(0, fresh.findIndex(q => q.id === c)) + d))
+    if (fresh[i] !== undefined) await io.setCursor(fresh[i]!.id)
+  })
+  return (
+    <Box flexDirection="column" height={rows}>
+      <Text bold>Archive <Text dimColor>{all.length === 0 ? 'Nothing answered yet.' : `${plural(all.length, 'answered item')}, newest first`}</Text></Text>
+      {win.top > 0 && <Text dimColor>  ↑ {win.top} above</Text>}
+      {win.rows.map(q => (
+        <Button key={`arch-${q.id}`} plain onPress={() => void io.serial(async () => { await io.acted(); await io.open(q.id, 'archive') })}>
+          <Text inverse={q.id === items[at]?.id} wrap="truncate-end">{q.id === items[at]?.id ? '> ' : '  '}{archiveRowText(q, now)}</Text>
+        </Button>
+      ))}
+      {items.length - win.top - win.rows.length > 0 && <Text dimColor>  ↓ {items.length - win.top - win.rows.length} more</Text>}
+      {all.length > items.length && <Text dimColor>  +{all.length - items.length} older: /flow inbox archive all</Text>}
+      <Box flexGrow={1} />
+      <Box flexDirection="row" gap={1}>
+        <Button key="arch-next" plain dimColor hotkey="j" onPress={move(1)}>j next</Button>
+        <Button key="arch-prev" plain dimColor hotkey="k" onPress={move(-1)}>k prev</Button>
+        <Button key="arch-open" plain dimColor hotkey="o" onPress={() => void io.serial(async () => {
+          await io.acted()
+          const c = await io.readCursor()
+          const q = archiveOf(await io.readInbox()).find(y => y.id === c) ?? items[0]
+          if (q !== undefined) await io.open(q.id, 'archive')
+        })}>o open</Button>
+        <Button key="arch-back" plain dimColor hotkey="b" onPress={() => void io.serial(async () => { await io.acted(); await io.leave('inbox') })}>b back</Button>
+      </Box>
     </Box>
   )
 }

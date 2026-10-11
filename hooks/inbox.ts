@@ -227,7 +227,7 @@ function ordered(items: Question[]): Question[] {
   return [...items].sort((a, b) => Number(b.blocking) - Number(a.blocking) || a.askedAt - b.askedAt)
 }
 
-const age = (ms: number) => {
+export const age = (ms: number) => {
   const m = Math.max(0, Math.round(ms / 60_000))
   return m < 60 ? `${m} min` : m < 1440 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`
 }
@@ -255,7 +255,7 @@ export function clip(text: string, max = 100): string {
   return t.length <= max ? t : `${t.slice(0, Math.max(0, max - 3)).trimEnd()}...`
 }
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
 // "2 questions (1 blocking), 9 decisions." for what is open.
 function summary(inbox: Inbox | undefined): string {
@@ -329,20 +329,71 @@ function questionLines(q: Question, now: number): string[] {
 // --- The pane's inbox view: the same order as renderInbox, as rows a person moves over. ---
 
 export type PaneRow = {
-  // The question's or decision's id.
+  // The question's or decision's id; FOLD_KEY for the folded group's row.
   key: string
   ids: string[]
-  q: Question
+  // Absent on the folded group's row.
+  q?: Question
+  // The folded group's row: how many decisions it holds and whether they are listed below it.
+  group?: { count: number; labels: string[]; expanded: boolean }
 }
 
-// Questions (blocking first, then oldest), then every open decision, newest first. Nothing is folded away.
-export function paneRows(inbox: Inbox | undefined): PaneRow[] {
-  return [...ordered(questionsOf(inbox)), ...[...fyisOf(inbox)].reverse()].map(q => ({ key: q.id, ids: [q.id], q }))
+export const FOLD_KEY = 'fold'
+
+// Decisions that are routine by their topic: sizing calls nobody needs to weigh one by one.
+export const ROUTINE_TOPICS = ['worker-size', 'manager-size']
+const isRoutine = (q: Question): boolean => q.topic !== undefined && ROUTINE_TOPICS.includes(q.topic.toLowerCase())
+
+// The names (as noteKeys) of agents that are over: no live roster row, and an ended row or a remembered
+// fact says they finished. A name never seen is not counted, so a decision of an unknown owner stays visible.
+export function endedOwners(rows: Array<{ name?: string; status: string }>, seen: Record<string, { status: string }>): Set<string> {
+  const over = new Set(['completed', 'failed', 'killed'])
+  const live = new Set(rows.filter(a => a.name !== undefined && !over.has(a.status)).map(a => noteKey(a.name!)))
+  const out = new Set<string>()
+  for (const a of rows) if (a.name !== undefined && over.has(a.status) && !live.has(noteKey(a.name))) out.add(noteKey(a.name))
+  for (const [name, fact] of Object.entries(seen)) if (over.has(fact.status) && !live.has(noteKey(name))) out.add(noteKey(name))
+  return out
 }
+
+// What the inbox list folds into one row: open decisions that are routine (by topic) or whose owner is over.
+// Protected items (deploy, env, push, reviewer, guard) are never folded. ended: noteKeys from endedOwners.
+export function foldedOf(inbox: Inbox | undefined, ended: Set<string> | undefined): { folded: Question[]; shown: Question[]; labels: string[] } {
+  const folded: Question[] = []
+  const shown: Question[] = []
+  const labels: string[] = []
+  for (const q of fyisOf(inbox)) {
+    const finished = ended?.has(noteKey(q.owner)) === true
+    if (needsExplicitAnswer(q) || (!isRoutine(q) && !finished)) { shown.push(q); continue }
+    folded.push(q)
+    const l = isRoutine(q) ? q.topic!.toLowerCase() : 'finished agents'
+    if (!labels.includes(l)) labels.push(l)
+  }
+  labels.sort((a, b) => Number(a === 'finished agents') - Number(b === 'finished agents') || a.localeCompare(b))
+  return { folded, shown, labels }
+}
+
+// Blocking questions, then the other questions, then the important open decisions (newest first), then one
+// group row for the folded ones; expanded lists them under it. Folded decisions stay open and undoable.
+export function paneRows(inbox: Inbox | undefined, ended?: Set<string>, expanded = false): PaneRow[] {
+  const { folded, shown, labels } = foldedOf(inbox, ended)
+  const rows: PaneRow[] = [...ordered(questionsOf(inbox)), ...[...shown].reverse()].map(q => ({ key: q.id, ids: [q.id], q }))
+  if (folded.length > 0) {
+    const newest = [...folded].reverse()
+    rows.push({ key: FOLD_KEY, ids: newest.map(q => q.id), group: { count: folded.length, labels, expanded } })
+    if (expanded) rows.push(...newest.map(q => ({ key: q.id, ids: [q.id], q })))
+  }
+  return rows
+}
+
+// "12 routine decisions (worker-size, finished agents)".
+export const foldText = (count: number, labels: string[]): string => `${plural(count, 'routine decision')} (${labels.join(', ')})`
 
 // A row's one line in the pane's list.
 export function paneRowText(r: PaneRow): string {
-  const q = r.q
+  if (r.group !== undefined) {
+    return `${r.group.expanded ? '▾' : '▸'} ${foldText(r.group.count, r.group.labels)} - y keeps all of them, Enter ${r.group.expanded ? 'folds' : 'expands'}`
+  }
+  const q = r.q!
   if (isFyi(q)) return `${q.id} ${q.owner}${q.topic ? ` [${q.topic}]` : ''}: ${clip(q.question, 80)}`
   const tags = tagsOf(q)
   return `${q.id}${tags === '' ? '' : ` ${tags}`} ${isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`}: ${q.guard !== undefined ? q.question : clip(q.question, 80)}`
@@ -370,16 +421,21 @@ export function decisionRows(decisions: Question[], now: number, all: boolean, w
 
 // /flow inbox: a summary line, the questions (blocking first), the decisions as a flat table, then what a standing answer did.
 // opts.all: every decision, not just the newest few.
-export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?: boolean; width?: number } = {}): string {
+// Routine decisions and those of finished agents (opts.ended) are one line, unless opts.all lists everything.
+export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?: boolean; width?: number; ended?: Set<string> } = {}): string {
   const open = ordered(questionsOf(inbox))
-  const decisions = fyisOf(inbox)
+  const allDecisions = fyisOf(inbox)
+  const fold = foldedOf(inbox, opts.ended)
+  const decisions = opts.all === true ? allDecisions : fold.shown
   const auto = recentAuto(inbox, now)
   const autoLines = auto.length === 0 ? [] : [
     '',
     `Auto-answered (last 24 h, ${auto.length} shown; to revoke a rule, ask main to remove it):`,
     ...auto.map(q => `  ${q.id} ${q.owner}: ${clip(q.question)} -> ${clip(q.answer ?? '', 60)} (rule ${q.rule ?? '?'})`),
   ]
-  if (open.length === 0 && decisions.length === 0) return ['No open questions.', ...autoLines].join('\n')
+  const archived = archiveOf(inbox).length
+  const archiveLine = archived === 0 ? [] : [`Archive: ${plural(archived, 'answered item')} (/flow inbox archive).`]
+  if (open.length === 0 && allDecisions.length === 0) return ['No open questions.', ...archiveLine, ...autoLines].join('\n')
   const lines = [summary(inbox)]
   if (open.length > 0) {
     lines.push('', 'Questions')
@@ -388,12 +444,40 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?:
   if (decisions.length > 0) {
     lines.push('', 'Decisions agents made (keep or undo)', ...decisionRows(decisions, now, opts.all === true, opts.width))
   }
+  if (opts.all !== true && fold.folded.length > 0) {
+    lines.push('', `${foldText(fold.folded.length, fold.labels)} folded: /flow ok keeps them with the rest, /flow inbox decisions lists them.`)
+  }
   const cmds = [
-    ...(decisions.length > 0 ? ['Keep all: /flow ok. Keep some: /flow ok d10 d11 or /flow ok <owner or topic>. Undo: /flow no d12 <what instead>.'] : []),
+    ...(allDecisions.length > 0 ? ['Keep all: /flow ok. Keep some: /flow ok d10 d11 or /flow ok <owner or topic>. Undo: /flow no d12 <what instead>.'] : []),
     ...(open.length > 0 ? ['Answer a question: /flow answer q1 <letter or your own words>; its default: /flow ok q1 (not for NEEDS YOU items).'] : []),
   ]
-  lines.push('', ...cmds)
+  lines.push('', ...cmds, ...archiveLine)
   return [...lines, ...autoLines].join('\n')
+}
+
+// The archive: answered questions and kept or undone decisions, newest answer first.
+export const archiveOf = (inbox: Inbox | undefined): Question[] =>
+  (inbox?.items ?? []).filter(q => q.state === 'answered').sort((a, b) => (b.answeredAt ?? 0) - (a.answeredAt ?? 0))
+
+export const ARCHIVE_SHOWN = 50
+
+export const archiveWho = (q: Question): string => (q.rule !== undefined ? `standing answer ${q.rule}` : q.answeredBy ?? '?')
+
+// One archived item as a line: id, answer, who and when, then the question.
+export const archiveRowText = (q: Question, now: number): string =>
+  `${q.id} ${clip(q.answer ?? '', 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(q.question, 80)}`
+
+// /flow inbox archive: the newest answered items; all: every one.
+export function renderArchive(inbox: Inbox | undefined, now: number, all = false): string {
+  const items = archiveOf(inbox)
+  if (items.length === 0) return 'The archive is empty: nothing has been answered yet.'
+  const shown = all ? items : items.slice(0, ARCHIVE_SHOWN)
+  return [
+    `Archive: ${plural(items.length, 'answered item')}, newest first.`,
+    ...shown.map(q => `  ${archiveRowText(q, now)}`),
+    ...(shown.length < items.length ? [`+${items.length - shown.length} older: /flow inbox archive all`] : []),
+    'One in full: /flow inbox <id>.',
+  ].join('\n')
 }
 
 // /flow inbox <id>: one item in full, answered or not.
@@ -409,7 +493,7 @@ export function renderItem(inbox: Inbox | undefined, id: string, now: number): s
     '',
     ...optionLines(q, '  '),
   ]
-  if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${q.answeredBy ?? '?'})`)
+  if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`)
   else {
     lines.push('', isFyi(q) ? `Keep: /flow ok ${q.id}. Undo: /flow no ${q.id} <what instead>.` : `Answer: /flow answer ${q.id} <letter or your own words>${needsExplicitAnswer(q) ? '' : `, or /flow ok ${q.id} for the default`}.`)
     if (overridesManager(q)) lines.push(`It is for ${q.addressee}; answering it overrides ${q.addressee}, who is told.`)

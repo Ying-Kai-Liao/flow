@@ -437,7 +437,9 @@ declare module 'claude-code' {
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots
-      viewMode: 'tree' | 'graph' | 'inbox'
+      viewMode: 'tree' | 'graph' | 'inbox' | 'card' | 'archive'
+      cardBack: 'tree' | 'inbox' | 'archive'
+      inboxExpanded: boolean
       inboxCursor: string | null
       inboxDraft: string
       inboxNote: string

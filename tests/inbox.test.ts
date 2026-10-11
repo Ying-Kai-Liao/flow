@@ -3,6 +3,7 @@ import { test } from './support'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, markAnswered, needsMessage, normalizeInbox,
   openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, findItem, DECISIONS_SHOWN, overridesManager, needsExplicitAnswer, paneRows, paneRowText, protectedWhy,
+  endedOwners, foldedOf, archiveOf, renderArchive, FOLD_KEY,
 } from '../hooks/inbox'
 import type { AskedQuestion, Inbox } from '../hooks/inbox'
 
@@ -366,8 +367,8 @@ test('renderInbox: push is NEEDS YOU; a question for a manager shows "for"; the 
 })
 
 test('renderInbox: decisions are one flat table, newest first, nothing grouped or collapsed', () => {
-  let box = fyis(EMPTY_INBOX, 'mgr-a', ['a1 text', 'a2 text', 'a3 text'], 'worker-size', 0)
-  box = fyis(box, 'mgr-b', ['b1 text', 'b2 text'], 'worker-size', 5 * H)
+  let box = fyis(EMPTY_INBOX, 'mgr-a', ['a1 text', 'a2 text', 'a3 text'], 'db', 0)
+  box = fyis(box, 'mgr-b', ['b1 text', 'b2 text'], 'db', 5 * H)
   const text = renderInbox(box, 6 * H)
   const lines = text.split('\n')
   const at = lines.findIndex(l => l.includes('Decisions agents made'))
@@ -401,7 +402,7 @@ test('renderItem prints one item in full; unknown ids and answered items are sai
   expect(full).toContain('/flow answer q1')
   expect(renderItem(box, 'q9', 0)).toBe('q9: no such question or decision.')
   const m = markAnswered(box, 'q1', 'b', 'main', 5)
-  expect(m.kind === 'ok' && renderItem(m.inbox, 'q1', 1000)).toContain('Answered: No (by main)')
+  expect(m.kind === 'ok' && renderItem(m.inbox, 'q1', 1000)).toContain('Answered: No (by main, 0 min ago)')
 })
 
 test('expandOk: no words is every open decision; ids pass; owner and topic expand to decisions; protected items are refused', () => {
@@ -437,12 +438,12 @@ test('predicates: the user may answer anything, over a manager when it is addres
 
 test('paneRows: questions blocking first, then every decision newest first, one flat row each', () => {
   let box = store([ask('soft'), ask('hard', { blocking: true })])
-  box = fyis(box, 'mgr-a', ['a1', 'a2', 'a3', 'a4'], 'worker-size', 10_440_000)
+  box = fyis(box, 'mgr-a', ['a1', 'a2', 'a3', 'a4'], 'db', 10_440_000)
   box = fyis(box, 'mgr-c', ['c1'], undefined, 0)
   const rows = paneRows(box)
   expect(rows.map(r => r.key)).toEqual(['q2', 'q1', 'd4', 'd3', 'd2', 'd1', 'd5'])
   expect(paneRowText(rows[0]!)).toContain('q2 BLOCKING worker-1, for mgr: hard')
-  expect(paneRowText(rows[2]!)).toBe('d4 mgr-a [worker-size]: a4')
+  expect(paneRowText(rows[2]!)).toBe('d4 mgr-a [db]: a4')
 })
 
 test('protectedWhy names the explicit way for deploy, env, push and guard items only', () => {
@@ -450,4 +451,78 @@ test('protectedWhy names the explicit way for deploy, env, push and guard items 
   expect(protectedWhy(q)).toBeUndefined()
   for (const kind of ['deploy', 'env', 'push'] as const) expect(protectedWhy({ ...q, kind })).toContain('y never answers it')
   expect(protectedWhy({ ...q, guard: { glob: 'a', test: 'b' } })).toContain('guard test')
+})
+
+test('foldedOf: routine topics and finished owners fold; protected and unknown owners stay shown', () => {
+  let box = fyis(EMPTY_INBOX, 'mgr-a', ['size one', 'size two'], 'worker-size', 0)
+  box = fyis(box, 'mgr-b', ['manager size'], 'manager-size', 1)
+  box = fyis(box, 'gone-w', ['by a finished agent'], 'db', 2)
+  box = fyis(box, 'live-w', ['important'], 'db', 3)
+  box = fyis(box, 'unknown', ['of an unknown owner'], undefined, 4)
+  const ended = new Set(['gone-w'])
+  const f = foldedOf(box, ended)
+  expect(f.folded.map(q => q.id)).toEqual(['d1', 'd2', 'd3', 'd4'])
+  expect(f.shown.map(q => q.id)).toEqual(['d5', 'd6'])
+  expect(f.labels).toEqual(['manager-size', 'worker-size', 'finished agents'])
+  // a protected decision is never folded, whatever its topic
+  const prot: Inbox = { ...box, items: box.items.map(q => (q.id === 'd1' ? { ...q, guard: { glob: 'a', test: 'b' } } : q)) }
+  expect(foldedOf(prot, ended).shown.map(q => q.id)).toContain('d1')
+  // no ended set: only the topics fold
+  expect(foldedOf(box, undefined).folded.map(q => q.id)).toEqual(['d1', 'd2', 'd3'])
+})
+
+test('paneRows: one group row after the important items, its ids are every folded decision; expanded lists them under it', () => {
+  let box = store([ask('soft'), ask('hard', { blocking: true })])
+  box = fyis(box, 'mgr-a', ['a1', 'a2'], 'worker-size', 0)
+  box = fyis(box, 'mgr-c', ['c1'], 'db', 5)
+  const rows = paneRows(box)
+  expect(rows.map(r => r.key)).toEqual(['q2', 'q1', 'd3', FOLD_KEY])
+  expect(rows[3]!.ids).toEqual(['d2', 'd1'])
+  expect(paneRowText(rows[3]!)).toBe('▸ 2 routine decisions (worker-size) - y keeps all of them, Enter expands')
+  const open = paneRows(box, undefined, true)
+  expect(open.map(r => r.key)).toEqual(['q2', 'q1', 'd3', FOLD_KEY, 'd2', 'd1'])
+  expect(paneRowText(open[3]!)).toContain('▾')
+  // answered ones drop out of the group
+  const kept = markAnswered(box, 'd1', null, 'main', 9, undefined, true)
+  expect(kept.kind === 'ok' && paneRows(kept.inbox)[3]!.ids).toEqual(['d2'])
+})
+
+test('endedOwners: ended roster rows and remembered facts count, a live successor or an unseen name does not', () => {
+  const ended = endedOwners(
+    [{ name: 'w1', status: 'completed' }, { name: 'm1', status: 'completed' }, { name: 'm1-2', status: 'running' }, { name: 'w2', status: 'running' }],
+    { gone: { status: 'killed' }, alive: { status: 'running' } },
+  )
+  expect([...ended].sort()).toContain('w1')
+  expect(ended.has('gone')).toBe(true)
+  expect(ended.has('w2')).toBe(false)
+  expect(ended.has('alive')).toBe(false)
+  expect(ended.has('nobody')).toBe(false)
+})
+
+test('renderInbox folds routine decisions into one line; decisions (all) lists them; the archive is mentioned', () => {
+  let box = fyis(EMPTY_INBOX, 'mgr-a', ['size one', 'size two'], 'worker-size', 0)
+  box = fyis(box, 'mgr-b', ['keep me in view'], 'db', 5)
+  const text = renderInbox(box, H)
+  expect(text).toContain('keep me in view')
+  expect(text).not.toContain('size one')
+  expect(text).toContain('2 routine decisions (worker-size) folded')
+  expect(renderInbox(box, H, { all: true })).toContain('size one')
+  const m = markAnswered(box, 'd3', 'Keep', 'main', 10, undefined, true)
+  expect(m.kind === 'ok' && renderInbox(m.inbox, H)).toContain('Archive: 1 answered item (/flow inbox archive).')
+})
+
+test('the archive lists answered items newest first with answer, who and when; capped unless all', () => {
+  let box = store(Array.from({ length: 60 }, (_, i) => ask(`question ${i}`)))
+  for (let i = 1; i <= 60; i++) {
+    const m = markAnswered(box, `q${i}`, 'No', i % 2 === 0 ? 'main' : 'mgr', i * 60_000, undefined, true)
+    if (m.kind === 'ok') box = m.inbox
+  }
+  expect(archiveOf(box)[0]!.id).toBe('q60')
+  const text = renderArchive(box, 61 * 60_000)
+  expect(text).toContain('60 answered items')
+  expect(text).toContain('q60 No (by main, 1 min ago): question 59')
+  expect(text).toContain('+10 older: /flow inbox archive all')
+  expect(text).not.toContain('q1 No')
+  expect(renderArchive(box, 61 * 60_000, true)).toContain('q1 No (by mgr')
+  expect(renderArchive(EMPTY_INBOX, 0)).toContain('empty')
 })

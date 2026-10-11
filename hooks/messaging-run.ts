@@ -5,7 +5,7 @@ import { MANAGER } from './core'
 import { LIVE } from './deliver'
 import type { DeliverOptions } from './deliver'
 import { ENV_KIND } from './deploy'
-import { answerMessage, findItem, isAddressee, isFyi, markAnswered, needsMessage, notesOwner, overridesManager, paneRows } from './inbox'
+import { answerMessage, findItem, isAddressee, isFyi, markAnswered, needsMessage, notesOwner, overridesManager, endedOwners, paneRows } from './inbox'
 import type { Inbox, Marked, PaneRow, Question } from './inbox'
 import { PUSH_KIND } from './pushgate'
 import { backNote } from './routing'
@@ -156,9 +156,9 @@ async function linkedEscalation(io: MessagingIo, q: Question, answer: string, by
 }
 
 // The pane's inbox rows, read fresh.
-export async function paneInboxRowsTo(io: MessagingIo): Promise<{ rows: PaneRow[]; now: number }> {
-  const [box, now] = await Promise.all([io.inbox(), io.now()])
-  return { rows: paneRows(box), now }
+export async function paneInboxRowsTo(io: MessagingIo, expanded = false): Promise<{ rows: PaneRow[]; now: number }> {
+  const [box, now, rows, seen] = await Promise.all([io.inbox(), io.now(), io.agents(), io.seen()])
+  return { rows: paneRows(box, endedOwners(rows, seen), expanded), now }
 }
 
 // A message for the manager that owns a PR: sent when it is alive, else noted for it and sent to main.
