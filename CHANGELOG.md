@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.29] - 2026-10-11
+
 ### Fixed
 
 - A reviewer that kept failing to start (for example on a usage limit) was replaced about once a second, hundreds of times, until the session was restarted. Now a reviewer that ends with no answer, on an API error or within 30 seconds counts as a failed start: the next start waits 30s, 1m, 2m, then 5m, and after 3 in a row (or 20 starts in a rolling hour) the plugin stops, shows the error in `/flow status` and the pane, and asks main once in the inbox (kind `reviewer`, never auto-answered) whether to retry. `/flow resume` and a new session also retry; the failure history is kept in `reviewer-breaker.json`.
