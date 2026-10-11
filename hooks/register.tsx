@@ -56,7 +56,7 @@ import type { InitIo } from './init'
 import { advance as demoAdvance, answer as demoAnswer, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
 import type { DemoState } from './demo-replay'
 import { demoView } from './demo-view'
-import { DEMO_AGENT, planCleanup } from './demo-clean'
+import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
 import { agentView, archiveView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, treeView } from './pane-view'
 import type { InboxCtx, PaneCtx, Usage } from './pane-view'
 import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
@@ -505,7 +505,14 @@ async function demoCleanup($: EngineInterface): Promise<string> {
   if (live.length > 0) return `Not cleaned: ${live.map(a => a.name).join(', ')} still running. Wait for it to end, then clean up.`
   const trees = await runCmd($, ['git', 'worktree', 'list', '--porcelain'])
   const refs = await runCmd($, ['git', 'for-each-ref', '--format=%(refname:short)', 'refs/heads/flow/'])
-  const plan = planCleanup(trees.stdout, refs.stdout.split('\n').map(l => l.trim()).filter(l => l !== ''))
+  // A worker's worktree whose branch is not named for the demo is the demo's only when its one commit is the demo file.
+  const confirmed: string[] = []
+  for (const w of toInspect(trees.stdout)) {
+    const diff = await runCmd($, ['git', '-C', w.path, 'diff', '--name-status', 'HEAD~1', 'HEAD'])
+    const status = await runCmd($, ['git', '-C', w.path, 'status', '--porcelain'])
+    if (diff.exitCode === 0 && status.exitCode === 0 && isDemoCommit(diff.stdout, status.stdout)) confirmed.push(w.path)
+  }
+  const plan = planCleanup(trees.stdout, refs.stdout.split('\n').map(l => l.trim()).filter(l => l !== ''), confirmed)
   const out: string[] = plan.kept.map(k => `kept: ${k}`)
   for (const w of plan.worktrees) {
     const r = await runCmd($, ['git', 'worktree', 'remove', '--force', w.path])

@@ -97,8 +97,9 @@ no PR is opened, nothing is merged, and your base branch is not touched. Confirm
    Pre-flight: skip
    Size: small - a throwaway one-line file
    This is the flow init demo. Start one worker named flow-demo-hello with this brief: add the file
-   flow-demo.md containing one line, "Hello from the flow demo", commit it on the worker's own branch in
-   its own worktree. The worker must NOT push, must NOT open a PR and must NOT call mcp__flow__handover; it
+   flow-demo.md containing one line, "Hello from the flow demo". The worker first runs
+   `git switch -c flow/flow-demo-hello` in its own worktree, then commits that one file (a single commit on
+   top of the base). The worker must NOT push, must NOT open a PR and must NOT call mcp__flow__handover; it
    reports the branch and the commit sha. You (the manager) review the diff (it must be exactly that one file),
    then report to main. Do NOT call mcp__flow__handover or open or merge a PR: this demo has no reviewer step.
    ```
@@ -108,7 +109,10 @@ no PR is opened, nothing is merged, and your base branch is not touched. Confirm
    merge the PR, run `full_check_command` once for the batch, cut the release, push (or wait for `/flow push`),
    and deploy.
 5. **Clean up:** `mcp__flow__demo` `{"action":"cleanup"}` removes the demo's worktree and its `flow/flow-demo*`
-   branch, and nothing else. Run it even if the demo was interrupted.
+   branch, and nothing else. It also takes a demo worker's worktree that kept another branch name or a detached
+   HEAD, but only when it is clean and its one commit adds exactly `flow-demo.md`; anything else it cannot tie to
+   the demo is left alone. Run it even if the demo was interrupted. Tell the user the file `flow-demo.md` never
+   reaches their main checkout (it stays as it was), so there is nothing to revert.
 6. Only if `gh` is installed and logged in and the repo has a remote, offer an extra opt-in: a **real draft PR**.
    The worker pushes its branch and opens a DRAFT PR titled "flow demo (safe to close)"; show it; then close the
    PR and delete the remote branch (`gh pr close <n> --delete-branch`). Still no merge and no handover. Skip this

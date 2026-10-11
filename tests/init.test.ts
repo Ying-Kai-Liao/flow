@@ -5,7 +5,7 @@ import type { TestBody } from 'claude-code/testing'
 import { candidatesOf, detect, firstRun, initCommand, refuse, settingsTool, writeSettings } from '../hooks/init'
 import type { Detected, InitCmdIo, InitIo } from '../hooks/init'
 import { advance, answer, canAdvance, inboxOf, isLast, openAsk, startDemo, STEPS, stepOf } from '../hooks/demo-replay'
-import { planCleanup } from '../hooks/demo-clean'
+import { isDemoCommit, planCleanup, toInspect } from '../hooks/demo-clean'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -285,6 +285,26 @@ test('demo cleanup: only the demo\'s own worktree and branch, never the main che
   expect(plan.kept[0]).toContain('locked')
 })
 
+test('demo cleanup: a worker on its own branch name or a detached HEAD is the demo\'s only when its commit is exactly flow-demo.md', () => {
+  expect(isDemoCommit('A\tflow-demo.md\n', '')).toBe(true)
+  expect(isDemoCommit('A\tflow-demo.md\nM\tsrc/a.ts\n', '')).toBe(false)
+  expect(isDemoCommit('M\tflow-demo.md\n', '')).toBe(false)
+  expect(isDemoCommit('A\tflow-demo.md\n', ' M src/a.ts\n')).toBe(false)
+  const porcelain = [
+    'worktree /repo\nHEAD a\nbranch refs/heads/main',
+    'worktree /repo/.claude/worktrees/agent-1\nHEAD b\nbranch refs/heads/worktree-agent-1',
+    'worktree /repo/.claude/worktrees/agent-2\nHEAD c\ndetached',
+    'worktree /repo/.claude/worktrees/agent-3\nHEAD d\nbranch refs/heads/worktree-agent-3',
+    'worktree /elsewhere/wt\nHEAD e\nbranch refs/heads/other',
+  ].join('\n\n')
+  // Inspection skips the main checkout and anything outside .claude/worktrees.
+  expect(toInspect(porcelain).map(w => w.path)).toEqual(['/repo/.claude/worktrees/agent-1', '/repo/.claude/worktrees/agent-2', '/repo/.claude/worktrees/agent-3'])
+  // Only confirmed paths go; an unconfirmed one and its branch stay, and a path outside the list is never taken.
+  const plan = planCleanup(porcelain, ['main', 'worktree-agent-1', 'worktree-agent-3'], ['/repo/.claude/worktrees/agent-1', '/repo/.claude/worktrees/agent-2', '/elsewhere/wt'])
+  expect(plan.worktrees.map(w => w.path)).toEqual(['/repo/.claude/worktrees/agent-1', '/repo/.claude/worktrees/agent-2'])
+  expect(plan.branches).toEqual(['worktree-agent-1'])
+})
+
 // --- the pane and the tools, in the engine ---
 
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const
@@ -329,7 +349,10 @@ function world(on: On, opts: { git?: boolean; files?: Record<string, string>; ag
       if (t !== undefined) { files.set(a[2] ?? '', t); files.delete(a[1] ?? '') }
       return ok()
     }
-    if (line === 'git worktree list --porcelain') return ok(`worktree ${TOP}\nHEAD a\nbranch refs/heads/main\n\nworktree ${TOP}/.claude/worktrees/flow-demo-hello\nHEAD b\nbranch refs/heads/flow/flow-demo-hello\n\nworktree ${TOP}/.claude/worktrees/real\nHEAD c\nbranch refs/heads/flow/real\n`)
+    if (line === 'git worktree list --porcelain') return ok(`worktree ${TOP}\nHEAD a\nbranch refs/heads/main\n\nworktree ${TOP}/.claude/worktrees/flow-demo-hello\nHEAD b\nbranch refs/heads/flow/flow-demo-hello\n\nworktree ${TOP}/.claude/worktrees/real\nHEAD c\nbranch refs/heads/flow/real\n\nworktree ${TOP}/.claude/worktrees/agent-demo\nHEAD d\nbranch refs/heads/worktree-agent-demo\n\nworktree ${TOP}/.claude/worktrees/agent-detached\nHEAD e\ndetached\n\nworktree ${TOP}/.claude/worktrees/agent-other\nHEAD f\nbranch refs/heads/worktree-agent-other\n`)
+    // Only agent-demo and agent-detached changed exactly the demo file; agent-other changed real code.
+    if (a[1] === '-C' && a[3] === 'diff') return ok(/agent-(demo|detached)$/.test(a[2]!) ? 'A\tflow-demo.md\n' : 'M\tsrc/app.ts\n')
+    if (a[1] === '-C' && a[3] === 'status') return ok('')
     if (line.startsWith('git for-each-ref')) return ok('flow/flow-demo-hello\nflow/real\n')
     return ok()
   })
@@ -409,7 +432,10 @@ test('the demo tool: status, start/stop, cleanup removes only the demo and refus
   const removed = w.calls.filter(c => c[0] === 'git' && (c[1] === 'worktree' && c[2] === 'remove' || c[1] === 'branch'))
   expect(removed).toEqual([
     ['git', 'worktree', 'remove', '--force', `${TOP}/.claude/worktrees/flow-demo-hello`],
+    ['git', 'worktree', 'remove', '--force', `${TOP}/.claude/worktrees/agent-demo`],
+    ['git', 'worktree', 'remove', '--force', `${TOP}/.claude/worktrees/agent-detached`],
     ['git', 'branch', '-D', 'flow/flow-demo-hello'],
+    ['git', 'branch', '-D', 'worktree-agent-demo'],
   ])
 })
 
