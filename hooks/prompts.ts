@@ -31,6 +31,9 @@ export type Settings = {
   // The providers' keys and base URLs, from /config only (keys are sensitive options); never put into a prompt.
   jevApiKey?: string
   jevBaseUrl?: string
+  openrouterApiKey?: string
+  openrouterBaseUrl?: string
+  openrouterJevModel?: string
   openaiApiKey?: string
   openaiBaseUrl?: string
   conflictModel?: string

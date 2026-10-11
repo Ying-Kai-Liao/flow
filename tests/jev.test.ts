@@ -29,9 +29,15 @@ function ioWith(ledger: Ledger = {}): SpawnIo {
 const spawn = (prompt: string, name = 'csv-docs') => ({ name, description: name, prompt, subagentType: 'flow:worker' }) as never
 
 test('jevConfig reads the /config options only and defaults the base url', () => {
-  expect(jevConfig({ jevApiKey: 'e', jevBaseUrl: 'https://f.example/' })).toEqual({ key: 'e', baseUrl: 'https://f.example' })
-  expect(jevConfig({ jevApiKey: 'f' })).toEqual({ key: 'f', baseUrl: 'https://api.typesafe.ai' })
-  expect(jevConfig({})).toEqual({ baseUrl: 'https://api.typesafe.ai' })
+  expect(jevConfig({ jevApiKey: 'e', jevBaseUrl: 'https://f.example/' })).toEqual({ key: 'e', baseUrl: 'https://f.example', model: 'jev-latest' })
+  expect(jevConfig({ jevApiKey: 'f', jevModel: 'm' })).toEqual({ key: 'f', baseUrl: 'https://api.typesafe.ai', model: 'm' })
+  expect(jevConfig({})).toEqual({ baseUrl: 'https://api.typesafe.ai', model: 'jev-latest' })
+})
+
+test('jevConfig routes through OpenRouter only without a direct key', () => {
+  expect(jevConfig({ openrouterApiKey: 'or' })).toEqual({ key: 'or', baseUrl: 'https://openrouter.ai/api', model: '~typesafe/jev-latest', via: 'openrouter' })
+  expect(jevConfig({ jevApiKey: 'j', openrouterApiKey: 'or' })).toEqual({ key: 'j', baseUrl: 'https://api.typesafe.ai', model: 'jev-latest' })
+  expect(jevConfig({ openrouterApiKey: 'or', openrouterBaseUrl: 'https://gw.example/api/', openrouterJevModel: 'x' })).toEqual({ key: 'or', baseUrl: 'https://gw.example/api', model: 'x', via: 'openrouter' })
 })
 
 test('the state drops the Size line and is capped at 8000 chars', () => {
