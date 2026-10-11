@@ -94,7 +94,7 @@ export async function answerQuestionTo(io: MessagingIo, wanted: string, choice: 
   if (over) {
     const mgr = (await io.agents()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && (LIVE.has(a.status) || a.status === 'idle'))
     if (mgr !== undefined) {
-      await io.deliver(mgr.id, `flow: the user answered ${q.id}, which ${q.owner} asked you: ${answer}. It is closed; don't answer it.`, { urgent: false, onGone: () => undefined }).catch(() => false)
+      await io.deliver(mgr.id, `flow: the user answered ${q.id}, which ${q.owner} asked you: ${answer}. It is closed; don't answer it.`, { held: true, onGone: () => undefined }).catch(() => false)
     }
   }
   if (!(isFyi(q) && isDefault)) await io.appendNote(notesOwner(q), `- ${await io.today()} decision: "${q.id} ${noteText(q)}: ${isFyi(q) ? `undone, ${answer}` : answer}"`)
@@ -122,15 +122,19 @@ async function askerTargetTo(io: MessagingIo, q: Question): Promise<string | und
 // Tells the asker of a question: wakes one that ended its turn to wait. Text that cannot be delivered, or whose
 // send is dropped because the agent ended meanwhile, goes to main (noted for the owner), never nowhere.
 // quiet: the answerer is main itself, who sees the result line. True when it reached the asker.
-async function tellAskerTo(io: MessagingIo, q: Question, text: string, by: string): Promise<boolean> {
+// info: a copy the asker needs no action on: held for its next turn, and never the reason to resume a manager that ended.
+async function tellAskerTo(io: MessagingIo, q: Question, text: string, by: string, info = false): Promise<boolean> {
   const toMain = (t: string) => by === 'main' ? Promise.resolve() : tellMainTo(io, notesOwner(q), `${t} (asked by ${q.owner}.)`)
   const id = await askerTargetTo(io, q)
   if (id === undefined) {
     await toMain(text)
     return false
   }
-  if (!(await io.agents()).some(a => a.id === id && (LIVE.has(a.status) || a.status === 'idle'))) io.markResumable(id)
-  return io.deliver(id, text, { urgent: q.blocking === true, onGone: toMain }).catch(() => false)
+  if (!(await io.agents()).some(a => a.id === id && (LIVE.has(a.status) || a.status === 'idle'))) {
+    if (info) return toMain(text).then(() => false)
+    io.markResumable(id)
+  }
+  return io.deliver(id, text, { urgent: !info && q.blocking === true, held: info, onGone: toMain }).catch(() => false)
 }
 
 // A worker's question that its manager escalated (ask with `for`) and the manager's own question are one
@@ -149,7 +153,7 @@ async function linkedEscalation(io: MessagingIo, q: Question, answer: string, by
     // main answered the manager's escalation: the worker hears it as main's answer, via its manager.
     if (needsMessage(other, answer === other.default)) await tellAskerTo(io, other, answerMessage(other, answer, `main (via ${q.owner})`, answer === other.default), by)
   } else if (by === 'main') {
-    await tellAskerTo(io, other, `flow: main answered ${q.id}, which your worker ${q.owner} asked and you escalated as ${other.id}: ${answer}. Both are closed; the worker has the answer.`, by)
+    await tellAskerTo(io, other, `flow: main answered ${q.id}, which your worker ${q.owner} asked and you escalated as ${other.id}: ${answer}. Both are closed; the worker has the answer.`, by, true)
   } else {
     io.toMain(`${by} answered ${q.id} (${q.owner}'s question) itself: ${answer}. That closes its escalation ${other.id} to you.`)
   }

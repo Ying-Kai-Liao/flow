@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/wake-cost.mjs`: counts manager wake-up turns in the transcripts by kind and estimates their cache-write cost, with the share the delivery rules hold and what a 1h cache TTL would change
+
+### Changed
+
+- Fewer manager wake-ups: the "the user answered qN over your head" relay, the "both are closed" copy of a linked escalation and decide_handoff's split advice are held for the manager's next turn (or 10 minutes) instead of waking it; the copy no longer resumes a manager that ended its turn
+
 ## [0.6.60] - 2026-10-12
 
 ### Changed

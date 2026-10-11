@@ -241,6 +241,38 @@ test('/flow answer takes a letter or free text, also for a question addressed to
   expect(await cmd($, 'answer q1')).toContain('Usage')
 })
 
+test('an idle manager is not woken for a relay it needs no action on; it gets it with its next turn or at the cap', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  // A blocking ask is the manager's to answer: at once. A non-blocking one waits.
+  await ask($, 'w1', [BLOCK])
+  expect(w.sent.filter(s => s.to === 'm1').length).toBe(1)
+  await ask($, 'w1', [{ ...SOFT, question: 'Quote header?' }])
+  await w.clock.advance(60_000)
+  expect(w.sent.filter(s => s.to === 'm1').length).toBe(1)
+  // The user answers the blocking one over the manager's head: the worker hears at once, the manager is only told.
+  expect(await cmd($, 'answer q1 a')).toContain('q1: csv')
+  await w.clock.advance(60_000)
+  expect(w.sent.some(s => s.to === 'w1' && s.text.includes('the user answered q1'))).toBe(true)
+  expect(w.sent.filter(s => s.to === 'm1').length).toBe(1)
+  // At the cap both arrive in one message.
+  await w.clock.advance(600_000)
+  const got = w.sent.filter(s => s.to === 'm1').slice(1)
+  expect(got.length).toBe(1)
+  expect(got[0]!.text).toContain('Quote header?')
+  expect(got[0]!.text).toContain('the user answered q1, which csv-worker asked you')
+})
+
+test('the copy of an answer to an escalated question does not resume a manager that ended', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [BLOCK])
+  await ask($, 'm1', [{ ...BLOCK, question: 'Escalated: which format?', for: 'q1' }])
+  w.agents[0]!.status = 'completed'
+  expect(await cmd($, 'answer q1 a')).toContain('q1: csv')
+  await w.clock.advance(600_000)
+  expect(w.sent.filter(s => s.to === 'm1' && s.text.includes('Both are closed')).length).toBe(0)
+})
+
 test('/flow ok refuses a guard item and says how; /flow answer answers it', async ($, on) => {
   const w = world(on)
   w.files.set(`${DIR}/inbox.json`, JSON.stringify({ next: 2, items: [{
