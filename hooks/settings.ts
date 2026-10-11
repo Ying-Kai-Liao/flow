@@ -155,6 +155,9 @@ function checked(source: string, layer: Record<string, unknown>, warnings: strin
       out[k] = v
     } else if (!typeOk(kind, v)) {
       warnings.push(`${source}: "${k}" should be a ${kind === 'list' ? 'list of strings' : kind === 'objects' ? 'list of objects' : kind === 'globmap' ? 'object mapping a glob to a list of test strings' : kind}; ignored`)
+    } else if (k === 'decision_api' && v === '') {
+      // /config carries an unset string option as "": that is unset, not a bad value.
+      continue
     } else if (CHOICES[k] !== undefined && !CHOICES[k]!.includes(String(v))) {
       warnings.push(`${source}: "${k}" is ${JSON.stringify(v)}; use ${CHOICES[k]!.map(c => `"${c}"`).join(' or ')}; ignored`)
       // A bad decision_api is still a set one: it means off, and must not fall back to size_model.
