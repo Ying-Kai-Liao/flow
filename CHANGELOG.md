@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Decisions read as statements, not questions: the pane tree folds them into the Inbox line ("1 question for you, 9 decisions to keep or undo"), and the inbox preview and card show the decision, why and "instead could" with only Keep and Undo; answered ones read Kept or Undone. A decision now stores its alternative in its own field.
+
 ## [0.6.50] - 2026-10-12
 
 ### Changed
