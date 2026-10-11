@@ -419,6 +419,64 @@ export function formatSize(r: SizeReport): string {
   return lines.join('\n')
 }
 
+// ---- size: per-role split and the "normal managers on sonnet" counterfactual (additions; the table above is unchanged) ----
+export type SplitRow = { role: SizeRole; model: string; n: number; agreeRun: number; agreeLine: number; under: number; usd: number }
+// Records grouped by role and the model the package ran on. "agree" is the as-run and Size-line sizers against the right
+// size; "under" is a package whose right size was above the one it ran at; "usd" is the as-run cost (costAtSize at used).
+export function sizeSplit(records: EvalRecord[]): SplitRow[] {
+  const rows = new Map<string, SplitRow>()
+  for (const m of records.map(r => r.size).filter((x): x is SizeMeta => x !== undefined)) {
+    const model = modelOfSize(m.role, m.used)
+    const k = `${m.role}|${model}`
+    const row = rows.get(k) ?? { role: m.role, model, n: 0, agreeRun: 0, agreeLine: 0, under: 0, usd: 0 }
+    const r = sizeClass(m.role, m.right)
+    row.n++
+    if (sizeClass(m.role, m.used) === r) row.agreeRun++
+    if (sizeClass(m.role, m.brief ?? m.used) === r) row.agreeLine++
+    if (r > sizeClass(m.role, m.used)) row.under++
+    row.usd += costAtSize(m, m.used)
+    rows.set(k, row)
+  }
+  return [...rows.values()].sort((a, b) => (a.role === b.role ? a.model.localeCompare(b.model) : a.role.localeCompare(b.role)))
+}
+
+export type ManagerCounterfactual = { n: number; smallN: number; underRate: number; currentUsd: number; counterfactualUsd: number }
+// Simplest defensible model. Managers that ran on opus are priced as if they had run on sonnet: their own first-spawn
+// tokens at the sonnet list price (tokens are not rescaled). Sonnet managers may be too weak and need a rerun, so each
+// record also pays, with probability p, one rerun at opus on the record's own tokens. p = the observed under-sized
+// rate of the managers that really ran on sonnet (small) in this history (0 when there are none). Current routing is
+// the as-run cost of the same records (one opus attempt; a rerun is only ever charged to a size below the right one).
+export function managerCounterfactual(records: EvalRecord[]): ManagerCounterfactual {
+  const ms = records.map(r => r.size).filter((x): x is SizeMeta => x !== undefined && x.role === 'manager')
+  const small = ms.filter(m => sizeClass('manager', m.used) === 0)
+  const opus = ms.filter(m => sizeClass('manager', m.used) === 1)
+  const underRate = small.length === 0 ? 0 : small.filter(m => sizeClass('manager', m.right) > 0).length / small.length
+  let currentUsd = 0
+  let counterfactualUsd = 0
+  for (const m of opus) {
+    currentUsd += costAtSize(m, m.used)
+    counterfactualUsd += (costOf('sonnet', m.tokens) ?? 0) + underRate * (costOf('opus', m.tokens) ?? 0)
+  }
+  return { n: opus.length, smallN: small.length, underRate, currentUsd, counterfactualUsd }
+}
+
+export function formatSizeSplit(rows: SplitRow[], cf: ManagerCounterfactual): string {
+  const pc = (a: number, b: number): string => `${Math.round((100 * a) / b)}%`
+  const lines = ['per role and model run on     n    agree as run  agree Size line  under-sized  $ as run']
+  for (const role of ['worker', 'manager'] as SizeRole[]) {
+    const mine = rows.filter(r => r.role === role)
+    if (mine.length === 0) lines.push(`${role}: no data`)
+    for (const x of mine) lines.push(`${`${x.role} on ${x.model}`.padEnd(29)} ${String(x.n).padEnd(4)} ${`${pc(x.agreeRun, x.n)} (${x.agreeRun})`.padEnd(13)} ${`${pc(x.agreeLine, x.n)} (${x.agreeLine})`.padEnd(16)} ${`${pc(x.under, x.n)} (${x.under})`.padEnd(12)} $${x.usd.toFixed(2)}`)
+  }
+  if (cf.n === 0) lines.push('normal managers on sonnet: no data (no manager ran on opus)')
+  else {
+    const d = cf.counterfactualUsd - cf.currentUsd
+    lines.push(`normal managers on sonnet (n=${cf.n} opus-run managers): current routing $${cf.currentUsd.toFixed(2)}, counterfactual $${cf.counterfactualUsd.toFixed(2)}, delta ${d >= 0 ? '+' : '-'}$${Math.abs(d).toFixed(2)}; under rate assumed ${Math.round(100 * cf.underRate)}% (from ${cf.smallN} sonnet-run managers)`)
+    lines.push("assumption: each opus-run manager's own tokens are priced at sonnet, plus the observed under-sized rate of sonnet-run managers times one rerun at opus on the same tokens; tokens are not rescaled by model")
+  }
+  return lines.join('\n')
+}
+
 // ---- scoring ----
 export type Result = { id: string; label: string; answer?: string; confidence?: number; lowConfidence?: number; error?: string }
 export type Ask = (text: string, q: Question) => Promise<Decision>

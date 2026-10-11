@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The main-checkout guard covers the main session only while flow has work in the repo (a flow worktree or a live flow agent), and its refusal now says "main checkout" means the repo folder, not the main branch, and names the settings to change
+### Added
+
+- `decide_eval` size report: a per-role split (workers and managers by the model they ran on: n, agreement, under-sized rate, $ as run) and a "normal managers on sonnet" counterfactual for managers, also printed by `scripts/decide-eval.mjs`.
 
 ## [0.6.60] - 2026-10-12
 
