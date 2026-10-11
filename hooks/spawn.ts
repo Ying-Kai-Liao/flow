@@ -10,6 +10,8 @@ import { addQuestions, fyiAsked, isFyi } from './inbox'
 import type { Question } from './inbox'
 import { effectiveSize, floorFrom, generation, isSuccessorName, managerDecision, managerModelFor, MANAGER_FYI_WHY, modelFor, parseSize } from './routing'
 import type { Size, SizeModels } from './routing'
+import { jevTag } from './jev'
+import type { JevAnswer } from './jev'
 import { isFable } from './settings'
 import { autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
 import type { AutoHits, StandingIo } from './standing-run'
@@ -159,10 +161,22 @@ export async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev:
 // Model routing: a worker brief's `Size:` line picks the model; a successor (`x-2`, or a brief that continues a
 // branch) runs at least one size up from the largest size recorded for its predecessors. No size and no
 // escalation leaves the spawn as the manager wrote it.
-export type Routed = { size: Size; reason: string; model: string; escalated: boolean }
+export type Routed = { size: Size; reason: string; model: string; escalated: boolean; jev?: string }
 
-export async function routeWorker(io: SpawnIo, e: AgentSpawnInput, models: SizeModels): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
-  const declared = parseSize(e.prompt)
+// Asks the optional size classifier; only given when size_model is jev.
+export type SizeJev = (prompt: string) => Promise<JevAnswer>
+
+// The brief's size, or Jev's when it answers. A failed Jev leaves the brief's size and a note for the decision text.
+async function declaredWith(e: AgentSpawnInput, jev: SizeJev | undefined): Promise<{ declared: { size: Size; reason: string } | undefined; tag?: string }> {
+  const brief = parseSize(e.prompt)
+  if (jev === undefined) return { declared: brief }
+  const a = await jev(e.prompt)
+  if ('note' in a) return { declared: brief, tag: a.note }
+  return { declared: { size: a.size, reason: brief?.reason ?? '' }, tag: jevTag(a.confidence, brief?.size, a.size) }
+}
+
+export async function routeWorker(io: SpawnIo, e: AgentSpawnInput, models: SizeModels, jev?: SizeJev): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
+  const { declared, tag } = await declaredWith(e, jev)
   const name = (e as { name?: string }).name ?? e.description
   const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
   let floor: Size | undefined
@@ -176,7 +190,7 @@ export async function routeWorker(io: SpawnIo, e: AgentSpawnInput, models: SizeM
   const size = effectiveSize(declared?.size, floor)
   if (size === undefined) return { e }
   const model = modelFor(size, models)
-  return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size } }
+  return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size, ...(tag !== undefined && { jev: tag }) } }
 }
 
 // The downgrade decision: below large the user can undo the manager's size. Filed by the plugin, owned by the
@@ -187,7 +201,7 @@ export async function fileSizeFyi(io: SpawnIo, options: Record<string, unknown>,
   const parent = (await io.agents()).find(a => a.id === parentId)
   if (parent === undefined || parent.type !== MANAGER || parent.name === undefined) return
   const owner = parent.name
-  const decision = `${name} runs ${routed.size} -> ${routed.model}${routed.escalated ? ' (one size up after an earlier worker on this package)' : ''}: ${routed.reason === '' ? 'no reason given' : routed.reason}`
+  const decision = `${name} runs ${routed.size} -> ${routed.model}${routed.escalated ? ' (one size up after an earlier worker on this package)' : ''}${routed.jev === undefined ? '' : ` (${routed.jev})`}: ${routed.reason === '' ? 'no reason given' : routed.reason}`
   const at = await io.standing.now()
   const { rules } = await loadRules(io.standing, options)
   const { added, auto } = await io.standing.withInbox(cur => {
@@ -203,8 +217,8 @@ export async function fileSizeFyi(io: SpawnIo, options: Record<string, unknown>,
 
 // A manager's model by the Size line main put on its prompt; a successor (`x-2`) runs one size up from the largest
 // size recorded for its predecessors. No size and no floor leaves the spawn alone.
-export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: string, base: string): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
-  const declared = parseSize(e.prompt)
+export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: string, base: string, jev?: SizeJev): Promise<{ e: AgentSpawnInput; routed?: Routed }> {
+  const { declared, tag } = await declaredWith(e, jev)
   const name = (e as { name?: string }).name ?? e.description
   let floor: Size | undefined
   if (isSuccessorName(name)) {
@@ -216,7 +230,7 @@ export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: strin
   const size = effectiveSize(declared?.size, floor)
   if (size === undefined) return { e }
   const model = managerModelFor(size, small, base)
-  return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size } }
+  return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size, ...(tag !== undefined && { jev: tag }) } }
 }
 
 // The manager's own downgrade decision: owned by the manager (so an overturn messages it), addressed to main.
@@ -229,7 +243,7 @@ export async function fileManagerSizeFyi(io: SpawnIo, options: Record<string, un
     if (cur.items.some(x => x.owner === name && isFyi(x) && x.topic === 'manager-size' && x.question.startsWith(`${name} runs `))) {
       return { inbox: cur, out: { added: [] as Array<{ q: Question }>, auto: new Map() as AutoHits } }
     }
-    const asked = fyiAsked({ decision: managerDecision(name, routed.size, routed.model, routed.reason, routed.escalated), why: MANAGER_FYI_WHY.replace('<name>', name), topic: 'manager-size' })
+    const asked = fyiAsked({ decision: managerDecision(name, routed.size, routed.model, routed.reason, routed.escalated, routed.jev), why: MANAGER_FYI_WHY.replace('<name>', name), topic: 'manager-size' })
     const r = autoAnswer(cur, addQuestions(cur, { name, id, isManager: true }, 'main', [asked], at, 'fyi'), rules, at)
     return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
   })

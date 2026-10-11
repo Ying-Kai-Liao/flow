@@ -1,0 +1,101 @@
+import { expect } from 'claude-code/testing'
+import { test } from './support'
+
+import { askJev, jevBody, jevConfig, jevState, parseEnvFile, parseJev } from '../hooks/jev'
+import type { FetchLike } from '../hooks/jev'
+import { routeManager, routeWorker } from '../hooks/spawn'
+import type { SpawnIo } from '../hooks/spawn'
+import type { Ledger } from '../types'
+
+const MODELS = { small: 'haiku', normal: 'sonnet', large: 'sonnet[1m]' }
+const answer = (choice: unknown, confidence: unknown) => ({ answers: { size: { type: 'choice', choice, confidence } } })
+const ok = (json: unknown): FetchLike => async () => ({ ok: true, status: 200, json: async () => json })
+const cfg = { key: 'fake-key', baseUrl: 'https://jev.example' }
+
+function ioWith(ledger: Ledger = {}): SpawnIo {
+  return { loadLedger: async () => undefined, ledger: async () => ledger } as unknown as SpawnIo
+}
+const spawn = (prompt: string, name = 'csv-docs') => ({ name, description: name, prompt, subagentType: 'flow:worker' }) as never
+
+test('parseEnvFile tolerates export, quotes and comments', () => {
+  const env = parseEnvFile('# c\nexport JEV_API_KEY="fake-1"\nJEV_BASE_URL=https://x.example # note\n\nbad line\nOTHER=\'a b\'\n')
+  expect(env).toEqual({ JEV_API_KEY: 'fake-1', JEV_BASE_URL: 'https://x.example', OTHER: 'a b' })
+})
+
+test('jevConfig prefers env over the file and defaults the base url', () => {
+  expect(jevConfig({ JEV_API_KEY: 'e' }, 'JEV_API_KEY=f\nJEV_BASE_URL=https://f.example/')).toEqual({ key: 'e', baseUrl: 'https://f.example' })
+  expect(jevConfig({}, 'JEV_API_KEY=f')).toEqual({ key: 'f', baseUrl: 'https://api.typesafe.ai' })
+  expect(jevConfig({}, undefined)).toEqual({ baseUrl: 'https://api.typesafe.ai' })
+})
+
+test('the state drops the Size line and is capped at 8000 chars', () => {
+  expect(jevState('Your name: x\nSize: small — docs\nbody')).toBe('Your name: x\nbody')
+  expect(jevState('a'.repeat(9000)).length).toBe(8000)
+  expect((jevBody('Size: large\nhi', 'jev-latest') as { model: string; state: string }).state).toBe('hi')
+})
+
+test('parseJev accepts a confident known choice and rejects the rest', () => {
+  expect(parseJev(answer('small', 0.98))).toEqual({ size: 'small', confidence: 0.98 })
+  expect(parseJev(answer('small', 0.5))).toEqual({ size: 'small', confidence: 0.5 })
+  expect(parseJev(answer('small', 0.49))).toEqual({ note: 'jev unavailable: low confidence 0.49' })
+  expect(parseJev(answer('huge', 1))).toEqual({ note: 'jev unavailable: unknown choice' })
+  expect(parseJev(answer('small', 'high'))).toEqual({ note: 'jev unavailable: bad response' })
+  expect(parseJev({})).toEqual({ note: 'jev unavailable: bad response' })
+  expect(parseJev(null)).toEqual({ note: 'jev unavailable: bad response' })
+})
+
+test('askJev sends the key and body, and names each failure kind without leaking the key', async () => {
+  let seen: { url: string; auth: string; body: string } | undefined
+  const spy: FetchLike = async (url, init) => { seen = { url, auth: init.headers.Authorization!, body: init.body }; return { ok: true, status: 200, json: async () => answer('normal', 0.9) } }
+  expect(await askJev(spy, cfg, 'jev-latest', 'Size: small\nhello')).toEqual({ size: 'normal', confidence: 0.9 })
+  expect(seen?.url).toBe('https://jev.example/v1/systemone')
+  expect(seen?.auth).toBe('Bearer fake-key')
+  expect(JSON.parse(seen!.body).state).toBe('hello')
+
+  expect(await askJev(ok({}), { baseUrl: 'x' }, 'm', 'p')).toEqual({ note: 'jev unavailable: no key' })
+  const http: FetchLike = async () => ({ ok: false, status: 401, json: async () => ({ detail: 'fake-key' }) })
+  expect(await askJev(http, cfg, 'm', 'p')).toEqual({ note: 'jev unavailable: HTTP 401' })
+  const badJson: FetchLike = async () => ({ ok: true, status: 200, json: async () => { throw new Error('nope') } })
+  expect(await askJev(badJson, cfg, 'm', 'p')).toEqual({ note: 'jev unavailable: bad response' })
+  const down: FetchLike = async () => { throw new Error('fake-key refused') }
+  expect(await askJev(down, cfg, 'm', 'p')).toEqual({ note: 'jev unavailable: network error' })
+  const hang: FetchLike = (_u, init) => new Promise((_res, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted'))))
+  expect(await askJev(hang, cfg, 'm', 'p', 20)).toEqual({ note: 'jev unavailable: timeout' })
+})
+
+test('off: no Jev function means routing is the Size line alone', async () => {
+  const r = await routeWorker(ioWith(), spawn('Size: normal — a few files'), MODELS)
+  expect(r.routed).toMatchObject({ size: 'normal', model: 'sonnet' })
+  expect(r.routed?.jev).toBeUndefined()
+})
+
+test('on: Jev wins over the Size line and the decision says so', async () => {
+  const jev = (p: string) => askJev(ok(answer('small', 0.98)), cfg, 'jev-latest', p)
+  const r = await routeWorker(ioWith(), spawn('Size: normal — docs only'), MODELS, jev)
+  expect(r.routed).toMatchObject({ size: 'small', model: 'haiku', reason: 'docs only', jev: 'jev 0.98; brief said normal' })
+  expect(r.e.model).toBe('haiku')
+})
+
+test('on: Jev decides with no Size line, and a manager routes the same way', async () => {
+  const jev = (p: string) => askJev(ok(answer('large', 0.8)), cfg, 'jev-latest', p)
+  const w = await routeWorker(ioWith(), spawn('no size line'), MODELS, jev)
+  expect(w.routed).toMatchObject({ size: 'large', model: 'sonnet[1m]', jev: 'jev 0.80' })
+  const small = (p: string) => askJev(ok(answer('small', 1)), cfg, 'jev-latest', p)
+  const m = await routeManager(ioWith(), spawn('plain', 'mgr'), 'sonnet', 'opus', small)
+  expect(m.routed).toMatchObject({ size: 'small', model: 'sonnet', jev: 'jev 1.00' })
+})
+
+test('on but Jev fails: the Size line stands and the note rides along', async () => {
+  const jev = (p: string) => askJev(ok({ answers: {} }), cfg, 'jev-latest', p)
+  const r = await routeWorker(ioWith(), spawn('Size: small — docs'), MODELS, jev)
+  expect(r.routed).toMatchObject({ size: 'small', model: 'haiku', jev: 'jev unavailable: bad response' })
+  const none = await routeWorker(ioWith(), spawn('no size'), MODELS, async () => ({ note: 'jev unavailable: timeout' }))
+  expect(none.routed).toBeUndefined()
+})
+
+test('the successor floor still raises Jev\'s size', async () => {
+  const ledger = { a: { role: 'worker', name: 'csv-docs', size: 'normal' } } as unknown as Ledger
+  const jev = (p: string) => askJev(ok(answer('small', 0.99)), cfg, 'jev-latest', p)
+  const r = await routeWorker(ioWith(ledger), spawn('x', 'csv-docs-2'), MODELS, jev)
+  expect(r.routed).toMatchObject({ size: 'large', escalated: true })
+})

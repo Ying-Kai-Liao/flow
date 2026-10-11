@@ -36,6 +36,8 @@ export const KEYS: Record<string, Kind> = {
   worker_model_small: 'string',
   worker_model_normal: 'string',
   explore_model: 'string',
+  size_model: 'string',
+  jev_model: 'string',
   conflict_model: 'string',
   manager_model: 'string',
   manager_model_small: 'string',
@@ -75,7 +77,7 @@ export const KEYS: Record<string, Kind> = {
 }
 
 // String settings with a closed set of values: another value is dropped with a warning.
-export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'] }
+export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev'] }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
@@ -264,6 +266,8 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     workerModelSmall: model('worker_model_small', 'haiku'),
     workerModelNormal: model('worker_model_normal', 'sonnet'),
     exploreModel: model('explore_model', 'haiku'),
+    sizeModel: str('size_model', 'off') === 'jev' ? 'jev' as const : 'off' as const,
+    jevModel: str('jev_model', 'jev-latest'),
     conflictModel: model('conflict_model', 'opus'),
     managerModel: model('manager_model', 'opus'),
     managerModelSmall: model('manager_model_small', 'sonnet'),
