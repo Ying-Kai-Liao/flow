@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.68] - 2026-10-12
+
+### Changed
+
+- Pane: monochrome glyphs instead of emoji (#162)
+
 ## [0.6.67] - 2026-10-12
 
 ### Fixed
