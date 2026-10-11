@@ -217,6 +217,13 @@
       "default": "on",
       "options": ["on", "off"]
     },
+    "ask_cards": {
+      "type": "string",
+      "title": "Question cards",
+      "description": "Advanced: on: the messages to the main session tell it to show blocking questions, env changes and deploy approvals as AskUserQuestion cards (clickable options plus Other). off: they stay text in the chat and the /flow inbox.",
+      "default": "on",
+      "options": ["on", "off"]
+    },
     "preflight_wait": {
       "type": "number",
       "title": "Pre-flight wait (minutes)",

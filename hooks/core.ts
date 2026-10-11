@@ -38,6 +38,8 @@ export const mirror = {
   // Pre-flight setting and round wait (ms).
   preflightOn: true,
   preflightWaitMs: 10 * 60_000,
+  // The ask_cards setting: texts to main tell it to pop blocking items as AskUserQuestion cards.
+  askCards: true,
 }
 
 

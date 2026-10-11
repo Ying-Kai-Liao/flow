@@ -71,6 +71,8 @@ minutes pass), one message "Pre-flight: N tasks, ..." reaches you.
 4. "Timed out waiting for: ..." means those managers are still in recon: tell the user their
    pre-flight follows later and don't wait. Late filings ("Pre-flight (late): ...") are handled
    the same way. `/flow preflight` shows the round.
+5. With `ask_cards` on, a round with blocking questions carries card instructions: pop the blocking
+   ones with AskUserQuestion as the message says, then one `mcp__flow__answer`. Off: text as before.
 
 ## Tasks from a source
 
@@ -115,6 +117,9 @@ put them in front of the user.
   If the result says an answer was undelivered (the asker is gone), relay it to the successor
   (`<name>-2`) by SendMessage and `mcp__flow__note`. A manager report ending in "?" with no
   inbox entry is still a question: relay it as before, answering by SendMessage.
+  With `ask_cards` on (default), put blocking questions in front of the user with AskUserQuestion as the
+  message tells you (up to 4 per call, default first marked "(Recommended)"), then answer with ONE
+  `mcp__flow__answer`. Off, or for non-blocking ones: the text list above.
 - **Decisions** (`mcp__flow__fyi`, ids `d1`, `d2`, ...) are choices agents took themselves, shown under
   "Decisions agents made" in `/flow inbox`. Put them in front of the user as a short skimmable list (id, owner, decision, why),
   separate from the questions. When the user says fine, keep them in bulk with
@@ -132,8 +137,8 @@ put them in front of the user.
   with `standing` `add` and `seed: "<id>"` (or `seeds: [ids]`). Questions flagged ESCALATED
   (an `escalate` rule) are in your inbox even when a worker asked: put them to the user, then
   answer them yourself; the asker gets the answer.
-- **Env changes.** A handover can declare env or secret changes per deploy target. Each becomes inbox items of kind env ("Set NAME=value on <target>?", "Secret NAME on <target> is set by you ...", "Do this yourself: ..."). They go to the user every time with their options: never answer one on your own judgment, never with `defaults`, and never make one standing (`always` makes no rule). A login step is the user's own; you cannot do it for them. A declined change holds its target until the user says to release it (`mcp__flow__deploy` `release`, which drops the declined changes). Never put a secret value in a message, a note or the PR text.
-- **Deploy approvals.** A deploy target in `confirm` mode puts an inbox item of kind deploy ("Deploy <target> at <sha>?", options `deploy` / `not now`) in front of you. It goes to the user every time, with the commits it ships: never answer it on your own judgment, never with `defaults`, and never make it standing (`always` makes no rule). Answering `deploy` starts a deploy-only reviewer run for that sha. When the user says "demo only, hold production" (or "hold <target>", "don't deploy <target> yet"), call `mcp__flow__deploy` `hold` with that target and `until` "batch" (just the next batch) or "released" (until they say so); `release` when they lift it. `mcp__flow__deploy` `list` shows each target's mode, hold and how far it is behind; `mcp__flow__status` says "<target> behind by N commits".
+- **Env changes.** A handover can declare env or secret changes per deploy target. Each becomes inbox items of kind env ("Set NAME=value on <target>?", "Secret NAME on <target> is set by you ...", "Do this yourself: ..."). They go to the user every time with their options: never answer one on your own judgment, never with `defaults`, and never make one standing (`always` makes no rule). A login step is the user's own; you cannot do it for them. A declined change holds its target until the user says to release it (`mcp__flow__deploy` `release`, which drops the declined changes). Never put a secret value in a message, a note or the PR text. With `ask_cards` on, show them as cards (no Recommended mark).
+- **Deploy approvals.** A deploy target in `confirm` mode puts an inbox item of kind deploy ("Deploy <target> at <sha>?", options `deploy` / `not now`) in front of you. It goes to the user every time, with the commits it ships: never answer it on your own judgment, never with `defaults`, and never make it standing (`always` makes no rule). Answering `deploy` starts a deploy-only reviewer run for that sha. When the user says "demo only, hold production" (or "hold <target>", "don't deploy <target> yet"), call `mcp__flow__deploy` `hold` with that target and `until` "batch" (just the next batch) or "released" (until they say so); `release` when they lift it. `mcp__flow__deploy` `list` shows each target's mode, hold and how far it is behind; `mcp__flow__status` says "<target> behind by N commits". With `ask_cards` on, show the approval as a card too (no Recommended mark).
 - **Person checks** are after-deploy checks that need a person (see `/flow checks`). When a reviewer
   report or the post-update prompt lists them, put them in front of the user as ONE list grouped by
   version (needs install of X and a restart, ready, no version), with id, PR and steps. Close them with
@@ -189,5 +194,5 @@ or risky changes.
 ## Settings
 
 The test command, the full check, the deploy command, the merge method, whether there is a
-reviewer, the manager limit (`max_managers`) and the worker limit, `preflight` (on or off) and `preflight_wait` (minutes the main session waits for a round, default 10) are this plugin's options (`/config`, flow). An unset full
+reviewer, the manager limit (`max_managers`) and the worker limit, `preflight` (on or off) and `preflight_wait` (minutes the main session waits for a round, default 10), `ask_cards` (on by default: blocking items arrive with an instruction to show them as AskUserQuestion cards; off keeps plain text) are this plugin's options (`/config`, flow). An unset full
 check or deploy is a step the reviewer skips and reports; it never improvises one.

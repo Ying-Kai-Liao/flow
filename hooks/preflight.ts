@@ -1,3 +1,4 @@
+import { CARDS_TEXT } from './askcards'
 import { noteKey } from './state'
 import { EMPTY_INBOX, parseAsk, renderInbox } from './inbox'
 import type { AskedQuestion, Inbox, Question } from './inbox'
@@ -194,7 +195,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 // The one message to main for a round.
 export function renderRound(
-  state: Preflight, inbox: Inbox, round: Round, ended: ReadonlySet<string>, now: number, timedOut: boolean,
+  state: Preflight, inbox: Inbox, round: Round, ended: ReadonlySet<string>, now: number, timedOut: boolean, cards = false,
 ): string {
   const entries = round.members.flatMap(k => (state.entries[k] === undefined ? [] : [[k, state.entries[k]!] as const]))
   const filed = entries.filter(([, e]) => e.phase === 'filed')
@@ -215,11 +216,12 @@ export function renderRound(
   lines.push('', open.length > 0
     ? 'Show this to the user, then answer with mcp__flow__answer (answers [{id, choice}], or defaults: true for the recommended ones). Managers with no blocking question can start workers already.'
     : 'Show this to the user. There are no questions: the managers start their workers by themselves.')
+  if (cards && blocking > 0) lines.push(CARDS_TEXT)
   return lines.join('\n')
 }
 
 // A filing that came after its round went out.
-export function renderFollowUp(state: Preflight, inbox: Inbox, name: string, now: number): string {
+export function renderFollowUp(state: Preflight, inbox: Inbox, name: string, now: number, cards = false): string {
   const key = noteKey(name)
   const e = state.entries[key]
   if (e === undefined || e.filing === undefined) return `Pre-flight: ${name} filed.`
@@ -228,7 +230,7 @@ export function renderFollowUp(state: Preflight, inbox: Inbox, name: string, now
   return [
     `Pre-flight (late): ${name} filed after the round went out${qs.length > 0 ? `, ${plural(qs.length, 'question')}${blocking > 0 ? ` (${blocking} blocking)` : ''}` : ''}`,
     ...entryLines(key, e, inbox, new Set()),
-    ...(qs.length > 0 ? ['', renderInbox({ ...inbox, items: qs }, now), '', 'Show this to the user and answer with mcp__flow__answer (or defaults: true).'] : ['', 'Show this to the user.']),
+    ...(qs.length > 0 ? ['', renderInbox({ ...inbox, items: qs }, now), '', 'Show this to the user and answer with mcp__flow__answer (or defaults: true).', ...(cards && blocking > 0 ? [CARDS_TEXT] : [])] : ['', 'Show this to the user.']),
   ].join('\n')
 }
 

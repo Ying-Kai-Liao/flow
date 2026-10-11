@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ask_cards` setting (default on): the messages to the main session tell it to show blocking questions, env changes and deploy approvals as AskUserQuestion cards (clickable options plus Other); new short notices for a blocking ask to main, env items and deploy approvals, and a hint on a manager report that ends in a question.
+
 ## [0.6.40] - 2026-10-12
 
 ### Added
