@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.63] - 2026-10-12
+
+### Changed
+
+- Fewer manager wakes: hold informational relays; wake-cost measurement (#157)
+
 ## [0.6.62] - 2026-10-12
 
 ### Changed
