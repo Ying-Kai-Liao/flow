@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "description": "Jev-assisted agent orchestration for Claude Code: managers, workers in git worktrees and one reviewer run your tasks in parallel; only decisions reach you",
+  "description": "Claude Code agents that work like a company, with Jev-assisted routing to keep cost down.",
   "owner": {
     "name": "Ying-Kai Liao"
   },
