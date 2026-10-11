@@ -28,6 +28,11 @@ export type Settings = {
   decisionApi?: 'off' | 'jev' | 'openai'
   jevModel?: string
   openaiModel?: string
+  // The providers' keys and base URLs, from /config only (keys are sensitive options); never put into a prompt.
+  jevApiKey?: string
+  jevBaseUrl?: string
+  openaiApiKey?: string
+  openaiBaseUrl?: string
   conflictModel?: string
   managerModel: string
   managerModelSmall?: string

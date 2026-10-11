@@ -1,7 +1,8 @@
 // One small decision API: ask a provider a choice or yes/no question about a text. Providers are plain functions
-// (jev.ts, openai.ts) that take the injected fetch, so tests need no network. Any failure is a short note and the
-// caller falls back to its default. The key and response bodies never reach a note.
-import { askJev, JEV_ENV_FILE, jevConfig } from './jev'
+// (jev.ts, openai.ts) that take the injected fetch (the engine's $.http.fetch in register.tsx), so tests need no
+// network. Keys and base URLs come from /config only. Any failure is a short note and the caller falls back to
+// its default. The key and response bodies never reach a note.
+import { askJev, jevConfig } from './jev'
 import { askOpenai, OPENAI_DEFAULT_MODEL, openaiConfig } from './openai'
 
 export const DECIDE_TIMEOUT_MS = 5000
@@ -33,14 +34,17 @@ export const decisionText = (text: string): string => text.replace(/^Size:.*(?:\
 // Shared by the providers: the timer, and one note per failure kind.
 export async function post(fetchFn: FetchLike, name: string, url: string, key: string, body: unknown, timeoutMs: number, parse: (json: unknown) => Decision): Promise<Decision> {
   const ac = new AbortController()
-  const timer = g.setTimeout(() => ac.abort(), timeoutMs)
+  let timer: unknown
+  // The race, not the signal alone, ends the wait: the engine's fetch takes no signal.
+  const timedOut = new Promise<'timeout'>(resolve => { timer = g.setTimeout(() => { ac.abort(); resolve('timeout') }, timeoutMs) })
   try {
-    const res = await fetchFn(url, {
+    const res = await Promise.race([fetchFn(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: ac.signal,
-    })
+    }), timedOut])
+    if (res === 'timeout') return { note: `${name} unavailable: timeout` }
     if (!res.ok) return { note: `${name} unavailable: HTTP ${res.status}` }
     let json: unknown
     try { json = await res.json() } catch { return { note: `${name} unavailable: bad response` } }
@@ -52,18 +56,15 @@ export async function post(fetchFn: FetchLike, name: string, url: string, key: s
   }
 }
 
-export type DecideIo = { env: Record<string, string | undefined>; fetch: FetchLike; readFile: (path: string) => Promise<string | undefined> }
-export type DecideSettings = { decisionApi?: DecisionApi; jevModel?: string; openaiModel?: string }
+export type DecideIo = { fetch: FetchLike }
+// The keys and base URLs are /config options (sensitive keys), never read from the environment or a file.
+export type DecideSettings = { decisionApi?: DecisionApi; jevModel?: string; openaiModel?: string; jevApiKey?: string; jevBaseUrl?: string; openaiApiKey?: string; openaiBaseUrl?: string }
 
 // How the decision text names the provider ("jev", "openai gpt-4.1-mini").
 export const sourceOf = (s: DecideSettings): string => (s.decisionApi === 'openai' ? `openai ${s.openaiModel ?? OPENAI_DEFAULT_MODEL}` : 'jev')
 
 export async function decide(io: DecideIo, s: DecideSettings, text: string, q: Question, timeoutMs = DECIDE_TIMEOUT_MS): Promise<Decision> {
-  if (s.decisionApi === 'openai') return askOpenai(io.fetch, openaiConfig(io.env), s.openaiModel ?? OPENAI_DEFAULT_MODEL, text, q, timeoutMs)
-  if (s.decisionApi === 'jev') {
-    const home = io.env.HOME
-    const file = home === undefined ? undefined : await io.readFile(`${home}/${JEV_ENV_FILE}`).catch(() => undefined)
-    return askJev(io.fetch, jevConfig(io.env, file), s.jevModel ?? JEV_DEFAULT_MODEL, text, q, timeoutMs)
-  }
+  if (s.decisionApi === 'openai') return askOpenai(io.fetch, openaiConfig(s), s.openaiModel ?? OPENAI_DEFAULT_MODEL, text, q, timeoutMs)
+  if (s.decisionApi === 'jev') return askJev(io.fetch, jevConfig(s), s.jevModel ?? JEV_DEFAULT_MODEL, text, q, timeoutMs)
   return { note: 'decision api off' }
 }

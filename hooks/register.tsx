@@ -1243,8 +1243,9 @@ function spawnIoOf($: EngineInterface): SpawnIo {
 // The decision API for sizing (decision_api jev or openai); undefined when off, so nothing touches the network.
 function jevOf($: EngineInterface, settings: DecideSettings): SizeJev | undefined {
   if (settings.decisionApi === undefined || settings.decisionApi === 'off') return undefined
-  const g = globalThis as unknown as { process: { env: Record<string, string | undefined> }; fetch: FetchLike }
-  const io = { env: g.process.env, fetch: g.fetch, readFile: (path: string) => $.fs.read(path) }
+  const fetch: FetchLike = (url, init) => $.http.fetch(url, { method: init.method, headers: init.headers, body: init.body })
+    .then(r => ({ ok: r.ok, status: r.status, json: async () => JSON.parse(r.text) as unknown }))
+  const io = { fetch }
   return sizeWith((text, q) => decide(io, settings, text, q), sourceOf(settings))
 }
 

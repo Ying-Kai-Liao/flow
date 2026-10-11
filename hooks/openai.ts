@@ -7,9 +7,10 @@ import type { Decision, Provider, Question } from './decide'
 export const OPENAI_DEFAULT_URL = 'https://api.openai.com/v1'
 export const OPENAI_DEFAULT_MODEL = 'gpt-4.1-mini'
 
-export function openaiConfig(env: Record<string, string | undefined>): { key?: string; baseUrl: string } {
-  const key = env.OPENAI_API_KEY
-  const baseUrl = (env.OPENAI_BASE_URL || OPENAI_DEFAULT_URL).replace(/\/+$/, '')
+// From the /config options openai_api_key and openai_base_url (settings.ts).
+export function openaiConfig(s: { openaiApiKey?: string; openaiBaseUrl?: string }): { key?: string; baseUrl: string } {
+  const key = s.openaiApiKey
+  const baseUrl = (s.openaiBaseUrl || OPENAI_DEFAULT_URL).replace(/\/+$/, '')
   return { ...(key ? { key } : {}), baseUrl }
 }
 
