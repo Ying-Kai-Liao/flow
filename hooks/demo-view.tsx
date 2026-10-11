@@ -44,7 +44,7 @@ export function demoView(c: DemoCtx) {
   const stop = <Button key="demo-stop" plain dimColor hotkey="x" onPress={() => void c.io.stop()}>x stop the demo</Button>
   if (ask !== undefined) {
     const ictx: InboxCtx = {
-      els: c.els, Input: c.Input, rows: Math.max(8, c.rows - 6), ibox: inboxOf(c.state, c.now), icur: ask.id, draft: c.draft, note: c.note, irows: [], list, now: c.now, from: 'tree',
+      els: c.els, Input: c.Input, rows: Math.max(8, c.rows - 6), columns: 80, ibox: inboxOf(c.state, c.now), icur: ask.id, draft: c.draft, note: c.note, irows: [], list, now: c.now, from: 'tree',
       io: {
         acted: async () => undefined, rows: async () => [], readInbox: async () => inboxOf(c.state, c.now), readCursor: async () => ask.id, setCursor: async () => undefined,
         readDraft: async () => c.draft, setDraft: c.io.setDraft, setNote: c.io.setNote, answer: c.io.answer, serial: fn => fn(), toast: c.io.toast, focus: c.io.focus,

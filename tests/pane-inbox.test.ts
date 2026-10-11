@@ -73,10 +73,11 @@ const protectedItems = (files: Map<string, string>) => {
 type Ui = {
   press(a: { key: string }): Promise<unknown>
   find(a: object): Promise<unknown>
+  drawn(): Promise<unknown>
   input(a: object): Promise<unknown>
   unmount(): Promise<void>
 }
-const mount = ($: Dollar, rows = 40) => $.ui.mount({ plugin: 'flow', surface: 'terminal', ...PANE, viewport: { columns: 100, rows } } as never) as unknown as Promise<Ui>
+const mount = ($: Dollar, rows = 40, columns = 100) => $.ui.mount({ plugin: 'flow', surface: 'terminal', ...PANE, viewport: { columns, rows } } as never) as unknown as Promise<Ui>
 const open = async (ui: Ui) => { await ui.press({ key: 'nav-inbox' }) }
 
 test('the inbox view opens with i, lists blocking first with the addressee, moves with j/k and answers by digit and letter', async ($, on) => {
@@ -182,14 +183,14 @@ test('routine decisions fold into one group row that y keeps whole; pressing the
   await fyi($, 'm1', [...fs, F(100)])
   const ui = await mount($)
   await open(ui)
-  expect(await ui.find({ text: /> d8 csv-export: Decision 100/ })).toBeDefined()
+  expect(await ui.find({ text: /> +d8 Decision 100/ })).toBeDefined()
   expect(await ui.find({ text: /▸ 7 routine \(worker-size\)/ })).toBeDefined()
-  expect(await ui.find({ text: /d4 csv-export \[worker-size\]/ })).toBeUndefined()
+  expect(await ui.find({ text: /d4 Decision 3/ })).toBeUndefined()
   // y keeps the important one only; the highlight then sits on the group, and y keeps all of it
   await ui.press({ key: 'inbox-yes' })
   expect(stored(w.files).filter(x => x.state === 'open').length).toBe(7)
   await ui.press({ key: 'row-fold' })
-  expect(await ui.find({ text: /d4 csv-export \[worker-size\]: Decision 3/ })).toBeDefined()
+  expect(await ui.find({ text: /d4 Decision 3/ })).toBeDefined()
   await ui.press({ key: 'inbox-yes' })
   expect(stored(w.files).filter(x => x.state === 'open').length).toBe(0)
   await ui.unmount()
@@ -201,7 +202,7 @@ test('w keeps folded decisions too, and a finished owner folds its decisions', a
   w.agents[1]!.status = 'completed'
   const ui = await mount($)
   await open(ui)
-  expect(await ui.find({ text: /▸ 2 routine decisions \(worker-size, finished agents\)/ })).toBeDefined()
+  expect(await ui.find({ text: /▸ 2 routine \(worker-size, finished agents\)/ })).toBeDefined()
   await ui.press({ key: 'inbox-all' })
   expect(stored(w.files).filter(x => x.state === 'open').length).toBe(0)
   await ui.unmount()
@@ -400,5 +401,55 @@ test('a highlight answered meanwhile answers nothing: the highlight moves and th
   expect(await ui.find({ text: /q2 was answered meanwhile \(by main\); the highlight moved, press again/ })).toBeDefined()
   await ui.press({ key: 'inbox-yes' })
   expect(stateOf(w.files, 'q1')?.answer).toBe('yes')
+  await ui.unmount()
+})
+
+// What the pane draws, as lines of text: a column stacks its children, a row sets them side by side with its gap.
+type El = string | { type?: string; props?: { flexDirection?: string; gap?: number; label?: string }; children?: El[] } | null | undefined | false
+const plain = (e: El): string => (typeof e === 'string' ? e : e ? (e.children === undefined && e.props?.label !== undefined ? e.props.label : (e.children ?? []).map(plain).join('')) : '')
+const linesOf = (e: El): string[] => {
+  if (typeof e === 'string') return [e]
+  if (!e) return []
+  const kids = (e.children ?? []).filter(Boolean)
+  if (e.type === 'Text') return plain(e).split('\n')
+  if (e.props?.flexDirection === 'row') return [kids.map(plain).join(' '.repeat(e.props.gap ?? 0))]
+  return kids.flatMap(linesOf)
+}
+
+test('at 60 columns by 30 rows every list row is one line of the pane width and both footer rows are drawn', async ($, on) => {
+  const agents: AgentInfo[] = [
+    { id: 'm1', name: 'ctx-init-tip', description: 'm', type: 'flow:manager', status: 'running' },
+    { id: 'm2', name: 'plain-capability-use', description: 'm', type: 'flow:manager', status: 'running' },
+    { id: 'm3', name: 'quiet-update-notice', description: 'm', type: 'flow:manager', status: 'running' },
+  ]
+  world(on, agents)
+  await fyi($, 'm1', [
+    { decision: 'Show the context-trim tip once per session, not on every init, because repeating it trains people to ignore it', why: 'noisy otherwise', topic: 'tip-frequency' },
+    { decision: 'Word the tip as a question', why: 'softer', topic: 'tip-wording' },
+  ])
+  await fyi($, 'm2', [F(1), { decision: 'Name the capability in plain words in the docs and in every error message the plugin prints', why: 'readers' }, F(3)])
+  await fyi($, 'm3', [{ decision: 'Say "update available" once, quietly', why: 'less nagging' }])
+  await fyi($, 'm1', Array.from({ length: 3 }, (_, i) => F(10 + i, 'manager-size')))
+  await fyi($, 'm2', Array.from({ length: 2 }, (_, i) => F(20 + i, 'worker-size')))
+  const ui = await mount($, 30, 60)
+  await open(ui)
+  const lines = linesOf((await ui.drawn()) as El)
+  expect(lines.length).toBeLessThanOrEqual(30)
+  for (const l of lines) expect(l.length).toBeLessThanOrEqual(60)
+  expect(lines.some(l => /▸ 5 routine \((manager-size, worker-size|worker-size, manager-size)\)/.test(l))).toBe(true)
+  expect(lines.some(l => /j next/.test(l) && /k prev/.test(l))).toBe(true)
+  expect(lines.some(l => /y keep/.test(l) && /n undo/.test(l) && /i back/.test(l))).toBe(true)
+  await ui.unmount()
+})
+
+test('with only a folded group the hot row shows its hint in the nav row; the keys row is drawn on a short pane', async ($, on) => {
+  world(on)
+  await fyi($, 'm1', Array.from({ length: 3 }, (_, i) => F(i, 'worker-size')))
+  const ui = await mount($, 20, 60)
+  await open(ui)
+  const lines = linesOf((await ui.drawn()) as El)
+  expect(lines.length).toBeLessThanOrEqual(20)
+  expect(lines.some(l => /j next/.test(l) && /y keeps all 3 · Enter expands/.test(l))).toBe(true)
+  expect(lines.some(l => /y keep/.test(l) && /i back/.test(l))).toBe(true)
   await ui.unmount()
 })

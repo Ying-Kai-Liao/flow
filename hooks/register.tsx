@@ -2640,7 +2640,7 @@ export const register: Register = (on, options) => {
       // The same rows a press reads, so what is drawn and what is pressed fold alike.
       const irows = (await paneInboxRows($)).rows
       const ictx: InboxCtx = {
-        els: { Box, Text, Button }, Input, rows, ibox, icur, draft, note, irows, list, now: t, from,
+        els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, list, now: t, from,
         io: {
           acted,
           rows: async () => (await paneInboxRows($)).rows,

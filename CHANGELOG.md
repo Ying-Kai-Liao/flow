@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Inbox list: every row is one line of the pane width (single "…"), decisions sit under a dim "owner · N" header with a dim id, the folded group reads "▸ 5 routine (labels)" with its keys hint in the footer, the preview and card get a dim rule, a header line and dim labels, and the footer is a nav row plus a keys row that are always visible (`hooks/pane-view.tsx`, `hooks/inbox.ts`)
+
 ## [0.6.55] - 2026-10-12
 
 ### Changed

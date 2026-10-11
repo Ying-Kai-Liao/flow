@@ -452,8 +452,8 @@ export function inboxView(x: InboxCtx) {
   const hotFyi = hq !== undefined && isFyi(hq)
   // The preview's wrapped lines are estimated from its text, cut to what its tier allows; a short pane takes a lower tier.
   const lineCap = Math.max(8, W - 8)
-  const wrapped = (text: string, lines: number) => { const t = clip(text, lines * lineCap); return { text: t, n: Math.max(1, Math.ceil(t.length / lineCap)) } }
-  const fixed = 1 + 2 + (hq !== undefined ? 2 : 1) + (note !== '' ? 1 : 0) + (Input !== undefined ? 1 : 0) + (hq !== undefined && !isFyi(hq) && hq.options.length > 0 ? 1 : 0) + 2
+  const wrapped = (text: string, lines: number) => { const t = fit(text, lines * lineCap); return { text: t, n: Math.max(1, Math.ceil(t.length / lineCap)) } }
+  const fixed = 1 + 2 + (hq !== undefined ? 2 : 1) + (note !== '' ? 1 : 0) + (Input !== undefined ? 1 : 0) + (hq !== undefined && !isFyi(hq) && hq.options.length > 0 ? 1 : 0) + 3
   const previews = [[3, 2, 2], [2, 1, 1], [1, 1, 0], [1, 0, 0]].map(([t, w, i]) => {
     const text = hq === undefined ? undefined : wrapped(hq.question, t!)
     const why = hq?.context && w! > 0 ? wrapped(hq.context, w!) : undefined
@@ -582,6 +582,7 @@ export function inboxView(x: InboxCtx) {
   const nQ = ibox.items.filter(x => x.state === 'open' && !isFyi(x)).length
   const nF = ibox.items.filter(x => x.state === 'open' && isFyi(x)).length
   const archived = archiveOf(ibox).length
+  const hasGroup = irows.some(r => r.group !== undefined)
   return (
     <Box flexDirection="column" height={rows}>
       <Text bold>Inbox <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
@@ -621,7 +622,7 @@ export function inboxView(x: InboxCtx) {
       {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
       <Box flexGrow={1} />
       {Input !== undefined && <Input key="inbox-answer" label="answer " placeholder="your own words (r), or what instead (n)" value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
-      <Box flexDirection="row" gap={1}>
+      {nOpts > 0 && <Box flexDirection="row" gap={1}>
         {Array.from({ length: Math.min(nOpts, 8) }, (_, k) => (
           <Button key={`pick-${String.fromCharCode(97 + k)}`} plain dimColor hotkey={String.fromCharCode(97 + k)} onPress={pickOption(k)}>{String.fromCharCode(97 + k)}</Button>
         ))}
@@ -629,15 +630,18 @@ export function inboxView(x: InboxCtx) {
           <Button key={`pick-${k + 1}`} plain dimColor hotkey={String(k + 1)} onPress={pickOption(k)}>{k + 1}</Button>
         ))}
         {nOpts > 0 && <Text dimColor>pick</Text>}
-      </Box>
-      <Box flexDirection="row" gap={1}>
+      </Box>}
+      <Box flexDirection="row" gap={2}>
         <Button key="inbox-next" plain dimColor hotkey="j" onPress={move(1)}>j next</Button>
         <Button key="inbox-prev" plain dimColor hotkey="k" onPress={move(-1)}>k prev</Button>
-        <Button key="inbox-yes" plain dimColor hotkey="y" onPress={takeDefault}>y default/keep</Button>
-        <Button key="inbox-all" plain dimColor hotkey="w" onPress={keepAll}>w keep all decisions</Button>
+        {hasGroup && <Button key="inbox-fold" plain dimColor hotkey="x" onPress={() => io.serial(async () => { await io.acted(); await io.toggleFold() })}>x fold</Button>}
+        {hotRow?.group !== undefined && <Text dimColor>{fit(groupHint(hotRow.group), Math.max(8, W - 26))}</Text>}
+      </Box>
+      <Box flexDirection="row" gap={2}>
+        <Button key="inbox-yes" plain dimColor hotkey="y" onPress={takeDefault}>{hq !== undefined && !isFyi(hq) ? 'y default' : 'y keep'}</Button>
         <Button key="inbox-no" plain dimColor hotkey="n" onPress={undo}>n undo</Button>
+        <Button key="inbox-all" plain dimColor hotkey="w" onPress={keepAll}>w keep all</Button>
         <Button key="inbox-reply" plain dimColor hotkey="r" onPress={reply}>r reply</Button>
-        {irows.some(r => r.group !== undefined) && <Button key="inbox-fold" plain dimColor hotkey="x" onPress={() => io.serial(async () => { await io.acted(); await io.toggleFold() })}>x fold/expand</Button>}
         <Button key="inbox-archive" plain dimColor hotkey="v" onPress={() => io.serial(async () => { await io.acted(); await io.leave('archive') })}>v archive{archived > 0 ? ` (${archived})` : ''}</Button>
         <Button key="inbox-back" plain dimColor hotkey="i" onPress={back}>i back</Button>
       </Box>
@@ -858,7 +862,8 @@ export function cardView(x: InboxCtx & { id: string | null }) {
         {open && <Button key="card-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
       </Box>
       <Text bold>{q.id} {kindOf(q)}{isFyi(q) ? <Text dimColor> · from {who} · {age(now - q.askedAt)} ago</Text> : ''}{q.alias === undefined ? '' : <Text dimColor> (earlier id {q.alias})</Text>}</Text>
-      {(tags !== '' || (isFyi(q) && q.topic)) && <Text color={q.blocking ? 'warning' : undefined}>{tags}{isFyi(q) && q.topic ? ` [${q.topic}]` : ''}</Text>}
+      {tags !== '' && <Text color={q.blocking ? 'warning' : undefined}>{tags}</Text>}
+      {isFyi(q) && q.topic && <Text dimColor>[{q.topic}]</Text>}
       {!isFyi(q) && <Text dimColor>from {who} · {age(now - q.askedAt)} ago{q.escalated !== undefined ? ' · escalated to you' : ''}</Text>}
       {agent !== undefined && <Text dimColor>{q.owner} is {agent.status}</Text>}
       {agent === undefined && <Text dimColor>{q.owner} is not in the roster</Text>}
@@ -867,9 +872,9 @@ export function cardView(x: InboxCtx & { id: string | null }) {
       {open && overridesManager(q) && <Text color="warning">It is for {q.addressee}: answering it overrides {q.addressee}, who is told.</Text>}
       <Text> </Text>
       <Text>{q.question}</Text>
-      {q.context && <Text dimColor>why: {q.context}</Text>}
-      {isFyi(q) && q.alternative && <Text dimColor>instead could: {q.alternative}</Text>}
-      <Text> </Text>
+      {q.context && <Text><Text dimColor>why: </Text>{q.context}</Text>}
+      {isFyi(q) && q.alternative && <Text><Text dimColor>instead could: </Text>{q.alternative}</Text>}
+      <Text dimColor>{'─'.repeat(Math.max(20, x.columns))}</Text>
       {!isFyi(q) && q.options.map((o, k) => {
         return open ? (
           <Button key={`card-opt-${k}`} hotkey={k < 9 ? String(k + 1) : undefined} onPress={pick(k)}>
