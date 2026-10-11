@@ -338,7 +338,7 @@ const migrationsIoOf = ($: EngineInterface): MigrationsIo => ({
 })
 
 const statusIoOf = ($: EngineInterface, options: Record<string, unknown>, base: string): StatusIo => ({
-  reconcile: agentId => reconcileStale(staleIoOf($, base), agentId),
+  reconcile: () => reconcileStale(staleIoOf($, base)),
   now: () => $.clock.now(),
   handovers: () => read($, handovers),
   readLog: () => readLog($),
@@ -1249,14 +1249,21 @@ const staleIoOf = ($: EngineInterface, base: string): StaleIo => ({
   handovers: () => read($, handovers),
   agents: () => $.agent.list(),
   isAncestor: async head => {
+    // The head must resolve to itself first, so a runner that answers every git call with exit 0 proves nothing.
+    const v = await runCmd($, ['git', 'rev-parse', '--verify', `${head}^{commit}`])
+    if (v.exitCode !== 0 || head.length < 7 || !v.stdout.trim().startsWith(head)) return undefined
     const r = await runCmd($, ['git', 'merge-base', '--is-ancestor', head, `origin/${base}`])
-    return r.exitCode === 0 ? true : r.exitCode === 1 ? false : undefined
+    // A clear exit 0 with no output only: anything else (a mocked or odd runner) is unknown.
+    if (r.exitCode === 0) return r.stdout.trim() === '' && r.stderr.trim() === '' ? true : undefined
+    return r.exitCode === 1 ? false : undefined
   },
   mergedPrs: async () => {
     const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'merged', '--limit', '50', '--json', 'number,mergeCommit'])
     if (r.exitCode !== 0) return undefined
     try {
-      return new Map((JSON.parse(r.stdout) as { number: number; mergeCommit?: { oid?: string } | null }[]).map(p => [p.number, p.mergeCommit?.oid ?? '']))
+      const list: unknown = JSON.parse(r.stdout)
+      if (!Array.isArray(list)) return undefined
+      return new Map((list as { number: number; mergeCommit?: { oid?: string } | null }[]).filter(p => typeof p?.number === 'number').map(p => [p.number, p.mergeCommit?.oid ?? '']))
     } catch { return undefined }
   },
   save: async h => {
@@ -1269,7 +1276,7 @@ const staleIoOf = ($: EngineInterface, base: string): StaleIo => ({
 })
 
 const reviewerIoOf = ($: EngineInterface, base: string): ReviewerIo => ({
-  reconcile: agentId => reconcileStale(staleIoOf($, base), agentId),
+  reconcile: () => reconcileStale(staleIoOf($, base)),
   run: argv => $.process.run(argv),
   handovers: () => read($, handovers),
   putHandover: async (pr, h) => { await update($, handovers, hs => ({ ...hs, [pr]: h })) },

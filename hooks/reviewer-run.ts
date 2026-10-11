@@ -21,7 +21,7 @@ type Settings = ReturnType<typeof settingsOf>
 // register.tsx builds a ReviewerIo of closures over the calls this needs.
 export type ReviewerIo = {
   // Marks handovers merged elsewhere done and frees ones a dead reviewer took.
-  reconcile: (agentId: string | undefined) => Promise<void>
+  reconcile: () => Promise<void>
   run: (argv: string[]) => Promise<Ran>
   handovers: () => Promise<Record<string, Handover>>
   putHandover: (pr: string, h: Handover) => Promise<void>
@@ -48,7 +48,7 @@ export type ReviewerIo = {
 
 export async function reviewerToolRun(io: ReviewerIo, settings: Settings, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
   const action = String(input.action)
-  if (action === 'list') await io.reconcile(agentId)
+  if (action === 'list') await io.reconcile()
   const all = await io.handovers()
   // While a batch exists the reviewer sees it, not the pending handovers: they go in after the push run.
   const batch = await io.batch()

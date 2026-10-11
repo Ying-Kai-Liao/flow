@@ -23,8 +23,8 @@ export const resetStaleThrottle = (): void => { lastFetchAt = -Infinity; lastMer
 
 // Pending/taken handovers whose PR was merged by someone else become done; a taken one whose reviewer
 // died goes back to pending. Never throws: on a gh or git failure the records stay as they are.
-// `except` is the caller: a reviewer asking for its worklist is alive but did not take the old records.
-export async function reconcileStale(io: StaleIo, except: string | undefined): Promise<void> {
+// A taken record is freed only when no reviewer is live at all: the caller may be mid-work on its own.
+export async function reconcileStale(io: StaleIo): Promise<void> {
   try {
     const open = Object.values(await io.handovers()).filter(h => h.status === 'pending' || h.status === 'taken')
     if (open.length === 0) return
@@ -54,7 +54,7 @@ export async function reconcileStale(io: StaleIo, except: string | undefined): P
       if (sha !== undefined) {
         await io.save({ ...cur, status: 'done', sha, report: `merged elsewhere (${sha})` })
       } else if (cur.status === 'taken') {
-        reviewerAlive ??= (await io.agents()).some(a => isReviewer(a.type) && a.id !== except && (LIVE.has(a.status) || a.status === 'idle'))
+        reviewerAlive ??= (await io.agents()).some(a => isReviewer(a.type) && (LIVE.has(a.status) || a.status === 'idle'))
         if (!reviewerAlive) await io.save({ ...cur, status: 'pending' })
       }
     }

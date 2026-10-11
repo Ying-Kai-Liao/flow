@@ -25,7 +25,7 @@ function world(list: Handover[], extra: Partial<StaleIo> = {}, roster: { id: str
 test('a merged PR becomes done with the merge commit; others stay', async () => {
   resetStaleThrottle()
   const w = world([h(1, 'pending'), h(2, 'taken'), h(3, 'pending')], { mergedPrs: async () => new Map([[1, 'abcdef1234567'], [2, '']]) }, [{ id: 'q', type: 'flow:reviewer', status: 'running' }])
-  await reconcileStale(w.io, undefined)
+  await reconcileStale(w.io)
   expect(w.db['1']).toMatchObject({ status: 'done', sha: 'abcdef12', report: 'merged elsewhere (abcdef12)' })
   expect(w.db['2']).toMatchObject({ status: 'done', sha: 'head2000', report: 'merged elsewhere (head2000)' })
   expect(w.db['3']!.status).toBe('pending')
@@ -34,29 +34,29 @@ test('a merged PR becomes done with the merge commit; others stay', async () => 
 test('a head that is an ancestor of the base is done without asking gh', async () => {
   resetStaleThrottle()
   const w = world([h(4, 'pending')], { isAncestor: async () => true })
-  await reconcileStale(w.io, undefined)
+  await reconcileStale(w.io)
   expect(w.db['4']).toMatchObject({ status: 'done', report: 'merged elsewhere (head4000)' })
   expect(w.calls.gh).toBe(0)
 })
 
-test('taken goes back to pending only when no other live reviewer exists', async () => {
+test('taken goes back to pending only when no reviewer is live', async () => {
   resetStaleThrottle()
   const dead = world([h(5, 'taken')], {}, [{ id: 'q', type: 'flow:reviewer', status: 'completed' }, { id: 'w', type: 'flow:worker', status: 'running' }])
-  await reconcileStale(dead.io, undefined)
+  await reconcileStale(dead.io)
   expect(dead.db['5']!.status).toBe('pending')
   resetStaleThrottle()
   const alive = world([h(5, 'taken')], {}, [{ id: 'q', type: 'flow:reviewer', status: 'running' }])
-  await reconcileStale(alive.io, undefined)
+  await reconcileStale(alive.io)
   expect(alive.db['5']!.status).toBe('taken')
-  // The caller itself is the only live reviewer: the old record is not its own work.
-  await reconcileStale(alive.io, 'q')
-  expect(alive.db['5']!.status).toBe('pending')
+  // Even when the caller is that reviewer: it may be mid-work on its own record.
+  await reconcileStale(alive.io)
+  expect(alive.db['5']!.status).toBe('taken')
 })
 
 test('awaiting, ready, returned and done are never touched', async () => {
   resetStaleThrottle()
   const w = world((['awaiting', 'ready', 'returned', 'done'] as const).map((s, i) => h(10 + i, s)), { isAncestor: async () => true })
-  await reconcileStale(w.io, undefined)
+  await reconcileStale(w.io)
   expect(Object.values(w.db).map(x => x.status)).toEqual(['awaiting', 'ready', 'returned', 'done'])
   expect(w.calls.git).toBe(0)
 })
@@ -64,13 +64,13 @@ test('awaiting, ready, returned and done are never touched', async () => {
 test('gh is called once per gap; failures leave records alone and never throw', async () => {
   resetStaleThrottle()
   const w = world([h(6, 'pending')], { mergedPrs: async () => undefined })
-  await reconcileStale(w.io, undefined)
+  await reconcileStale(w.io)
   expect(w.db['6']!.status).toBe('pending')
   w.calls.now = 30_000
-  await reconcileStale(w.io, undefined)
+  await reconcileStale(w.io)
   expect(w.calls.gh).toBe(0)
   const boom = world([h(7, 'pending')], { isAncestor: async () => { throw new Error('x') } })
-  await reconcileStale(boom.io, undefined)
+  await reconcileStale(boom.io)
   expect(boom.db['7']!.status).toBe('pending')
 })
 
@@ -80,6 +80,6 @@ test('a handover that changed meanwhile is not overwritten', async () => {
   let reads = 0
   const base = w.io.handovers
   w.io.handovers = async () => (++reads > 1 ? { '8': { ...h(8, 'returned') } } : base())
-  await reconcileStale(w.io, undefined)
+  await reconcileStale(w.io)
   expect(w.db['8']!.status).toBe('pending')
 })
