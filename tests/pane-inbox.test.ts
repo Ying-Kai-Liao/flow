@@ -1,6 +1,7 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
+import { askBright, cols } from '../hooks/pane'
 import type { TestBody } from 'claude-code/testing'
 
 type Dollar = Parameters<TestBody>[0]
@@ -12,7 +13,7 @@ const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 
 
 // A manager "csv-export" (m1) with one worker (w1).
 function world(on: On, agents?: AgentInfo[]) {
-  mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: 1_000_000 })
   const roster: AgentInfo[] = agents ?? [
     { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
     { id: 'w1', name: 'csv-worker', description: 'w', type: 'flow:worker', status: 'running', parentId: 'm1' },
@@ -46,7 +47,7 @@ function world(on: On, agents?: AgentInfo[]) {
     }
     return ok()
   })
-  return { agents: roster, files, sent }
+  return { agents: roster, files, sent, clock }
 }
 
 const ask = ($: Dollar, agentId: string, questions: unknown[]) => $.tool.call({ tool: 'mcp__flow__ask', from: 'x', questions, agentId } as never)
@@ -79,6 +80,8 @@ type Ui = {
 }
 const mount = ($: Dollar, rows = 40, columns = 100) => $.ui.mount({ plugin: 'flow', surface: 'terminal', ...PANE, viewport: { columns, rows } } as never) as unknown as Promise<Ui>
 const open = async (ui: Ui) => { await ui.press({ key: 'nav-inbox' }) }
+// Whole drawn lines, for text that is made of several styled pieces.
+const has = async (ui: Ui, re: RegExp) => linesOf((await ui.drawn()) as El).some(l => re.test(l))
 
 test('the inbox view opens with i, lists blocking first with the addressee, moves with j/k and answers by digit and letter', async ($, on) => {
   const w = world(on)
@@ -86,21 +89,21 @@ test('the inbox view opens with i, lists blocking first with the addressee, move
   await ask($, 'm1', [{ ...SOFT, question: 'Ship it?' }])
   await fyi($, 'w1', [F(1)])
   const ui = await mount($)
-  expect(await ui.find({ text: /Inbox: 3 questions for you \(1 blocking\), 1 decision to keep or undo · i/ })).toBeDefined()
+  expect(await ui.find({ text: /📬 \? 3 questions \(1 blocking\) · 1 decision · i/ })).toBeDefined()
   await open(ui)
   expect(await ui.find({ text: /Inbox/ })).toBeDefined()
   // Blocking first; the worker's question is for its manager.
-  expect(await ui.find({ text: /> q2 BLOCKING csv-worker, for csv-export: Which format/ })).toBeDefined()
+  expect(await has(ui, /> q2 BLOCKING Which format\?, for csv-export/)).toBe(true)
   expect(await ui.find({ text: /a\) csv \(default\)/ })).toBeDefined()
   expect(await ui.find({ text: /why: the export needs one/ })).toBeDefined()
   await ui.press({ key: 'inbox-next' })
-  expect(await ui.find({ text: /> q1 csv-worker, for csv-export: Quote fields/ })).toBeDefined()
+  expect(await has(ui, /> q1 Quote fields\?, for csv-export/)).toBe(true)
   await ui.press({ key: 'inbox-prev' })
-  expect(await ui.find({ text: /> q2 BLOCKING/ })).toBeDefined()
+  expect(await has(ui, /> q2 BLOCKING/)).toBe(true)
   // A letter answers q2 over the manager's head; the highlight moves on.
   await ui.press({ key: 'pick-b' })
   expect(stateOf(w.files, 'q2')?.answer).toBe('tsv')
-  expect(await ui.find({ text: /> q1 / })).toBeDefined()
+  expect(await has(ui, /> q1 /)).toBe(true)
   // A digit answers the next one.
   await ui.press({ key: 'pick-2' })
   expect(stateOf(w.files, 'q1')?.answer).toBe('no')
@@ -287,7 +290,7 @@ test('the tree lines are buttons that open the card; Back returns to the tree; d
   const ui = await mount($)
   // Decisions get no tree rows; they fold into the one Inbox line.
   expect(await ui.find({ text: /d1 decision/ })).toBeUndefined()
-  expect(await ui.find({ text: /Inbox: 1 question for you \(1 blocking\), 2 decisions to keep or undo · i/ })).toBeDefined()
+  expect(await ui.find({ text: /📬 \? 1 question \(1 blocking\) · 2 decisions · i/ })).toBeDefined()
   await ui.press({ key: 'open-q1' })
   expect(await ui.find({ text: /q1 · csv-worker · / })).toBeDefined()
   expect(await ui.find({ text: /^question/ })).toBeDefined()
@@ -301,7 +304,7 @@ test('a tree with only decisions shows just the Inbox line, singular and plural'
   world(on)
   await fyi($, 'm1', [F(1)])
   const ui = await mount($)
-  expect(await ui.find({ text: /Inbox: 1 decision to keep or undo · i/ })).toBeDefined()
+  expect(await has(ui, /📬 1 decision · i/)).toBe(true)
   expect(await ui.find({ text: /question/ })).toBeUndefined()
   expect(await ui.find({ text: /d1 decision/ })).toBeUndefined()
   await ui.unmount()
@@ -413,25 +416,28 @@ test('a highlight answered meanwhile answers nothing: the highlight moves and th
 
 // What the pane draws, as lines of text: a column stacks its children, a row sets them side by side with its gap
 // (a child of several lines beside the next one), a border adds its two columns and rows.
-type El = string | { type?: string; props?: { flexDirection?: string; gap?: number; label?: string; borderStyle?: string; paddingX?: number }; children?: El[] } | null | undefined | false
+type El = string | { type?: string; props?: { flexDirection?: string; gap?: number; label?: string; borderStyle?: string; paddingX?: number; width?: number; wrap?: string }; children?: El[] } | null | undefined | false
 const plain = (e: El): string => (typeof e === 'string' ? e : e ? (e.children === undefined && e.props?.label !== undefined ? e.props.label : (e.children ?? []).map(plain).join('')) : '')
+const padCols = (l: string, w: number) => l + ' '.repeat(Math.max(0, w - cols(l)))
 const linesOf = (e: El): string[] => {
   if (typeof e === 'string') return [e]
   if (!e) return []
   const kids = (e.children ?? []).filter(Boolean)
-  if (e.type === 'Text') return plain(e).split('\n')
+  // A truncating Text is cut at the pane's 60 columns, as the terminal does.
+  if (e.type === 'Text') return plain(e).split('\n').map(l => (e.props?.wrap === 'truncate-end' && cols(l) > 60 ? [...l].slice(0, 59).join('') + '…' : l))
   // A Button with a plain string child carries it as its label.
   if (e.children === undefined && e.props?.label !== undefined) return [e.props.label]
   let lines: string[]
   if (e.props?.flexDirection === 'row') {
-    const cols = kids.map(linesOf).filter(c => c.length > 0)
-    const widths = cols.map(c => Math.max(...c.map(l => l.length)))
-    lines = Array.from({ length: Math.max(0, ...cols.map(c => c.length)) }, (_, i) => cols.map((c, k) => (c[i] ?? '').padEnd(widths[k]!)).join(' '.repeat(e.props!.gap ?? 0)).trimEnd())
+    const cols_ = kids.map(linesOf).filter(c => c.length > 0)
+    const widths = cols_.map(c => Math.max(...c.map(cols)))
+    lines = Array.from({ length: Math.max(0, ...cols_.map(c => c.length)) }, (_, i) => cols_.map((c, k) => padCols(c[i] ?? '', widths[k]!)).join(' '.repeat(e.props!.gap ?? 0)).trimEnd())
   } else lines = kids.flatMap(linesOf)
   if (e.props?.borderStyle === undefined) return lines
   const pad = ' '.repeat(e.props.paddingX ?? 0)
-  const w = Math.max(0, ...lines.map(l => l.length)) + 2 * pad.length
-  return [`╭${'─'.repeat(w)}╮`, ...lines.map(l => `│${pad}${l.padEnd(w - 2 * pad.length)}${pad}│`), `╰${'─'.repeat(w)}╯`]
+  // A set width is the whole box, border included: the box does not shrink to its content.
+  const w = Math.max(e.props.width === undefined ? 0 : e.props.width - 2, Math.max(0, ...lines.map(cols)) + 2 * pad.length)
+  return [`╭${'─'.repeat(w)}╮`, ...lines.map(l => `│${pad}${padCols(l, w - 2 * pad.length)}${pad}│`), `╰${'─'.repeat(w)}╯`]
 }
 
 // The 60-column inbox: three managers with decisions and a question, and five routine sizing calls.
@@ -460,7 +466,7 @@ async function cardsWorld($: Dollar, on: On) {
 const rendered = async (ui: Ui) => linesOf((await ui.drawn()) as El)
 const shape = (lines: string[], rows: number) => {
   expect(lines.length).toBeLessThanOrEqual(rows)
-  for (const l of lines) expect(l.length).toBeLessThanOrEqual(60)
+  for (const l of lines) expect(cols(l)).toBeLessThanOrEqual(60)
   expect(lines.some(l => /j next/.test(l) && /k prev/.test(l))).toBe(true)
   expect(lines.some(l => /y (keep|default)/.test(l) && /n undo/.test(l) && /i back/.test(l))).toBe(true)
 }
@@ -471,10 +477,17 @@ test('at 60 columns by 30 rows each owner is a card: a chevron, a round border, 
   await open(ui)
   const lines = await rendered(ui)
   shape(lines, 30)
+  // every open card is the pane's full width, the short one included
+  const tops = lines.filter(l => /▾ ╭/.test(l))
+  expect(tops).toHaveLength(3)
+  for (const l of tops) expect(cols(l)).toBe(60)
+  // a question row: the id, BLOCKING when it blocks, the text; no owner prefix
+  expect(lines.some(l => /ctx-init-tip: /.test(l) && /q1/.test(l))).toBe(false)
+  expect(lines.some(l => /^ +│ +> q1 Should the tip also show in the status line\? +│$/.test(l))).toBe(true)
   expect(lines.some(l => /▾ ╭/.test(l))).toBe(true)
   expect(lines.some(l => /│ ctx-init-tip · 2 decisions · asks +│/.test(l))).toBe(true)
-  expect(lines.some(l => /> q1 ctx-init-tip: Should/.test(l))).toBe(true)
-  expect(lines.some(l => /▾ ╭/.test(l) && /quiet-update-notice/.test(lines[lines.indexOf(l) + 1]!))).toBe(true)
+  expect(lines.some(l => /> q1 Should the tip/.test(l))).toBe(true)
+  expect(lines.some((l, i) => /▾ ╭/.test(l) && /quiet-update-notice/.test(lines[i + 1]!))).toBe(true)
   expect(lines.some(l => /^▸ routine · 5 \((manager-size, worker-size|worker-size, manager-size)\)$/.test(l))).toBe(true)
   expect(lines.some(l => /c collapse/.test(l))).toBe(true)
   // the card closes with c, then the highlight sits on its one line
@@ -526,5 +539,86 @@ test('with only a folded group the hot row shows its hint in the nav row; the ke
   expect(lines.length).toBeLessThanOrEqual(20)
   expect(lines.some(l => /j next/.test(l) && /y keeps all 3 · c expands/.test(l))).toBe(true)
   expect(lines.some(l => /y keep/.test(l) && /i back/.test(l))).toBe(true)
+  await ui.unmount()
+})
+
+// The tree's top lines at 60 columns, as drawn until the main card.
+const topOf = (lines: string[]) => lines.slice(0, lines.findIndex(l => /^╭/.test(l)))
+
+test('the tree\'s top lines carry icons, fit 60 columns counting emoji as 2, and the footer stays', async ($, on) => {
+  await cardsWorld($, on)
+  const ui = await mount($, 30, 60)
+  const lines = await rendered(ui)
+  const top = topOf(lines)
+  expect(top[0]).toMatch(/^👥 3 agents · 3 live/)
+  expect(top.some(l => /^📬 \? 1 question · 11 decisions · i$/.test(l))).toBe(true)
+  for (const l of lines) expect(cols(l)).toBeLessThanOrEqual(60)
+  expect(lines.some(l => /i inbox/.test(l))).toBe(true)
+  expect(cols('📬 ?')).toBe(4)
+  await ui.unmount()
+})
+
+test('the inbox icon is the open mailbox with something open and the empty one without', async ($, on) => {
+  world(on)
+  const ui = await mount($, 30, 60)
+  await ui.unmount()
+  await fyi($, 'm1', [F(1)])
+  const only = await mount($, 30, 60)
+  await open(only)
+  const lines = await rendered(only)
+  expect(lines[0]).toMatch(/^📬 Inbox 0 questions, 1 decision$/)
+  expect(lines[0]).not.toMatch(/\?/)
+  await only.unmount()
+})
+
+test('an empty inbox shows the empty mailbox and no question mark', async ($, on) => {
+  world(on)
+  await fyi($, 'm1', [F(1)])
+  await cmd($, 'ok')
+  const ui = await mount($, 30, 60)
+  await open(ui)
+  const lines = await rendered(ui)
+  expect(lines[0]).toMatch(/^📭 Inbox Nothing open\.$/)
+  await ui.unmount()
+})
+
+test('the question mark pulses from the clock: two phases differ, and a waiting question is the only reason for it', async ($, on) => {
+  expect(askBright(1_000_000)).toBe(true)
+  expect(askBright(1_001_000)).toBe(false)
+  // the same second is the same frame, so a redraw does not restart it
+  expect(askBright(1_000_000)).toBe(askBright(1_000_999))
+  const w = world(on)
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'w1' }))
+  await $.agent.spawn({ prompt: 'b', description: 'x', subagentType: 'flow:worker' } as never)
+  await ask($, 'm1', [SOFT])
+  await w.clock.settle()
+  const ui = await mount($, 30, 60)
+  const mark = async () => JSON.stringify(await ui.find({ text: /^\?$/ }))
+  const a = await mark()
+  expect(a).toContain('warning')
+  await w.clock.advance(1000)
+  await $.tool.call({ tool: 'mcp__flow__status' } as never)
+  const b = await mark()
+  expect(b).not.toEqual(a)
+  await w.clock.advance(1000)
+  await $.tool.call({ tool: 'mcp__flow__status' } as never)
+  expect(await mark()).toEqual(a)
+  await ui.unmount()
+})
+
+test('with no question waiting (decisions only) there is no question mark and the line does not change', async ($, on) => {
+  const w = world(on)
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'w1' }))
+  await $.agent.spawn({ prompt: 'b', description: 'x', subagentType: 'flow:worker' } as never)
+  await fyi($, 'm1', [F(1)])
+  await w.clock.settle()
+  const ui = await mount($, 30, 60)
+  expect(await ui.find({ text: /^\?$/ })).toBeUndefined()
+  const line = async () => (await rendered(ui)).filter(l => /decision/.test(l))
+  const a = await line()
+  await w.clock.advance(1000)
+  await $.tool.call({ tool: 'mcp__flow__status' } as never)
+  expect(a).toEqual(['📬 1 decision · i'])
+  expect(await line()).toEqual(a)
   await ui.unmount()
 })
