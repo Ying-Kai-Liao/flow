@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The README install command: `/plugin marketplace add Ying-Kai-Liao/flow`, then `/plugin install flow@flow`.
+### Fixed
+
+- A reviewer's message to a finished manager is refused as a `deny` (the "Not sent" text) instead of a string result, which the host rejected as "SendMessage output is not an object".
 
 ## [0.6.40] - 2026-10-12
 

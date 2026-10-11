@@ -1995,13 +1995,15 @@ export const register: Register = (on, options) => {
       if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) {
         let handled: string | undefined
         await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard(routeIoOf($), id, to, text) })
-        if (handled !== undefined) return { result: handled }
+        // A built-in tool's output must be an object; a string result is refused by the host as
+        // "SendMessage output is not an object". deny carries the same "Not sent" text to the reviewer.
+        if (handled !== undefined) return { deny: handled }
         if (to === 'main') {
           // Lines the guard already sent main need no second copy; anything new goes through.
           const lines = text.split('\n').map(normText).filter(l => l !== '')
           const sent = (await read($, forwarded)).lines[id] ?? []
           if (lines.length > 0 && lines.every(l => sent.includes(l) || (needLines(l).length > 0 && needLines(l).every(n => sent.includes(n))))) {
-            return { result: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
+            return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
           }
         }
       }
