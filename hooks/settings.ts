@@ -156,8 +156,13 @@ function checked(source: string, layer: Record<string, unknown>, warnings: strin
       out[k] = v
     } else if (!typeOk(kind, v)) {
       warnings.push(`${source}: "${k}" should be a ${kind === 'list' ? 'list of strings' : kind === 'objects' ? 'list of objects' : kind === 'globmap' ? 'object mapping a glob to a list of test strings' : kind}; ignored`)
+    } else if (k === 'decision_api' && v === '') {
+      // /config carries an unset string option as "": that is unset, not a bad value.
+      continue
     } else if (CHOICES[k] !== undefined && !CHOICES[k]!.includes(String(v))) {
       warnings.push(`${source}: "${k}" is ${JSON.stringify(v)}; use ${CHOICES[k]!.map(c => `"${c}"`).join(' or ')}; ignored`)
+      // A bad decision_api is still a set one: it means off, and must not fall back to size_model.
+      if (k === 'decision_api') out[k] = v
     } else if (MODEL_KEYS.includes(k) && isFable(v)) {
       warnings.push(`${source}: "${k}" is ${JSON.stringify(v)}; sub-agents don't run on Fable, using the default`)
     } else {
@@ -270,9 +275,9 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     workerModelSmall: model('worker_model_small', 'haiku'),
     workerModelNormal: model('worker_model_normal', 'sonnet'),
     exploreModel: model('explore_model', 'haiku'),
-    // size_model is the 0.6.35 name. It applies while decision_api is unset or still the plugin default "off",
-    // so a 0.6.35 config keeps working; decision_api jev or openai wins.
-    decisionApi: ((v: string) => v === 'jev' || v === 'openai' ? v : 'off' as const)(str('decision_api', 'off') === 'off' ? str('size_model', 'off') : str('decision_api', 'off')),
+    // size_model is the 0.6.35 name. It applies only while decision_api is unset, so a 0.6.35 config keeps working;
+    // an explicit decision_api (even "off", or an unknown value, which is off) always wins.
+    decisionApi: ((v: string) => v === 'jev' || v === 'openai' ? v : 'off' as const)(str('decision_api', str('size_model', 'off'))),
     jevModel: str('jev_model', 'jev-latest'),
     openaiModel: str('openai_model', 'gpt-4.1-mini'),
     conflictModel: model('conflict_model', 'opus'),
