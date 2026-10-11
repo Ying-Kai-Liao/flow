@@ -1939,7 +1939,7 @@ export const register: Register = (on, options) => {
     await $.tool.register(CHECK_TOOL)
     await $.tool.register(NOTE_TOOL)
     // 'queue' is the tool's old name: prompts of a reviewer started by an older version still call it.
-    for (const name of ['reviewer', 'queue']) await $.tool.register(reviewerTool(name))
+    for (const name of ['reviewer', 'queue']) await $.tool.register(reviewerTool(name, name === 'queue'))
     await $.tool.register(PUSH_TOOL)
     await $.tool.register(STATUS_TOOL)
 

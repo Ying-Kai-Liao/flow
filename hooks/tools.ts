@@ -6,21 +6,20 @@ import { seedIds } from './standing'
 
 export const HANDOVER_TOOL: ToolSpec = {
   name: 'handover',
-  description: 'Hand an approved PR to the flow reviewer (records it at its current head, starts a reviewer if none runs). Managers call this after reviewing a worker\'s PR; leave the branch alone afterwards. ' +
-    'Refused unless the PR description has a ## Verification section (Ran, Exercised, Not verified); the refusal shows the format.',
+  description: 'Hand an approved PR to the flow reviewer (managers, after reviewing a worker\'s PR; leave the branch alone afterwards). Refused unless the PR description has a ## Verification section (Ran, Exercised, Not verified); the refusal shows the format.',
   inputSchema: {
     type: 'object',
     properties: {
       pr: { type: 'number', description: 'The PR number' },
       verified: { type: 'string', description: 'Optional: one-line summary of your review' },
       pending: { type: 'string', description: '"none", or decisions the user still has to make' },
-      after_deploy: { type: 'string', description: '"none", or what to check after deploy (an agent checks what it can; the rest is reported as "needs a person")' },
-      verify_command: { type: 'string', description: 'Optional: shell command that verifies the change after deploy; for a check that needs a person, the reviewer runs it at merged main and closes the check (pass on exit 0)' },
+      after_deploy: { type: 'string', description: '"none", or what to check after deploy' },
+      verify_command: { type: 'string', description: 'Optional: shell command that verifies the change after deploy; the reviewer runs it at merged main to close a check that needs a person' },
       report_to: { type: 'string', description: 'Optional: your own agent name (default); an unknown name is refused' },
-      release: { type: 'string', enum: ['patch', 'minor', 'major'], description: 'Version bump at merge (release setting on only): omit for patch, "minor" for a user-visible feature, "major" only when the task asks. The batch gets the highest.' },
+      release: { type: 'string', enum: ['patch', 'minor', 'major'], description: 'Version bump at merge (release setting on only): omit for patch, "minor" for a user-visible feature, "major" only when the task asks' },
       env: {
         type: 'array',
-        description: 'Optional: env or secret changes the PR needs on a deploy target; each goes to the user\'s inbox and the target does not deploy until answered. Never put a secret value anywhere, in this field or in the PR text.',
+        description: 'Optional: env or secret changes the PR needs on a deploy target; each goes to the user\'s inbox and the target waits for the answer. Never put a secret value anywhere, in this field or in the PR text.',
         items: {
           type: 'object',
           properties: {
@@ -34,7 +33,7 @@ export const HANDOVER_TOOL: ToolSpec = {
           required: ['target', 'name', 'why'],
         },
       },
-      mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: waits for the user\'s /flow approve before merge. "auto": safe to merge directly; refused when merge_mode is confirm. Omit to use the setting.' },
+      mode: { type: 'string', enum: ['auto', 'confirm'], description: '"confirm" for a risky PR: waits for the user\'s /flow approve before merge. "auto": safe to merge directly; refused when merge_mode is confirm.' },
     },
     required: ['pr'],
   },
@@ -43,7 +42,7 @@ export const HANDOVER_TOOL: ToolSpec = {
 
 export const RELEASE_TOOL: ToolSpec = {
   name: 'release',
-  description: 'Release at merge (release setting on). The reviewer calls it once per batch, after the full check and before the push: moves the changelog\'s ## [Unreleased] lines into a new version section, bumps the version (patch, or the highest of the PRs\' handover release field and flow:minor / flow:major labels) and returns the commit command; it does not commit or push. A second call for the same PRs is refused. Action "publish" (release_github on, after the release commit is pushed) tags v<version>, pushes the tag and creates the GitHub Release; failures come back as a "Not published" line.',
+  description: 'Release at merge (release setting on); the reviewer calls it once per batch after the full check, before the push. "cut": moves the changelog\'s ## [Unreleased] lines into a new version section, bumps the version (patch, or the highest of the PRs\' release field and flow:minor / flow:major labels), returns the commit command; does not commit or push; a repeat for the same PRs is refused. "publish" (release_github on, after the release commit is pushed): tags v<version>, pushes the tag, creates the GitHub Release; failures come back as "Not published".',
   inputSchema: {
     type: 'object',
     properties: {
@@ -60,10 +59,7 @@ export const RELEASE_TOOL: ToolSpec = {
 
 export const ASK_TOOL: ToolSpec = {
   name: 'ask',
-  description: 'Ask structured questions (a batch) instead of asking in prose. A worker\'s go to its manager, a manager\'s to main; main cannot ask. ' +
-    'Give options and your recommended default. Non-blocking: go ahead on the default and say in your report that you assumed it; you get a message if the answer differs. ' +
-    'Blocking: end your turn and wait; you are woken with the answer. A manager escalating a worker\'s open question sets `for` to its id, and main\'s answer reaches both. ' +
-    'Give a recurring kind of question a stable kebab-case topic: the user can answer a topic once as a standing answer.',
+  description: 'Ask structured questions (a batch) instead of prose. A worker\'s go to its manager, a manager\'s to main; main cannot ask. Give options and a recommended default. Non-blocking: go on with the default and say so in your report; you get a message if the answer differs. Blocking: end your turn and wait; you are woken with the answer. A recurring kind of question gets a stable kebab-case topic.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -78,7 +74,7 @@ export const ASK_TOOL: ToolSpec = {
             default: { type: 'string', description: 'Your recommended option (text or 1-based number)' },
             blocking: { type: 'boolean', description: 'true if you cannot go on without the answer' },
             context: { type: 'string', description: 'What the answerer needs to know' },
-            topic: { type: 'string', description: 'Short stable kebab-case label for a recurring kind (e.g. version-bump, test-approach), the same every time' },
+            topic: { type: 'string', description: 'Short stable kebab-case label for a recurring kind (e.g. version-bump), the same every time' },
             for: { type: 'string', description: 'Managers only: id of a worker\'s open question (e.g. q12) this escalates to main' },
           },
           required: ['question', 'options', 'default', 'blocking'],
@@ -92,9 +88,7 @@ export const ASK_TOOL: ToolSpec = {
 
 export const FYI_TOOL: ToolSpec = {
   name: 'fyi',
-  description: 'Record a reversible choice you took yourself (a threshold, wording, a name, a default, styling within the existing design) as a non-blocking decision (ids d1, d2, ...) the user can keep or undo. ' +
-    'A worker\'s go to its manager, a manager\'s to main. Never stop for it; you get a message only if it is undone, then change your work. ' +
-    'Irreversible or product-defining choices (what customers pay for, who receives data, deleting data) are asks. Main cannot call it.',
+  description: 'Record a reversible choice you took yourself (a threshold, wording, a name, a default, styling) as a non-blocking decision (ids d1, d2, ...) the user can keep or undo. A worker\'s go to its manager, a manager\'s to main. Never stop for it; you get a message only if it is undone. Irreversible or product-defining choices (what customers pay for, who receives data, deleting data) are asks. Main cannot call it.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -120,8 +114,7 @@ export const FYI_TOOL: ToolSpec = {
 
 export const PREFLIGHT_TOOL: ToolSpec = {
   name: 'preflight',
-  description: 'Managers only. File your pre-flight after looking over your task (code, history, open PRs; no workers yet). Worker starts are refused until you have, and, with blocking questions, until they are answered. ' +
-    'Questions go to main\'s decision inbox like mcp__flow__ask. Filing again replaces the earlier filing.',
+  description: 'Managers only. File your pre-flight after looking over your task (no workers yet). Worker starts are refused until you have, and until blocking questions are answered.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -160,9 +153,7 @@ export const PREFLIGHT_TOOL: ToolSpec = {
 
 export const ANSWER_TOOL: ToolSpec = {
   name: 'answer',
-  description: 'Answer questions addressed to you in the decision inbox: a manager answers its workers\', main the managers\'. ' +
-    'Decisions (mcp__flow__fyi, ids d1, ...) work the same way: choice Keep, or defaults: true, keeps them; any other choice or free text undoes the decision and messages the owner. Main may answer any decision. ' +
-    'answers: [{id, choice}] (an option\'s letter, number or text, or free text). defaults: true takes every default of your open questions, or only those in ids.',
+  description: 'Answer questions addressed to you in the decision inbox. Decisions (mcp__flow__fyi) work the same way: choice Keep, or defaults: true, keeps them; any other choice or free text undoes the decision and messages the owner. Main may answer any decision. choice: an option\'s letter, number or text, or free text. defaults: true takes every default of your open questions, or only those in ids.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -186,9 +177,7 @@ export const ANSWER_TOOL: ToolSpec = {
 
 export const STANDING_TOOL: ToolSpec = {
   name: 'standing',
-  description: 'Main only. Standing answers: rules that answer a recurring decision-inbox question at once. "list": the rules (id, file, match, answer, use count) and suggestions (questions you answered the same way 3+ times); with no rules it also offers starting rules, accepted with "add" and seed/seeds. ' +
-    '"add": topic or match (case-insensitive regex on the question text), answer, optional blocking (default false: blocking questions are left to you) and from (asker name). "remove": id (rules without an id are named by file and position: personal:1, repo:2). ' +
-    'Instead of an answer, escalate: true makes matching questions blocking and yours alone; answer "default" takes the question\'s own default (non-blocking only).',
+  description: 'Main only. Standing answers: rules that answer a recurring decision-inbox question at once. "list": rules and suggestions (questions answered the same way 3+ times); with no rules it offers starting rules, accepted with "add" and seed/seeds. "add": topic or match (case-insensitive regex on the question), answer, optional blocking (default false: blocking questions are left to you) and from. "remove": id (rules without one: file and position, e.g. personal:1). escalate: true makes matching questions blocking and yours alone; answer "default" takes the question\'s own default (non-blocking only).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -210,9 +199,7 @@ export const STANDING_TOOL: ToolSpec = {
 
 export const CHECK_TOOL: ToolSpec = {
   name: 'check',
-  description: 'Main only (the reviewer may close checks that carry a verify command). After-deploy checks that need a person, kept across restarts. ' +
-    '"list": open checks grouped by plugin version, and open follow-ups. "pass": id or ids. "fail": id and note (required); creates a follow-up for you to start a manager on. ' +
-    '"skip": id or ids and note (required) when the check no longer applies; no follow-up. "started": id of a failed check and manager.',
+  description: 'Main only (the reviewer may close checks that carry a verify command). After-deploy checks that need a person. "list": open checks and follow-ups. "pass": id or ids. "fail": id and note; creates a follow-up. "skip": id or ids and note (check no longer applies). "started": id of a failed check and manager.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -245,10 +232,9 @@ export const NOTE_TOOL: ToolSpec = {
 // 'queue' is the tool's old name: prompts of a reviewer started by an older version still call it.
 export const reviewerTool = (name: string, isDeferred = false): ToolSpec => ({
   name,
-  description: (name === 'queue' ? '(Old name of reviewer; use reviewer.) ' : '') + 'The reviewer\'s worklist; only the reviewer calls it. "list": pending and taken handovers in arrival order. ' +
-    '"take" (pr), "done" (pr, sha, report) or "back" (pr, reason) record what the reviewer did. ' +
-    '"done" also deletes the merged PR branch on the remote (after confirming the merge is in origin/<base>) and appends "| flaky: <test>" for tests that failed then passed under test_slot. ' +
-    'With push_mode confirm, "ready" (prs, sha, base_sha, check, version?) saves the checked batch under refs/flow/push/<id> for the user\'s /flow push instead of pushing.',
+  description: (name === 'queue' ? '(Old name of reviewer; use reviewer.) ' : '') + 'The reviewer\'s worklist; only the reviewer calls it. "list": pending and taken handovers. "take" (pr), "done" (pr, sha, report) or "back" (pr, reason). ' +
+    '"done" also deletes the merged PR branch on the remote and appends "| flaky: <test>" for tests that failed then passed under test_slot. ' +
+    'With push_mode confirm, "ready" (prs, sha, base_sha, check, version?) saves the checked batch for the user\'s /flow push instead of pushing.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -261,7 +247,7 @@ export const reviewerTool = (name: string, isDeferred = false): ToolSpec => ({
       sha: { type: 'string' },
       report: { type: 'string' },
       reason: { type: 'string' },
-      failed_tests: { type: 'array', items: { type: 'string' }, description: 'back: exact names of the failing tests (and their files or commands); logged as "| failed: …" and main is asked whether workers should run them (guard_tests)' },
+      failed_tests: { type: 'array', items: { type: 'string' }, description: 'back: exact names of the failing tests' },
     },
     required: ['action'],
   },
@@ -270,8 +256,7 @@ export const reviewerTool = (name: string, isDeferred = false): ToolSpec => ({
 
 export const PUSH_TOOL: ToolSpec = {
   name: 'push',
-  description: 'Main only, on the user\'s word: release the batch the reviewer saved because push_mode is confirm. Managers, workers and the reviewer are refused. ' +
-    '"list": the ready batch. "push": release it (a reviewer pushes, deploys and marks the PRs done). "send-back" (pr): return one PR; the rest is rebuilt, re-checked and asked again. "drop": discard the batch and return every PR.',
+  description: 'Main only, on the user\'s word: release the batch the reviewer saved because push_mode is confirm; others are refused. "list": the ready batch. "push": release it. "send-back" (pr): return one PR; the rest is rebuilt and re-checked. "drop": discard the batch and return every PR.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -285,19 +270,15 @@ export const PUSH_TOOL: ToolSpec = {
 
 export const STATUS_TOOL: ToolSpec = {
   name: 'status',
-  description: 'The flow at a glance: managers, workers and reviewer with status and last report, and handed-over PRs. ' +
-    'Scoped by caller: a manager sees its own subtree and PRs, a worker itself and its manager, main and the reviewer everything. ' +
-    'Lists only the newest 5 finished PRs; with pr, that PR in full (handover line, owner, log).',
+  description: 'The flow at a glance: managers, workers and reviewer with status and last report, and handed-over PRs, scoped to your own subtree (main and the reviewer see everything). Newest 5 finished PRs only; with pr, that PR in full.',
   inputSchema: { type: 'object', properties: { pr: { type: 'number', description: 'A PR number, to see who owns it' } } },
   isDeferred: false,
 }
 
 export const DEPLOY_TOOL: ToolSpec = {
   name: 'deploy',
-  description: 'Per-target deploy gates. The reviewer calls "gate" (target, sha) before each deploy target and gets exactly one of "Go", "Held: <why>" or "Awaits approval: <qid>"; on the last two it skips that target for this batch. ' +
-    'A confirm target opens one inbox item; only the user\'s "deploy" answer lets that sha through. The reviewer calls "deployed" (target, sha, ok) after each target. ' +
-    'Main only, on the user\'s word: "hold" (target, until "batch" or "released", reason?) and "release" (target; also drops env changes the user declined). "list": every target with mode, hold, last deployed sha, how far behind, approval and pending env changes. ' +
-    'Env changes declared by a handed-over PR come first in the gate: "Awaits env: <qids>" (skip the target), "Held: env change NAME declined" (skip until main releases it), or "Go, first apply env:" with one exact command per change: run each (non-zero exit fails the target), call "env-applied" (target, names), then deploy.',
+  description: 'Per-target deploy gates. The reviewer calls "gate" (target, sha) before each target and gets exactly one of "Go", "Held: <why>" or "Awaits approval: <qid>"; on the last two skip that target for this batch. Only the user\'s "deploy" answer lets a confirm target through. Call "deployed" (target, sha, ok) after each target. Main only, on the user\'s word: "hold" (target, until, reason?) and "release" (target). "list": every target with mode, hold, last deployed sha, approval and pending env changes. ' +
+    'Env changes of a handed-over PR come first in the gate: "Awaits env: <qids>" (skip the target), "Held: env change NAME declined" (skip until main releases it), or "Go, first apply env:" with one exact command per change: run each (non-zero exit fails the target), call "env-applied" (target, names), then deploy.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -316,16 +297,14 @@ export const DEPLOY_TOOL: ToolSpec = {
 
 export const CLEAN_TOOL: ToolSpec = {
   name: 'clean',
-  description: 'Leftover worktrees under .claude/worktrees/ and local branches of finished work. Without apply: a dry run listing what would be removed and what is kept and why. ' +
-    'With apply true: removes only clean work that is on the base or in a merged PR (or pushed with its PR closed); uncommitted, unpushed, locked and live work is never touched.',
+  description: 'Leftover worktrees under .claude/worktrees/ and local branches of finished work. Dry run unless apply is true; apply removes only clean work that is on the base or in a merged PR (or pushed with its PR closed); uncommitted, unpushed, locked and live work is never touched.',
   inputSchema: { type: 'object', properties: { apply: { type: 'boolean', description: 'Remove the safe candidates (default false: dry run)' } } },
   isDeferred: false,
 }
 
 export const MIGRATIONS_TOOL: ToolSpec = {
   name: 'migrations',
-  description: 'Read-only (fetches only). Reports migration-number clashes and the next free number, for the migrations_dir setting: the highest number on the base and at ref, and per PR each migration it adds as ok, clash (same number as one on the base, at ref or in an earlier PR of the list) or at-or-below (not above the base\'s highest). ' +
-    'For each non-ok one: the next free number (highest + 1, no gap filling), the git mv to run, and where the PR\'s own files mention the old number.',
+  description: 'Read-only. Reports migration-number clashes and the next free number for the migrations_dir setting: per PR each added migration as ok, clash or at-or-below (not above the base\'s highest). For each non-ok one: the next free number, the git mv to run, and where the PR\'s files mention the old number.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -338,9 +317,7 @@ export const MIGRATIONS_TOOL: ToolSpec = {
 
 export const PLAN_TOOL: ToolSpec = {
   name: 'plan',
-  description: 'Declare which packages (for main, tasks) wait for others; the plugin refuses early starts and tells you when they are ready. ' +
-    '"add": nodes [{id, title, after?, until?}]: id is the agent name you will start (or its prefix before -N), after lists node ids, until is "merged" (default) or "reported" (agent reported back). ' +
-    '"list": your graph (main may pass owner). "done" (id, note?) / "block" (id, reason): set a node by hand. "remove" (id): drop a waiting or ready node nothing depends on.',
+  description: 'Declare which packages (for main, tasks) wait for others; the plugin refuses early starts and tells you when they are ready. "add": nodes [{id, title, after?, until?}]: id is the agent name you will start (or its prefix before -N), after lists node ids, until is "merged" (default) or "reported". "list" (main may pass owner), "done" (id, note?), "block" (id, reason), "remove" (id; only a waiting or ready node nothing depends on).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -370,9 +347,7 @@ export const PLAN_TOOL: ToolSpec = {
 
 export const TEST_SLOT_TOOL: ToolSpec = {
   name: 'test_slot',
-  description: 'A lock on heavy test runs: only test_slots of them run at once across all worktrees. ' +
-    '"acquire" before a whole suite or any run over about a minute (waits a few seconds; if it says queued, wait as the answer tells you (grant file or message), then call acquire once to confirm). ' +
-    '"release" when the run ends or fails, with result "pass" or "fail" and on fail failed_tests (exact names from the output; a pass after a fail with the same label is reported as flaky). "status": holders and waiters.',
+  description: 'A lock on heavy test runs: only test_slots of them run at once across all worktrees. "acquire" before a whole suite or any run over about a minute; if it says queued, wait as the answer tells you (grant file or message), then call acquire once to confirm. "release" when the run ends or fails, with result "pass"/"fail" and on fail failed_tests (exact names; a pass after a fail with the same label is reported as flaky). "status": holders and waiters.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -389,8 +364,7 @@ export const TEST_SLOT_TOOL: ToolSpec = {
 
 export const GUARD_TESTS_TOOL: ToolSpec = {
   name: 'guard_tests',
-  description: 'The repo-wide tests the guard_tests setting requires for your diff. Call it before gh pr create, normally with no arguments (it finds your changed files: origin/<base>...HEAD plus uncommitted and untracked). ' +
-    'Run each listed test under mcp__flow__test_slot and list each under `Ran:` in the PR\'s ## Verification section; handover refuses otherwise.',
+  description: 'The repo-wide tests the guard_tests setting requires for your diff. Call it before gh pr create, normally with no arguments. Run each listed test under mcp__flow__test_slot and list each under `Ran:` in the PR\'s ## Verification section; handover refuses otherwise.',
   inputSchema: {
     type: 'object',
     properties: { files: { type: 'array', items: { type: 'string' }, description: 'Optional: use these repo-relative paths instead of your diff' } },
@@ -400,10 +374,7 @@ export const GUARD_TESTS_TOOL: ToolSpec = {
 
 export const SESSION_TOOL: ToolSpec = {
   name: 'session',
-  description: 'Workers outside this session: another harness (codex, gemini, opencode, claude, or your own command line) in an Orca terminal or tmux session the user can watch. ' +
-    '"start" (name, brief, harness, host?, command?) makes a worktree on flow/<name> from the base and starts the harness with the worker rules and the brief; its report comes back as a "flow session:" message, and a quiet harness is reported as idle. ' +
-    'Same controls for every harness: "send" (name, text) types and submits, "keys" (name, keys) presses keys ("1", "y enter", "escape", "interrupt", "down enter"), ' +
-    '"read" (name, lines?) shows the end of its terminal, "restart" (name) resumes it in its worktree where the harness can, "list", "stop" (name, remove_worktree?).',
+  description: 'Workers outside this session: another harness (codex, gemini, opencode, claude, or your own command line) in an Orca terminal or tmux session the user can watch. "start" (name, brief, harness, host?, command?) makes a worktree on flow/<name> and starts the harness with the worker rules and the brief; its report comes back as a "flow session:" message. "send" (name, text), "keys" (name, keys), "read" (name, lines?), "restart" (name), "list", "stop" (name, remove_worktree?).',
   inputSchema: {
     type: 'object',
     properties: {
