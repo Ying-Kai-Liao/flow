@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `decide_eval` feature `route`: measures whether Jev can tell `direct` (one worker would do), `manager+1` and `manager+n` for a manager's task text, labelled from what each manager family did, scored against main's choice (lite = direct), a Size/docs rule and the always-baselines with under-/over-shaped rates and a cost column; risky tasks (migrations, auth, secrets, deploy/CI/infra, data rewrites) are excluded. Measurement only, no routing behaviour. `scripts/decide-eval.mjs` prints the key-free baselines
+
 ## [0.6.59] - 2026-10-12
 
 ### Added

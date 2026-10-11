@@ -2,7 +2,7 @@
 // the session's own settings (so the key stays in /config and never reaches an agent), writes the results next to the state.
 import { decide } from './decide'
 import type { DecideIo, DecideSettings, Question } from './decide'
-import { EXPORT_FILE, FEATURES, formatSize, loadDatasets, parseExport, reportJson, reportText, runEval, sizeBaselines } from './decide-eval'
+import { EXPORT_FILE, FEATURES, formatRoute, formatSize, loadDatasets, parseExport, reportJson, reportText, routeBaselines, runEval, sizeBaselines } from './decide-eval'
 import type { FeatureKey } from './decide-eval'
 
 export const DECIDE_EVAL_FILE = 'decide-eval.json'
@@ -32,8 +32,8 @@ export async function decideEvalTool(io: DecideEvalIo, settings: DecideSettings 
     ? `Source: ${EXPORT_FILE} (export from ${exported.at}, ${ageMin} min old; rerun scripts/decide-eval.mjs --export to refresh).`
     : `Source: the flow state dir only (no ${EXPORT_FILE}; run scripts/decide-eval.mjs --export to add transcript-derived test failures and conflicts, otherwise those come from log.jsonl alone).`
   if (dry) {
-    // Size also says how many spawns were labelable of how many, and what the key-free sizers score.
-    const lines = datasets.filter(d => features.includes(d.key)).map(d => `${d.key}: ${d.records.length} records${d.guard ? ` (+${d.guard.length} must-not-auto-answer)` : ''}. Sample: ${(d.records[0]?.text ?? 'none').slice(0, 300).replace(/\n/g, ' / ')}${d.key === 'size' ? `\n  ${d.notes.join('\n  ')}\n${formatSize(sizeBaselines(d.records))}` : ''}`)
+    // Size and route also say how many spawns were labelable of how many, and what the key-free sizers score.
+    const lines = datasets.filter(d => features.includes(d.key)).map(d => `${d.key}: ${d.records.length} records${d.guard ? ` (+${d.guard.length} must-not-auto-answer)` : ''}. Sample: ${(d.records[0]?.text ?? 'none').slice(0, 300).replace(/\n/g, ' / ')}${d.key === 'size' ? `\n  ${d.notes.join('\n  ')}\n${formatSize(sizeBaselines(d.records))}` : d.key === 'route' ? `\n  ${d.notes.join('\n  ')}\n${formatRoute(routeBaselines(d.records))}` : ''}`)
     return ['Dry run, no network.', ...lines, sources].join('\n')
   }
   const s: DecideSettings = { ...settings, decisionApi: provider as 'jev' | 'openai' }

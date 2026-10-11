@@ -9,15 +9,17 @@ import type { Decision, Question } from './decide'
 import { generation, isSize, parseSize } from './routing'
 import type { Size } from './routing'
 import { SIZE_QUESTION } from './spawn'
-import { HANDOFF_QUESTION, INBOX_ROUTINE_QUESTION, MERGE_CONFLICT_QUESTION, TEST_FAILURE_QUESTION, textOfConflict, textOfHandoff, textOfInbox, textOfTestFailure } from './decide-questions'
+import { isLite } from './preflight'
+import { noteKey } from './state'
+import { HANDOFF_QUESTION, INBOX_ROUTINE_QUESTION, MERGE_CONFLICT_QUESTION, ROUTE_QUESTION, TEST_FAILURE_QUESTION, textOfConflict, textOfHandoff, textOfInbox, textOfTestFailure } from './decide-questions'
 
-export type FeatureKey = 'inbox' | 'test' | 'conflict' | 'handoff' | 'size'
-export const FEATURES: FeatureKey[] = ['inbox', 'test', 'conflict', 'handoff', 'size']
+export type FeatureKey = 'inbox' | 'test' | 'conflict' | 'handoff' | 'size' | 'route'
+export const FEATURES: FeatureKey[] = ['inbox', 'test', 'conflict', 'handoff', 'size', 'route']
 export const THRESHOLDS = [0.5, 0.7, 0.8, 0.9]
-export const QUESTIONS: Record<FeatureKey, Question> = { inbox: INBOX_ROUTINE_QUESTION, test: TEST_FAILURE_QUESTION, conflict: MERGE_CONFLICT_QUESTION, handoff: HANDOFF_QUESTION, size: SIZE_QUESTION }
+export const QUESTIONS: Record<FeatureKey, Question> = { inbox: INBOX_ROUTINE_QUESTION, test: TEST_FAILURE_QUESTION, conflict: MERGE_CONFLICT_QUESTION, handoff: HANDOFF_QUESTION, size: SIZE_QUESTION, route: ROUTE_QUESTION }
 
 export type LogLine = { ts?: string; event: string; owner?: string; agent?: string; branch?: string; pr?: number; text?: string }
-export type EvalRecord = { id: string; text: string; label: string; baseline?: string; agent?: boolean; size?: SizeMeta }
+export type EvalRecord = { id: string; text: string; label: string; baseline?: string; agent?: boolean; size?: SizeMeta; route?: RouteMeta }
 export type Dataset = { key: FeatureKey; records: EvalRecord[]; guard?: EvalRecord[]; notes: string[] }
 
 // Light events of one transcript, in order (scripts/decide-eval.mjs extracts them; the tool has none).
@@ -25,6 +27,10 @@ export type TranscriptEvent =
   | { t: 'agent'; model: string; type: string; prompt: string; name?: string }
   | { t: 'edit' }
   | { t: 'result'; id: string; text: string }
+  // The agent a transcript file belongs to (first event of a sub-agent file), and its flow tool calls that route needs:
+  // plan nodes added (ids), a question asked or filed (blocking), by `owner` (the call's `from`, else the file's agent).
+  | { t: 'owner'; name: string }
+  | { t: 'flow'; tool: 'plan' | 'ask'; owner?: string; ids?: string[]; blocking?: boolean }
 
 type InboxItem = { id: string; owner?: string; question?: string; context?: string; options?: string[]; default?: string; blocking?: boolean; kind?: string; topic?: string; state?: string; answer?: string }
 const recOf = (i: InboxItem) => ({ question: i.question ?? '', ...(i.context !== undefined ? { context: i.context } : {}), options: i.options ?? [], ...(i.default !== undefined ? { default: i.default } : {}), ...(i.owner !== undefined ? { owner: i.owner } : {}), ...(i.topic !== undefined ? { topic: i.topic } : {}), ...(i.blocking !== undefined ? { blocking: i.blocking } : {}), ...(i.kind !== undefined ? { kind: i.kind } : {}) })
@@ -196,7 +202,7 @@ export function unitCosts(ledger: Record<string, LedgerRow>): Record<FeatureKey,
   // A conflict sub-agent is a whole agent run, not one turn: priced as the average "other" agent (sub-agents).
   const o = acc.other
   const sub: Unit = o ? { usd: o.usd / o.entries, tokens: o.tokens / o.entries, basis: `other: average of ${o.entries} sub-agent runs` } : { usd: 0, tokens: 0, basis: 'other: no data' }
-  return { inbox: per('main'), test: per('reviewer'), conflict: sub, handoff: per('manager'), size: { usd: 0, tokens: 0, basis: 'size: priced per spawn from its own tokens (see the size notes)' } }
+  return { inbox: per('main'), test: per('reviewer'), conflict: sub, handoff: per('manager'), size: { usd: 0, tokens: 0, basis: 'size: priced per spawn from its own tokens (see the size notes)' }, route: { usd: 0, tokens: 0, basis: 'route: priced per task from its own family (see the route notes)' } }
 }
 
 
@@ -419,6 +425,203 @@ export function formatSize(r: SizeReport): string {
   return lines.join('\n')
 }
 
+// ---- route: is a manager needed, or would a direct worker do? (measure only; nothing at runtime asks ROUTE_QUESTION) ----
+// One record per task = per manager family (a manager and its `-N` successors, grouped by noteKey like lite.ts). The text is
+// the manager's spawn prompt (the task text main gave it). Label rule:
+//   direct    = the family started exactly one worker (a `-N` worker successor makes two), produced exactly one merged PR,
+//               filed no blocking question (mcp__flow__ask or pre-flight, blocking true), the reviewer sent nothing back
+//               (no `back` event for it), it declared no plan DAG nodes, and it had no successor manager.
+//   manager+1 = exactly one worker (no -N worker successor) but another direct condition failed.
+//   manager+n = two or more distinct workers across the manager and its -N successors.
+//   unlabelable = no recoverable prompt, no worker at all (shipped already, or died before starting one), or no merged PR
+//             (still running, aborted, open PR). Skipped; counted in notes.
+// Hard rule (before scoring, for every router): a task touching migrations, auth or permissions, secrets, deploy/CI/infra
+// config, or data rewrites or deletions is never `direct`; it is removed from scoring. Signals: the prompt text (HARD_PROMPT),
+// the merged PRs' files (HARD_FILE), a handover with mode "confirm" or an `approve` event for its branch.
+export const HARD_PROMPT = /\bmigrations?\b|\bauth(?:entication|orization|orisation)?\b|\bpermissions?\b|\bsecrets?\b|\bcredentials?\b|\bapi[_ -]?keys?\b|\bCI\b|\.github\/workflows|\binfra(?:structure)?\b|\bterraform\b|\bdeploy(?:ment)? (?:config|target|pipeline|script|workflow)s?\b|\bdrop (?:table|column)\b|\b(?:rewrite|delete|wipe|purge|backfill)\b[^.\n]{0,30}\b(?:data|records|rows|database|db)\b|\bdestructive\b/i
+export const HARD_FILE = /(?:^|\/)(?:db\/)?migrations?\/|(?:^|\/)\.github\/workflows\/|(?:^|\/)(?:Dockerfile|docker-compose[^/]*|\.env[^/]*|\.gitlab-ci\.yml|Jenkinsfile|fly\.toml|vercel\.json|netlify\.toml|serverless\.ya?ml)$|\.tf$|(?:^|\/)(?:terraform|infra|k8s|helm)\/|(?:^|\/)deploy[^/]*\.(?:ya?ml|json|toml)$/i
+// Two or more listed packages: lines like "Package 2", "Part B", "WP3".
+const MULTI_PACKAGE = /^\s*(?:#{1,4}\s*)?(?:package|part|wp)\s*[\dA-Z]\b/gim
+const DOC_FILE = /\.mdx?$/i
+const DOCS_PROMPT = /\bdocs?[- ]only\b|\breadme\b|\bchangelog\b|\bdocumentation\b/i
+const CODE_PROMPT = /\.(?:tsx?|mjs|js|json)\b|\bhooks?\/|\bsrc\/|\btests?\b|\bfunction\b|\brefactor/i
+// A main PR review, in turns of main: the ledger has no per-PR split, so a fixed count at main's average turn cost.
+export const REVIEW_TURNS = 4
+
+export type RouteLabel = 'direct' | 'manager+1' | 'manager+n'
+export const ROUTE_LABELS: RouteLabel[] = ['direct', 'manager+1', 'manager+n']
+const shape = (l: RouteLabel): number => ROUTE_LABELS.indexOf(l)
+export type RouteMeta = {
+  label: RouteLabel
+  // Main's actual choice: a lite manager (prompt line or lite state) = direct, else manager+1 (the record cannot tell +1 from +n).
+  main: RouteLabel
+  sizeSmall: boolean
+  sizeLarge: boolean
+  multiPackage: boolean
+  docsOnlyPr: boolean
+  docsOnlyPrompt: boolean
+  managerUsd: number
+  workerUsd: number
+  reviewUsd: number
+}
+export type RouteSource = SizeSource & {
+  // lite.json (noteKey -> record), preflight.json entries by name, and the handover files; undefined when the file is absent.
+  lite?: Record<string, unknown>
+  preflight?: Record<string, { asked?: string[]; blocking?: string[] }>
+  handovers?: { branch?: string; mode?: string }[]
+}
+
+export function routeData(src: RouteSource): Dataset {
+  const rows = Object.values(src.ledger).filter(r => r.name !== undefined)
+  const prompts = new Map<string, string>()
+  for (const evs of src.transcripts ?? []) {
+    for (const e of evs) {
+      if (e.t !== 'agent' || e.type !== 'flow:manager') continue
+      const name = /^\s*Your name:\s*(\S+)/m.exec(e.prompt)?.[1] ?? e.name
+      if (name !== undefined && !prompts.has(name)) prompts.set(name, e.prompt)
+    }
+  }
+  const families = [...new Set(rows.filter(r => r.role === 'manager').map(r => noteKey(r.name!)))]
+  let prefixOwned = 0
+  // A worker belongs to the family of its ledger `manager` field; without one, to the longest family its name is prefixed by.
+  const familyOf = (r: LedgerRow): string | undefined => {
+    if (r.manager !== undefined) return noteKey(r.manager)
+    const f = families.filter(x => r.name!.startsWith(`${x}-`)).sort((a, b) => b.length - a.length)[0]
+    if (f !== undefined) prefixOwned++
+    return f
+  }
+  const workerRows = rows.filter(r => r.role === 'worker')
+  const reviewUsd = unitCosts(src.ledger).inbox.usd * REVIEW_TURNS
+  const flowEvs = (src.transcripts ?? []).flat().filter((e): e is Extract<TranscriptEvent, { t: 'flow' }> => e.t === 'flow')
+  const planOwners = new Set(flowEvs.filter(e => e.tool === 'plan' && e.owner !== undefined).map(e => noteKey(e.owner!)))
+  const planIds = flowEvs.flatMap(e => (e.tool === 'plan' ? e.ids ?? [] : []))
+  const askOwners = new Set(flowEvs.filter(e => e.tool === 'ask' && e.blocking === true && e.owner !== undefined).map(e => noteKey(e.owner!)))
+  const planKnown = (src.transcripts ?? []).length > 0
+  const records: EvalRecord[] = []
+  const skip: Record<string, number> = { 'no prompt': 0, 'no worker': 0, 'no merged PR': 0 }
+  const hard: Record<string, number> = { prompt: 0, files: 0, confirm: 0 }
+  const disq: Record<string, number> = { 'workers != 1': 0, 'merged PRs != 1': 0, 'blocking question': 0, 'reviewer back': 0, 'plan nodes': 0, 'successor manager': 0 }
+  let liteUnknown = 0
+  for (const family of families) {
+    const managers = rows.filter(r => r.role === 'manager' && noteKey(r.name!) === family)
+    const text = prompts.get(family) ?? [...prompts].find(([n]) => noteKey(n) === family)?.[1]
+    if (text === undefined) { skip['no prompt']!++; continue }
+    const workers = workerRows.filter(r => familyOf(r) === family)
+    const names = new Set(workers.map(r => r.name!))
+    if (names.size === 0) { skip['no worker']!++; continue }
+    const branches = [...new Set(workers.map(r => r.branch).filter((b): b is string => b !== undefined))]
+    const merged = branches.map(b => src.prs?.[b]).filter((p): p is PrStat => p !== undefined && p.state === 'MERGED')
+    if (merged.length === 0) { skip['no merged PR']!++; continue }
+    const mine = (x: LogLine): boolean => (x.owner !== undefined && noteKey(x.owner) === family) || (x.branch !== undefined && branches.includes(x.branch))
+    const pre = Object.entries(src.preflight ?? {}).filter(([n]) => noteKey(n) === family).map(([, e]) => e)
+    const asked = new Set(pre.flatMap(e => e.asked ?? []))
+    const blocking = src.inbox.some(i => i.blocking === true && ((i.owner !== undefined && noteKey(i.owner) === family) || asked.has(i.id))) || pre.some(e => (e.blocking ?? []).length > 0) || askOwners.has(family)
+    const back = src.log.some(l => l.event === 'back' && mine(l))
+    const plan = planOwners.has(family) || planIds.some(id => id.startsWith(`${family}-`) || noteKey(id) === family)
+    const successors = new Set(managers.map(m => m.name!)).size > 1
+    const dq: string[] = []
+    if (names.size !== 1) dq.push('workers != 1')
+    if (merged.length !== 1) dq.push('merged PRs != 1')
+    if (blocking) dq.push('blocking question')
+    if (back) dq.push('reviewer back')
+    if (plan) dq.push('plan nodes')
+    if (successors) dq.push('successor manager')
+    for (const d of dq) disq[d]!++
+    const label: RouteLabel = names.size >= 2 ? 'manager+n' : dq.length === 0 ? 'direct' : 'manager+1'
+    const files = merged.flatMap(p => p.files.map(f => f.path))
+    const confirm = (src.handovers ?? []).some(h => h.mode === 'confirm' && h.branch !== undefined && branches.includes(h.branch)) || src.log.some(l => l.event === 'approve' && mine(l))
+    const signal = HARD_PROMPT.test(text) ? 'prompt' : files.some(f => HARD_FILE.test(f)) ? 'files' : confirm ? 'confirm' : undefined
+    if (signal !== undefined) { hard[signal]!++; continue }
+    const litePrompt = isLite(text)
+    const liteState = src.lite === undefined ? undefined : src.lite[family] !== undefined
+    if (liteState === undefined && !litePrompt) liteUnknown++
+    const main: RouteLabel = litePrompt || liteState === true ? 'direct' : 'manager+1'
+    const meta: RouteMeta = {
+      label, main, sizeSmall: parseSize(text)?.size === 'small', sizeLarge: parseSize(text)?.size === 'large', multiPackage: (text.match(MULTI_PACKAGE) ?? []).length >= 2, docsOnlyPr: files.length > 0 && files.every(f => DOC_FILE.test(f)),
+      docsOnlyPrompt: DOCS_PROMPT.test(text) && !CODE_PROMPT.test(text), managerUsd: usdOfRows(managers), workerUsd: usdOfRows(workers), reviewUsd,
+    }
+    records.push({ id: `r-${family}`, text, label, route: meta })
+  }
+  const dist: Record<string, number> = {}
+  for (const r of records) dist[r.label] = (dist[r.label] ?? 0) + 1
+  const excluded = hard.prompt! + hard.files! + hard.confirm!
+  return {
+    key: 'route', records,
+    notes: [
+      `manager families in the ledger: ${families.length}; labelable: ${records.length + excluded}; unlabelable ${JSON.stringify(skip)} (no worker = shipped already or died before starting one, its own bucket); excluded by the hard rule: ${excluded} ${JSON.stringify(hard)} (first signal only); scored: ${records.length}; labels ${JSON.stringify(dist)}; other-direct-condition failures (a family can have several) ${JSON.stringify(disq)}`,
+      'label rule: manager+n = two or more distinct workers (a -N worker successor counts); else direct = exactly one merged PR, no blocking question (mcp__flow__ask or pre-flight), no reviewer back event, no plan DAG nodes, no successor manager; else manager+1; unlabelable = no prompt, no worker or no merged PR',
+      'hard rule: never direct for migrations, auth/permissions, secrets, deploy/CI/infra config, data rewrites or deletions; detected from the prompt text, the merged PR files, and a confirm-mode handover or approve event; those tasks are removed from scoring for every router',
+      `evidence gaps: ${prefixOwned} worker ledger rows had no manager field and were matched by name prefix; ${liteUnknown} families had no lite state or Mode: lite line, so main's choice there is manager+1 (lite state unknown, not false); main's router cannot tell manager+1 from manager+n, so every non-lite choice is scored as manager+1; plan nodes and blocking asks are read from transcripts (${planKnown ? 'present' : 'absent: counted as none'}), the inbox and preflight.json; the main router sees managers only, a flow:worker started by main with no manager has no record`,
+      'rule routers: direct = Size: small or docs-only, manager+n = Size: large or two listed packages (Package/Part/WP lines), else manager+1; "docs PR" variant peeks at the outcome (the merged PRs\' files), so it is not usable at spawn; "Size small | docs prompt" uses the prompt alone',
+    ],
+  }
+}
+
+// ---- route scoring ----
+export type RouterRow = { router: string; n: number; agree: number; under: number; over: number; usd: number; actualUsd: number; fellThrough?: number }
+export type RouteReport = { rows: RouterRow[]; model: string }
+const ROUTE_COST_MODEL = `Cost model: the family's real spend from the ledger at hooks/cost.ts list prices (M = manager rows, W = worker rows); "as run" is M+W. Router answers priced by (answer, label): answer direct on a direct label = W + R, where R is a main PR review (main's average per-turn ledger cost x ${REVIEW_TURNS} turns) and the manager's spend is saved; answer direct on a manager label (under-shaped) = M + 2W + R (the rerun under a manager plus the failed direct attempt); answer manager+1 on a manager+n label (under-shaped) = M+W plus a successor manager, estimated as M again; an over-shaped answer (manager+1 or +n on a lighter label) costs M+W, as run (the wasted manager or workers are already in the ledger); the right class costs as run, except direct = W + R. "vs as run" is the router's total minus the real M+W over the same records (negative = cheaper). Under-shaped = picked a lower class than the label (lost review, or a successor or extra workers needed); over-shaped = picked a higher class (wasted manager or workers); both are shares of all scored records.`
+
+export const costOfRoute = (m: RouteMeta, answer: RouteLabel): number => {
+  if (answer === 'direct') return m.label === 'direct' ? m.workerUsd + m.reviewUsd : m.managerUsd + 2 * m.workerUsd + m.reviewUsd
+  if (answer === 'manager+1' && m.label === 'manager+n') return 2 * m.managerUsd + m.workerUsd
+  return m.managerUsd + m.workerUsd
+}
+
+function scoreRouter(router: string, recs: { meta: RouteMeta; answer: RouteLabel }[], fellThrough?: number): RouterRow {
+  const row: RouterRow = { router, n: recs.length, agree: 0, under: 0, over: 0, usd: 0, actualUsd: 0, ...(fellThrough !== undefined ? { fellThrough } : {}) }
+  for (const { meta, answer } of recs) {
+    if (answer === meta.label) row.agree++
+    else if (shape(answer) < shape(meta.label)) row.under++
+    else row.over++
+    row.usd += costOfRoute(meta, answer)
+    row.actualUsd += meta.managerUsd + meta.workerUsd
+  }
+  return row
+}
+
+// Jev falls back to manager+1 (the middle class) on an error, a non-answer or a confidence under the threshold.
+export function routeReport(records: EvalRecord[], results: Result[]): RouteReport {
+  const byId = new Map(results.map(r => [r.id, r]))
+  const withMeta = records.filter(r => r.route !== undefined).map(r => ({ meta: r.route!, id: r.id }))
+  const jevAt = (min: number | undefined) => withMeta.map(({ meta, id }) => {
+    const r = byId.get(id)
+    const ok = r?.answer !== undefined && (ROUTE_LABELS as string[]).includes(r.answer) && (min === undefined || (r.confidence ?? 1) >= min)
+    return { meta, answer: ok ? (r!.answer as RouteLabel) : ('manager+1' as RouteLabel), live: ok }
+  })
+  const all = (answer: (m: RouteMeta) => RouteLabel) => withMeta.map(({ meta }) => ({ meta, answer: answer(meta) }))
+  const rule = (m: RouteMeta, docs: boolean): RouteLabel => (m.sizeSmall || docs ? 'direct' : m.sizeLarge || m.multiPackage ? 'manager+n' : 'manager+1')
+  const rows: RouterRow[] = [
+    scoreRouter('main (lite = direct)', all(m => m.main)),
+    scoreRouter('always direct', all(() => 'direct')),
+    scoreRouter('always manager+1', all(() => 'manager+1')),
+    scoreRouter('always manager+n', all(() => 'manager+n')),
+    scoreRouter('rule: Size/packages | docs PR*', all(m => rule(m, m.docsOnlyPr))),
+    scoreRouter('rule: Size/packages | docs prompt', all(m => rule(m, m.docsOnlyPrompt))),
+  ]
+  if (results.length > 0) {
+    const live = jevAt(undefined).filter(x => x.live)
+    rows.push(scoreRouter('jev (answered only)', live, withMeta.length - live.length))
+    for (const t of [undefined, 0.7, 0.8]) {
+      const a = jevAt(t)
+      rows.push(scoreRouter(t === undefined ? 'jev, else manager+1' : `jev >= ${t}, else manager+1`, a, a.filter(x => !x.live).length))
+    }
+  }
+  return { rows, model: ROUTE_COST_MODEL }
+}
+export const routeBaselines = (records: EvalRecord[]): RouteReport => routeReport(records, [])
+
+export function formatRoute(r: RouteReport): string {
+  const pc = (a: number, b: number): string => (b === 0 ? '-' : `${Math.round((100 * a) / b)}%`)
+  const lines = ['router                           n    agree        under-shaped over-shaped  $ total   vs as run   fell-through']
+  for (const x of r.rows) {
+    lines.push(`${x.router.padEnd(32)} ${String(x.n).padEnd(4)} ${`${pc(x.agree, x.n)} (${x.agree})`.padEnd(12)} ${`${pc(x.under, x.n)} (${x.under})`.padEnd(12)} ${`${pc(x.over, x.n)} (${x.over})`.padEnd(12)} ${`$${x.usd.toFixed(2)}`.padEnd(9)} ${`${x.usd - x.actualUsd >= 0 ? '+' : '-'}$${Math.abs(x.usd - x.actualUsd).toFixed(2)}`.padEnd(11)} ${x.fellThrough ?? ''}`)
+  }
+  lines.push('* the docs-PR rule peeks at the outcome (merged PR files); the other rule and the rest use only what was known at spawn')
+  lines.push(r.model)
+  return lines.join('\n')
+}
+
 // ---- scoring ----
 export type Result = { id: string; label: string; answer?: string; confidence?: number; lowConfidence?: number; error?: string }
 export type Ask = (text: string, q: Question) => Promise<Decision>
@@ -444,7 +647,7 @@ export async function replay(ask: Ask, records: EvalRecord[], q: Question, limit
 }
 
 export type Row = { threshold: number; answered: number; fellThrough: number; agree: number; savedDecisions: number; savedCorrect: number; savedUsd: number; savedUsdCorrect: number; savedTokens: number; savedTokensCorrect: number }
-export type FeatureReport = { key: FeatureKey; n: number; labels: Record<string, number>; unit: Unit; rows: Row[]; histogram: Record<string, number>; results: Result[]; notes: string[]; errors: string[]; mustNotAutoAnswer?: { threshold: number; wronglyAnswered: number; of: number }[]; baseline?: { agree: number; n: number; nonTrivialFiles: number; agentStarted: number }; size?: SizeReport }
+export type FeatureReport = { key: FeatureKey; n: number; labels: Record<string, number>; unit: Unit; rows: Row[]; histogram: Record<string, number>; results: Result[]; notes: string[]; errors: string[]; mustNotAutoAnswer?: { threshold: number; wronglyAnswered: number; of: number }[]; baseline?: { agree: number; n: number; nonTrivialFiles: number; agentStarted: number }; size?: SizeReport; route?: RouteReport }
 
 // An answer without a confidence (openai without logprobs) counts as certain: the plugin would act on it.
 const conf = (r: Result): number => r.confidence ?? 1
@@ -476,6 +679,13 @@ const pct = (a: number, b: number): string => (b === 0 ? '-' : `${Math.round((10
 const usd = (n: number): string => `$${n.toFixed(2)}`
 
 export function formatFeature(f: FeatureReport): string {
+  if (f.route) {
+    const lines = [`== ${f.key}  (n=${f.n}; actual labels ${JSON.stringify(f.labels)}; routers scored against the label)`, formatRoute(f.route)]
+    lines.push(`confidence histogram: ${BUCKETS.map(b => `${b}:${f.histogram[b]}`).join('  ')}`)
+    if (f.errors.length > 0) lines.push(`errors (count as fall-through): ${f.errors.join('; ')}`)
+    for (const note of f.notes) lines.push(`   ${note}`)
+    return lines.join('\n')
+  }
   if (f.size) {
     const lines = [`== ${f.key}  (n=${f.n}; actual labels ${JSON.stringify(f.labels)}; sizers scored against the implied right size)`, formatSize(f.size)]
     lines.push(`confidence histogram: ${BUCKETS.map(b => `${b}:${f.histogram[b]}`).join('  ')}`)
@@ -520,6 +730,7 @@ export async function runEval(ask: Ask, datasets: Dataset[], units: Record<Featu
       report.labels = {}
       for (const r of records) report.labels[r.label] = (report.labels[r.label] ?? 0) + 1
     }
+    if (ds.key === 'route') report.route = routeReport(records, results)
     if (ds.key === 'conflict') {
       const nonTrivial = records.filter(r => r.baseline === 'needs_agent')
       report.baseline = { agree: records.filter(r => r.baseline === r.label).length, n: records.length, nonTrivialFiles: nonTrivial.length, agentStarted: nonTrivial.filter(r => r.agent).length }
@@ -531,7 +742,7 @@ export async function runEval(ask: Ask, datasets: Dataset[], units: Record<Featu
 
 // The datasets of a flow state dir. `read` gives a file's text by its path relative to .git/flow (undefined when absent);
 // transcripts are optional because the engine's file API cannot read files over 4 MiB.
-export type FlowSource = { read: (rel: string) => Promise<string | undefined>; readAbs: (path: string) => Promise<string | undefined>; maxContinues: number; transcripts?: TranscriptEvent[][]; prs?: Record<string, PrStat> }
+export type FlowSource = { read: (rel: string) => Promise<string | undefined>; readAbs: (path: string) => Promise<string | undefined>; maxContinues: number; transcripts?: TranscriptEvent[][]; prs?: Record<string, PrStat>; handovers?: { branch?: string; mode?: string }[] }
 export const parseLog = (raw: string | undefined): LogLine[] => {
   const out: LogLine[] = []
   for (const line of (raw ?? '').split('\n')) {
@@ -544,7 +755,10 @@ export async function loadDatasets(src: FlowSource): Promise<{ datasets: Dataset
   const log = parseLog(await src.read('log.jsonl'))
   const inbox = await json<{ items?: InboxItem[] }>('inbox.json', {})
   const ledger = await json<Record<string, LedgerRow>>('ledger.json', {})
-  const datasets = [inboxData(inbox.items ?? []), testData(log, src.transcripts), conflictData(log, src.transcripts), await handoffData(log, src.maxContinues, src.readAbs), sizeData({ log, ledger, inbox: inbox.items ?? [], ...(src.transcripts ? { transcripts: src.transcripts } : {}), ...(src.prs ? { prs: src.prs } : {}) })]
+  const sizeSrc: SizeSource = { log, ledger, inbox: inbox.items ?? [], ...(src.transcripts ? { transcripts: src.transcripts } : {}), ...(src.prs ? { prs: src.prs } : {}) }
+  const lite = await json<Record<string, unknown> | undefined>('lite.json', undefined)
+  const pre = await json<{ entries?: RouteSource['preflight'] }>('preflight.json', {})
+  const datasets = [inboxData(inbox.items ?? []), testData(log, src.transcripts), conflictData(log, src.transcripts), await handoffData(log, src.maxContinues, src.readAbs), sizeData(sizeSrc), routeData({ ...sizeSrc, ...(lite ? { lite } : {}), ...(pre.entries ? { preflight: pre.entries } : {}), ...(src.handovers ? { handovers: src.handovers } : {}) })]
   return { datasets, units: unitCosts(ledger) }
 }
 

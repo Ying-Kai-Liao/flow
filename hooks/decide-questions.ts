@@ -47,6 +47,19 @@ export const HANDOFF_QUESTION: Question = {
   },
 }
 
+// Only the eval (decide-eval.ts, feature `route`) asks this; nothing at runtime does. The text is the task as main wrote
+// it into a manager's prompt.
+export const ROUTE_QUESTION: Question = {
+  id: 'route',
+  type: 'choice',
+  instructions: 'This is the task text a coordinator would hand to a manager agent, which plans the work, writes briefs, starts workers and reviews their pull requests. Decide how to staff it: one direct worker, a manager with one worker, or a manager with several workers.',
+  criteria: {
+    direct: 'one self-contained package: a single worker can do it end to end in one pull request, with clear scope, no open questions, and no split into several parts',
+    'manager+1': 'one package, but it needs a manager: pre-flight questions, a decision with real trade-offs, careful review of unclear or cross-cutting scope, or a likely follow-up',
+    'manager+n': 'it splits into two or more packages that need their own workers, sequenced or in parallel, so a manager must plan and coordinate them',
+  },
+}
+
 // A text never goes over what a provider reads; the cut says so.
 const CUT = '\n[...trimmed...]'
 const cap = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, Math.max(0, n - CUT.length))}${CUT}`)
