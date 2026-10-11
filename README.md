@@ -66,6 +66,7 @@ fix X" is enough.
 | `/flow answer q3 <choice>` | Answers any question addressed to main (option letter, number, text, or your own words), deploy, push and env items included. |
 | `/flow checks` | Lists the after-deploy checks that only a person can do as one table (id, PR, title, what it needs, age). `/flow checks <id>` shows one in full; `pass`, `fail` and `skip <id...> <why>` close them. |
 | `/flow approve <n>` | Approves PR `n` when it is waiting for you. |
+| `/flow reject <n> [reason]` | Turns down PR `n` while it awaits approval or is pending (alias `/flow drop`). The manager is told; the GitHub PR and branch are left alone. |
 | `/flow push` | Pushes the batch the reviewer built and checked, when `push_mode` is `confirm`. `/flow push back <pr>` returns one PR, `/flow push drop` all of them. |
 | `/flow hold <target>` / `/flow release <target>` | Keeps a deploy target from deploying, or lets it go again. |
 | `/flow resume` | Picks up unfinished work after a restart. |

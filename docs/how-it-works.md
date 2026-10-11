@@ -54,7 +54,7 @@ add login-redirect  after: csv-export
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
-  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow checks` lists the after-deploy checks that need a person (see Person checks), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
+  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow checks` lists the after-deploy checks that need a person (see Person checks), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you and `/flow reject <n> [reason]` (alias `/flow drop`) turns one down (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
   `c` collapses or expands the highlighted card, `q` the Reviewer section. In an agent's detail, `b` goes back and `m` starts a message.
@@ -295,6 +295,8 @@ and nothing else) to put it in the reviewer. The approval is tied to the head co
 branch moves and the manager hands it over again, you approve again. The reviewer re-reads the labels
 and head when it takes a PR; a PR still unapproved answers "Held:" and is skipped, and if `gh` fails
 the labels count as none, so it never merges something it could not check.
+
+Run `/flow reject <n> [reason]` (alias `/flow drop`; yours only) to turn a handover down instead. It works on awaiting and pending handovers, not on one the reviewer has taken. The handover becomes `returned` ("declined by the user" plus your reason), its env items close, the manager is messaged, and the GitHub PR and branch are not touched. Separately, a handover whose PR was closed on GitHub without a merge is returned on its own ("PR closed on GitHub"); merged PRs count as done.
 
 ## Push gate
 
