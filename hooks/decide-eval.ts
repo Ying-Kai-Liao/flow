@@ -315,3 +315,21 @@ export type EvalReport = { provider: string; at: string; features: FeatureReport
 // The file keeps ids, labels, answers and confidences, never a record's text or a key.
 export const reportJson = (r: EvalReport): string => JSON.stringify(r, null, 2)
 export const reportText = (r: EvalReport): string => [`decide eval, provider ${r.provider}, ${r.at}`, ...r.features.map(formatFeature)].join('\n\n')
+
+// The export a script writes for the tool (the tool cannot read transcripts, but it can read this file): the built
+// datasets and unit costs, texts cut to `textMax` so the file stays under the engine's 4 MiB read cap.
+export const EXPORT_FILE = 'decide-eval-data.json'
+export type ExportData = { at: string; datasets: Dataset[]; units: Record<FeatureKey, Unit> }
+export function exportJson(datasets: Dataset[], units: Record<FeatureKey, Unit>, at: string, textMax: number): string {
+  const cut = (r: EvalRecord): EvalRecord => ({ ...r, text: r.text.slice(0, textMax) })
+  return JSON.stringify({ at, datasets: datasets.map(d => ({ ...d, records: d.records.map(cut), ...(d.guard ? { guard: d.guard.map(cut) } : {}) })), units })
+}
+export function parseExport(raw: string | undefined): ExportData | undefined {
+  try {
+    const d = JSON.parse(raw ?? '') as ExportData
+    const ok = typeof d.at === 'string' && Array.isArray(d.datasets) && d.datasets.every(x => FEATURES.includes(x.key) && Array.isArray(x.records)) && typeof d.units === 'object' && d.units !== null
+    return ok ? d : undefined
+  } catch {
+    return undefined
+  }
+}

@@ -2,9 +2,9 @@
 // session transcripts as well (the engine tool cannot read files over 4 MiB, this script can), and prints their sizes and
 // sample texts. No network, no key: the live run is the main-only `decide_eval` tool, which uses the key in /config.
 //
-//   node --experimental-strip-types scripts/decide-eval.mjs [--samples N] [--flow-dir <dir>] [--transcripts <dir>]
+//   node --experimental-strip-types scripts/decide-eval.mjs [--export] [--samples N] [--flow-dir <dir>] [--transcripts <dir>]
 import { execFileSync } from 'node:child_process'
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { register } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -17,7 +17,7 @@ register('data:text/javascript,' + encodeURIComponent(
 ))
 
 const root = join(dirname(new URL(import.meta.url).pathname), '..')
-const { loadDatasets } = await import(pathToFileURL(join(root, 'hooks/decide-eval.ts')).href)
+const { EXPORT_FILE, exportJson, loadDatasets } = await import(pathToFileURL(join(root, 'hooks/decide-eval.ts')).href)
 
 const argv = process.argv.slice(2)
 const opt = (name, dflt) => { const i = argv.indexOf(`--${name}`); return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : dflt }
@@ -61,7 +61,7 @@ async function transcriptEvents() {
 }
 
 const rd = async path => { try { return readFileSync(path, 'utf8') } catch { return undefined } }
-const { datasets } = await loadDatasets({ read: rel => rd(join(flowDir, rel)), readAbs: rd, maxContinues: MAX_CONTINUES, transcripts: await transcriptEvents() })
+const { datasets, units } = await loadDatasets({ read: rel => rd(join(flowDir, rel)), readAbs: rd, maxContinues: MAX_CONTINUES, transcripts: await transcriptEvents() })
 console.log(`flow dir: ${flowDir}\ntranscripts: ${transcriptDir}`)
 for (const d of datasets) {
   const labels = {}
@@ -69,4 +69,15 @@ for (const d of datasets) {
   console.log(`\n== ${d.key}: ${d.records.length} records${d.guard ? ` (+${d.guard.length} must-not-auto-answer)` : ''}; labels ${JSON.stringify(labels)}`)
   for (const note of d.notes) console.log(`   ${note}`)
   for (const r of d.records.slice(0, samples)) console.log(`--- sample ${r.id} (actual: ${r.label}) ---\n${r.text.slice(0, 1200)}${r.text.length > 1200 ? '\n[...]' : ''}`)
+}
+
+// --export: the built datasets (with texts) for the decide_eval tool, which cannot read transcripts. The tool's file read
+// is capped at 4 MiB, so texts are cut harder until the file is under 3 MiB.
+if (argv.includes('--export')) {
+  const path = join(flowDir, EXPORT_FILE)
+  let max = 4000
+  let json = exportJson(datasets, units, new Date().toISOString(), max)
+  while (json.length > 3 * 1024 * 1024 && max > 250) { max = Math.floor(max / 2); json = exportJson(datasets, units, new Date().toISOString(), max) }
+  writeFileSync(path, json)
+  console.log(`\nexported to ${path}: ${(Buffer.byteLength(json) / 1024).toFixed(0)} KiB, texts cut at ${max} chars; ${datasets.map(d => `${d.key} ${d.records.length}${d.guard ? `+${d.guard.length}` : ''}`).join(', ')}`)
 }

@@ -2,7 +2,7 @@
 // the session's own settings (so the key stays in /config and never reaches an agent), writes the results next to the state.
 import { decide } from './decide'
 import type { DecideIo, DecideSettings, Question } from './decide'
-import { FEATURES, loadDatasets, reportJson, reportText, runEval } from './decide-eval'
+import { EXPORT_FILE, FEATURES, loadDatasets, parseExport, reportJson, reportText, runEval } from './decide-eval'
 import type { FeatureKey } from './decide-eval'
 
 export const DECIDE_EVAL_FILE = 'decide-eval.json'
@@ -24,8 +24,13 @@ export async function decideEvalTool(io: DecideEvalIo, settings: DecideSettings 
   if (dir === undefined) return 'Refused: not in a git repo, so there is no flow state to replay.'
   const features = Array.isArray(input.features) ? FEATURES.filter(f => (input.features as unknown[]).includes(f)) : FEATURES
   const limit = typeof input.limit === 'number' && input.limit > 0 ? Math.floor(input.limit) : undefined
-  const { datasets, units } = await loadDatasets({ read: rel => io.readFile(`${dir}/${rel}`), readAbs: io.readFile, maxContinues: settings.maxContinues })
-  const sources = 'Sources: the flow state dir only (inbox.json, log.jsonl, handoffs, ledger.json); transcripts are not read (the engine reads files up to 4 MiB), so test failures and conflicts come from log.jsonl.'
+  // The export of scripts/decide-eval.mjs carries the transcript-derived sets; without it only the state dir is read.
+  const exported = parseExport(await io.readFile(`${dir}/${EXPORT_FILE}`))
+  const { datasets, units } = exported ?? await loadDatasets({ read: rel => io.readFile(`${dir}/${rel}`), readAbs: io.readFile, maxContinues: settings.maxContinues })
+  const ageMin = exported === undefined ? 0 : Math.max(0, Math.round((await io.now() - Date.parse(exported.at)) / 60000))
+  const sources = exported
+    ? `Source: ${EXPORT_FILE} (export from ${exported.at}, ${ageMin} min old; rerun scripts/decide-eval.mjs --export to refresh).`
+    : `Source: the flow state dir only (no ${EXPORT_FILE}; run scripts/decide-eval.mjs --export to add transcript-derived test failures and conflicts, otherwise those come from log.jsonl alone).`
   if (dry) {
     const lines = datasets.filter(d => features.includes(d.key)).map(d => `${d.key}: ${d.records.length} records${d.guard ? ` (+${d.guard.length} must-not-auto-answer)` : ''}. Sample: ${(d.records[0]?.text ?? 'none').slice(0, 300).replace(/\n/g, ' / ')}`)
     return ['Dry run, no network.', ...lines, sources].join('\n')

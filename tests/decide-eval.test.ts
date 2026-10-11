@@ -3,7 +3,7 @@ import { test } from './support'
 
 import type { DecideIo, FetchLike } from '../hooks/decide'
 import { decide } from '../hooks/decide'
-import { conflictData, handoffData, inboxData, loadDatasets, parseLog, reportText, runEval, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
+import { conflictData, exportJson, handoffData, inboxData, loadDatasets, parseExport, parseLog, reportText, runEval, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
 import type { Ask, LogLine, TranscriptEvent } from '../hooks/decide-eval'
 import { decideEvalTool } from '../hooks/decide-eval-run'
 import { parseJev } from '../hooks/jev'
@@ -137,6 +137,20 @@ test('decide_eval: main only, refused when decision_api is off, dry run makes no
   expect(json).not.toContain('sk-secret')
   expect(json).not.toContain('Question:')
   expect(calls).toBe(2)
+})
+
+test('decide_eval loads decide-eval-data.json when present and says so; parseExport rejects junk', async () => {
+  expect(parseExport('nope')).toBeUndefined()
+  expect(parseExport(JSON.stringify({ at: 'x', datasets: [{ key: 'bogus', records: [] }], units: {} }))).toBeUndefined()
+  const data = exportJson([{ key: 'test', records: [{ id: 'tf-1', text: 'z'.repeat(50), label: 'real' }], notes: [] }], unitCosts(ledger), '1970-01-01T00:00:00.000Z', 10)
+  expect(JSON.parse(data).datasets[0].records[0].text.length).toBe(10)
+  const all: Record<string, string> = { ...files, '/s/decide-eval-data.json': data }
+  let calls = 0
+  const f: FetchLike = async (u, i) => { calls++; return jevFetch(0.9)(u, i) }
+  const out = await decideEvalTool({ ...toolIo(f), readFile: async p => all[p] }, settings, { features: ['test'] }, undefined)
+  expect(out).toContain('Source: decide-eval-data.json (export from 1970-01-01T00:00:00.000Z')
+  expect(out).toContain('== test  (n=1;')
+  expect(calls).toBe(1)
 })
 
 test('loadDatasets and parseLog tolerate missing and torn files', async () => {
