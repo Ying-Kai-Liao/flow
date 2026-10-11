@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The pane's inbox draws each owner as a collapsible card like the tree's agents (chevron, round border, "owner · N decisions", one clipped line per item); the routine decisions are a collapsed card; c (or x) and the chevron fold a card, and a pane too short for all cards draws all but the hot one collapsed. The decision card's header is "id · owner · age".
+- The pane's status lines get icons from one map in `hooks/pane.ts`: 📬 (something open) or 📭 (empty) on the inbox title and the tree's inbox line (now "📬 ? 2 questions · 9 decisions · i"), 👥 agents, 📋 checks, 🧹 leftovers. A waiting question shows a "?" in warning colour that pulses bright and dim once a second from the clock. In an owner's card a question row is the id, BLOCKING in warning colour, then the text (the card names the owner; ", for x" only for a linked escalation), and every open card is the full pane width.
+
 ## [0.6.63] - 2026-10-12
 
 ### Changed
@@ -56,10 +61,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `decide_eval` gets a `size` feature: replays spawn sizing (worker and manager briefs from transcripts, labelled under/ok/over from successors, handoffs, undone size decisions and PR size) and compares Jev, the brief's `Size:` line and always-normal on agreement, under-size rate, over-size rate and estimated cost; `scripts/decide-eval.mjs` prints the key-free part
-### Changed
-
-- The pane's inbox draws each owner as a collapsible card like the tree's agents (chevron, round border, "owner · N decisions", one clipped line per item); the routine decisions are a collapsed card; c (or x) and the chevron fold a card, and a pane too short for all cards draws all but the hot one collapsed. The decision card's header is "id · owner · age".
-- The pane's status lines get icons from one map in `hooks/pane.ts`: 📬 (something open) or 📭 (empty) on the inbox title and the tree's inbox line (now "📬 ? 2 questions · 9 decisions · i"), 👥 agents, 📋 checks, 🧹 leftovers. A waiting question shows a "?" in warning colour that pulses bright and dim once a second from the clock. In an owner's card a question row is the id, BLOCKING in warning colour, then the text (the card names the owner; ", for x" only for a linked escalation), and every open card is the full pane width.
 
 ## [0.6.57] - 2026-10-12
 
