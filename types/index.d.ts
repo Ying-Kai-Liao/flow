@@ -458,7 +458,7 @@ declare module 'claude-code' {
       // The gh details of a PR card by "<pr>@<head>" (prcard.ts), fetched in the background.
       prDetails: Record<string, { fetchedAt: number; fetching?: true; error?: string; details?: { url: string; additions: number; deletions: number; files: { path: string; additions: number; deletions: number }[]; labels: string[]; headRefOid?: string } }>
       cardBack: 'tree' | 'inbox' | 'archive'
-      inboxExpanded: boolean
+      inboxFolds: Record<string, boolean>
       inboxCursor: string | null
       inboxDraft: string
       inboxNote: string
