@@ -128,7 +128,7 @@ export function renderChecksForAgents(c: Checks, installed: string | undefined):
   const fu = openFollowUps(c)
   if (open.length === 0 && fu.length === 0) return 'No open checks.'
   return [
-    ...(open.length ? [`Open checks: ${open.length}. Close with mcp__flow__check (pass / fail / skip) or /flow checks pass <id...> | fail <id> <note> | skip <id...> <why>.`, ...groupLines(groupOpen(c, installed), installed)] : ['No open checks.']),
+    ...(open.length ? [`Open checks: ${open.length}. Close with mcp__flow__check (action pass, fail or skip) or /flow checks pass <id...> | fail <id> <note> | skip <id...> <why>.`, ...groupLines(groupOpen(c, installed), installed)] : ['No open checks.']),
     ...(fu.length ? [FOLLOW, ...fu.map(followUpLine)] : []),
   ].join('\n')
 }

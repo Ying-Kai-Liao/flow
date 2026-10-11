@@ -5,7 +5,7 @@ import type { TestBody } from 'claude-code/testing'
 import { candidatesOf, detect, firstRun, initCommand, refuse, settingsTool, writeSettings } from '../hooks/init'
 import type { Detected, InitCmdIo, InitIo } from '../hooks/init'
 import { advance, answer, canAdvance, inboxOf, isLast, openAsk, startDemo, STEPS, stepOf } from '../hooks/demo-replay'
-import { isDemoCommit, planCleanup, toInspect } from '../hooks/demo-clean'
+import { DEMO_DIFF_LINE, DEMO_FILE, isDemoCommit, planCleanup, toInspect } from '../hooks/demo-clean'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -287,6 +287,7 @@ test('demo cleanup: only the demo\'s own worktree and branch, never the main che
 })
 
 test('demo cleanup: a worker on its own branch name or a detached HEAD is the demo\'s only when its commit is exactly flow-demo.md', () => {
+  expect(DEMO_DIFF_LINE).toBe(`A\t${DEMO_FILE}`)
   expect(isDemoCommit('A\tflow-demo.md\n', '')).toBe(true)
   expect(isDemoCommit('A\tflow-demo.md\nM\tsrc/a.ts\n', '')).toBe(false)
   expect(isDemoCommit('M\tflow-demo.md\n', '')).toBe(false)
