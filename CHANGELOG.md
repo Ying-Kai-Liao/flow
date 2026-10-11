@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ## [0.6.46] - 2026-10-12
+### Changed
+
+- After an update, the after-deploy checks the new version covers are announced with a one-line toast ("flow <version>: N after-deploy checks can be done now. /flow checks lists them."), once per version, instead of a prompt submitted to main. An update no longer starts a turn; the checks stay in `/flow checks`, the inbox and the pane.
+
+## [0.6.43] - 2026-10-12
 
 ### Changed
 

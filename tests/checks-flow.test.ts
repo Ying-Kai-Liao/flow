@@ -19,6 +19,7 @@ function world(on: On, opts: { shaVersion?: string; installed?: string; changed?
   ]
   const files = new Map<string, string>()
   const submitted: string[] = []
+  const toasts: string[] = []
   const calls: (readonly string[])[] = []
   on('agent.list', () => ({ value: agents }))
   on('session.start', () => ({ cwd: '/r' }))
@@ -30,7 +31,7 @@ function world(on: On, opts: { shaVersion?: string; installed?: string; changed?
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', (_, e) => { toasts.push((e as unknown as { text: string }).text); return { value: undefined } })
   on('prompt.submit', (_, e) => { submitted.push(e.text); return { text: e.text } })
   on('fs.write', (_, e) => { files.set(e.path, e.text); return { value: undefined } })
   on('fs.read', (_, e) => {
@@ -54,7 +55,7 @@ function world(on: On, opts: { shaVersion?: string; installed?: string; changed?
     }
     return ok()
   })
-  return { agents, files, submitted, clock, calls }
+  return { agents, files, submitted, toasts, clock, calls }
 }
 
 const handover = (n: number, extra: Record<string, unknown> = {}) => ({
@@ -204,18 +205,20 @@ test('verify_paths: gh failing runs the command anyway', async ($, on) => {
   expect(await done($, 7, 'needs a person: PR #7: look')).toContain('Run `npm run smoke`')
 })
 
-test('after an update, main is prompted once per installed version with the checks it covers', async ($, on) => {
+test('after an update, a toast names the checks the installed version covers, once per version, and main gets no prompt', async ($, on) => {
   const w = world(on, { installed: '0.3.40', shaVersion: '0.3.39' })
   seed(w, 7, { status: 'done', sha: 's', report: 'needs a person: PR #7: look' })
   await start($)
   await w.clock.advance(5)
-  expect(w.submitted.length).toBe(1)
-  expect(w.submitted[0]).toContain('1 after-deploy check can be done now')
-  expect(w.submitted[0]).toMatch(/c1\s+#7\s+Title 7\s+ready/)
-  expect(w.submitted[0]).not.toContain('look')
+  expect(w.submitted.length).toBe(0)
+  const notices = w.toasts.filter(t => t.includes('after-deploy'))
+  expect(notices).toEqual(['flow 0.3.40: 1 after-deploy check can be done now. /flow checks lists them.'])
   expect(stored(w).promptedVersion).toBe('0.3.40')
+  expect(await cmd($, 'checks')).toMatch(/c1\s+#7\s+Title 7/)
   await start($)
-  expect(w.submitted.length).toBe(1)
+  await w.clock.advance(5)
+  expect(w.toasts.filter(t => t.includes('after-deploy')).length).toBe(1)
+  expect(w.submitted.length).toBe(0)
 })
 
 test('ids are accepted in any case, the reason keeps its own', async ($, on) => {

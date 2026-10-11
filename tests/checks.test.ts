@@ -94,7 +94,7 @@ test('verify_paths globs: ** crosses directories, * does not', () => {
   expect(anyMatch(['db/**'], ['src/a.ts'])).toBe(false)
 })
 
-test('the post-update prompt is due once per installed version, for checks the version covers', () => {
+test('the post-update notice is due once per installed version, for checks the version covers', () => {
   const c = seed()
   expect(dueForPrompt(c, undefined)).toEqual([])
   expect(dueForPrompt(c, '0.3.30').map(x => x.id)).toEqual(['c2', 'c4'])

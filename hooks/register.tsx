@@ -42,11 +42,10 @@ import type { Preflight } from './preflight'
 import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, recordLite, releaseToolAccess, reviewerToolAccess, withLiteRules } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
-  addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, paneChecksLine, parseNeeds, renderChecksTable,
+  addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, paneChecksLine, parseNeeds,
   SKIP_NOTE, versionInSteps,
 } from './checks'
 import type { Check, Checks } from './checks'
-import { termWidth } from './table'
 import type { Inbox, Marked, Question } from './inbox'
 import { addGuardTest, loadRules, offerSeedsOnce, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
@@ -1785,14 +1784,12 @@ export const register: Register = (on, options) => {
         // A PR that already has a check (any state) runs no git calls on a normal restart.
         if (ho.status === 'done' && !(await read($, checks)).items.some(c => c.pr === ho.pr)) await captureChecks($, ho, settings.verifyPaths, false)
       }
-      // Once per installed version: the checks it now covers go to main as a prompt.
+      // Once per installed version: a toast names the checks it now covers. Not a prompt: an update
+      // must not start a turn in main; the checks stay in /flow checks, the inbox and the pane.
       const due = dueForPrompt(await read($, checks), installed)
       if (due.length === 0) return
       await withChecks($, cur => ({ checks: { ...cur, promptedVersion: installed }, out: undefined }))
-      const text = `Flow ${installed} is installed. ${due.length} after-deploy check${due.length === 1 ? '' : 's'} can be done now; tell the user, do not start managers for them:\n` +
-        renderChecksTable({ next: 0, items: due }, installed, termWidth(), await $.clock.now(), false) +
-        '\nThe user closes them with /flow checks pass <id...>, fail <id> <what you saw> or skip <id...> <why>; /flow checks <id> shows the steps.'
-      $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
+      void $.ui.toast(`flow ${installed}: ${due.length} after-deploy check${due.length === 1 ? '' : 's'} can be done now. /flow checks lists them.`)
     })
     await best($, 'loading deploy gates', async () => {
       const dir = await stateDir($)
