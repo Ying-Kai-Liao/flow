@@ -1550,6 +1550,8 @@ export const register: Register = (on, options) => {
   }
   // Set once a `[1m]` model was refused for a sub-agent: later spawns go straight to the plain one.
   let noLong = false
+  // Set once the host refused a flow:continue rewrite: later continuations start in a new worktree.
+  let noContinue = false
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
@@ -1792,7 +1794,7 @@ export const register: Register = (on, options) => {
     }
     // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
     // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
-    const spawn = e.subagentType === WORKER ? await prepareContinue(spawnIoOf($), e) : e
+    const spawn = e.subagentType === WORKER ? await prepareContinue(spawnIoOf($), e, !noContinue) : e
     const role = ROLE[spawn.subagentType]
     const wanted = role === undefined ? undefined : (spawn.model ?? (settings as Record<string, unknown>)[`${role}Model`])
     const long = typeof wanted === 'string' && wanted.includes('[1m]') ? wanted : undefined
@@ -1820,26 +1822,17 @@ export const register: Register = (on, options) => {
     if (spawn.subagentType === CONTINUE && !('agentId' in started && started.agentId !== undefined)) {
       const name = (e as { name?: string }).name ?? e.description
       const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
-      const path = spawn.cwd
       await best($, 'releasing a continuation claim', async () => { await update($, handoffs, hs => {
         const r = branch === undefined ? undefined : hs[branch]
         if (branch === undefined || r === undefined || r.takenBy !== name) return hs
         const { takenBy: _t, ...rest } = r
         return { ...hs, [branch]: rest }
       }) })
-      const { cwd: _c, ...plain } = ev
-      const note = `The previous worker's worktree ${path} is kept, and ${branch} may be checked out there: if \`git checkout -B\` fails, work on a local branch and push \`HEAD:${branch}\`.`
-      ev = { ...plain, subagentType: WORKER, prompt: ev.prompt.replace(/\n\nYou continue in the same worktree [^\n]*/, `\n\n${note}`) }
+      // The host replays its refusal to a second next of this spawn, so no retry in this call: later
+      // continuations skip the in-place rewrite, and the manager is told to spawn the brief again.
+      noContinue = true
       await best($, 'logging a continuation fallback', async () => appendLog($, { event: 'continue', agent: name, owner: await ownerNameOf($, e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
-      try {
-        ;({ ev, started } = await go(ev))
-      } catch (err) {
-        // The host replays its first refusal to a second next for the same spawn. Start the plain worker as a
-        // spawn of its own instead, so the manager never sees the flow:continue refusal.
-        const { tool_use_id: _u, provider: _p, parentAgentId: _a, ...args } = ev as AgentSpawnInput & Record<string, unknown>
-        const again = await $.agent.spawn(args as never).catch(() => ({ deny: String((err as Error).message) }))
-        started = again as typeof started
-      }
+      return { deny: `flow: the host refused the in-place continuation (flow:continue); spawn the same brief again and it starts as a plain flow:worker in a new worktree on ${branch}.` }
     }
     if ('agentId' in started && started.agentId !== undefined) {
       const t = await $.clock.now()

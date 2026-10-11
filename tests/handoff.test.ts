@@ -209,15 +209,22 @@ test('a continuation of a clean, pushed worktree runs in place with the digest',
   })
 })
 
-test('a refused flow:continue falls back to a plain worker in a new worktree and frees the claim', async ($, on) => {
+test('a refused flow:continue frees the claim, tells the manager, and the repeat starts a plain worker', async ($, on) => {
   mock.clock(on, { now: 1 })
   const spawned: Record<string, unknown>[] = []
-  const opts = { agents: DONE, spawned, refuseContinue: true }
-  world(on, opts)
+  const opts = { agents: DONE, spawned, refuseContinue: true, strict: true }
+  const { files } = world(on, opts)
   await finish($, 'w1')
 
-  await spawnIt($)
+  const r = await spawnIt($)
 
+  expect(r).toMatchObject({ deny: expect.stringContaining('spawn the same brief again') })
+  expect(spawned).toHaveLength(0)
+  expect(logOf(files).filter(l => l.event === 'continue').pop()).toMatchObject({ text: 'new worktree (flow:continue refused)' })
+
+  // No recursion: the repeat is one plain spawn, even though the host would now accept flow:continue.
+  opts.refuseContinue = false
+  await spawnIt($, { name: 'csv-worker-3' })
   expect(spawned).toHaveLength(1)
   expect(spawned[0]).toMatchObject({ subagentType: 'flow:worker' })
   expect(spawned[0]?.cwd).toBeUndefined()
@@ -225,10 +232,6 @@ test('a refused flow:continue falls back to a plain worker in a new worktree and
   expect(prompt).toContain('is kept')
   expect(prompt).not.toContain('You continue in the same worktree')
   expect(prompt).toContain('Transcript digest of the previous worker')
-  // The claim was given back: once the host accepts flow:continue, the next spawn gets the worktree.
-  opts.refuseContinue = false
-  await spawnIt($, { name: 'csv-worker-3' })
-  expect(spawned[1]).toMatchObject({ subagentType: 'flow:continue', cwd: '/r/.claude/worktrees/agent-w1' })
 })
 
 test('a host that checks the offer as listed and replays a refusal still continues in place', async ($, on) => {
@@ -241,22 +244,6 @@ test('a host that checks the offer as listed and replays a refusal still continu
 
   expect(spawned).toHaveLength(1)
   expect(spawned[0]).toMatchObject({ subagentType: 'flow:continue', cwd: '/r/.claude/worktrees/agent-w1' })
-})
-
-test('a host that refuses flow:continue and replays the refusal never fails the spawn', async ($, on) => {
-  mock.clock(on, { now: 1 })
-  const spawned: Record<string, unknown>[] = []
-  world(on, { agents: DONE, spawned, strict: true, refuseContinue: true })
-  await finish($, 'w1')
-
-  const r = await spawnIt($)
-
-  expect(r).not.toHaveProperty('deny')
-  expect(spawned).toHaveLength(1)
-  // The retry is a spawn of its own, so the mock records it in the Agent tool's shape.
-  expect(spawned[0]).toMatchObject({ subagent_type: 'flow:worker' })
-  expect(spawned[0]?.cwd).toBeUndefined()
-  expect(String(spawned[0]?.prompt)).toContain('is kept')
 })
 
 test('the model cannot start flow:continue itself', async ($, on) => {
