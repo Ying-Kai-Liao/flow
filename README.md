@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/flow-horizontal-reversed.svg">
+    <img src="docs/brand/flow-horizontal-color.svg" alt="flow" width="280">
+  </picture>
+</p>
+
 # flow
 
 flow is a Claude Code plugin that works through a batch of software tasks in parallel, inside your
