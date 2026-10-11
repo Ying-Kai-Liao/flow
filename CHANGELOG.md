@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `size_model: openai` lets an OpenAI chat model (`size_model_openai`, default gpt-4.1-mini; key from `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`) pick the worker and manager size at spawn, with confidence from logprobs; the brief text is sent to that host.
 - Optional `size_model` setting (`off` by default): `jev` lets TypeSafe's Jev classifier pick the worker and manager size at spawn, falling back to the `Size:` line when Jev is unavailable. The brief text is sent to api.typesafe.ai when on.
 
 ## [0.6.34] - 2026-10-11

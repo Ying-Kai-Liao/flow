@@ -91,5 +91,7 @@ export async function askJev(fetchFn: FetchLike, cfg: { key?: string; baseUrl: s
 }
 
 // How the decision text says where the size came from.
-export const jevTag = (confidence: number, brief: Size | undefined, size: Size): string =>
-  `jev ${confidence.toFixed(2)}${brief !== undefined && brief !== size ? `; brief said ${brief}` : ''}`
+// `source` names the classifier ("jev", "openai <model>"); no confidence (an answer without logprobs) leaves the number out.
+export const sizeTag = (source: string, confidence: number | undefined, brief: Size | undefined, size: Size): string =>
+  `${source}${confidence === undefined ? '' : ` ${confidence.toFixed(2)}`}${brief !== undefined && brief !== size ? `; brief said ${brief}` : ''}`
+export const jevTag = (confidence: number, brief: Size | undefined, size: Size): string => sizeTag('jev', confidence, brief, size)

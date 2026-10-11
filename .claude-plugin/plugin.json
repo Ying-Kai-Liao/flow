@@ -153,15 +153,21 @@
     "size_model": {
       "type": "string",
       "title": "Size model",
-      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev classifier decides the size at spawn (the brief text is sent to api.typesafe.ai; key from JEV_API_KEY or ~/.config/jev/env); the Size line is the fallback if Jev is unavailable.",
+      "description": "Advanced: off: the brief's `Size:` line picks the model. openai: an OpenAI chat model decides the size (the brief text is sent to api.openai.com or OPENAI_BASE_URL; key from OPENAI_API_KEY). jev: TypeSafe's Jev classifier decides the size at spawn (the brief text is sent to api.typesafe.ai; key from JEV_API_KEY or ~/.config/jev/env); the Size line is the fallback if Jev is unavailable.",
       "default": "off",
-      "options": ["off", "jev"]
+      "options": ["off", "jev", "openai"]
     },
     "jev_model": {
       "type": "string",
       "title": "Jev model",
       "description": "Advanced: Jev model name used when size_model is jev.",
       "default": "jev-latest"
+    },
+    "size_model_openai": {
+      "type": "string",
+      "title": "OpenAI size model",
+      "description": "Advanced: OpenAI chat model used when size_model is openai. It must support structured outputs and logprobs (not a reasoning model).",
+      "default": "gpt-4.1-mini"
     },
     "conflict_model": {
       "type": "string",

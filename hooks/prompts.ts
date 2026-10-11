@@ -27,6 +27,7 @@ export type Settings = {
   // Optional size classifier (jev.ts): "jev" lets TypeSafe's Jev pick the size at spawn; absent or "off" never touches the network.
   sizeModel?: string
   jevModel?: string
+  sizeModelOpenai?: string
   conflictModel?: string
   managerModel: string
   managerModelSmall?: string

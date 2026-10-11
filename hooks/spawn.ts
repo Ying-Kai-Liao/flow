@@ -10,8 +10,7 @@ import { addQuestions, fyiAsked, isFyi } from './inbox'
 import type { Question } from './inbox'
 import { effectiveSize, floorFrom, generation, isSuccessorName, managerDecision, managerModelFor, MANAGER_FYI_WHY, modelFor, parseSize } from './routing'
 import type { Size, SizeModels } from './routing'
-import { jevTag } from './jev'
-import type { JevAnswer } from './jev'
+import { sizeTag } from './jev'
 import { isFable } from './settings'
 import { autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
 import type { AutoHits, StandingIo } from './standing-run'
@@ -164,7 +163,9 @@ export async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev:
 export type Routed = { size: Size; reason: string; model: string; escalated: boolean; jev?: string }
 
 // Asks the optional size classifier; only given when size_model is jev.
-export type SizeJev = (prompt: string) => Promise<JevAnswer>
+// `source` names the classifier in the decision text (jev, openai <model>); no confidence means the provider gave none.
+export type SizeAnswer = { size: Size; confidence?: number; source?: string } | { note: string }
+export type SizeJev = (prompt: string) => Promise<SizeAnswer>
 
 // The brief's size, or Jev's when it answers. A failed Jev leaves the brief's size and a note for the decision text.
 async function declaredWith(e: AgentSpawnInput, jev: SizeJev | undefined): Promise<{ declared: { size: Size; reason: string } | undefined; tag?: string }> {
@@ -172,7 +173,7 @@ async function declaredWith(e: AgentSpawnInput, jev: SizeJev | undefined): Promi
   if (jev === undefined) return { declared: brief }
   const a = await jev(e.prompt)
   if ('note' in a) return { declared: brief, tag: a.note }
-  return { declared: { size: a.size, reason: brief?.reason ?? '' }, tag: jevTag(a.confidence, brief?.size, a.size) }
+  return { declared: { size: a.size, reason: brief?.reason ?? '' }, tag: sizeTag(a.source ?? 'jev', a.confidence, brief?.size, a.size) }
 }
 
 export async function routeWorker(io: SpawnIo, e: AgentSpawnInput, models: SizeModels, jev?: SizeJev): Promise<{ e: AgentSpawnInput; routed?: Routed }> {

@@ -25,6 +25,7 @@ import { checkAttachments, CONTINUE_LINE, continuingCount, dispatch, fableDenied
 import type { SizeJev } from './spawn'
 import { askJev, JEV_ENV_FILE, jevConfig } from './jev'
 import type { FetchLike } from './jev'
+import { askOpenai, openaiConfig, OPENAI_DEFAULT_MODEL } from './openai-size'
 import type { Routed, SpawnIo } from './spawn'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
@@ -1065,8 +1066,16 @@ function spawnIoOf($: EngineInterface): SpawnIo {
   }
 }
 
-// The optional size classifier (size_model jev); undefined when off, so nothing touches the network.
-function jevOf($: EngineInterface, settings: { sizeModel?: string; jevModel?: string }): SizeJev | undefined {
+// The optional size classifier (size_model jev or openai); undefined when off, so nothing touches the network.
+function jevOf($: EngineInterface, settings: { sizeModel?: string; jevModel?: string; sizeModelOpenai?: string }): SizeJev | undefined {
+  if (settings.sizeModel === 'openai') {
+    const model = settings.sizeModelOpenai ?? OPENAI_DEFAULT_MODEL
+    return async prompt => {
+      const g = globalThis as unknown as { process: { env: Record<string, string | undefined> }; fetch: FetchLike }
+      const a = await askOpenai(g.fetch, openaiConfig(g.process.env), model, prompt)
+      return 'note' in a ? a : { ...a, source: `openai ${model}` }
+    }
+  }
   if (settings.sizeModel !== 'jev') return undefined
   return async prompt => {
     const g = globalThis as unknown as { process: { env: Record<string, string | undefined> }; fetch: FetchLike }

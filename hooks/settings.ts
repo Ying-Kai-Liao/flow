@@ -38,6 +38,7 @@ export const KEYS: Record<string, Kind> = {
   explore_model: 'string',
   size_model: 'string',
   jev_model: 'string',
+  size_model_openai: 'string',
   conflict_model: 'string',
   manager_model: 'string',
   manager_model_small: 'string',
@@ -77,7 +78,7 @@ export const KEYS: Record<string, Kind> = {
 }
 
 // String settings with a closed set of values: another value is dropped with a warning.
-export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev'] }
+export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'] }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
@@ -266,8 +267,9 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     workerModelSmall: model('worker_model_small', 'haiku'),
     workerModelNormal: model('worker_model_normal', 'sonnet'),
     exploreModel: model('explore_model', 'haiku'),
-    sizeModel: str('size_model', 'off') === 'jev' ? 'jev' as const : 'off' as const,
+    sizeModel: ((v: string) => v === 'jev' || v === 'openai' ? v : 'off' as const)(str('size_model', 'off')),
     jevModel: str('jev_model', 'jev-latest'),
+    sizeModelOpenai: str('size_model_openai', 'gpt-4.1-mini'),
     conflictModel: model('conflict_model', 'opus'),
     managerModel: model('manager_model', 'opus'),
     managerModelSmall: model('manager_model_small', 'sonnet'),
