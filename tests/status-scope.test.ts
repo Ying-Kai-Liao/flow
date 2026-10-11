@@ -128,7 +128,7 @@ test('old handovers with fields missing still render', async ($, on) => {
   expect(cappedHandovers([old, bare]).hidden).toBe(0)
 })
 
-test('the main-only standing and push tools and the rarely used check and old-name queue are deferred; status, ask and reviewer stay loaded', async ($, on) => {
+test('the main-only standing and push tools and the old-name queue are deferred; status, ask, reviewer and check stay loaded', async ($, on) => {
   const seen = new Map<string, boolean>()
   world(on, [], e => {
     const t = e as { name: string; isDeferred?: boolean }
@@ -137,9 +137,8 @@ test('the main-only standing and push tools and the rarely used check and old-na
   await start($)
   expect(seen.get('standing')).toBe(true)
   expect(seen.get('push')).toBe(true)
-  expect(seen.get('check')).toBe(true)
   expect(seen.get('queue')).toBe(true)
-  for (const name of ['status', 'ask', 'reviewer']) expect(seen.get(name)).toBe(false)
+  for (const name of ['status', 'ask', 'reviewer', 'check']) expect(seen.get(name)).toBe(false)
 })
 
 test('cappedHandovers keeps every open handover and only caps the finished ones', () => {

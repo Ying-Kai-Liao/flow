@@ -211,7 +211,7 @@ export const CHECK_TOOL: ToolSpec = {
     },
     required: ['action'],
   },
-  isDeferred: true,
+  isDeferred: false,
 }
 
 export const NOTE_TOOL: ToolSpec = {
