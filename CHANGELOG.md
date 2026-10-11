@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.59] - 2026-10-12
+
 ### Added
 
 - `size_min_confidence` (default 0): the least confidence the decision API's answer needs for spawn sizing to use it, below which the brief's `Size:` line is used
