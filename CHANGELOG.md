@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A `Continue on branch:` worker spawn no longer fails with "a hook's subagentType 'flow:continue' names no agent this call can dispatch". The host checks a rewrite against the offer as listed and replays that refusal to a second `next` of the same spawn, so the 0.3.23 in-call fallback could not recover. `flow:continue` is now always offered (a model's own spawn of it is denied). If the host still refuses, the claim is given back, in-place continuations stop for the session, and the manager is told to spawn the brief again, which starts a plain `flow:worker` in a new worktree.
+### Added
+
+- `/flow init`: a re-runnable onboarding. A short walkthrough, a demo and the Core settings, driven by the new `flow:init` skill. Detects test and check commands (package.json, Makefile, pyproject, Cargo, go.mod), the base branch, the remote and `gh`; nothing is written unless you choose it. `/flow init settings`, `/flow init demo`, `/flow init demo live` and `/flow init demo stop` jump to a part.
+- The demo is a free replay in the Flow pane by default (canned agents, a question and a decision you answer, a handover and merge; no agents, no tokens, nothing written, labelled DEMO). `/flow init demo live` runs a real throwaway demo (uses tokens) in its own worktree, with nothing pushed, and cleans up after itself.
+- Tools `settings` (show, and write to the repo or personal file with validation: known keys, kinds and choices only, merged into the existing file, `null` removes a key, secrets refused, invalid JSON never overwritten) and `demo` (replay start/stop, cleanup of a real demo's worktree and branch). Both main only.
+- First-run hint at session start: while neither settings file exists and `/flow init` never ran in the repo (marker `<git-common-dir>/flow/init-done`), one line points at `/flow init`.
 
 ## [0.6.38] - 2026-10-11
 

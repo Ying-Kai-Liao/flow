@@ -15,6 +15,8 @@ import type { PushState } from './pushgate'
 import type { Hold } from './deploy'
 import { mirror, PANE } from './core'
 import { LITE_USAGE, liteStartPrompt } from './lite'
+import { initCommand } from './init'
+import type { Detected } from './init'
 
 type Settings = ReturnType<typeof settingsOf>
 
@@ -59,6 +61,11 @@ export type CommandIo = {
   closeReturnedEnv: (h: Handover) => Promise<void>
   settleBatch: () => Promise<void>
   tellManager: (name: string, text: string) => Promise<void>
+  // /flow init: detection, the first-run marker and the free demo replay.
+  initDetect: (options: Record<string, unknown>) => Promise<Detected>
+  initMark: (d: Detected) => Promise<void>
+  demoStart: () => Promise<string>
+  demoStop: () => Promise<string>
 }
 
 export async function flowCommand(
@@ -194,6 +201,9 @@ export async function flowCommand(
       return { text, context: [resumeInstructions(found.items, settings.maxManagers, notes)] }
     }
     const words = arg.split(/\s+/)
+    if (words[0] === 'init') {
+      return initCommand({ detect: () => io.initDetect(options), markDone: io.initMark, demoStart: io.demoStart, demoStop: io.demoStop, after: io.after, submit: io.submit }, words.slice(1))
+    }
     if (words[0] === 'clean' && words.slice(1).every(w => w === '--yes')) {
       // A person's command: --yes removes whatever the cleanup setting says.
       return { text: await io.sweep(settings.base, words.length > 1, 'Run /flow clean --yes to remove them.') }
@@ -261,7 +271,7 @@ export async function flowCommand(
       await io.refreshBehind()
       return { text }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and the decisions agents made, /flow ok keeps decisions, /flow no <id> undoes one, /flow answer <id> <choice> answers a question, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (or /flow drop) turns a handover down, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them).` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and the decisions agents made, /flow ok keeps decisions, /flow no <id> undoes one, /flow answer <id> <choice> answers a question, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (or /flow drop) turns a handover down, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them), /flow init walks you through flow, runs a demo and sets your settings.` }
     await io.open()
     return { text: 'Flow pane opened.' }
 }

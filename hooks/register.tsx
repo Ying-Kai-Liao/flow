@@ -49,7 +49,14 @@ import { termWidth } from './table'
 import type { Inbox, Marked, Question } from './inbox'
 import { addGuardTest, loadRules, offerSeedsOnce, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
+import { DEMO_TOOL, SETTINGS_TOOL } from './init-tools'
 import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
+import { detect as initDetect, firstRun, HINT as INIT_HINT, settingsTool, writeMarker } from './init'
+import type { InitIo } from './init'
+import { advance as demoAdvance, answer as demoAnswer, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
+import type { DemoState } from './demo-replay'
+import { demoView } from './demo-view'
+import { DEMO_AGENT, planCleanup } from './demo-clean'
 import { agentView, archiveView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, treeView } from './pane-view'
 import type { InboxCtx, PaneCtx, Usage } from './pane-view'
 import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
@@ -418,13 +425,110 @@ const commandIoOf = ($: EngineInterface): CommandIo => ({
   closeReturnedEnv: h => closeReturnedEnv($, h),
   settleBatch: () => settleBatch($),
   tellManager: (name, text) => tellManager($, name, text),
+  initDetect: options => initDetect(initIoOf($), options),
+  initMark: d => writeMarker(initIoOf($), d),
+  demoStart: () => demoStart($),
+  demoStop: () => demoStop($),
 })
 
 function limitsLine(rows: AgentRow[], workers: number): string {
   return `Limits: managers ${liveManagers(rows).length}/${mirror.maxManagers}, workers per manager ${workers}`
 }
 
-const rosterIoOf = ($: EngineInterface): RosterIo => ({
+// --- /flow init: the io detection works through, and the demo replay (demo-replay.ts) ---
+
+const initIoOf = ($: EngineInterface): InitIo => ({
+  readFile: path => readText($, path),
+  exists: path => $.fs.exists(path).then(Boolean, () => false),
+  writeFile: async (path, text) => {
+    try {
+      const tmp = `${path}.${Date.now()}.tmp`
+      await $.fs.write(tmp, text)
+      return (await $.process.run(['mv', tmp, path])).exitCode === 0
+    } catch {
+      return false
+    }
+  },
+  mkdirp: dir => $.process.run(['mkdir', '-p', dir]),
+  run: argv => runCmd($, argv, 15_000),
+})
+
+// The replay's state is this atom alone: no agent, handover or inbox row of the real flow is touched, and a
+// restart loses it. Each start gets a new generation, so a timer of an earlier run does nothing.
+const demo = atom({ plugin: 'flow', key: 'demo' } as const, null as DemoState | null)
+let demoGen = 0
+
+const DEMO_DONE = 'Demo finished. /flow init settings sets your commands; /flow init demo live runs it for real (uses tokens).'
+
+// One change to the running replay, in the pane's own order. Timers pass the generation they were set for.
+function demoMove($: EngineInterface, fn: (s: DemoState, t: number) => DemoState, gen?: number): Promise<void> {
+  return paneSerial(async () => {
+    const cur = await read($, demo)
+    if (cur === null || (gen !== undefined && cur.gen !== gen)) return
+    const next = fn(cur, await $.clock.now())
+    if (next === cur) return
+    await update($, demo, () => next)
+    if (next.step === cur.step) return
+    if (demoIsLast(next)) void $.ui.toast(DEMO_DONE)
+    demoArm($, next)
+  })
+}
+
+function demoArm($: EngineInterface, s: DemoState): void {
+  const ms = demoStepOf(s).autoMs
+  if (ms === undefined) return
+  $.clock.after(ms, () => void demoMove($, (cur, t) => (cur.step === s.step && canAdvance(cur) ? demoAdvance(cur, t) : cur), s.gen).catch(() => undefined))
+}
+
+async function demoStart($: EngineInterface): Promise<string> {
+  if (await read($, demo) !== null) return 'The demo is already running in the Flow pane. /flow init demo stop ends it.'
+  const s = startDemo(++demoGen, await $.clock.now())
+  await update($, demo, () => s)
+  await update($, inboxDraft, () => '')
+  await update($, inboxNote, () => '')
+  demoArm($, s)
+  await $.ui.open({ id: PANE, title: 'Flow', focus: true })
+  return 'Demo started in the Flow pane: a replay of one task with canned agents. No agents run, no tokens are used, nothing is written. m = next step, x = stop, or /flow init demo stop.'
+}
+
+async function demoStop($: EngineInterface): Promise<string> {
+  if (await read($, demo) === null) return 'No demo is running.'
+  await update($, demo, () => null)
+  await update($, inboxDraft, () => '')
+  await update($, inboxNote, () => '')
+  return 'Demo stopped; the pane shows your real work again.'
+}
+
+// Removes what a real demo left: its worktree and branch, by the demo's own names only. Refused while a demo agent lives.
+async function demoCleanup($: EngineInterface): Promise<string> {
+  const live = (await $.agent.list()).filter(a => a.name !== undefined && DEMO_AGENT.test(a.name) && LIVE_STATUS.has(a.status))
+  if (live.length > 0) return `Not cleaned: ${live.map(a => a.name).join(', ')} still running. Wait for it to end, then clean up.`
+  const trees = await runCmd($, ['git', 'worktree', 'list', '--porcelain'])
+  const refs = await runCmd($, ['git', 'for-each-ref', '--format=%(refname:short)', 'refs/heads/flow/'])
+  const plan = planCleanup(trees.stdout, refs.stdout.split('\n').map(l => l.trim()).filter(l => l !== ''))
+  const out: string[] = plan.kept.map(k => `kept: ${k}`)
+  for (const w of plan.worktrees) {
+    const r = await runCmd($, ['git', 'worktree', 'remove', '--force', w.path])
+    out.push(r.exitCode === 0 ? `removed worktree ${w.path}` : `could not remove worktree ${w.path}: ${r.stderr.trim()}`)
+  }
+  for (const b of plan.branches) {
+    const r = await runCmd($, ['git', 'branch', '-D', b])
+    out.push(r.exitCode === 0 ? `deleted branch ${b}` : `could not delete branch ${b}: ${r.stderr.trim()}`)
+  }
+  return out.length === 0 ? 'Nothing of the demo is left.' : out.join('\n')
+}
+
+async function demoTool($: EngineInterface, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
+  if (agentId !== undefined) return { result: 'Refused: only main runs the demo.' }
+  const action = String(input.action ?? 'status')
+  if (action === 'start') return { result: await demoStart($) }
+  if (action === 'stop') return { result: await demoStop($) }
+  if (action === 'cleanup') return { result: await demoCleanup($) }
+  const agents = (await $.agent.list()).filter(a => a.name !== undefined && DEMO_AGENT.test(a.name)).map(a => `${a.name} (${a.status})`)
+  return { result: `Replay: ${(await read($, demo)) === null ? 'not running' : 'running'}. Real demo agents: ${agents.join(', ') || 'none'}.` }
+}
+
+const rosterIoOf =($: EngineInterface): RosterIo => ({
   list: () => $.agent.list(),
   now: () => $.clock.now(),
   plan: () => read($, plan),
@@ -1758,6 +1862,8 @@ export const register: Register = (on, options) => {
     await $.tool.register(GUARD_TESTS_TOOL)
 
     await $.tool.register(SESSION_TOOL)
+    await $.tool.register(SETTINGS_TOOL)
+    await $.tool.register(DEMO_TOOL)
 
     $.clock.every(POLL_MS, () => {
       void refresh($)
@@ -1776,6 +1882,10 @@ export const register: Register = (on, options) => {
     $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
     // The reviewer agent type exists only now, and a spawn needs the session bound: start it after the hook.
     if (queueDue) $.clock.after(0, () => void best($, 'starting the reviewer', async () => void (await ensureQueue($))))
+    // A replay left over from before a reload is gone with the atom's memory; this clears it explicitly.
+    await update($, demo, () => null)
+    // A new repo: one line pointing at /flow init, after the session has drawn.
+    $.clock.after(3000, () => void best($, 'first-run hint', async () => { if (await firstRun(initIoOf($))) void $.ui.toast(INIT_HINT) }))
     return next(e)
   })
 
@@ -2076,7 +2186,11 @@ export const register: Register = (on, options) => {
     return { result: await sweep($, settings.base, apply) }
   }).catch(toolCatch)
 
-  on('tool.call', { tool: 'mcp__flow__migrations' }, ($, e) => migrationsTool(migrationsIoOf($), settings, e as unknown as Record<string, unknown>)).catch(toolCatch)
+  on('tool.call', { tool: 'mcp__flow__settings' }, ($, e) => settingsTool(initIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+
+  on('tool.call', { tool: 'mcp__flow__demo' }, ($, e) => demoTool($, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+
+  on('tool.call', { tool: 'mcp__flow__migrations' },($, e) => migrationsTool(migrationsIoOf($), settings, e as unknown as Record<string, unknown>)).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__session' }, async ($, e) => {
     const id = e.agentId
@@ -2221,6 +2335,30 @@ export const register: Register = (on, options) => {
     try {
     return await (async () => {
     const { Box, Text, Button } = $.ui.resolve(e)
+    const dm = await read($, demo)
+    if (dm !== null) {
+      const Input = ($.ui.resolve(e) as unknown as { Input?: Parameters<typeof demoView>[0]['Input'] }).Input
+      return demoView({
+        els: { Box, Text, Button }, Input, rows: e.viewport?.rows ?? 24, state: dm, now: await read($, now), draft: await read($, inboxDraft), note: await read($, inboxNote),
+        io: {
+          setDraft: v => update($, inboxDraft, () => v),
+          setNote: v => update($, inboxNote, () => v),
+          answer: (id, choice) => paneSerial(async () => {
+            const cur = await read($, demo)
+            if (cur === null) return 'The demo has ended.'
+            const r = demoAnswer(cur, id, choice, await $.clock.now())
+            await update($, demo, () => r.state)
+            await update($, inboxDraft, () => '')
+            if (r.state.step !== cur.step) { if (demoIsLast(r.state)) void $.ui.toast(DEMO_DONE); demoArm($, r.state) }
+            return r.text
+          }),
+          toast: text => { void $.ui.toast(text) },
+          focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
+          next: () => demoMove($, (s, t) => (canAdvance(s) ? demoAdvance(s, t) : s)),
+          stop: async () => { void $.ui.toast(await demoStop($)) },
+        },
+      })
+    }
     let [list, acts, pick, t, hs, cur, fold, unhanded, leftCounts] = await Promise.all([
       read($, roster), read($, activity), read($, selected), read($, now), read($, handovers),
       read($, cursor), read($, folded), currentUnhanded($), read($, leftovers),
