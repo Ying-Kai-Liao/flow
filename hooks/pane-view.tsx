@@ -658,6 +658,7 @@ export function treeView(c: TreeCtx) {
           {!queueOpen && returned > 0 && <Text color="warning"> · {returned} returned</Text>}
         </Box>
       )}
+      {breakerNote !== undefined && <Text color="warning" wrap="truncate-end">{'    '}⚠ {breakerNote}</Text>}
       {queueOpen && prs.slice(0, 5).map(ho => (
         <Text key={`pr-${ho.pr}`} dimColor={ho.status === 'done'} color={ho.status === 'awaiting' || ho.status === 'ready' ? 'warning' : undefined} wrap="truncate-end">
           {'    '}{HANDOVER_GLYPH[ho.status]} #{ho.pr} {ho.status === 'awaiting' ? `awaiting your approval: /flow approve ${ho.pr}` : ho.status === 'ready' ? 'ready, awaiting your push: /flow push' : ho.status}{ho.status === 'returned' ? `: ${ho.reason ?? ''}` : ''} <Text dimColor>{ho.title}</Text>
