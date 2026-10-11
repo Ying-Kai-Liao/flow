@@ -55,8 +55,9 @@ export function backNote(workers: Array<{ name: string; size?: string; spawnMode
   return `Its worker ran ${last.size}${last.spawnModel === undefined ? '' : ` (${last.spawnModel})`}: continue with a fresh ${next} worker (Continue on branch: ${branch}); it runs one size up.`
 }
 
-// A manager's model: only `small` goes to the cheaper one; normal, large and no size stay on manager_model.
-export const managerModelFor = (size: Size, small: string, base: string): string => (size === 'small' ? small : base)
+// A manager's model by size: small -> manager_model_small, normal -> manager_model_normal (which follows manager_model unless set),
+// large and no size -> manager_model.
+export const managerModelFor = (size: Size, small: string, normal: string, base: string): string => (size === 'small' ? small : size === 'normal' ? normal : base)
 
 // The downgrade decision for a manager, as filed in the inbox.
 export const managerDecision = (name: string, size: Size, model: string, reason: string, escalated: boolean, jev?: string): string =>

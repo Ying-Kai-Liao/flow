@@ -54,6 +54,7 @@ export const KEYS: Record<string, Kind> = {
   conflict_model: 'string',
   manager_model: 'string',
   manager_model_small: 'string',
+  manager_model_normal: 'string',
   reviewer_model: 'string',
   queue_model: 'string',
   base_branch: 'string',
@@ -99,7 +100,7 @@ export const SECRET_KEYS = ['jev_api_key', 'openrouter_api_key', 'openai_api_key
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
 // Sub-agents don't run on Fable: a model setting naming it is refused.
-export const MODEL_KEYS = ['worker_model', 'worker_model_small', 'worker_model_normal', 'explore_model', 'conflict_model', 'manager_model', 'manager_model_small', 'reviewer_model', 'queue_model']
+export const MODEL_KEYS = ['worker_model', 'worker_model_small', 'worker_model_normal', 'explore_model', 'conflict_model', 'manager_model', 'manager_model_small', 'manager_model_normal', 'reviewer_model', 'queue_model']
 export const isFable = (model: unknown): boolean => typeof model === 'string' && /fable/i.test(model)
 
 export type Loaded = { raw: Record<string, unknown>; files: string[]; warnings: string[] }
@@ -310,6 +311,8 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     conflictModel: model('conflict_model', 'opus'),
     managerModel: model('manager_model', 'opus'),
     managerModelSmall: model('manager_model_small', 'sonnet'),
+    // Left out when unset so a normal manager follows manager_model (a Fable value counts as unset).
+    ...(str('manager_model_normal', '') !== '' && !isFable(str('manager_model_normal', '')) ? { managerModelNormal: str('manager_model_normal', '') } : {}),
     reviewerModel: model('reviewer_model', 'sonnet'),
     language: str('language', 'English'),
     bigFiles: strs('big_files'),

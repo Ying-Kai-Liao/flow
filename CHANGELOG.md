@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Manager model tier for `Size: normal`: the new `manager_model_normal` setting (Advanced). Unset it follows `manager_model`, so nothing changes until you set it; small stays on `manager_model_small`, large and no size on `manager_model`.
+
 ## [0.6.60] - 2026-10-12
 
 ### Changed

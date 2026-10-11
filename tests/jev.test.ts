@@ -93,7 +93,7 @@ test('on: Jev decides with no Size line, and a manager routes the same way', asy
   const w = await routeWorker(ioWith(), spawn('no size line'), MODELS, jev)
   expect(w.routed).toMatchObject({ size: 'large', model: 'sonnet[1m]', jev: 'jev 0.80' })
   const small = (p: string) => askJev(ok(answer('small', 1)), cfg, 'jev-latest', p)
-  const m = await routeManager(ioWith(), spawn('plain', 'mgr'), 'sonnet', 'opus', small)
+  const m = await routeManager(ioWith(), spawn('plain', 'mgr'), 'sonnet', 'opus', 'opus', small)
   expect(m.routed).toMatchObject({ size: 'small', model: 'sonnet', jev: 'jev 1.00' })
 })
 

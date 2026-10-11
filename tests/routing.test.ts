@@ -249,10 +249,10 @@ test('costBlock adds a by-size line only when some entry has a size', () => {
   expect(costBlock({ b: sized.b! }, [], false, scope).join('\n')).not.toContain('by size')
 })
 
-test('managerModelFor sends only small to the small model', () => {
-  expect(managerModelFor('small', 'sonnet', 'opus')).toBe('sonnet')
-  expect(managerModelFor('normal', 'sonnet', 'opus')).toBe('opus')
-  expect(managerModelFor('large', 'sonnet', 'opus')).toBe('opus')
+test('managerModelFor routes small, normal and large to their own model', () => {
+  expect(managerModelFor('small', 'haiku', 'sonnet', 'opus')).toBe('haiku')
+  expect(managerModelFor('normal', 'haiku', 'sonnet', 'opus')).toBe('sonnet')
+  expect(managerModelFor('large', 'haiku', 'sonnet', 'opus')).toBe('opus')
 })
 
 const mspawn = ($: Dollar, name: string, prompt: string) =>
@@ -267,6 +267,31 @@ test('a manager with Size small runs on manager_model_small; normal, large and n
   expect(w.spawned.map(s => s.model)).toEqual(['sonnet', 'opus', 'opus', undefined])
   expect((await ledger(w)).a1!.size).toBe('small')
   expect(w.logs.join('\n')).toContain('size small -> sonnet')
+})
+
+test('manager_model_normal routes normal managers; large and none stay on manager_model', { options: { ...OPTS, manager_model_normal: 'sonnet' } }, async ($, on) => {
+  const w = world(on)
+  await mspawn($, 'docs-a', 'Size: small')
+  await mspawn($, 'docs-b', 'Size: normal')
+  await mspawn($, 'docs-c', 'Size: large')
+  await mspawn($, 'docs-d', 'Task only')
+  expect(w.spawned.map(s => s.model)).toEqual(['sonnet', 'sonnet', 'opus', undefined])
+})
+
+test('a normal manager follows a custom manager_model while manager_model_normal is unset', { options: { ...OPTS, manager_model: 'sonnet[1m]' } }, async ($, on) => {
+  const w = world(on)
+  await mspawn($, 'docs-b', 'Size: normal')
+  expect(w.spawned.map(s => s.model)).toEqual(['sonnet[1m]'])
+})
+
+test('the successor of a normal manager escalates to large, manager_model', { options: { ...OPTS, manager_model_normal: 'sonnet' } }, async ($, on) => {
+  const w = world(on)
+  await mspawn($, 'docs-a', 'Size: normal')
+  await w.clock.advance(3500)
+  await w.clock.settle()
+  await mspawn($, 'docs-a-2', 'Size: normal')
+  expect(w.spawned.map(s => s.model)).toEqual(['sonnet', 'opus'])
+  expect((await ledger(w)).a2!.size).toBe('large')
 })
 
 test('a manager successor runs one size up from its predecessor', { options: OPTS }, async ($, on) => {

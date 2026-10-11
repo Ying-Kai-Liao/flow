@@ -260,16 +260,22 @@
     "manager_model": {
       "type": "string",
       "title": "Manager model",
-      "description": "Core: Model alias for managers. Set explicitly so it does not follow the main session's model.",
+      "description": "Core: Model alias for managers. Set explicitly so it does not follow the main session's model. Covers managers whose prompt says `Size: large` or has no Size line, and `Size: normal` unless manager_model_normal is set.",
       "default": "opus",
       "options": ["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"]
     },
     "manager_model_small": {
       "type": "string",
       "title": "Manager model, small tasks",
-      "description": "Advanced: Model alias for managers whose prompt says `Size: small`. Normal, large, or no Size line use manager_model.",
+      "description": "Advanced: Model alias for managers whose prompt says `Size: small`. Normal maps to manager_model_normal, large or no Size line to manager_model.",
       "default": "sonnet",
       "options": ["sonnet", "sonnet[1m]", "haiku", "opus", "opus[1m]"]
+    },
+    "manager_model_normal": {
+      "type": "string",
+      "title": "Manager model, normal tasks",
+      "description": "Advanced: Model alias for managers whose prompt says `Size: normal`. Unset: follows manager_model, so a normal manager runs on opus unless you change either key. Aliases: sonnet, sonnet[1m], haiku, opus, opus[1m].",
+      "default": ""
     },
     "reviewer_model": {
       "type": "string",

@@ -45,6 +45,8 @@ export type Settings = {
   conflictModel?: string
   managerModel: string
   managerModelSmall?: string
+  // Unset: normal managers follow managerModel.
+  managerModelNormal?: string
   reviewerModel: string
   language: string
   bigFiles: string[]
