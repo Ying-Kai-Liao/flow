@@ -234,6 +234,17 @@ restart. A failure in the ledger never touches the step.
   (5m + 1h) divided by turns: when a wake-up comes after the 5-minute cache expiry the whole context
   is written again, so a high figure means many cold wake-ups.
 
+## The PR card and the batch card
+
+Pane views for the reviewer's work (`hooks/prcard.ts`, `hooks/pane-view.tsx`). Both are reached from the Reviewer section of the tree; `b` goes back.
+
+- **PR card:** press a PR line (or the "N awaiting approval" summary, which opens the first awaiting PR). Any status opens it; Approve and Reject show only while the handover is `awaiting`.
+  - Shows `#N title`, status, branch, the first 8 characters of the stored head, who handed it over and when, why it awaits you (`mode` confirm: "the manager marked it risky"; else the `flow:confirm` label; else the `merge_mode` setting), `verified`, pending decisions, after-deploy check and verify command, the stored evidence ("no evidence stored" for old handovers), env changes, and the files with +/- counts and the URL.
+  - The files, counts and URL come from `gh pr view <n> --json url,files,additions,deletions,labels,headRefOid`, run in the background when the card is drawn, never in the render. They are cached per `<pr>@<head>` for 5 minutes (30 seconds after a failure). The card says "loading details…" first, and "details unavailable: <reason>" if `gh` fails; the rest still works. If GitHub's head differs from the stored one the card warns that approving approves the stored head.
+  - Keys: `a` Approve, `r` Reject (the input is an optional reason), `g` Open on GitHub (`open` on macOS, `xdg-open` on Linux; the URL is shown when no opener works).
+  - Approve and Reject call the same functions as `/flow approve` and `/flow reject` (`approvePr`, `rejectPr`). Each re-reads the handover and refuses when it is no longer awaiting (Reject also takes a pending one, from the command), so a double press, or a reviewer that took the PR meanwhile, changes nothing. The result is shown on the card and as a toast; the card stays open with the new status.
+- **Batch card:** press the "ready to push" batch line. Shows the batch id, version, the check line and its PRs (press one for its PR card, read-only). Keys: `p` Push, `d` Drop, and `send back` on a PR followed by `y` (or `n` to cancel). They call the same push gate as `/flow push`, `/flow push drop` and `/flow push back <pr>`. Only a `ready` batch has these buttons.
+
 ## State on disk
 
 Flow's state survives a restart. It lives in `<git-common-dir>/flow/` (for example `.git/flow/`),

@@ -14,6 +14,7 @@ import type { PushAct } from './pushgate-run'
 import type { PushState } from './pushgate'
 import type { Hold } from './deploy'
 import { mirror, PANE } from './core'
+import { approvePr, rejectPr } from './prcard'
 import { LITE_USAGE, liteStartPrompt } from './lite'
 
 type Settings = ReturnType<typeof settingsOf>
@@ -202,45 +203,13 @@ export async function flowCommand(
       // Only a person's command approves; no tool does.
       const n = Number(words[1])
       if (words.length !== 2 || !Number.isInteger(n) || n <= 0) return { text: 'Usage: /flow approve <pr>' }
-      const h = (await io.handovers())[String(n)]
-      if (h === undefined) return { text: `No handover for PR #${n}.` }
-      if (h.status !== 'awaiting') return { text: `PR #${n} is ${h.status}, not awaiting approval.` }
-      const next: Handover = { ...h, status: 'pending', approvedHead: h.head }
-      await io.putHandover(String(n), next)
-      await io.best('saving a handover', async () => {
-        await io.saveHandover(next)
-        await io.appendLog({ event: 'approve', owner: next.reportTo, pr: n, branch: next.branch, text: next.title })
-      })
-      void io.toast(`PR #${n} approved at ${h.head.slice(0, 8)}`)
-      const queue = await io.ensureQueue()
-      await io.refresh()
-      return { text: `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}` }
+      return { text: await approvePr(io, n) }
     }
     if (words[0] === 'reject' || words[0] === 'drop') {
       // Only a person's command turns a handover down; the GitHub PR and branch are left alone.
       const n = Number((words[1] ?? '').replace(/^#/, ''))
       if (!Number.isInteger(n) || n <= 0) return { text: 'Usage: /flow reject <pr> [reason] (alias: /flow drop)' }
-      const h0 = (await io.handovers())[String(n)]
-      if (h0 === undefined) return { text: `No handover for PR #${n}.` }
-      if (h0.status !== 'awaiting' && h0.status !== 'pending') {
-        return { text: `PR #${n} is ${h0.status}, not awaiting approval or pending.${h0.status === 'taken' || h0.status === 'ready' ? ' The reviewer owns it now.' : ''}` }
-      }
-      // Re-read just before writing: the reviewer or the stale sweep may have moved it on.
-      const h = (await io.handovers())[String(n)]
-      if (h === undefined || (h.status !== 'awaiting' && h.status !== 'pending')) return { text: `PR #${n} is ${h?.status ?? 'gone'}, not awaiting approval or pending.` }
-      const why = words.slice(2).join(' ')
-      const reason = `declined by the user${why === '' ? '' : `: ${why}`}`
-      const next: Handover = { ...h, status: 'returned', reason }
-      await io.putHandover(String(n), next)
-      await io.best('saving a handover', async () => {
-        await io.saveHandover(next)
-        await io.appendLog({ event: 'back', owner: next.reportTo, pr: n, branch: next.branch, text: reason })
-      })
-      await io.closeReturnedEnv(next)
-      await io.settleBatch()
-      void io.toast(`PR #${n} returned: ${reason}`)
-      await io.tellManager(next.reportTo, `flow: PR #${n} was declined by the user${why === '' ? '' : `: ${why}`}. Its GitHub PR and branch are untouched. Decide what to do with it, and hand it over again when it is ready.`)
-      return { text: `Rejected PR #${n} (${reason}). Its GitHub PR and branch are untouched.` }
+      return { text: await rejectPr(io, n, words.slice(2).join(' ')) }
     }
     if (words[0] === 'push') {
       // Only a person's command releases a ready batch (or main, on the user's word, with the push tool).

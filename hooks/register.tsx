@@ -51,8 +51,10 @@ import type { Inbox, Marked, Question } from './inbox'
 import { addGuardTest, loadRules, offerSeedsOnce, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
 import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
-import { agentView, archiveView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, treeView } from './pane-view'
+import { agentView, archiveView, batchCardView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, prCardView, treeView } from './pane-view'
 import type { InboxCtx, PaneCtx, Usage } from './pane-view'
+import { approvePr, detailsKey, detailsStale, fetchDetails, openerFor, rejectPr, urlNote } from './prcard'
+import type { DetailsCache } from './prcard'
 import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
 import {
   fill, LITE_MARK, LITE_RULES, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT,
@@ -222,7 +224,12 @@ async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
 }
 const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
 // The pane draws the agents as a tree of cards or as the dependency graph; the graph's highlight is a node id.
-const viewMode = atom({ plugin: 'flow', key: 'viewMode' } as const, 'tree' as 'tree' | 'graph' | 'inbox' | 'card' | 'archive')
+const viewMode = atom({ plugin: 'flow', key: 'viewMode' } as const, 'tree' as 'tree' | 'graph' | 'inbox' | 'card' | 'archive' | 'pr' | 'batch')
+// The PR card (prcard.ts) and the batch card: the PR shown, where Back goes, the PR picked to send back, and the gh details by PR and head.
+const prShown = atom({ plugin: 'flow', key: 'prShown' } as const, null as number | null)
+const prBack = atom({ plugin: 'flow', key: 'prBack' } as const, 'tree' as 'tree' | 'batch')
+const batchPick = atom({ plugin: 'flow', key: 'batchPick' } as const, null as number | null)
+const prDetails = atom({ plugin: 'flow', key: 'prDetails' } as const, {} as DetailsCache)
 // The inbox view: the highlighted row's key, the expanded groups, the typed answer and the last result line.
 const inboxCursor = atom({ plugin: 'flow', key: 'inboxCursor' } as const, null as string | null)
 // The card view: the highlighted id is inboxCursor; Back returns to where the card was opened from.
@@ -1392,6 +1399,22 @@ function usageIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, 
   }
 }
 
+// The PR card's gh details, fetched when the card is opened (a render is pure, it cannot write): the entry
+// is marked first so a second open does not start another call, and the result lands in the cache, which
+// redraws the pane. Keyed by PR and head; a fresh entry is not fetched again.
+function fetchPrDetails($: EngineInterface, pr: number): void {
+  void (async () => {
+    const h = (await read($, handovers))[String(pr)]
+    if (h === undefined) return
+    const key = detailsKey(h)
+    const t = await $.clock.now()
+    if (!detailsStale((await read($, prDetails))[key], t)) return
+    await update($, prDetails, c => ({ ...c, [key]: { ...c[key], fetchedAt: t, fetching: true as const } }))
+    const fresh = await fetchDetails((argv, timeoutMs) => $.process.run(argv, { timeoutMs }), pr, await $.clock.now())
+    await update($, prDetails, c => ({ ...c, [key]: fresh }))
+  })().catch(() => undefined)
+}
+
 // One gh call at a time: the timer and a status call may meet.
 let fetching: Promise<void> | undefined
 function fetchPrs($: EngineInterface): Promise<void> {
@@ -2359,6 +2382,51 @@ export const register: Register = (on, options) => {
     if (agent !== undefined && agent.type === MANAGER && mode === 'graph') return managerGraphView(ctx, agent, planOwner(plans, agent.name))
     if (agent !== undefined) return agentView(ctx, agent)
 
+    if (mode === 'pr' || mode === 'batch') {
+      const [shownPr, back, pickPr, note, draft, cache, sstate] = await Promise.all([read($, prShown), read($, prBack), read($, batchPick), read($, inboxNote), read($, inboxDraft), read($, prDetails), read($, pushState)])
+      const leave = async () => {
+        await update($, inboxNote, () => '')
+        await update($, inboxDraft, () => '')
+        await update($, batchPick, () => null)
+        await update($, viewMode, () => mode === 'pr' ? back : 'tree')
+      }
+      const openPr = async (n: number, from: 'tree' | 'batch') => {
+        fetchPrDetails($, n)
+        await update($, prShown, () => n)
+        await update($, prBack, () => from)
+        await update($, inboxNote, () => '')
+        await update($, inboxDraft, () => '')
+        await update($, viewMode, () => 'pr')
+      }
+      const common = { acted, serial: paneSerial, toast: (text: string) => { void $.ui.toast(text) }, setNote: (v: string) => update($, inboxNote, () => v) }
+      if (mode === 'batch') {
+        return batchCardView({
+          els: { Box, Text, Button }, rows, batch: sstate.batch, hs, note, pick: pickPr, now: t,
+          io: { ...common, act: a => pushAct($, a, 'user'), openPr: n => openPr(n, 'batch'), setPick: n => update($, batchPick, () => n), leave },
+        })
+      }
+      const h = shownPr === null ? undefined : hs[String(shownPr)]
+      const key = h === undefined ? undefined : detailsKey(h)
+      const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
+      return prCardView({
+        els: { Box, Text, Button }, Input, rows, pr: shownPr, h, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note,
+        io: {
+          ...common, leave,
+          approve: n => approvePr(commandIoOf($), n),
+          reject: (n, why) => rejectPr(commandIoOf($), n, why),
+          readDraft: () => read($, inboxDraft),
+          setDraft: v => update($, inboxDraft, () => v),
+          openUrl: async n => {
+            const url = (await read($, prDetails))[detailsKey((await read($, handovers))[String(n)] ?? { pr: n, head: '' })]?.details?.url
+            if (url === undefined) return 'No URL yet: the details have not loaded.'
+            const opener = openerFor((globalThis as unknown as { process?: { platform?: string } }).process?.platform ?? '')
+            if (opener === undefined) return urlNote(url)
+            const r = await $.process.run([opener, url], { timeoutMs: 5_000 }).catch(() => undefined)
+            return r !== undefined && r.exitCode === 0 ? `Opened ${url}` : urlNote(url)
+          },
+        },
+      })
+    }
     if (mode === 'inbox' || mode === 'card' || mode === 'archive') {
       // Only some surfaces have an Input; without one the keys still answer.
       const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
@@ -2427,6 +2495,21 @@ export const register: Register = (on, options) => {
         await update($, inboxCursor, () => id)
         await update($, cardBack, () => 'tree')
         await update($, viewMode, () => 'card')
+      },
+      openPr: async n => {
+        fetchPrDetails($, n)
+        await acted()
+        await update($, prShown, () => n)
+        await update($, prBack, () => 'tree')
+        await update($, inboxNote, () => '')
+        await update($, inboxDraft, () => '')
+        await update($, viewMode, () => 'pr')
+      },
+      openBatch: async () => {
+        await acted()
+        await update($, batchPick, () => null)
+        await update($, inboxNote, () => '')
+        await update($, viewMode, () => 'batch')
       },
     })
     })()
