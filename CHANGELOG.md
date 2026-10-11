@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Lite mode: `/flow lite <task>`, or a `Mode: lite` line on a manager's prompt, runs one task as just a manager and its workers to save tokens. A lite manager is skipped in pre-flight, files no manager-size or worker-size decisions, and merges its own PR (full check, release, push, deploy gates, `reviewer` done) instead of starting a reviewer agent, then reports in a few lines. A PR under `merge_mode` confirm or judged risky is handed over with `mode: "confirm"` and goes to a normal reviewer. Only a lite manager's own PRs open the `release`, `reviewer` ready/done and `deploy` gate tools to it; other managers and workers are refused them.
+### Fixed
+
+- A `Continue on branch:` worker spawn no longer fails with "a hook's subagentType 'flow:continue' names no agent this call can dispatch". The host checks a rewrite against the offer as listed and replays that refusal to a second `next` of the same spawn, so the 0.3.23 in-call fallback could not recover. `flow:continue` is now always offered (a model's own spawn of it is denied). If the host still refuses, the claim is given back, in-place continuations stop for the session, and the manager is told to spawn the brief again, which starts a plain `flow:worker` in a new worktree.
 
 ## [0.6.38] - 2026-10-11
 

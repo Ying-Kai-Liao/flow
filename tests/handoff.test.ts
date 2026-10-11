@@ -35,9 +35,11 @@ const TRANSCRIPT = [
 
 // The test body's $, which can raise agent.offer; the mocked host calls it as the engine would.
 let host: Dollar | undefined
+// Whether flow:continue was offered when the agent listing was made, before any spawn ran.
+let listedContinue = true
 
 type Git = { dirty?: boolean; head?: string; pushed?: string; ancestor?: boolean }
-function world(on: On, o: { deny?: boolean; agents?: AgentInfo[]; git?: Git; spawned?: Record<string, unknown>[]; removed?: string[]; refuseContinue?: boolean } = {}) {
+function world(on: On, o: { deny?: boolean; agents?: AgentInfo[]; git?: Git; spawned?: Record<string, unknown>[]; removed?: string[]; refuseContinue?: boolean; strict?: boolean } = {}) {
   const files = new Map<string, string>()
   const sent: { to: unknown; text: string }[] = []
   const toasts: string[] = []
@@ -46,10 +48,24 @@ function world(on: On, o: { deny?: boolean; agents?: AgentInfo[]; git?: Git; spa
   on('agent.list', () => ({ value: o.agents ?? AGENTS }))
   // The host: a spawn of a type needs it to be offered (as for a rewrite), so flow:continue only dispatches
   // while the plugin offers it.
+  // Strict, as the real host: a type is checked against the offer as listed (asked outside a spawn), and a
+  // second next for a spawn replays its first refusal.
+  const refused = new Map<string, Error>()
   on('agent.spawn', async (_, e) => {
+    const key = (e as { tool_use_id?: string }).tool_use_id ?? ''
+    if (o.strict && refused.has(key)) throw refused.get(key)
+    if (o.strict && e.subagentType === 'flow:continue') {
+      if (!listedContinue) {
+        const err = new Error(`a hook's subagentType '${e.subagentType}' names no agent this call can dispatch`)
+        refused.set(key, err)
+        throw err
+      }
+    }
     const offered = host === undefined ? { isOffered: true } : await host.agent.offer({ agent: e.subagentType, description: '', source: 'plugin', provider: { plugin: 'flow', tier: 'user' } } as never)
     if (!offered.isOffered || (o.refuseContinue && e.subagentType === 'flow:continue')) {
-      throw new Error(`a hook's subagentType '${e.subagentType}' names no agent this call can dispatch`)
+      const err = new Error(`a hook's subagentType '${e.subagentType}' names no agent this call can dispatch`)
+      refused.set(key, err)
+      throw err
     }
     o.spawned?.push(e as unknown as Record<string, unknown>)
     return { model: 'sonnet', agentId: 'n1' }
@@ -168,8 +184,11 @@ test('a manager handoff is not a worker handoff', async ($, on) => {
 // Continuations: the spawn hook rewrites a worker that continues a handed-off branch.
 const DONE: AgentInfo[] = AGENTS.map(a => a.id === 'w1' ? { ...a, status: 'completed' as const } : a)
 const BRIEF = 'Your name: csv-worker-2\nContinue on branch: flow/csv\nGo on.'
-const spawnIt = ($: Dollar, over: Record<string, unknown> = {}) =>
-  ((host = $), $).agent.spawn({ subagentType: 'flow:worker', name: 'csv-worker-2', description: 'w', prompt: BRIEF, parentAgentId: 'm1', ...over } as never)
+const spawnIt = async ($: Dollar, over: Record<string, unknown> = {}) => {
+  host = $
+  listedContinue = (await $.agent.offer({ agent: 'flow:continue', description: '', source: 'plugin', provider: { plugin: 'flow', tier: 'user' } } as never)).isOffered
+  return $.agent.spawn({ subagentType: 'flow:worker', name: 'csv-worker-2', description: 'w', prompt: BRIEF, parentAgentId: 'm1', tool_use_id: `tu-${String(over.name ?? 'csv-worker-2')}`, ...over } as never)
+}
 
 test('a continuation of a clean, pushed worktree runs in place with the digest', async ($, on) => {
   mock.clock(on, { now: 1 })
@@ -190,15 +209,22 @@ test('a continuation of a clean, pushed worktree runs in place with the digest',
   })
 })
 
-test('a refused flow:continue falls back to a plain worker in a new worktree and frees the claim', async ($, on) => {
+test('a refused flow:continue frees the claim, tells the manager, and the repeat starts a plain worker', async ($, on) => {
   mock.clock(on, { now: 1 })
   const spawned: Record<string, unknown>[] = []
-  const opts = { agents: DONE, spawned, refuseContinue: true }
-  world(on, opts)
+  const opts = { agents: DONE, spawned, refuseContinue: true, strict: true }
+  const { files } = world(on, opts)
   await finish($, 'w1')
 
-  await spawnIt($)
+  const r = await spawnIt($)
 
+  expect(r).toMatchObject({ deny: expect.stringContaining('spawn the same brief again') })
+  expect(spawned).toHaveLength(0)
+  expect(logOf(files).filter(l => l.event === 'continue').pop()).toMatchObject({ text: 'new worktree (flow:continue refused)' })
+
+  // No recursion: the repeat is one plain spawn, even though the host would now accept flow:continue.
+  opts.refuseContinue = false
+  await spawnIt($, { name: 'csv-worker-3' })
   expect(spawned).toHaveLength(1)
   expect(spawned[0]).toMatchObject({ subagentType: 'flow:worker' })
   expect(spawned[0]?.cwd).toBeUndefined()
@@ -206,16 +232,24 @@ test('a refused flow:continue falls back to a plain worker in a new worktree and
   expect(prompt).toContain('is kept')
   expect(prompt).not.toContain('You continue in the same worktree')
   expect(prompt).toContain('Transcript digest of the previous worker')
-  // The claim was given back: once the host accepts flow:continue, the next spawn gets the worktree.
-  opts.refuseContinue = false
-  await spawnIt($, { name: 'csv-worker-3' })
-  expect(spawned[1]).toMatchObject({ subagentType: 'flow:continue', cwd: '/r/.claude/worktrees/agent-w1' })
 })
 
-test('flow:continue is not offered outside a spawn', async ($, on) => {
+test('a host that checks the offer as listed and replays a refusal still continues in place', async ($, on) => {
+  mock.clock(on, { now: 1 })
+  const spawned: Record<string, unknown>[] = []
+  world(on, { agents: DONE, spawned, strict: true })
+  await finish($, 'w1')
+
+  await spawnIt($)
+
+  expect(spawned).toHaveLength(1)
+  expect(spawned[0]).toMatchObject({ subagentType: 'flow:continue', cwd: '/r/.claude/worktrees/agent-w1' })
+})
+
+test('the model cannot start flow:continue itself', async ($, on) => {
   world(on)
-  const r = await $.agent.offer({ agent: 'flow:continue', description: '', source: 'plugin', provider: { plugin: 'flow', tier: 'user' } } as never)
-  expect(r.isOffered).toBe(false)
+  const r = await spawnIt($, { subagentType: 'flow:continue' })
+  expect(r).toHaveProperty('deny')
 })
 
 test('only the first of two spawns for a branch gets the worktree', async ($, on) => {

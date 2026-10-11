@@ -21,7 +21,7 @@ import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as
 import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
 import { backNote } from './routing'
-import { checkAttachments, CONTINUE_LINE, continuingCount, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
+import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
 import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
 import { decide, sourceOf } from './decide'
@@ -1593,6 +1593,8 @@ export const register: Register = (on, options) => {
   }
   // Set once a `[1m]` model was refused for a sub-agent: later spawns go straight to the plain one.
   let noLong = false
+  // Set once the host refused a flow:continue rewrite: later continuations start in a new worktree.
+  let noContinue = false
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
@@ -1791,12 +1793,15 @@ export const register: Register = (on, options) => {
     return { text: `Picking tasks${args ? ` from ${args}` : ''}.` }
   })
 
-  // The plugin starts flow:continue itself; the model is never offered it. It is offered only while
-  // the spawn hook below dispatches its own rewrite, since the host checks the offer for a rewrite too.
-  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: continuingCount() > 0 }))
+  // The plugin starts flow:continue itself through a rewrite. The host checks a rewrite's type against the
+  // offer as listed (a hook that is offered only while it dispatches is too late for that check, and the host
+  // then replays the refusal to a second next), so the type stays offered; a model's own spawn of it is denied below.
+  on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: true }))
 
   on('agent.spawn', async ($, input, next) => {
     let e = input
+    // Only the plugin's own rewrite below starts flow:continue: it needs the old worktree as cwd.
+    if (e.subagentType === CONTINUE) return { deny: 'flow: flow:continue is started by the plugin only; spawn a flow:worker with "Continue on branch: <branch>" in the brief.' }
     // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
     const plans = await read($, plan)
     if (Object.keys(plans).length > 0 && e.name !== undefined) {
@@ -1844,7 +1849,7 @@ export const register: Register = (on, options) => {
     }
     // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
     // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
-    const spawn = e.subagentType === WORKER ? await prepareContinue(spawnIoOf($), e) : e
+    const spawn = e.subagentType === WORKER ? await prepareContinue(spawnIoOf($), e, !noContinue) : e
     const role = ROLE[spawn.subagentType]
     const wanted = role === undefined ? undefined : (spawn.model ?? (settings as Record<string, unknown>)[`${role}Model`])
     const long = typeof wanted === 'string' && wanted.includes('[1m]') ? wanted : undefined
@@ -1872,18 +1877,17 @@ export const register: Register = (on, options) => {
     if (spawn.subagentType === CONTINUE && !('agentId' in started && started.agentId !== undefined)) {
       const name = (e as { name?: string }).name ?? e.description
       const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
-      const path = spawn.cwd
       await best($, 'releasing a continuation claim', async () => { await update($, handoffs, hs => {
         const r = branch === undefined ? undefined : hs[branch]
         if (branch === undefined || r === undefined || r.takenBy !== name) return hs
         const { takenBy: _t, ...rest } = r
         return { ...hs, [branch]: rest }
       }) })
-      const { cwd: _c, ...plain } = ev
-      const note = `The previous worker's worktree ${path} is kept, and ${branch} may be checked out there: if \`git checkout -B\` fails, work on a local branch and push \`HEAD:${branch}\`.`
-      ev = { ...plain, subagentType: WORKER, prompt: ev.prompt.replace(/\n\nYou continue in the same worktree [^\n]*/, `\n\n${note}`) }
+      // The host replays its refusal to a second next of this spawn, so no retry in this call: later
+      // continuations skip the in-place rewrite, and the manager is told to spawn the brief again.
+      noContinue = true
       await best($, 'logging a continuation fallback', async () => appendLog($, { event: 'continue', agent: name, owner: await ownerNameOf($, e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
-      ;({ ev, started } = await go(ev))
+      return { deny: `flow: the host refused the in-place continuation (flow:continue); spawn the same brief again and it starts as a plain flow:worker in a new worktree on ${branch}.` }
     }
     if ('agentId' in started && started.agentId !== undefined) {
       const t = await $.clock.now()

@@ -73,7 +73,7 @@ export async function checkAttachments(io: SpawnIo, prompt: string): Promise<{ p
 // A continuing worker's spawn: add the previous worker's digest, then either run it in the old worktree
 // (rewritten to flow:continue with that cwd) or in a new one, removing the old one when that is safe.
 // Best-effort: anything that fails leaves the spawn as the manager wrote it.
-export async function prepareContinue(io: SpawnIo, e: AgentSpawnInput): Promise<AgentSpawnInput> {
+export async function prepareContinue(io: SpawnIo, e: AgentSpawnInput, inPlace = true): Promise<AgentSpawnInput> {
   const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
   if (branch === undefined) return e
   const name = (e as { name?: string }).name ?? e.description
@@ -111,7 +111,7 @@ export async function prepareContinue(io: SpawnIo, e: AgentSpawnInput): Promise<
       const pushed = await gitOut(io, ['rev-parse', `origin/${branch}`])
       const head = clean ? await gitOut(io, ['-C', path, 'rev-parse', 'HEAD']) : undefined
       let won = false
-      if (clean && !live && pushed !== undefined && head === pushed) {
+      if (inPlace && clean && !live && pushed !== undefined && head === pushed) {
         // Claimed in the same update, so a second spawn for the branch does not get the worktree too.
         await io.updateHandoffs(hs => {
           const r = hs[branch] ?? old
@@ -142,19 +142,13 @@ export async function prepareContinue(io: SpawnIo, e: AgentSpawnInput): Promise<
   }
 }
 
-// How many rewritten flow:continue spawns are in the host's hands: the agent.offer hook offers the type then.
-let continuing = 0
-export const continuingCount = (): number => continuing
-// Dispatches a spawn; a flow:continue one counts while it runs and a refusal comes back as a deny.
+// Dispatches a spawn; a refusal of a flow:continue rewrite comes back as a deny, for the caller's fallback.
 export async function dispatch<R>(next: (ev: AgentSpawnInput) => Promise<R>, ev: AgentSpawnInput): Promise<R | { deny: string }> {
   if (ev.subagentType !== CONTINUE) return next(ev)
-  continuing++
   try {
     return await next(ev)
   } catch (err) {
     return { deny: String((err as Error).message) }
-  } finally {
-    continuing--
   }
 }
 
