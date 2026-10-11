@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Shorter flow MCP tool descriptions (about 30% fewer description bytes in `hooks/tools.ts`), and the old-name `queue` tool is deferred so it costs no context until fetched
+
 ## [0.6.52] - 2026-10-12
 
 ### Changed
