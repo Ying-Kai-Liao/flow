@@ -128,7 +128,7 @@ export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answ
     const kind = q.kind === undefined || q.kind === 'question' ? 'ask' : q.kind
     if ((kind === 'deploy' || kind === 'env') && rule.kinds?.includes(kind) !== true) continue
     // Pushing a checked batch is the user's call, whatever the rule says: no rule can name this kind.
-    if (kind === 'push') continue
+    if (kind === 'push' || kind === 'reviewer') continue
     if (rule.kinds !== undefined && !rule.kinds.includes(kind)) continue
     if (rule.answer === DEFAULT_WORD) {
       if (q.blocking) continue
@@ -185,7 +185,7 @@ const SUGGEST_AT = 3
 export function suggest(inbox: Inbox, rules: Resolved[]): Suggestion[] {
   const groups = new Map<string, Question[]>()
   for (const q of inbox.items) {
-    if (q.state !== 'answered' || q.answeredBy !== 'main' || q.answer === undefined || q.kind === 'push') continue
+    if (q.state !== 'answered' || q.answeredBy !== 'main' || q.answer === undefined || q.kind === 'push' || q.kind === 'reviewer') continue
     const key = q.topic !== undefined && q.topic !== '' ? `topic:${lower(q.topic)}` : `text:${lower(q.question)}`
     groups.set(key, [...(groups.get(key) ?? []), q])
   }
