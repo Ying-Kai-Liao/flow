@@ -85,7 +85,7 @@ test('the inbox view opens with i, lists blocking first with the addressee, move
   await ask($, 'm1', [{ ...SOFT, question: 'Ship it?' }])
   await fyi($, 'w1', [F(1)])
   const ui = await mount($)
-  expect(await ui.find({ text: /Inbox: 3 questions for you \(1 blocking\), 1 decision agents made\. Press i/ })).toBeDefined()
+  expect(await ui.find({ text: /Inbox: 3 questions for you \(1 blocking\), 1 decision to keep or undo · i/ })).toBeDefined()
   await open(ui)
   expect(await ui.find({ text: /Inbox/ })).toBeDefined()
   // Blocking first; the worker's question is for its manager.
@@ -274,19 +274,60 @@ test('a protected card: y never answers it, an option press does', async ($, on)
   await ui.unmount()
 })
 
-test('the tree lines are buttons that open the card; Back returns to the tree; important decisions are listed there', async ($, on) => {
+test('the tree lines are buttons that open the card; Back returns to the tree; decisions fold into the Inbox line', async ($, on) => {
   const w = world(on)
   await ask($, 'w1', [Q])
   await fyi($, 'm1', [F(1), F(2, 'worker-size')])
   const ui = await mount($)
-  expect(await ui.find({ text: /d1 decision csv-export: Decision 1/ })).toBeDefined()
-  expect(await ui.find({ text: /d2 decision/ })).toBeUndefined()
+  // Decisions get no tree rows; they fold into the one Inbox line.
+  expect(await ui.find({ text: /d1 decision/ })).toBeUndefined()
+  expect(await ui.find({ text: /Inbox: 1 question for you \(1 blocking\), 2 decisions to keep or undo · i/ })).toBeDefined()
   await ui.press({ key: 'open-q1' })
   expect(await ui.find({ text: /q1 question/ })).toBeDefined()
   await ui.press({ key: 'card-back' })
   expect(await ui.find({ text: /super manager/ })).toBeDefined()
   expect(stateOf(w.files, 'q1')?.state).toBe('open')
   await ui.unmount()
+})
+
+test('a tree with only decisions shows just the Inbox line, singular and plural', async ($, on) => {
+  world(on)
+  await fyi($, 'm1', [F(1)])
+  const ui = await mount($)
+  expect(await ui.find({ text: /Inbox: 1 decision to keep or undo · i/ })).toBeDefined()
+  expect(await ui.find({ text: /question/ })).toBeUndefined()
+  expect(await ui.find({ text: /d1 decision/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the decision preview shows text, why and instead could, with no option lines; a card shows Keep and Undo only', async ($, on) => {
+  const w = world(on)
+  await fyi($, 'w1', [{ decision: 'Use 5 s timeout', why: 'slow CI', alternative: 'poll instead' }])
+  const ui = await mount($)
+  await open(ui)
+  expect(await ui.find({ text: /Use 5 s timeout/ })).toBeDefined()
+  expect(await ui.find({ text: /why: slow CI/ })).toBeDefined()
+  expect(await ui.find({ text: /instead could: poll instead/ })).toBeDefined()
+  expect(await ui.find({ text: /a\) / })).toBeUndefined()
+  await ui.press({ key: 'row-d1' })
+  expect(await ui.find({ text: /d1 decision · from csv-worker, for csv-export · \d+ \w+ ago/ })).toBeDefined()
+  expect(await ui.find({ text: /y Keep/ })).toBeDefined()
+  expect(await ui.find({ text: /n Undo/ })).toBeDefined()
+  expect(await ui.find({ key: 'card-opt-0' })).toBeUndefined()
+  expect(await ui.find({ key: 'card-pick-a' })).toBeUndefined()
+  await ui.press({ key: 'card-yes' })
+  expect(stateOf(w.files, 'd1')?.state).toBe('answered')
+  await ui.unmount()
+})
+
+test('answered decisions read Kept or Undone in the archive; old decisions without alternative render', async ($, on) => {
+  world(on)
+  await fyi($, 'w1', [F(1), F(2)])
+  await cmd($, 'ok d1')
+  await cmd($, 'no d2 use polling')
+  const out = await cmd($, 'inbox archive')
+  expect(out).toMatch(/d1 Kept/)
+  expect(out).toMatch(/d2 Undone: use polling/)
 })
 
 test('the archive lists answered items; an archived card is read-only', async ($, on) => {

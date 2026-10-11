@@ -2466,8 +2466,8 @@ export const register: Register = (on, options) => {
     const breakerNote = breakerLine(await read($, reviewerBreaker), t)
     const askers = askingNames(await read($, inbox))
     const fyiCount = openAll(await read($, inbox)).filter(isFyi).length
-    // The decisions worth a line in the tree: not the routine ones, nor those of finished agents.
-    const openItems = [...openQs, ...foldedOf(await read($, inbox), await endedOwnersOf($)).shown.filter(q => q.kind !== PUSH_KIND).reverse()]
+    // Rows in the tree: questions and approvals, not decisions; those fold into the one Inbox line.
+    const openItems = [...openQs, ...foldedOf(await read($, inbox), await endedOwnersOf($)).shown.filter(q => q.kind !== PUSH_KIND && !isFyi(q)).reverse()]
     // The key row is drawn when any key in it works: the agents' keys, the reviewer's, or the inbox's.
     // The inbox key also opens the archive, so answered items keep it drawn.
     const anyOpen = (await read($, inbox)).items.length > 0
