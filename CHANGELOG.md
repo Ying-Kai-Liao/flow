@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.50] - 2026-10-12
+
+### Changed
+
+- Clear MOD_CAPABILITY_USE_NOT_PLAIN and reflective-code findings, with a source guard (#138)
+
 ## [0.6.49] - 2026-10-12
 
 ### Fixed
