@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.62] - 2026-10-12
+
+### Changed
+
+- decide_eval: route feature (direct / manager+1 / manager+n) (#152)
+
 ## [0.6.61] - 2026-10-12
 
 ### Changed
