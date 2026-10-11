@@ -241,6 +241,30 @@ test('pressing a row opens its large card: tags, who, agent status, every option
   await ui.unmount()
 })
 
+// The Box that holds the answer Input, found in the drawn tree. A flexGrow child in that Box would push the answer row to the pane bottom.
+const answerBox = (e: El): { children?: El[]; props?: { flexGrow?: number } } | undefined => {
+  if (typeof e === 'string' || !e) return undefined
+  const kids = e.children ?? []
+  if (kids.some(c => typeof c === 'object' && c && c.props?.label === 'answer ')) return e as never
+  for (const c of kids) { const hit = answerBox(c); if (hit) return hit }
+  return undefined
+}
+const growing = (box: { children?: El[] } | undefined) => (box?.children ?? []).some(c => typeof c === 'object' && c && c.props?.flexGrow === 1)
+
+test('the answer row sits right under the content of the inbox and of a question card, not at the pane bottom', async ($, on) => {
+  world(on)
+  await ask($, 'w1', [Q])
+  const ui = await mount($, 40, 100)
+  await open(ui)
+  expect(answerBox((await ui.drawn()) as El)).toBeDefined()
+  expect(growing(answerBox((await ui.drawn()) as El))).toBe(false)
+  await ui.press({ key: 'row-q1' })
+  expect(answerBox((await ui.drawn()) as El)).toBeDefined()
+  expect(growing(answerBox((await ui.drawn()) as El))).toBe(false)
+  expect(await has(ui, /y default/)).toBe(true)
+  await ui.unmount()
+})
+
 test('a card answers free text through its Input; a decision card undoes with the typed words', async ($, on) => {
   const w = world(on)
   await ask($, 'm1', [SOFT])
@@ -416,7 +440,7 @@ test('a highlight answered meanwhile answers nothing: the highlight moves and th
 
 // What the pane draws, as lines of text: a column stacks its children, a row sets them side by side with its gap
 // (a child of several lines beside the next one), a border adds its two columns and rows.
-type El = string | { type?: string; props?: { flexDirection?: string; gap?: number; label?: string; borderStyle?: string; paddingX?: number; width?: number; wrap?: string }; children?: El[] } | null | undefined | false
+type El = string | { type?: string; props?: { flexDirection?: string; flexGrow?: number; gap?: number; label?: string; borderStyle?: string; paddingX?: number; width?: number; wrap?: string }; children?: El[] } | null | undefined | false
 const plain = (e: El): string => (typeof e === 'string' ? e : e ? (e.children === undefined && e.props?.label !== undefined ? e.props.label : (e.children ?? []).map(plain).join('')) : '')
 const padCols = (l: string, w: number) => l + ' '.repeat(Math.max(0, w - cols(l)))
 const linesOf = (e: El): string[] => {
