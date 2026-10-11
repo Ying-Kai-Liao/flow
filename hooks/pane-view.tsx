@@ -74,6 +74,9 @@ export type CardCtx = {
   runTime: (act: Activity | undefined, isEnded: boolean) => string
   toggleFold: (a: AgentRow, shown: boolean) => Promise<void>
   open: (id: string) => Promise<void>
+  columns: number
+  // The short model tag of an agent; undefined when unknown.
+  modelOf: (a: AgentRow) => string | undefined
 }
 
 // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
@@ -97,12 +100,22 @@ export function card(c: CardCtx, a: AgentRow, depth: number, full: boolean, bord
   const nHand = below.filter(x => handoffOf(x, acts[x.id])?.kind === 'wrapping').length
   // Only a running agent shines; a pending one is still starting up.
   const working = a.status === 'running' && !asks
+  // The model tag is the first thing to go when the row is short: it shows only if the whole head
+  // (and the collapsed row's percent) still fits, so the name is never cut for it.
+  const tag = c.modelOf(a)
+  const headWidth = 2 + labelOf(a).length + (under > 0 ? ` (+${under})`.length : 0) + 2 + (ROLE[a.type] ?? a.type).length
+    + (hand?.kind === 'wrapping' ? 9 : 0) + (collapsed && asks ? 5 : 0)
+    + (nAsk > 0 ? ` · ${nAsk} asks`.length : 0) + (nHand > 0 ? ` · ${nHand} handoff`.length : 0)
+    + (!(full && !collapsed) && u !== undefined ? ` ${u.percent}%`.length : 0)
+  const chrome = depth * 2 + 1 + (collapsed !== undefined ? 2 : 0) + (bordered && full && !collapsed ? 4 : 0)
+  const showTag = tag !== undefined && headWidth + 3 + tag.length + chrome <= c.columns
   const head = <Text>
     <Text color={COLOR[a.status]}>{GLYPH[a.status] ?? '?'}</Text> {working
       ? <Text bold>{shimmerParts(labelOf(a), t).map((p, i) => <Text key={`sh${i}`} bold inverse={hot} color={p.lit ? 'suggestion' : undefined}>{p.text}</Text>)}</Text>
       : <Text bold inverse={hot}>{labelOf(a)}</Text>}
     {under > 0 && <Text dimColor> (+{under})</Text>}
     <Text dimColor>  {ROLE[a.type] ?? a.type}</Text>
+    {showTag && <Text dimColor> · {tag}</Text>}
     {hand?.kind === 'wrapping' && <Text bold color="warning">  handoff</Text>}
     {collapsed && asks && <Text color="warning"> asks</Text>}
     {nAsk > 0 && <Text color="warning"> · {nAsk} asks</Text>}
@@ -153,6 +166,7 @@ export type PaneCtx = {
   askers: string[]
   decisionPhrases: string[]
   toggle: JSX.Element
+  modelOf: (a: AgentRow) => string | undefined
   card: (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot?: boolean, collapsed?: boolean) => JSX.Element
   runTime: (act: Activity | undefined, isEnded: boolean) => string
   control: (name: string, input: Record<string, unknown>, confirm?: string) => () => Promise<void>
@@ -181,6 +195,7 @@ export type TreeCtx = PaneCtx & {
   inboxRows: number
   deployLines: string[]
   mainU: Usage | undefined
+  mainModel: string | undefined
   mainTime: string
   mergeQueueKey: string
   warnOf: (window: number) => number
@@ -307,6 +322,7 @@ export function agentView(c: PaneCtx, agent: AgentRow) {
   const { Box, Text, Button } = c.els
   const { list, acts, rows, t, shown, sessionMap, arm } = c
   const act = acts[agent.id]
+  const model = c.modelOf(agent)
   const answer = (act?.answer ?? '').trim()
   const children = list.filter(a => a.parentId === agent.id).sort((a, b) => rankOf(a, acts) - rankOf(b, acts))
   const fullChildren = children.length * CARD_ROWS <= rows - 15
@@ -325,7 +341,7 @@ export function agentView(c: PaneCtx, agent: AgentRow) {
         )}>Message</Button>
       </Box>
       <Text bold color={COLOR[agent.status]}>
-        {GLYPH[agent.status] ?? '?'} {labelOf(agent)} <Text dimColor>{ROLE[agent.type] ?? agent.type} · {agent.status}
+        {GLYPH[agent.status] ?? '?'} {labelOf(agent)} <Text dimColor>{ROLE[agent.type] ?? agent.type}{model === undefined ? '' : ` · ${model}`} · {agent.status}
         {act ? ` · ${c.runTime(act, ENDED.has(agent.status))} · last active ${ago(t - act.lastAt)} ago` : ''}{children.length ? ` · ${children.length} under it` : ''}</Text>
       </Text>
       <Text dimColor>{agent.description}</Text>
@@ -633,12 +649,12 @@ export function treeView(c: TreeCtx) {
       {leftover && <Text dimColor wrap="truncate-end">{leftover}</Text>}
       {rootFull ? (
         <Box flexDirection="column" borderStyle="round" paddingX={1}>
-          <Text bold>{ROOT_GLYPH} main <Text dimColor> super manager</Text></Text>
+          <Text bold>{ROOT_GLYPH} main <Text dimColor> super manager{c.mainModel === undefined ? '' : ` · ${c.mainModel}`}</Text></Text>
           {c.meter(mainU, false, mainTime)}
           {limits.slice(0, usageRows).map(l => limitLine(c.els, c.t, l))}
         </Box>
       ) : (
-        <Text bold>{ROOT_GLYPH} main <Text dimColor>· super manager</Text>
+        <Text bold>{ROOT_GLYPH} main <Text dimColor>· super manager{c.mainModel === undefined ? '' : ` · ${c.mainModel}`}</Text>
           {mainU !== undefined && <Text color={meterColor(mainU.percent, c.warnOf(mainU.window))}> {mainU.percent}%</Text>}
         </Text>
       )}
