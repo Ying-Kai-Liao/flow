@@ -85,7 +85,7 @@ test('decide through jev: choice and yes/no', async () => {
   const jev = ok({ answers: { size: { choice: 'large', confidence: 0.9 } } })
   expect(await decide(io(jev, { JEV_API_KEY: 'k' }), { decisionApi: 'jev' }, 'text', SIZE_QUESTION)).toEqual({ answer: 'large', confidence: 0.9 })
   const yn = ok({ answers: { docs: { choice: 'yes', confidence: 0.8 } } })
-  expect(await decide(io(yn, {}, 'JEV_API_KEY=k'), { decisionApi: 'jev' }, 'text', YESNO)).toEqual({ answer: 'yes', confidence: 0.8 })
+  expect(await decide(io(yn, { HOME: '/h' }, 'JEV_API_KEY=k'), { decisionApi: 'jev' }, 'text', YESNO)).toEqual({ answer: 'yes', confidence: 0.8 })
   expect(await decide(io(yn), { decisionApi: 'jev' }, 'text', YESNO)).toEqual({ note: 'jev unavailable: no key' })
 })
 
