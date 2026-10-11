@@ -60,6 +60,14 @@ export function decide(b: Breaker, now: number): Decision {
 
 export const startRun = (b: Breaker, name: string, now: number): Breaker => ({ ...b, run: { name, startedAt: now }, starts: [...recentStarts(b, now), now] })
 
+// A spawn the host denied never ran: its run and its start time go.
+export function abandonRun(b: Breaker, name: string, startedAt: number): Breaker {
+  if (b.run?.name !== name) return b
+  const { run: _run, ...rest } = b
+  const i = (b.starts ?? []).lastIndexOf(startedAt)
+  return { ...rest, starts: (b.starts ?? []).filter((_, j) => j !== i) }
+}
+
 const firstLine = (text: string): string => {
   const line = text.trim().split('\n')[0] ?? ''
   return line.length > 200 ? `${line.slice(0, 199)}…` : line

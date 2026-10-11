@@ -9,7 +9,7 @@ import type { PushState } from './pushgate'
 import { envSummary, itemViewOf } from './deploy'
 import { SKIP_NOTE } from './checks'
 import { withFailed, withFlaky } from './testfail'
-import { CAP_ERROR, clearHalt, decide, endRun, isRetry, normalizeBreaker, openHaltItem, REVIEWER_KIND, startRun } from './reviewer-breaker'
+import { abandonRun, CAP_ERROR, clearHalt, decide, endRun, isRetry, normalizeBreaker, openHaltItem, REVIEWER_KIND, startRun } from './reviewer-breaker'
 import type { RunEnd } from './reviewer-breaker'
 import { isReviewer, mirror, REVIEWER } from './core'
 import { LIVE } from './deliver'
@@ -262,14 +262,18 @@ export async function startQueue(io: QueueIo): Promise<string> {
   }
   const n = (await io.runs()) + 1
   await io.setRuns(n)
+  // Recorded before the spawn: a reviewer that dies at once ends before spawn() resolves, and that end must find its run.
+  await withBreaker(io.breaker, cur => ({ breaker: startRun(cur, `reviewer-${n}`, now), out: undefined }))
   const started = await io.spawn({
     subagentType: REVIEWER,
     name: `reviewer-${n}`,
     description: 'reviewer',
     prompt: `Pending handovers: ${batch !== undefined ? 'wait behind the batch' : pending.length === 0 ? 'none' : pending.map(h => `#${h.pr}`).join(', ')}.${dueTargets.length === 0 ? '' : ` Deploy-only work due: ${dueTargets.join(', ')}.`}${batch === undefined ? '' : batch.state === 'ready' ? ` Batch ${batch.id} awaits the user's push: leave it alone.` : ` ${batch.state === 'pushing' ? 'Push run' : 'Rebuild run'} for batch ${batch.id}: see "Push run" in your instructions.`} Start with mcp__flow__deploy action "list" and mcp__flow__reviewer action "list".`,
   })
-  if (started.deny !== undefined) return `Could not start a reviewer: ${started.deny}`
-  await withBreaker(io.breaker, cur => ({ breaker: startRun(cur, `reviewer-${n}`, now), out: undefined }))
+  if (started.deny !== undefined) {
+    await withBreaker(io.breaker, cur => ({ breaker: abandonRun(cur, `reviewer-${n}`, now), out: undefined }))
+    return `Could not start a reviewer: ${started.deny}`
+  }
   return `Started reviewer reviewer-${n}.`
 }
 

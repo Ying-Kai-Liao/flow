@@ -1,5 +1,5 @@
 import type { AgentInfo } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { Breaker, Question } from '../types'
 import { EMPTY_INBOX, needsMessage, protectedWhy } from '../hooks/inbox'
@@ -7,6 +7,7 @@ import {
   BACKOFF_MS, breakerLine, CAP_ERROR, clearHalt, decide, delayFor, EMPTY_BREAKER, endRun, errorText, HALT_AFTER, HOUR_MS, MAX_STARTS_PER_HOUR, normalizeBreaker,
   openHaltItem, SHORT_RUN_MS, startRun,
 } from '../hooks/reviewer-breaker'
+import { test } from './support'
 import { matchRule, parseRules, suggest } from '../hooks/standing'
 
 type Dollar = Parameters<TestBody>[0]
@@ -146,17 +147,20 @@ function world(on: On) {
   const files = new Map<string, string>()
   const spawns: { name: string | undefined; prompt: string }[] = []
   const toasts: string[] = []
+  // A test can hold spawn() open and have the new reviewer already dead in the roster.
+  const hold: { gate?: Promise<void>; status?: AgentInfo['status'] } = {}
   on('agent.list', () => ({ value: agents }))
   on('session.start', () => ({ cwd: '/r' }))
   on('command.register', () => ({ value: undefined } as never))
   on('tool.register', () => ({ value: undefined } as never))
   on('fs.stat', () => { throw new Error('ENOENT') })
   on('agent.register', (_, e) => ({ value: { agent: (e as unknown as { name: string }).name } }))
-  on('agent.spawn', (_, e) => {
+  on('agent.spawn', async (_, e) => {
     const input = e as unknown as { subagent_type?: string; subagentType?: string; name?: string; description: string; prompt: string }
     const id = `r${spawns.length + 1}`
     spawns.push({ name: input.name, prompt: input.prompt })
-    agents.push({ id, name: input.name, description: input.description, type: input.subagent_type ?? input.subagentType ?? '', status: 'running' })
+    agents.push({ id, name: input.name, description: input.description, type: input.subagent_type ?? input.subagentType ?? '', status: hold.status ?? 'running' })
+    if (hold.gate !== undefined) await hold.gate
     return { model: 'sonnet', agentId: id }
   })
   on('session.send', () => ({ isDelivered: true as const }))
@@ -187,7 +191,7 @@ function world(on: On) {
     }
     return ok()
   })
-  return { agents, files, spawns, toasts, clock }
+  return { agents, files, spawns, toasts, clock, hold }
 }
 
 type W = ReturnType<typeof world>
@@ -275,6 +279,30 @@ test('a handover while halted does not restart the loop or open a second item; a
   await end($, w, 'r4', 500)
   expect(stored(w, 'reviewer-breaker').halt).toBeDefined()
   expect(haltItems(w)).toHaveLength(3)
+})
+
+test('a reviewer that dies before spawn() resolves still counts, and is not respawned at once; a denied spawn leaves no run behind', async ($, on) => {
+  const w = world(on)
+  await start($)
+  // Hold the spawn open: the reviewer is already dead and ends before the host answers.
+  let release: () => void = () => undefined
+  w.hold.gate = new Promise<void>(r => { release = r })
+  w.hold.status = 'failed'
+  const first = handover($, 7)
+  await w.clock.settle()
+  // Its ensureQueue waits behind the held spawn, but the end itself is recorded first.
+  const ended = $.turn.complete({ answer: '', agentId: 'r1', durationMs: 5, isAborted: false, turnId: 't-r1', reason: 'error' } as never)
+  await w.clock.settle()
+  expect(stored(w, 'reviewer-breaker')).toMatchObject({ streak: 1 })
+  release()
+  await first
+  await ended
+  await w.clock.settle()
+  expect(stored(w, 'reviewer-breaker')).toMatchObject({ streak: 1 })
+  expect(w.spawns).toHaveLength(1)
+  await w.clock.advance(1_000)
+  await w.clock.settle()
+  expect(w.spawns).toHaveLength(1)
 })
 
 test('a long successful reviewer resets the breaker', async ($, on) => {
