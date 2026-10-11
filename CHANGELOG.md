@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.41] - 2026-10-12
+
+### Changed
+
+- Continue-on-branch spawn never fails with the flow:continue refusal (#125)
+
 ## [0.6.40] - 2026-10-12
 
 ### Added
