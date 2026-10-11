@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Optional `decision_api` setting (`off` by default): `jev` (TypeSafe's Jev) or `openai` (an OpenAI chat model, `openai_model`, key from `OPENAI_API_KEY`) picks the worker and manager size at spawn through one small decision API, falling back to the `Size:` line when the provider is unavailable. The brief text is sent to the provider (api.typesafe.ai, or the OpenAI host) when on. `size_model` stays as a deprecated alias.
+- Optional `size_model` setting (`off` by default): `jev` lets TypeSafe's Jev classifier pick the worker and manager size at spawn, falling back to the `Size:` line when Jev is unavailable. The brief text is sent to api.typesafe.ai when on.
 
 ## [0.6.34] - 2026-10-11
 

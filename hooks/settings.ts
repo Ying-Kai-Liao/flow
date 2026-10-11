@@ -79,7 +79,7 @@ export const KEYS: Record<string, Kind> = {
 }
 
 // String settings with a closed set of values: another value is dropped with a warning.
-export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'] }
+export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['off', 'jev', 'openai'] }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
