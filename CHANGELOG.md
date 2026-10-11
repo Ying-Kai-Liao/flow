@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MIT license (`LICENSE`) and plugin metadata for the Claude plugin directory listing: `license`, `homepage`, `repository` and `keywords` in `plugin.json`.
+
+### Fixed
+
+- The README install command: `/plugin marketplace add Ying-Kai-Liao/flow`, then `/plugin install flow@flow`.
+
 ## [0.6.40] - 2026-10-12
 
 ### Added
