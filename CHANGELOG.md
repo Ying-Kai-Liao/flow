@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.52] - 2026-10-12
+
+### Changed
+
+- Trim dispatch and init skills (#140)
+
 ## [0.6.51] - 2026-10-12
 
 ### Changed
