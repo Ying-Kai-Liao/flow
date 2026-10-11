@@ -7,15 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.64] - 2026-10-12
+## [0.6.65] - 2026-10-12
 
 ### Changed
 
 - manager_model_normal: third manager model tier routed by Size (#156)
 - decide_eval size: per-role split and normal-managers-on-sonnet counterfactual (#155)
-- Test-slot hook guard: refuse whole-suite runs without a slot (#158)
+
+## [0.6.64] - 2026-10-12
+
 ### Changed
 
+- Test-slot hook guard: refuse whole-suite runs without a slot (#158)
 - The pane's inbox draws each owner as a collapsible card like the tree's agents (chevron, round border, "owner · N decisions", one clipped line per item); the routine decisions are a collapsed card; c (or x) and the chevron fold a card, and a pane too short for all cards draws all but the hot one collapsed. The decision card's header is "id · owner · age".
 - The pane's status lines get icons from one map in `hooks/pane.ts`: 📬 (something open) or 📭 (empty) on the inbox title and the tree's inbox line (now "📬 ? 2 questions · 9 decisions · i"), 👥 agents, 📋 checks, 🧹 leftovers. A waiting question shows a "?" in warning colour that pulses bright and dim once a second from the clock. In an owner's card a question row is the id, BLOCKING in warning colour, then the text (the card names the owner; ", for x" only for a linked escalation), and every open card is the full pane width.
 
