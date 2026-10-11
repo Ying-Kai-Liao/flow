@@ -742,6 +742,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
     )
   }
   const open = q.state === 'open'
+  const linked = q.forQ === undefined ? undefined : findItem(x.ibox, q.forQ)
   const agent = list.find(a => a.name !== undefined && noteKey(a.name) === noteKey(q.owner))
   // Where the next card comes from: the rows as they are after the answer, from this one on.
   const answerWith = (choice: string | null) => io.serial(async () => {
@@ -798,6 +799,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
       <Text dimColor>from {who} · {age(now - q.askedAt)} ago{q.escalated !== undefined ? ' · escalated to you' : ''}</Text>
       {agent !== undefined && <Text dimColor>{q.owner} is {agent.status}</Text>}
       {agent === undefined && <Text dimColor>{q.owner} is not in the roster</Text>}
+      {linked !== undefined && <Text>escalated from {linked.owner}'s {linked.id}: {linked.question}</Text>}
       {q.env !== undefined && <Text dimColor>PR #{q.env.pr}, target {q.env.target}</Text>}
       {open && overridesManager(q) && <Text color="warning">It is for {q.addressee}: answering it overrides {q.addressee}, who is told.</Text>}
       <Text> </Text>

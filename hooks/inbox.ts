@@ -219,7 +219,14 @@ export function answerMessage(q: Question, answer: string, by: string, isDefault
 }
 
 // Questions only; decisions have their own section.
-const questionsOf = (inbox: Inbox | undefined): Question[] => openAll(inbox ?? EMPTY_INBOX).filter(q => !isFyi(q))
+// A worker's question escalated through its manager's (viaQ) is one item with the manager's question: it is
+// hidden while that one is open, and both close together.
+export const hiddenByLink = (inbox: Inbox | undefined, q: Question): boolean => {
+  if (q.viaQ === undefined) return false
+  const via = findItem(inbox, q.viaQ)
+  return via !== undefined && via.state === 'open'
+}
+const questionsOf = (inbox: Inbox | undefined): Question[] => openAll(inbox ?? EMPTY_INBOX).filter(q => !isFyi(q) && !hiddenByLink(inbox, q))
 const fyisOf = (inbox: Inbox | undefined): Question[] => openAll(inbox ?? EMPTY_INBOX).filter(isFyi).sort((a, b) => a.askedAt - b.askedAt)
 
 // Blocking questions first, then oldest first.
@@ -307,7 +314,7 @@ export function expandOk(inbox: Inbox | undefined, words: string[]): { ids: stri
 export const tagsOf = (q: Question): string => [
   q.blocking ? 'BLOCKING' : '',
   q.kind === 'deploy' ? 'NEEDS YOU: DEPLOY APPROVAL' : q.kind === 'push' ? 'NEEDS YOU: PUSH' : q.kind === 'reviewer' ? 'NEEDS YOU: REVIEWER' : q.kind === 'env' ? `NEEDS YOU:${envLabel(q)}` : q.guard !== undefined ? 'NEEDS YOU: GUARD TEST' : '',
-  q.escalated !== undefined ? `ESCALATED (rule ${q.escalated}), for main` : '',
+  q.viaQ !== undefined ? `ESCALATED ${q.escalated ?? `via ${q.viaQ}`}` : q.escalated !== undefined ? `ESCALATED (rule ${q.escalated}), for main` : '',
   q.topic && !isFyi(q) ? `[${q.topic}]` : '',
 ].filter(x => x !== '').join(' ')
 

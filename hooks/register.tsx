@@ -29,7 +29,7 @@ import type { Routed, SpawnIo } from './spawn'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
 import {
-  answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner, endedOwners, foldedOf, FOLD_KEY,
+  answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner, endedOwners, foldedOf, FOLD_KEY, hiddenByLink,
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
@@ -2154,7 +2154,8 @@ export const register: Register = (on, options) => {
     ])
     const leftover = leftoverLine(leftCounts)
     // The push item is drawn as the banner on top, not as a question.
-    const openQs = openAll(await read($, inbox)).filter(q => !isFyi(q) && q.kind !== PUSH_KIND).sort((a, b) => Number(b.blocking) - Number(a.blocking))
+    const boxNow = await read($, inbox)
+    const openQs = openAll(boxNow).filter(q => !isFyi(q) && q.kind !== PUSH_KIND && !hiddenByLink(boxNow, q)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
     const gate = (await read($, pushState)).batch
     const breakerNote = breakerLine(await read($, reviewerBreaker), t)
     const askers = askingNames(await read($, inbox))

@@ -3,7 +3,7 @@ import { test } from './support'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, markAnswered, needsMessage, normalizeInbox,
   openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, findItem, DECISIONS_SHOWN, overridesManager, needsExplicitAnswer, paneRows, paneRowText, protectedWhy,
-  endedOwners, foldedOf, archiveOf, renderArchive, FOLD_KEY,
+  endedOwners, foldedOf, tagsOf, hiddenByLink, archiveOf, renderArchive, FOLD_KEY,
 } from '../hooks/inbox'
 import type { AskedQuestion, Inbox } from '../hooks/inbox'
 
@@ -525,4 +525,21 @@ test('the archive lists answered items newest first with answer, who and when; c
   expect(text).not.toContain('q1 No')
   expect(renderArchive(box, 61 * 60_000, true)).toContain('q1 No (by mgr')
   expect(renderArchive(EMPTY_INBOX, 0)).toContain('empty')
+})
+
+test('an escalated pair is one item: the worker question is hidden while the manager one is open, and tagged via', () => {
+  let box = store([ask('worker asks')])
+  box = store([ask('manager asks')], { name: 'mgr', id: 'm1', isManager: true }, 'main', box)
+  box = { ...box, items: box.items.map(q => (q.id === 'q1' ? { ...q, escalated: 'via q2', viaQ: 'q2' } : { ...q, forQ: 'q1' })) }
+  const w = box.items[0]!
+  expect(tagsOf(w)).toContain('ESCALATED via q2')
+  expect(tagsOf(w)).not.toContain('rule')
+  expect(hiddenByLink(box, w)).toBe(true)
+  expect(paneRows(box).map(r => r.key)).toEqual(['q2'])
+  const text = renderInbox(box, 1000)
+  expect(text).toContain('manager asks')
+  expect(text).not.toContain('worker asks')
+  // once the manager's question is answered the pair is closed; an open worker question would show again
+  const m = markAnswered(box, 'q2', 'Yes', 'main', 2000, undefined, true)
+  expect(m.kind === 'ok' && hiddenByLink(m.inbox, w)).toBe(false)
 })
