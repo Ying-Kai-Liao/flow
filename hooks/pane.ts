@@ -14,6 +14,16 @@ export const COLOR: Record<string, string> = {
 }
 export const ROLE: Record<string, string> = { [MANAGER]: 'manager', [WORKER]: 'worker', [CONTINUE]: 'worker', [SESSION]: 'worker', [REVIEWER]: 'reviewer', [QUEUE]: 'reviewer' }
 export const ROOT_GLYPH = '◆'
+// Icons on the pane's status lines. Emoji are two columns wide: measure with `cols`, never `.length`.
+export const ICON = {
+  agents: '👥', inboxOpen: '📬', inboxEmpty: '📭', checks: '📋', leftover: '🧹',
+  ask: '?',
+} as const
+// Terminal columns of a line: emoji take two, a variation selector or joiner none.
+export const cols = (s: string): number => [...s].reduce((n, ch) => n + (/\p{Emoji_Presentation}/u.test(ch) ? 2 : /[\u200d\ufe0e\ufe0f]/.test(ch) ? 0 : 1), 0)
+// The waiting "?" pulses bright and dim once a second. The phase comes from the clock (like
+// hooks/shimmer.ts), so a redraw never restarts it.
+export const askBright = (now: number): boolean => Math.floor(now / 1000) % 2 === 0
 // Plan states, drawn like the agent statuses they turn into; a waiting node has no agent yet.
 export const PLAN_GLYPH: Record<string, string> = { waiting: '○', ready: '◌', running: '●', done: '✓', blocked: '✗' }
 export const PLAN_COLOR: Record<string, string | undefined> = { waiting: undefined, ready: 'warning', running: 'suggestion', done: 'success', blocked: 'error' }

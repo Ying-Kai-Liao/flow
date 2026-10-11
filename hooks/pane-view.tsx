@@ -6,7 +6,7 @@ import { asksQuestion } from './dag'
 import type { Plan } from './dag'
 import { ENDED } from './deliver'
 import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELLS, tokensDown } from './meter'
-import { COLOR, GLYPH, handoffOf, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
+import { askBright, COLOR, GLYPH, handoffOf, ICON, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
 import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, groupTitle, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
@@ -441,6 +441,20 @@ export function graphModeView(c: PaneCtx) {
   )
 }
 
+// The waiting "?" in warning colour: bold when bright, dim when not.
+const askMark = (Text: Els['Text'], now: number) => <Text color="warning" bold={askBright(now)} dimColor={!askBright(now)}>{ICON.ask}</Text>
+
+// A question inside its owner's card: the id (dim), BLOCKING in warning colour, other tags, the text;
+// the owner is the card's title, so only a linked escalation names who it is for.
+function questionRow(Text: Els['Text'], q: Question, hot: boolean, inner: number) {
+  const other = tagsOf(q).replace(/^BLOCKING ?/, '')
+  const forWho = isAddressee(q, 'main') ? '' : `, for ${q.addressee}`
+  const used = 2 + q.id.length + (q.blocking ? 9 : 0) + (other === '' ? 0 : other.length + 1) + 1 + forWho.length
+  return (
+    <Text inverse={hot}>{hot ? '> ' : '  '}<Text dimColor>{q.id}</Text>{q.blocking && <Text color="warning"> BLOCKING</Text>}{other === '' ? '' : ` ${other}`} {fit(q.question, inner - used)}{forWho}</Text>
+  )
+}
+
 export function inboxView(x: InboxCtx) {
     const { Input, ibox, icur, draft, note, irows, io } = x
   const { Box, Text, Button } = x.els
@@ -610,7 +624,7 @@ export function inboxView(x: InboxCtx) {
   })
   return (
     <Box flexDirection="column" height={rows}>
-      <Text bold>Inbox <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
+      <Text bold>{irows.length === 0 ? ICON.inboxEmpty : ICON.inboxOpen} Inbox{nQ > 0 && <Text> {askMark(Text, x.now)}</Text>} <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
       {iAbove > 0 && <Text dimColor>  ↑ {iAbove} above</Text>}
       {sv.rows.map(sg => {
         const g = sg.g
@@ -646,7 +660,7 @@ export function inboxView(x: InboxCtx) {
             <Button key={`row-${r.key}`} plain onPress={() => void io.serial(async () => { await io.acted(); await io.open(r.key, 'inbox') })}>
               {isFyi(q)
                 ? <Text inverse={hot}>{hot ? '> ' : '  '}<Text dimColor>{q.id}</Text> {fit(q.question, inner - 3 - q.id.length)}</Text>
-                : <Text inverse={hot} color={q.blocking ? 'warning' : undefined}>{hot ? '> ' : '  '}{fit(paneRowText(r), inner - 2)}</Text>}
+                : questionRow(Text, q, hot, inner)}
             </Button>
           )
         }
@@ -655,7 +669,7 @@ export function inboxView(x: InboxCtx) {
             <Button key={`fold-${g.key}`} plain dimColor onPress={press}>{drawnOpen ? '▾ ' : '▸ '}</Button>
             {drawnOpen ? (
               // A Button holds Text only, so the border is drawn around the buttons, as for an agent's card.
-              <Box flexDirection="column" borderStyle="round" borderDimColor={!hotCard} borderColor={hotCard ? 'suggestion' : undefined} paddingX={1}>
+              <Box flexDirection="column" width={W - 2} borderStyle="round" borderDimColor={!hotCard} borderColor={hotCard ? 'suggestion' : undefined} paddingX={1}>
                 <Button key={`row-${g.key}`} plain onPress={press}>{title}</Button>
                 {items.map(item)}
               </Box>
@@ -770,7 +784,7 @@ export function treeView(c: TreeCtx) {
       {gate !== undefined && gate.state !== 'ready' && (
         <Text color="suggestion" wrap="truncate-end">⇪ Batch {gate.id} {gate.state === 'pushing' ? 'released, a reviewer is pushing it' : `is being rebuilt${gate.reason === undefined ? '' : ` (${gate.reason})`}`}: {gate.prs.map(n => `#${n}`).join(' ')}</Text>
       )}
-      <Text dimColor>{list.length} agents · {live} live{prs.length ? ` · ${prs.length} PR${prs.length === 1 ? '' : 's'} with the reviewer` : ''}{list.length > 0 ? ' · press an agent to open it' : ''}</Text>
+      <Text dimColor>{ICON.agents} {list.length} agents · {live} live{prs.length ? ` · ${prs.length} PR${prs.length === 1 ? '' : 's'} with the reviewer` : ''}{list.length > 0 ? ' · press an agent to open it' : ''}</Text>
       {c.openItems.slice(0, 5).map(q => (
         <Button key={`open-${q.id}`} plain onPress={() => c.openCard(q.id)}>
           <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{q.id} {q.owner}: {q.question}</Text>
@@ -779,19 +793,19 @@ export function treeView(c: TreeCtx) {
       {c.openItems.length > 5 && <Text dimColor>and {c.openItems.length - 5} more</Text>}
       {(openQs.length > 0 || fyiCount > 0) && (
         <Text dimColor wrap="truncate-end">
-          Inbox: {[
-            ...(openQs.length > 0 ? [`${openQs.length} question${openQs.length === 1 ? '' : 's'} for you${openQs.some(q => q.blocking) ? ` (${openQs.filter(q => q.blocking).length} blocking)` : ''}`] : []),
-            ...(fyiCount > 0 ? [`${fyiCount} decision${fyiCount === 1 ? '' : 's'} to keep or undo`] : []),
-          ].join(', ')} · i
+          {ICON.inboxOpen} {openQs.length > 0 && askMark(Text, c.t)}{openQs.length > 0 && ' '}{[
+            ...(openQs.length > 0 ? [`${openQs.length} question${openQs.length === 1 ? '' : 's'}${openQs.some(q => q.blocking) ? ` (${openQs.filter(q => q.blocking).length} blocking)` : ''}`] : []),
+            ...(fyiCount > 0 ? [`${fyiCount} decision${fyiCount === 1 ? '' : 's'}`] : []),
+          ].join(' · ')} · i
         </Text>
       )}
-      {checksLine !== undefined && <Text dimColor wrap="truncate-end">{checksLine}</Text>}
+      {checksLine !== undefined && <Text dimColor wrap="truncate-end">{ICON.checks} {checksLine}</Text>}
       {unhanded.length > 0 && (
         <Text color="warning" wrap="truncate-end">
           ⚠ {unhanded.length} PR{unhanded.length > 1 ? 's' : ''} nobody handed over: {unhanded.map(u => `#${u.pr}`).join(' ')}
         </Text>
       )}
-      {leftover && <Text dimColor wrap="truncate-end">{leftover}</Text>}
+      {leftover && <Text dimColor wrap="truncate-end">{ICON.leftover} {leftover}</Text>}
       {rootFull ? (
         <Box flexDirection="column" borderStyle="round" paddingX={1}>
           <Text bold>{ROOT_GLYPH} main <Text dimColor> super manager{c.mainModel === undefined ? '' : ` · ${c.mainModel}`}</Text></Text>
