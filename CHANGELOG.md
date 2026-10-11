@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The usage accounting in the turn.step and turn.complete hooks (context meter, handoff threshold, cost ledger) moved from hooks/register.tsx into hooks/usage-run.ts. No behavior change.
+
 ## [0.6.30] - 2026-10-11
 
 ### Changed
