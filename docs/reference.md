@@ -238,6 +238,7 @@ stops a tool call.
   handoffs/<branch-slug>/<n>.md  transcript digest of a worker's n-th handoff
   managers/<key>/notes.md  a manager's notes
   push.json                the batch behind the push gate (see Push gate)
+  reviewer-breaker.json    the reviewer respawn breaker (see Reviewer rules)
   preflight.json           pre-flight filings and rounds (see Pre-flight)
   checks.json              person checks and their follow-ups (see Person checks)
   ledger.json              tokens spent per agent and model (see Cost meter)
@@ -248,6 +249,7 @@ stops a tool call.
   afterDeploy, evidence?: {ran, exercised, notVerified}, status, at, sha?, report?, reason?}`; `status` is pending, awaiting, taken, ready (⇪, in a batch that awaits `/flow push`), done or returned.
   A new session loads these.
 - `push.json`: `{batch?: {id, state, prs, items, sha, baseSha, ref, check, createdAt, version?, qid?, releasedAt?, reason?}}`; `state` is ready, pushing or rebuilding, `ref` is `refs/flow/push/<id>` (a local ref shared by all worktrees). The inbox item has kind `push`, options push / not yet (default) / drop, and is never answered by standing answers.
+- `reviewer-breaker.json`: `{streak, run?: {name, startedAt}, endedAt?, error?, starts?: [ms], halt?: {at, error, qid?}}`; `halt` stops reviewer starts until a retry. Its inbox item has kind `reviewer`, options retry / not now (default), and is never answered by standing answers. Missing or damaged reads as an empty history.
 - `log.jsonl`: one JSON object per line, `{ts, event, owner, agent?, pr?, branch?, text?}`;
   `event` is spawn, report, handover, take, done, back or note. `owner` is the manager the
   event belongs to (or `main`).

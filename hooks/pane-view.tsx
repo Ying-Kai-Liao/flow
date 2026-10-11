@@ -177,6 +177,7 @@ export type TreeCtx = PaneCtx & {
   anyOpen: boolean
   checksLine: string | undefined
   gate: PushState['batch']
+  breakerNote: string | undefined
   inboxRows: number
   deployLines: string[]
   mainU: Usage | undefined
@@ -557,7 +558,7 @@ export function inboxView(x: InboxCtx) {
 
 export function treeView(c: TreeCtx) {
   const { Box, Text, Button } = c.els
-  const { list, fold, acts, hs, rows, limits, anyOpen, unhanded, leftover, inboxRows, deployLines, cur, gate, openQs, fyiCount, checksLine, mainU, mainTime, toggle, card } = c
+  const { list, fold, acts, hs, rows, limits, anyOpen, unhanded, leftover, inboxRows, deployLines, cur, gate, openQs, fyiCount, checksLine, breakerNote, mainU, mainTime, toggle, card } = c
   const { toggleFold, toggleQueue, open } = c
   // The tree: each agent under the one that started it, what needs a person first.
   const first = treeItems(list, fold, undefined, false, acts).items[0]?.a.id

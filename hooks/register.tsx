@@ -5,7 +5,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, Breaker, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { grantFile, grantSlots, reapSlots } from './slots'
 import type { Evidence } from './evidence'
 import type { RunWork } from './mainff'
@@ -56,8 +56,11 @@ import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
 import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, needLines, normText, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
 import type { Forwarded, RouteIo } from './reviewer-route'
-import { reviewerToolRun, startQueue } from './reviewer-run'
-import type { QueueIo, ReviewerIo } from './reviewer-run'
+import { noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue } from './reviewer-run'
+import { reconcileStale } from './stale-handovers'
+import type { StaleIo } from './stale-handovers'
+import type { BreakerIo, QueueIo, ReviewerIo } from './reviewer-run'
+import { breakerLine, EMPTY_BREAKER, normalizeBreaker, REVIEWER_KIND } from './reviewer-breaker'
 import { handoverTool } from './handover-run'
 import type { HandoverIo } from './handover-run'
 import { askTool, answerTool, fyiTool, preflightTool } from './inbox-run'
@@ -143,6 +146,8 @@ const checks = atom({ plugin: 'flow', key: 'checks' } as const, EMPTY_CHECKS as 
 const ledger = atom({ plugin: 'flow', key: 'ledger' } as const, {} as Ledger)
 const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
+// The reviewer respawn circuit breaker, mirrored from <state dir>/reviewer-breaker.json.
+const reviewerBreaker = atom({ plugin: 'flow', key: 'reviewerBreaker' } as const, EMPTY_BREAKER as Breaker)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
 const prCache = atom({ plugin: 'flow', key: 'prCache' } as const, { prs: [], fetchedAt: 0 } as PrCache)
 // The last dry cleanup sweep, refreshed with the PR list so a render never runs git.
@@ -332,7 +337,8 @@ const migrationsIoOf = ($: EngineInterface): MigrationsIo => ({
   runCmd: argv => runCmd($, argv),
 })
 
-const statusIoOf = ($: EngineInterface, options: Record<string, unknown>): StatusIo => ({
+const statusIoOf = ($: EngineInterface, options: Record<string, unknown>, base: string): StatusIo => ({
+  reconcile: () => reconcileStale(staleIoOf($, base)),
   now: () => $.clock.now(),
   handovers: () => read($, handovers),
   readLog: () => readLog($),
@@ -350,6 +356,7 @@ const statusIoOf = ($: EngineInterface, options: Record<string, unknown>): Statu
   slots: () => read($, testSlots),
   offerSeeds: () => offerSeedsOnce(standingIoOf($), options),
   pushState: () => read($, pushState),
+  breaker: () => read($, reviewerBreaker),
   deploys: () => read($, deploys),
   behind: () => read($, behind),
   limitsLine: (rows, workers) => limitsLine(rows, workers),
@@ -383,6 +390,7 @@ const commandIoOf = ($: EngineInterface): CommandIo => ({
   appendLog: event => appendLog($, event),
   toast: text => { void $.ui.toast(text) },
   ensureQueue: () => ensureQueue($),
+  releaseReviewerHalt: () => releaseHaltTo(breakerIoOf($), 'user'),
   refresh: () => refresh($),
   pushAct: (act, by) => pushAct($, act, by),
   holdTarget: (name, until, by, reason) => holdTarget($, name, until, by, reason),
@@ -804,7 +812,7 @@ async function answerQuestion($: EngineInterface, wanted: string, choice: string
   // The user over a manager's head: the asker hears "the user", and the manager learns the question is closed.
   const over = user && overridesManager(q)
   const who = over ? 'the user' : by
-  const deployNote = q.kind === 'deploy' ? await onDeployAnswer($, q, answer) : q.kind === ENV_KIND ? await onEnvAnswer($, q, answer) : q.kind === PUSH_KIND ? await onPushAnswer($, q, answer, by) : ''
+  const deployNote = q.kind === 'deploy' ? await onDeployAnswer($, q, answer) : q.kind === ENV_KIND ? await onEnvAnswer($, q, answer) : q.kind === PUSH_KIND ? await onPushAnswer($, q, answer, by) : q.kind === REVIEWER_KIND ? await onReviewerAnswer($, answer, by) : ''
   let delivered = true
   let hint = ''
   if (needsMessage(q, isDefault)) {
@@ -1237,7 +1245,40 @@ function ensureQueue($: EngineInterface): Promise<string> {
   return run
 }
 
-const reviewerIoOf = ($: EngineInterface): ReviewerIo => ({
+// Reconciling stale handovers: the git and gh calls stay local to this closure set.
+const staleIoOf = ($: EngineInterface, base: string): StaleIo => ({
+  now: () => $.clock.now(),
+  handovers: () => read($, handovers),
+  agents: () => $.agent.list(),
+  isAncestor: async head => {
+    // The head must resolve to itself first, so a runner that answers every git call with exit 0 proves nothing.
+    const v = await runCmd($, ['git', 'rev-parse', '--verify', `${head}^{commit}`])
+    if (v.exitCode !== 0 || head.length < 7 || !v.stdout.trim().startsWith(head)) return undefined
+    const r = await runCmd($, ['git', 'merge-base', '--is-ancestor', head, `origin/${base}`])
+    // A clear exit 0 with no output only: anything else (a mocked or odd runner) is unknown.
+    if (r.exitCode === 0) return r.stdout.trim() === '' && r.stderr.trim() === '' ? true : undefined
+    return r.exitCode === 1 ? false : undefined
+  },
+  mergedPrs: async () => {
+    const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'merged', '--limit', '50', '--json', 'number,mergeCommit'])
+    if (r.exitCode !== 0) return undefined
+    try {
+      const list: unknown = JSON.parse(r.stdout)
+      if (!Array.isArray(list)) return undefined
+      return new Map((list as { number: number; mergeCommit?: { oid?: string } | null }[]).filter(p => typeof p?.number === 'number').map(p => [p.number, p.mergeCommit?.oid ?? '']))
+    } catch { return undefined }
+  },
+  save: async h => {
+    await update($, handovers, hs => ({ ...hs, [String(h.pr)]: h }))
+    await best($, 'saving a handover', async () => {
+      await saveHandover($, h)
+      if (h.status === 'done') await appendLog($, { event: 'done', owner: h.reportTo, pr: h.pr, branch: h.branch, text: h.report })
+    })
+  },
+})
+
+const reviewerIoOf = ($: EngineInterface, base: string): ReviewerIo => ({
+  reconcile: () => reconcileStale(staleIoOf($, base)),
   run: argv => $.process.run(argv),
   handovers: () => read($, handovers),
   putHandover: async (pr, h) => { await update($, handovers, hs => ({ ...hs, [pr]: h })) },
@@ -1269,7 +1310,33 @@ const queueIoOf = ($: EngineInterface): QueueIo => ({
   runs: () => read($, queueRuns),
   setRuns: n => update($, queueRuns, () => n),
   spawn: input => $.agent.spawn(input),
+  breaker: breakerIoOf($),
+  wait: ms => {
+    // One timer at a time: several ends or handovers during a wait start at most one reviewer.
+    if (breakerTimer) return
+    breakerTimer = true
+    $.clock.after(ms, () => {
+      breakerTimer = false
+      void best($, 'starting the reviewer', async () => void (await ensureQueue($)))
+    })
+  },
 })
+
+let breakerTimer = false
+
+const breakerIoOf = ($: EngineInterface): BreakerIo => ({
+  stateDir: () => stateDir($),
+  readJson: path => readJson($, path),
+  writeJson: (path, obj) => writeJsonAtomic($, path, obj),
+  mkdir: dir => $.process.run(['mkdir', '-p', dir]),
+  get: () => read($, reviewerBreaker),
+  set: async b => { await update($, reviewerBreaker, () => b) },
+  now: () => $.clock.now(),
+  withInbox: fn => withInbox($, fn),
+  toast: text => { void $.ui.toast(text) },
+})
+
+const onReviewerAnswer = ($: EngineInterface, answer: string, by: string): Promise<string> => onReviewerAnswerTo(breakerIoOf($), () => ensureQueue($), answer, by)
 
 const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
 
@@ -1638,6 +1705,14 @@ export const register: Register = (on, options) => {
       const disk = normalizeInbox(await readJson($, `${dir}/inbox.json`))
       await update($, inbox, () => disk)
     })
+    // A fresh session is a fresh attempt: the halt and the wait end, the failure history stays.
+    await best($, 'loading the reviewer breaker', async () => {
+      const dir = await stateDir($)
+      if (dir === undefined) return
+      const disk = normalizeBreaker(await readJson($, `${dir}/reviewer-breaker.json`))
+      await update($, reviewerBreaker, () => disk)
+      await releaseHaltTo(breakerIoOf($), 'flow')
+    })
     await best($, 'loading checks', async () => {
       installed = await installedVersion($)
       const dir = await stateDir($)
@@ -1991,7 +2066,7 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'mcp__flow__release' }, ($, e) => releaseTool(releaseIoOf($), settings, e as unknown as Record<string, unknown>))
 
-  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, ($, e) => reviewerToolRun(reviewerIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId))
+  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, ($, e) => reviewerToolRun(reviewerIoOf($, settings.base), settings, e as unknown as Record<string, unknown>, e.agentId))
 
   on('tool.call', { tool: 'mcp__flow__plan' }, ($, e) => planTool(planIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId))
 
@@ -2084,7 +2159,7 @@ export const register: Register = (on, options) => {
     return { result: 'Unknown action: use list, push, send-back or drop.' }
   })
 
-  on('tool.call', { tool: 'mcp__flow__status' }, ($, e) => statusTool(statusIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__status' }, ($, e) => statusTool(statusIoOf($, options, settings.base), settings, e as unknown as Record<string, unknown>, e.agentId))
   // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
   // Re-armed when usage drops back below the threshold (after a /compact).
   const mainWarn = { warned: false }
@@ -2226,7 +2301,12 @@ export const register: Register = (on, options) => {
         const owner = rows.find(a => a.id === me.parentId)?.name ?? 'main'
         await best($, 'recording a handoff', () => recordHandoff($, me, handedOff[1] as string, owner, settings.maxContinues))
       }
-      if (me && isReviewer(me.type)) await ensureQueue($)
+      // A reviewer that ends at once (no answer, an API error) must not be replaced at once: the breaker records
+      // the end and decides when, or whether, the next one starts.
+      if (me && isReviewer(me.type)) {
+        await best($, 'recording the reviewer end', () => noteReviewerEnd(breakerIoOf($), { name: me.name ?? '', answer: e.answer, reason: e.reason, status: me.status }))
+        await ensureQueue($)
+      }
     }
     return next(e)
   })
@@ -2268,6 +2348,7 @@ export const register: Register = (on, options) => {
     // The push item is drawn as the banner on top, not as a question.
     const openQs = openAll(await read($, inbox)).filter(q => !isFyi(q) && q.kind !== PUSH_KIND).sort((a, b) => Number(b.blocking) - Number(a.blocking))
     const gate = (await read($, pushState)).batch
+    const breakerNote = breakerLine(await read($, reviewerBreaker), t)
     const askers = askingNames(await read($, inbox))
     const fyiCount = openAll(await read($, inbox)).filter(isFyi).length
     // The key row is drawn when any key in it works: the agents' keys, the reviewer's, or the inbox's.
@@ -2420,7 +2501,7 @@ export const register: Register = (on, options) => {
       : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
 
     return treeView({
-      ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, fyiCount, anyOpen, checksLine, gate, inboxRows, deployLines, mainU, mainTime,
+      ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, fyiCount, anyOpen, checksLine, gate, breakerNote, inboxRows, deployLines, mainU, mainTime,
       mergeQueueKey: MERGE_QUEUE_KEY, warnOf, meter, toggleFold, toggleQueue,
       readCursor: () => read($, cursor),
       setCursor: id => update($, cursor, () => id),
