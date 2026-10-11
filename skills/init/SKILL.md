@@ -32,6 +32,13 @@ Give these as a few short messages. After each, ask whether to go on or skip to 
 6. **Checks.** After a deploy, what an agent cannot verify becomes a check for a person: `/flow checks`.
 7. **Coming back.** `/flow resume` picks up unfinished work after a restart; `/flow clean` lists leftover
    worktrees and branches (`--yes` removes them).
+8. **Trim context per project.** Every flow agent inherits this session's global skills, plugins and MCP servers,
+   so unused ones are paid for in every manager, worker and reviewer. Run `/context all` to see what each costs,
+   then override per project in `.claude/settings.local.json` (usually git-ignored): `"skillOverrides": {"<skill>": "off"}`
+   for personal and claude.ai-synced skills (not plugin skills), `"enabledPlugins": {"<name>@<marketplace>": false}`
+   for plugins (claude.ai-synced ones are `<name>@synced`; `claude plugin list` shows ids), and
+   `"deniedMcpServers": [{"serverName": "..."}]` for MCP servers. `/mcp` and `/skills` toggle these per project.
+   `/plugin` may write to your user (global) settings, so prefer the local file. Then `/reload-plugins` or restart.
 
 ## 2. Demo (part: all, or when asked)
 
