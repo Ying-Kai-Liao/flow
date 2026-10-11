@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.57] - 2026-10-12
+
 ### Added
 
 - Jev through OpenRouter: set `openrouter_api_key` (with optional `openrouter_jev_model`, `openrouter_base_url`) and, with no `jev_api_key`, `decision_api` jev sends the request to openrouter.ai; decisions read "jev via openrouter"
