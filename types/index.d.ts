@@ -96,6 +96,8 @@ export type Handover = {
   mode?: 'auto' | 'confirm'
   // The head the user approved with /flow approve; the reviewer merges a confirm PR only at this head.
   approvedHead?: string
+  // A lite manager's own PR (lite.ts): status 'taken' by the manager itself, no reviewer started for it.
+  lite?: true
   // How far the release at merge bumps for this PR; absent (old handovers) means patch.
   release?: 'patch' | 'minor' | 'major'
   // Env/secret changes the PR needs on deploy targets, from the handover tool's env field.
@@ -448,6 +450,8 @@ declare module 'claude-code' {
       hinted: boolean
       handoffs: Record<string, HandoffRecord>
       preflight: Preflight
+      // Managers started in lite mode, keyed by note key (lite.ts).
+      lite: Record<string, { name: string; at: number }>
       leftovers: Leftovers
       sessions: Record<string, Session>
       // Quota windows of the harnesses flow can read (Codex's own logs), for the pane.

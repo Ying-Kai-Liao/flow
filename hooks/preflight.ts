@@ -16,7 +16,10 @@ export const EMPTY_PREFLIGHT: Preflight = { next: 1, entries: {}, rounds: [] }
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
 
 export const SKIP_LINE = /^\s*Pre-flight:\s*skip\b/im
-export const isSkip = (prompt: string): boolean => SKIP_LINE.test(prompt)
+// Lite mode (lite.ts): one task as just a manager and its workers. It implies no pre-flight.
+export const LITE_LINE = /^\s*Mode:\s*lite\b/im
+export const isLite = (prompt: string): boolean => LITE_LINE.test(prompt)
+export const isSkip = (prompt: string): boolean => SKIP_LINE.test(prompt) || isLite(prompt)
 
 // The filing checked whole: one bad field refuses the call and nothing is recorded.
 export function parseFiling(input: unknown): { filing: Filing; questions: AskedQuestion[] } | { error: string } {
@@ -174,7 +177,7 @@ const list = (xs: string[]) => xs.join('; ')
 
 function entryLines(key: string, e: Entry, inbox: Inbox, ended: ReadonlySet<string>): string[] {
   const head = `- ${e.name}`
-  if (e.phase === 'skipped') return [`${head}: skipped (Pre-flight: skip)`]
+  if (e.phase === 'skipped') return [`${head}: skipped (Pre-flight: skip or Mode: lite)`]
   if (e.phase === 'recon') return [`${head}: ${ended.has(key) ? 'ended without pre-flight' : 'still in recon, no pre-flight yet'}`]
   const f = e.filing!
   const qs = openOf(inbox, e, key)

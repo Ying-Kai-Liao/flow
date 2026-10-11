@@ -69,6 +69,7 @@ fix X" is enough.
 | `/flow reject <n> [reason]` | Turns down PR `n` while it awaits approval or is pending (alias `/flow drop`). The manager is told; the GitHub PR and branch are left alone. |
 | `/flow push` | Pushes the batch the reviewer built and checked, when `push_mode` is `confirm`. `/flow push back <pr>` returns one PR, `/flow push drop` all of them. |
 | `/flow hold <target>` / `/flow release <target>` | Keeps a deploy target from deploying, or lets it go again. |
+| `/flow lite <task>` | Runs one task in lite mode: just a manager and its workers, no pre-flight and no reviewer agent, to save tokens (see Lite mode in docs/how-it-works.md). |
 | `/flow resume` | Picks up unfinished work after a restart. |
 | `/flow clean` | Lists leftover worktrees and branches. Add `--yes` to remove them. |
 
