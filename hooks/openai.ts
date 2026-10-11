@@ -61,7 +61,7 @@ export function answerConfidence(content: string, tokens: unknown, options: stri
   return hit && pos === content.length ? Math.exp(logp) : undefined
 }
 
-export function parseOpenai(json: unknown, q: Question): Decision {
+export function parseOpenai(json: unknown, q: Question, minConfidence = DECIDE_MIN_CONFIDENCE): Decision {
   const choice = (json as { choices?: { message?: { content?: unknown }; logprobs?: { content?: unknown } | null }[] } | null)?.choices?.[0]
   const content = choice?.message?.content
   if (typeof content !== 'string') return { note: 'openai unavailable: bad response' }
@@ -74,11 +74,11 @@ export function parseOpenai(json: unknown, q: Question): Decision {
   // Without usable logprobs the answer stands without the threshold.
   const confidence = answerConfidence(content, choice?.logprobs?.content, options)
   if (confidence === undefined) return { answer }
-  if (confidence < DECIDE_MIN_CONFIDENCE) return { note: `openai unavailable: low confidence ${confidence.toFixed(2)}` }
+  if (confidence < minConfidence) return { note: `openai unavailable: low confidence ${confidence.toFixed(2)}` }
   return { answer, confidence }
 }
 
-export const askOpenai: Provider = async (io, cfg, model, text, q, timeoutMs = DECIDE_TIMEOUT_MS) => {
+export const askOpenai: Provider = async (io, cfg, model, text, q, timeoutMs = DECIDE_TIMEOUT_MS, minConfidence = DECIDE_MIN_CONFIDENCE) => {
   if (cfg.key === undefined) return { note: 'openai unavailable: no key' }
-  return post(io, 'openai', `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, cfg.key, openaiBody(text, model, q), timeoutMs, json => parseOpenai(json, q))
+  return post(io, 'openai', `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, cfg.key, openaiBody(text, model, q), timeoutMs, json => parseOpenai(json, q, minConfidence))
 }
