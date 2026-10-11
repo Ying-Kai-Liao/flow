@@ -157,7 +157,9 @@
     "decision_api": {
       "type": "string",
       "title": "Decision API",
-      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev decides the size at spawn (the brief text is sent to api.typesafe.ai; key from JEV_API_KEY or ~/.config/jev/env). openai: an OpenAI chat model decides it (the brief text is sent to api.openai.com or the OPENAI_BASE_URL host; key from OPENAI_API_KEY). The Size line is the fallback if the provider is unavailable. Leave unset to use the deprecated size_model instead; no default, so an unset value is not mistaken for an explicit off."
+      "default": "auto",
+      "options": ["auto", "off", "jev", "openai"],
+      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev decides the size at spawn (the brief text is sent to api.typesafe.ai; key from JEV_API_KEY or ~/.config/jev/env). openai: an OpenAI chat model decides it (the brief text is sent to api.openai.com or the OPENAI_BASE_URL host; key from OPENAI_API_KEY). The Size line is the fallback if the provider is unavailable. auto (the default, same as unset): not set, so the deprecated size_model applies if set, else off. off, jev and openai are explicit and always win."
     },
     "size_model": {
       "type": "string",

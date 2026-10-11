@@ -80,7 +80,7 @@ export const KEYS: Record<string, Kind> = {
 }
 
 // String settings with a closed set of values: another value is dropped with a warning.
-export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['off', 'jev', 'openai'] }
+export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'] }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
@@ -156,8 +156,8 @@ function checked(source: string, layer: Record<string, unknown>, warnings: strin
       out[k] = v
     } else if (!typeOk(kind, v)) {
       warnings.push(`${source}: "${k}" should be a ${kind === 'list' ? 'list of strings' : kind === 'objects' ? 'list of objects' : kind === 'globmap' ? 'object mapping a glob to a list of test strings' : kind}; ignored`)
-    } else if (k === 'decision_api' && v === '') {
-      // /config carries an unset string option as "": that is unset, not a bad value.
+    } else if (k === 'decision_api' && (v === '' || v === 'auto')) {
+      // /config carries an unset string option as "", and "auto" is its dropdown name for unset: neither is a bad value.
       continue
     } else if (CHOICES[k] !== undefined && !CHOICES[k]!.includes(String(v))) {
       warnings.push(`${source}: "${k}" is ${JSON.stringify(v)}; use ${CHOICES[k]!.map(c => `"${c}"`).join(' or ')}; ignored`)
@@ -275,9 +275,9 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     workerModelSmall: model('worker_model_small', 'haiku'),
     workerModelNormal: model('worker_model_normal', 'sonnet'),
     exploreModel: model('explore_model', 'haiku'),
-    // size_model is the 0.6.35 name. It applies only while decision_api is unset, so a 0.6.35 config keeps working;
+    // size_model is the 0.6.35 name. It applies only while decision_api is unset or "auto", so a 0.6.35 config keeps working;
     // an explicit decision_api (even "off", or an unknown value, which is off) always wins.
-    decisionApi: ((v: string) => v === 'jev' || v === 'openai' ? v : 'off' as const)(str('decision_api', str('size_model', 'off'))),
+    decisionApi: ((v: string) => v === 'jev' || v === 'openai' ? v : 'off' as const)(options.decision_api === 'auto' ? str('size_model', 'off') : str('decision_api', str('size_model', 'off'))),
     jevModel: str('jev_model', 'jev-latest'),
     openaiModel: str('openai_model', 'gpt-4.1-mini'),
     conflictModel: model('conflict_model', 'opus'),

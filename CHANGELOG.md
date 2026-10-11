@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `decision_api` is a dropdown in `/config`: `auto` (the default, same as unset: `size_model` applies if set), `off`, `jev`, `openai`. Explicit values always win.
+- The push-batch card's Drop now asks "Drop the whole batch (all PRs go back)?" with Yes/No before returning the PRs. `/flow push drop` is unchanged.
+
 ## [0.6.43] - 2026-10-12
 
 ### Added

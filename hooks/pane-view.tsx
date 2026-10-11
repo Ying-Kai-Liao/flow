@@ -982,7 +982,7 @@ export type BatchCtx = {
   batch: PushState['batch']
   hs: Record<string, Handover>
   note: string
-  // The PR picked to be sent back, awaiting the confirming press.
+  // The PR picked to be sent back (or 0, Drop of the whole batch), awaiting the confirming press.
   pick: number | null
   now: number
   io: {
@@ -997,6 +997,9 @@ export type BatchCtx = {
     leave: () => Promise<void>
   }
 }
+
+// The pick value that asks to confirm Drop instead of naming a PR (PR numbers are positive).
+const DROP_PICK = 0
 
 // The ready push batch: its PRs (each opens its own card) and Push, Send one back, Drop.
 export function batchCardView(x: BatchCtx) {
@@ -1044,12 +1047,19 @@ export function batchCardView(x: BatchCtx) {
           <Button key="batch-back-no" hotkey="n" onPress={() => void io.serial(async () => { await io.acted(); await io.setPick(null) })}>No</Button>
         </Box>
       )}
+      {ready && pick === DROP_PICK && (
+        <Box flexDirection="row" gap={1}>
+          <Text color="warning">Drop the whole batch (all PRs go back)?</Text>
+          <Button key="batch-drop-yes" hotkey="y" onPress={run({ kind: 'drop' })}>Yes, drop</Button>
+          <Button key="batch-drop-no" hotkey="n" onPress={() => void io.serial(async () => { await io.acted(); await io.setPick(null) })}>No</Button>
+        </Box>
+      )}
       <Box flexGrow={1} />
       {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
       {ready && (
         <Box flexDirection="row" gap={1}>
           <Button key="batch-push" hotkey="p" onPress={run({ kind: 'push' })}>Push</Button>
-          <Button key="batch-drop" hotkey="d" onPress={run({ kind: 'drop' })}>Drop</Button>
+          <Button key="batch-drop" hotkey="d" onPress={() => void io.serial(async () => { await io.acted(); await io.setPick(DROP_PICK) })}>Drop</Button>
         </Box>
       )}
     </Box>
