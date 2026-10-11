@@ -226,6 +226,24 @@
       "description": "Advanced: OpenAI chat model used when decision_api is openai. It must support structured outputs and logprobs (not a reasoning model).",
       "default": "gpt-4.1-mini"
     },
+    "decide_inbox": {
+      "type": "boolean",
+      "title": "Decision API keeps routine decisions",
+      "description": "Advanced: On, with decision_api jev or openai: when an agent records a decision (mcp__flow__fyi), the provider reads its text and, if it is confident the decision is routine, flow keeps it so main is not woken for it. It is listed as kept by the provider and can still be undone. Only decisions are asked about, never questions, deploys, env changes or pushes. The decision text is sent to the provider. Off: nothing is sent.",
+      "default": false
+    },
+    "decide_handoff": {
+      "type": "boolean",
+      "title": "Decision API advises at handoffs",
+      "description": "Advanced: On, with decision_api jev or openai: when a worker hands off, the provider reads the handoff note and, if it is confident, the manager is told to split the package (or, past max_continues, which way it leans). Advice only: max_continues is unchanged. The handoff note is sent to the provider. Off: nothing is sent.",
+      "default": false
+    },
+    "decide_min_confidence": {
+      "type": "number",
+      "title": "Decision API min confidence",
+      "description": "Advanced: The least confidence (0 to 1) the provider's answer needs for decide_inbox and decide_handoff to act on it. Spawn sizing keeps its own 0.5.",
+      "default": 0.8
+    },
     "conflict_model": {
       "type": "string",
       "title": "Conflict model",

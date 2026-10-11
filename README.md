@@ -134,6 +134,7 @@ through the engine's `$` calls. This section lists what it sends, runs, writes a
 | an OpenAI-compatible API | the brief or task text (its `Size:` line removed, at most 8000 characters), a fixed sizing question and its options, sent to `openai_base_url` (default `https://api.openai.com/v1`) with your `openai_api_key` | only when `decision_api` is `openai`, once per manager or worker start |
 | TypeSafe's Jev | the same text and question, sent to `jev_base_url` (default `https://api.typesafe.ai`) with your `jev_api_key` | only when `decision_api` is `jev`, once per manager or worker start |
 | OpenRouter (Jev route) | the same text and question, sent to `openrouter_base_url` (default `https://openrouter.ai/api`) with your `openrouter_api_key` | only when `decision_api` is `jev`, `jev_api_key` is empty and `openrouter_api_key` is set |
+| the same provider (`jev` or `openai`) | an inbox decision's text, or a worker's handoff note (at most 8000 characters), with a fixed question and its options | only when `decide_inbox` / `decide_handoff` is on and `decision_api` is `jev` or `openai`, once per recorded decision or handoff |
 | its own agents in this session | messages, through `$.session.send` (see below) | while they run |
 
 The two API calls go through the engine's `$.http.fetch`. With `decision_api` at `off`, the

@@ -27,6 +27,8 @@ import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
 import { decide, sourceOf } from './decide'
 import type { DecideIo, DecideSettings, FetchLike } from './decide'
+import { adviceLine, adviceSuffix, handoffLean } from './decide-use'
+import type { DecideUseSettings } from './decide-use'
 import type { Routed, SpawnIo } from './spawn'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
@@ -352,6 +354,7 @@ function inboxIoOf($: EngineInterface): InboxIo {
     withPreflight: fn => withPreflight($, fn),
     preflightTick: rows => preflightTick($, rows),
     submitLater: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
+    net: decideIoOf($),
   }
 }
 
@@ -1227,12 +1230,13 @@ const mainHasAnswer = ($: EngineInterface, answer: string) => mainHasAnswerTo(ro
 
 // A worker's HANDOFF: write the digest, log it, remember where its worktree is, and warn the owner when the
 // package keeps handing off. Best-effort throughout: a missing digest still leaves the record.
-async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, owner: string, maxContinues: number): Promise<void> {
+async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, owner: string, maxContinues: number, decideSettings: DecideUseSettings): Promise<void> {
   const prior = (await readLog($)).filter(ev => ev.event === 'handoff' && ev.branch === branch)
   // turn.complete can fire again for the same agent; count its handoff once.
   if (prior.some(ev => ev.agent === me.name)) return
   const count = prior.length + 1
   let digestPath: string | undefined
+  let note: string | undefined
   await best($, 'writing a handoff digest', async () => {
     const dir = await stateDir($)
     if (dir === undefined) return
@@ -1240,7 +1244,8 @@ async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, o
     if ('deny' in msgs) return
     const path = `${dir}/handoffs/${branch.replaceAll('/', '-')}/${count}.md`
     await $.process.run(['mkdir', '-p', path.slice(0, path.lastIndexOf('/'))])
-    await $.fs.write(path, buildDigest(msgs, branch, me.name ?? me.id))
+    note = buildDigest(msgs, branch, me.name ?? me.id)
+    await $.fs.write(path, note)
     digestPath = path
   })
   let wt: { path: string; head?: string } | undefined
@@ -1254,9 +1259,15 @@ async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, o
     ...(digestPath && { digestPath }), ...(wt && { worktree: wt.path, ...(wt.head && { head: wt.head }) }),
   }
   await update($, handoffs, hs => ({ ...hs, [branch]: record }))
+  // decide_handoff: the provider's lean, advice only; max_continues is enforced the same either way.
+  const lean = me.parentId === undefined ? undefined : await handoffLean(decideIoOf($), standingIoOf($), decideSettings, { branch, owner, note, count, maxContinues }).catch(() => undefined)
+  const source = sourceOf(decideSettings)
   if (count > maxContinues && me.parentId !== undefined) {
     void $.ui.toast(`${branch} has handed off ${count} times: split it`)
-    await deliver($, me.parentId, `flow: ${branch} has handed off ${count} times (max_continues ${maxContinues}). The package is too big for one worker: split the Remaining part of its handoff note into smaller briefs instead of another plain continuation.`, { urgent: true }).catch(() => undefined)
+    await deliver($, me.parentId, `flow: ${branch} has handed off ${count} times (max_continues ${maxContinues}). The package is too big for one worker: split the Remaining part of its handoff note into smaller briefs instead of another plain continuation.${lean === undefined ? '' : adviceSuffix(source, lean)}`, { urgent: true }).catch(() => undefined)
+  } else if (lean !== undefined && me.parentId !== undefined) {
+    const line = adviceLine(source, branch, lean)
+    if (line !== undefined) await deliver($, me.parentId, line, { urgent: false }).catch(() => undefined)
   }
 }
 
@@ -2269,7 +2280,7 @@ export const register: Register = (on, options) => {
   }).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__ask' }, ($, e) => askTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
-  on('tool.call', { tool: 'mcp__flow__fyi' }, ($, e) => fyiTool(inboxIoOf($), e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+  on('tool.call', { tool: 'mcp__flow__fyi' }, ($, e) => fyiTool(inboxIoOf($), e as unknown as Record<string, unknown>, e.agentId, settings)).catch(toolCatch)
   on('tool.call', { tool: 'mcp__flow__preflight' }, ($, e) => preflightTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
   on('tool.call', { tool: 'mcp__flow__answer' }, ($, e) => answerTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
   on('tool.call', { tool: 'mcp__flow__standing' }, ($, e) => standingTool(standingIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
@@ -2409,7 +2420,7 @@ export const register: Register = (on, options) => {
       const handedOff = /^HANDOFF:\s*(?!manager\b)(\S+)\s*$/.exec(e.answer.trim().split('\n').pop() ?? '')
       if (me && WORKERS.has(me.type) && handedOff?.[1] !== undefined) {
         const owner = rows.find(a => a.id === me.parentId)?.name ?? 'main'
-        await best($, 'recording a handoff', () => recordHandoff($, me, handedOff[1] as string, owner, settings.maxContinues))
+        await best($, 'recording a handoff', () => recordHandoff($, me, handedOff[1] as string, owner, settings.maxContinues, settings))
       }
       // A reviewer that ends at once (no answer, an API error) must not be replaced at once: the breaker records
       // the end and decides when, or whether, the next one starts.

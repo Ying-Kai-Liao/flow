@@ -209,13 +209,20 @@ export type Session = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff' | 'branch-delete' | 'tests-failed' | 'flaky'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff' | 'branch-delete' | 'tests-failed' | 'flaky' | 'decide'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string
   pr?: number
   branch?: string
   text?: string
+  // Only on 'decide' (hooks/decide-use.ts): which feature asked, the item, the provider's answer and whether it was applied.
+  feature?: 'inbox' | 'handoff'
+  id?: string
+  answer?: string
+  confidence?: number
+  applied?: boolean
+  note?: string
 }
 
 export type Question = {
@@ -258,6 +265,8 @@ export type Question = {
   askerIsManager?: boolean
   // The standing answer rule that answered it (answeredBy is then "standing answer").
   rule?: string
+  // Only on a decision the decision API kept itself (hooks/decide-use.ts): who and how sure. It stays undoable until someone answers it again.
+  auto?: { by: string; confidence: number }
   // A guard_tests suggestion (guardtests.ts): answering "Add it" writes this mapping to the personal config.
   guard?: { glob: string; test: string }
   // An escalate standing rule holds it for the user: it is blocking and only main may answer it.
