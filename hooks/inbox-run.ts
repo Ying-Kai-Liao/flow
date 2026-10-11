@@ -3,7 +3,7 @@
 import type { AgentRow } from '../types'
 import { MANAGER } from './core'
 import type { DeliverOptions } from './deliver'
-import { addQuestions, fyiAsked, isFyi, findItem, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
+import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, linkEscalations, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
 import { followUp, FILE_HELP, parseFiling, recordFiling, renderFollowUp } from './preflight'
 import type { Preflight } from './preflight'
 import { alwaysRule, autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
@@ -38,9 +38,13 @@ export async function askTool(io: InboxIo, options: Record<string, unknown>, inp
   // Standing answers hook: rules are read fresh. A fresh question that one matches is stored, then marked
   // answered in the same write (so it has an id and history); the result line tells the asker.
   const { rules } = await loadRules(io.standing, options)
+  const bad = await io.standing.withInbox(cur => ({ inbox: cur, out: checkEscalations(cur, name, me?.type === MANAGER, parsed.questions) }))
+  if (bad !== undefined) return { result: `Refused, nothing recorded: ${bad}` }
   const { added, auto } = await io.standing.withInbox(cur => {
     const r = autoAnswer(cur, addQuestions(cur, { name, id: agentId, isManager: me?.type === MANAGER }, addressee, parsed.questions, at), rules, at, true)
-    return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
+    // A rule that answered the escalation at once leaves the worker's question open: no link, the manager relays.
+    const linkable = r.added.filter(a => !r.hits.has(a.q.id))
+    return { inbox: linkEscalations(r.inbox, linkable), out: { added: r.added, auto: r.hits } }
   })
   await recordAutoAnswers(io.standing, added, auto, name)
   const date = await io.standing.today()
@@ -64,9 +68,10 @@ export async function askTool(io: InboxIo, options: Record<string, unknown>, inp
     result: added.map(({ q, fresh: isNew }) => {
       if (!isNew) return `${q.id}: already asked as ${q.id}.`
       const hit = auto.get(q.id)
-      if (hit !== undefined) return `${q.id}: answered by standing answer ${hit.rid}: ${hit.answer}. Carry on from it.`
+      if (hit !== undefined) return `${q.id}: answered by standing answer ${hit.rid}: ${hit.answer}. Carry on from it.${q.forQ === undefined ? '' : ` Your worker's ${q.forQ} stays open: answer it yourself with that answer.`}`
+      if (q.forQ !== undefined) return `${q.id}: ${q.forQ} is escalated to main through this question. Main's answer to either closes both and the worker is told; don't relay it.${q.blocking ? ' End your turn and wait: the answer arrives by message.' : ' Go on the default meanwhile.'}`
       return q.blocking
-        ? `${q.id}: end your turn now; the answer arrives by message.`
+        ? `${q.id}: end your turn now and wait for the answer; you are woken with it as a message (also if you show as completed), then carry on from it.`
         : `${q.id}: proceed on the default (${q.default}), say in your report/PR that you assumed it; you'll get a message if the answer differs.`
     }).join('\n'),
   }

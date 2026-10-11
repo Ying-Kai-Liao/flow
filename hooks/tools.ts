@@ -63,7 +63,7 @@ export const ASK_TOOL: ToolSpec = {
   name: 'ask',
   description: 'Ask a structured question (a batch) instead of asking in prose. A worker\'s questions go to its manager, a manager\'s to main. ' +
     'Give options and the default you recommend. Non-blocking: go ahead on the default now and say in your report that you assumed it; you get a message if the answer differs. ' +
-    'Blocking: end your turn; the answer arrives by message. Main cannot ask. ' +
+    'Blocking: end your turn and wait; you are woken with the answer as a message, then carry on from it. Main cannot ask. A manager escalating a worker\'s open question to main sets `for` to that question\'s id (instead of relaying main\'s answer by hand): main\'s answer then reaches the worker and you. ' +
     'Give a recurring kind of question a short stable kebab-case topic (e.g. version-bump, test-approach): the user can answer a topic once, and a standing answer then answers it for you at once (the result line says so).',
   inputSchema: {
     type: 'object',
@@ -80,6 +80,7 @@ export const ASK_TOOL: ToolSpec = {
             blocking: { type: 'boolean', description: 'true when you cannot go on without the answer' },
             context: { type: 'string', description: 'What the answerer needs to know' },
             topic: { type: 'string', description: 'For a question of a recurring kind: a short, stable kebab-case label (e.g. version-bump, test-approach), the same every time you ask it. The user can answer such a topic once as a standing answer.' },
+            for: { type: 'string', description: 'Managers only: the id of a worker\'s open question addressed to you (e.g. q12) that this question escalates to main. Main\'s answer closes both and is sent to the worker.' },
           },
           required: ['question', 'options', 'default', 'blocking'],
         },

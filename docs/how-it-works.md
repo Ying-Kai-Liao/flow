@@ -126,8 +126,16 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   gets an id (`q7`); asking the same open question twice returns the existing id. They are kept in
   `<git-common-dir>/flow/inbox.json`, so they survive restarts.
 - **Non-blocking**: the agent goes ahead on the default and says in its report or PR that it
-  assumed it; a message comes only if the answer differs. **Blocking**: it ends its turn and the
-  answer arrives by message.
+  assumed it; a message comes only if the answer differs. **Blocking**: it ends its turn and waits;
+  the answer wakes it as a message, also when it showed as completed or left the roster (it is not
+  finished, and `status` shows "waiting on q7"), and it continues from the answer. An asker that
+  failed or was killed cannot be woken: the answer is noted for its owner and sent to main. A worker
+  continued as `name-2` gets the answer instead.
+- **Escalation**: a manager passes a worker's blocking question to you with `mcp__flow__ask` and
+  `for: "q7"` (the worker's open question addressed to it). The worker's question then shows as
+  escalated; your answer to either question closes both, the worker hears "main answered q7 via
+  <manager>" and the manager is told. A second answer to the other one is refused as already answered.
+  The manager may still answer q7 itself; that closes its escalation and tells main.
 - `/flow inbox` is the person's view: a one-line summary, the questions (blocking first; deploy, push,
   env and guard items tagged NEEDS YOU) with the options on one line (default marked) and age, the decisions
   as one flat table (id, from, headline, age; newest first, the newest 15 and a `+M more` line, `/flow inbox decisions`
