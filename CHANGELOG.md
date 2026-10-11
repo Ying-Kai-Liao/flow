@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Shorter flow MCP tool descriptions (about 30% fewer description bytes in `hooks/tools.ts`), and the old-name `queue` tool is deferred so it costs no context until fetched
+## [0.6.52] - 2026-10-12
+
+### Changed
+
+- Trim dispatch and init skills (#140)
+
+## [0.6.51] - 2026-10-12
+
+### Changed
+
+- Decisions read as statements, not questions: the pane tree folds them into the Inbox line ("1 question for you, 9 decisions to keep or undo"), and the inbox preview and card show the decision, why and "instead could" with only Keep and Undo; answered ones read Kept or Undone. A decision now stores its alternative in its own field.
+### Changed
+
+- Cut the dispatch skill to about half its size; rare procedures moved to skills/dispatch/references/details.md
 
 ## [0.6.50] - 2026-10-12
 
