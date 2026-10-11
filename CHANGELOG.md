@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.54] - 2026-10-12
+
 ### Changed
 
 - `/flow init` walkthrough adds a step on trimming unused global skills, plugins and MCP servers per project (`.claude/settings.local.json`) before running flow, since every agent inherits them
