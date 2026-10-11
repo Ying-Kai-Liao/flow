@@ -2,13 +2,13 @@
 // (jev.ts, openai.ts) that take the injected fetch and timer (the engine's $.http.fetch and $.clock.after in
 // register.tsx), so tests need no network and no clock. Keys and base URLs come from /config only. Any failure is a short note and the caller falls back to
 // its default. The key and response bodies never reach a note.
-import { askJev, jevConfig } from './jev'
+import { askJev, jevConfig, jevName } from './jev'
+export { JEV_DEFAULT_MODEL } from './jev'
 import { askOpenai, OPENAI_DEFAULT_MODEL, openaiConfig } from './openai'
 
 export const DECIDE_TIMEOUT_MS = 5000
 export const DECIDE_MIN_CONFIDENCE = 0.5
 export const DECIDE_TEXT_MAX = 8000
-export const JEV_DEFAULT_MODEL = 'jev-latest'
 export type DecisionApi = 'off' | 'jev' | 'openai'
 
 // `id` is the key a provider may answer under; a choice lists its options with criteria, a yes/no answers "yes" or "no".
@@ -56,14 +56,14 @@ export async function post(io: DecideIo, name: string, url: string, key: string,
 // `after` is a one-shot timer that `cancel()` stops, as the engine's $.clock.after.
 export type DecideIo = { fetch: FetchLike; after: (ms: number, fn: () => void) => { cancel: () => void } }
 // The keys and base URLs are /config options (sensitive keys), never read from the environment or a file.
-export type DecideSettings = { decisionApi?: DecisionApi; jevModel?: string; openaiModel?: string; jevApiKey?: string; jevBaseUrl?: string; openaiApiKey?: string; openaiBaseUrl?: string }
+export type DecideSettings = { decisionApi?: DecisionApi; jevModel?: string; openaiModel?: string; jevApiKey?: string; jevBaseUrl?: string; openrouterApiKey?: string; openrouterBaseUrl?: string; openrouterJevModel?: string; openaiApiKey?: string; openaiBaseUrl?: string }
 
 // How the decision text names the provider ("jev", "openai gpt-4.1-mini").
-export const sourceOf = (s: DecideSettings): string => (s.decisionApi === 'openai' ? `openai ${s.openaiModel ?? OPENAI_DEFAULT_MODEL}` : 'jev')
+export const sourceOf = (s: DecideSettings): string => (s.decisionApi === 'openai' ? `openai ${s.openaiModel ?? OPENAI_DEFAULT_MODEL}` : jevName(jevConfig(s).via))
 
 // `minConfidence` is the floor under which an answer comes back as a "low confidence" note; the eval lowers it to see every answer.
 export async function decide(io: DecideIo, s: DecideSettings, text: string, q: Question, timeoutMs = DECIDE_TIMEOUT_MS, minConfidence = DECIDE_MIN_CONFIDENCE): Promise<Decision> {
   if (s.decisionApi === 'openai') return askOpenai(io, openaiConfig(s), s.openaiModel ?? OPENAI_DEFAULT_MODEL, text, q, timeoutMs, minConfidence)
-  if (s.decisionApi === 'jev') return askJev(io, jevConfig(s), s.jevModel ?? JEV_DEFAULT_MODEL, text, q, timeoutMs, minConfidence)
+  if (s.decisionApi === 'jev') { const c = jevConfig(s); return askJev(io, c, c.model, text, q, timeoutMs, minConfidence) }
   return { note: 'decision api off' }
 }

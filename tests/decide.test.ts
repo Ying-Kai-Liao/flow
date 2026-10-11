@@ -129,6 +129,25 @@ test('the jev request for sizing keeps its shape', () => {
   }))
 })
 
+test('decide through jev via OpenRouter: URL, Bearer key, model, parsed answer and named notes', async () => {
+  let seen: { url: string; auth: string; model: string } | undefined
+  const f: FetchLike = async (url, init) => {
+    seen = { url, auth: init.headers.Authorization!, model: JSON.parse(init.body).model }
+    return { ok: true, status: 200, json: async () => ({ answers: { size: { type: 'choice', choice: 'large', confidence: 0.82, probabilities: { small: 0.1, normal: 0.08, large: 0.82 } } } }) }
+  }
+  const s = { decisionApi: 'jev' as const, openrouterApiKey: 'or-key' }
+  expect(await decide(io(f), s, 'text', SIZE_QUESTION)).toEqual({ answer: 'large', confidence: 0.82 })
+  expect(seen).toEqual({ url: 'https://openrouter.ai/api/v1/systemone', auth: 'Bearer or-key', model: '~typesafe/jev-latest' })
+  expect(sourceOf(s)).toBe('jev via openrouter')
+  expect(sourceOf({ ...s, jevApiKey: 'k' })).toBe('jev')
+  const bad: FetchLike = async () => ({ ok: false, status: 401, json: async () => ({}) })
+  expect(await decide(io(bad), s, 'text', SIZE_QUESTION)).toEqual({ note: 'jev via openrouter unavailable: HTTP 401' })
+  expect(await decide(io(f), { decisionApi: 'openai', openrouterApiKey: 'or-key' }, 'text', SIZE_QUESTION)).toEqual({ note: 'openai unavailable: no key' })
+  seen = undefined
+  await decide(io(f), { ...s, jevApiKey: 'k' }, 'text', SIZE_QUESTION)
+  expect(seen).toEqual({ url: 'https://api.typesafe.ai/v1/systemone', auth: 'Bearer k', model: 'jev-latest' })
+})
+
 test('sourceOf names the provider for the decision text', () => {
   expect(sourceOf({ decisionApi: 'jev' })).toBe('jev')
   expect(sourceOf({ decisionApi: 'openai' })).toBe('openai gpt-4.1-mini')

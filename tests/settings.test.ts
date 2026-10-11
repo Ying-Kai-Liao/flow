@@ -93,13 +93,14 @@ test('decision_phrases warns that it is deprecated and still applies', () => {
 
 test('API keys come from /config only: a settings file that sets one is ignored with a warning', () => {
   const r = mergeLayers({ openai_api_key: 'sk-config' }, [
-    { path: REPO, text: JSON.stringify({ openai_api_key: 'sk-repo', jev_api_key: 'k', openai_base_url: 'https://gw.example/v1' }) },
+    { path: REPO, text: JSON.stringify({ openai_api_key: 'sk-repo', jev_api_key: 'k', openrouter_api_key: 'or', openai_base_url: 'https://gw.example/v1' }) },
     { path: OVERLAY, text: JSON.stringify({ openai_api_key: 'sk-overlay' }) },
   ])
   expect(r.raw.openai_api_key).toBe('sk-config')
   expect(r.raw.jev_api_key).toBeUndefined()
+  expect(r.raw.openrouter_api_key).toBeUndefined()
   expect(r.raw.openai_base_url).toBe('https://gw.example/v1')
-  expect(r.warnings.filter(x => x.includes('/config only')).length).toBe(3)
+  expect(r.warnings.filter(x => x.includes('/config only')).length).toBe(4)
   expect(r.warnings.some(x => x.includes('sk-'))).toBe(false)
 })
 

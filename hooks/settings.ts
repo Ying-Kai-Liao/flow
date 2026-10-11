@@ -42,6 +42,9 @@ export const KEYS: Record<string, Kind> = {
   openai_model: 'string',
   jev_api_key: 'string',
   jev_base_url: 'string',
+  openrouter_api_key: 'string',
+  openrouter_jev_model: 'string',
+  openrouter_base_url: 'string',
   openai_api_key: 'string',
   openai_base_url: 'string',
   conflict_model: 'string',
@@ -87,7 +90,7 @@ export const KEYS: Record<string, Kind> = {
 export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'] }
 
 // API keys are sensitive /config options (kept in secure storage); a settings file, which may be committed, can't set them.
-export const SECRET_KEYS = ['jev_api_key', 'openai_api_key']
+export const SECRET_KEYS = ['jev_api_key', 'openrouter_api_key', 'openai_api_key']
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
@@ -291,6 +294,9 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     openaiModel: str('openai_model', 'gpt-4.1-mini'),
     ...(str('jev_api_key', '') ? { jevApiKey: str('jev_api_key', '') } : {}),
     ...(str('jev_base_url', '') ? { jevBaseUrl: str('jev_base_url', '') } : {}),
+    ...(str('openrouter_api_key', '') ? { openrouterApiKey: str('openrouter_api_key', '') } : {}),
+    ...(str('openrouter_jev_model', '') ? { openrouterJevModel: str('openrouter_jev_model', '') } : {}),
+    ...(str('openrouter_base_url', '') ? { openrouterBaseUrl: str('openrouter_base_url', '') } : {}),
     ...(str('openai_api_key', '') ? { openaiApiKey: str('openai_api_key', '') } : {}),
     ...(str('openai_base_url', '') ? { openaiBaseUrl: str('openai_base_url', '') } : {}),
     conflictModel: model('conflict_model', 'opus'),

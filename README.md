@@ -133,6 +133,7 @@ through the engine's `$` calls. This section lists what it sends, runs, writes a
 | your `origin`, through `git` | `git fetch`; pushes a release tag; deletes a merged PR's branch, only once the merge is in `origin/<base>` | fetches as it works; the tag with `release_github` on; the delete when the reviewer reports a PR done |
 | an OpenAI-compatible API | the brief or task text (its `Size:` line removed, at most 8000 characters), a fixed sizing question and its options, sent to `openai_base_url` (default `https://api.openai.com/v1`) with your `openai_api_key` | only when `decision_api` is `openai`, once per manager or worker start |
 | TypeSafe's Jev | the same text and question, sent to `jev_base_url` (default `https://api.typesafe.ai`) with your `jev_api_key` | only when `decision_api` is `jev`, once per manager or worker start |
+| OpenRouter (Jev route) | the same text and question, sent to `openrouter_base_url` (default `https://openrouter.ai/api`) with your `openrouter_api_key` | only when `decision_api` is `jev`, `jev_api_key` is empty and `openrouter_api_key` is set |
 | its own agents in this session | messages, through `$.session.send` (see below) | while they run |
 
 The two API calls go through the engine's `$.http.fetch`. With `decision_api` at `off`, the
@@ -144,9 +145,10 @@ The hosts flow contacts:
 
 - `api.openai.com`, the default `openai_base_url`, only with `decision_api` at `openai`.
 - `api.typesafe.ai`, the default `jev_base_url`, only with `decision_api` at `jev`.
+- `openrouter.ai`, the default `openrouter_base_url`, only with `decision_api` at `jev` and only `openrouter_api_key` set.
 - `github.com`, through `gh` and `git` (or wherever your `origin` points).
 
-Both base URLs can be changed in `/config`; flow then contacts the host you set instead.
+The base URLs can be changed in `/config`; flow then contacts the host you set instead.
 
 The agents flow starts do their own pushing and merging with `git` and `gh`, as their prompts
 say: workers push their branch and open a PR, the reviewer merges and pushes `<base>`.

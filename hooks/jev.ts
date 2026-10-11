@@ -4,13 +4,24 @@ import { criteriaOf, decisionText, DECIDE_MIN_CONFIDENCE, DECIDE_TIMEOUT_MS, opt
 import type { Decision, Provider, Question } from './decide'
 
 export const JEV_DEFAULT_URL = 'https://api.typesafe.ai'
+export const OPENROUTER_DEFAULT_URL = 'https://openrouter.ai/api'
+export const OPENROUTER_JEV_MODEL = '~typesafe/jev-latest'
+export const JEV_DEFAULT_MODEL = 'jev-latest'
 
-// From the /config options jev_api_key and jev_base_url (settings.ts).
-export function jevConfig(s: { jevApiKey?: string; jevBaseUrl?: string }): { key?: string; baseUrl: string } {
-  const key = s.jevApiKey
-  const baseUrl = (s.jevBaseUrl || JEV_DEFAULT_URL).replace(/\/+$/, '')
-  return { ...(key ? { key } : {}), baseUrl }
+type JevSettings = { jevApiKey?: string; jevBaseUrl?: string; jevModel?: string; openrouterApiKey?: string; openrouterBaseUrl?: string; openrouterJevModel?: string }
+
+// The route to Jev: the direct key (jev_api_key, jev_base_url, jev_model) wins; else the OpenRouter key
+// (openrouter_api_key, openrouter_base_url, openrouter_jev_model), same request and response. `via` names the route in notes.
+export function jevConfig(s: JevSettings): { key?: string; baseUrl: string; model: string; via?: 'openrouter' } {
+  const trim = (u: string) => u.replace(/\/+$/, '')
+  if (!s.jevApiKey && s.openrouterApiKey) {
+    return { key: s.openrouterApiKey, baseUrl: trim(s.openrouterBaseUrl || OPENROUTER_DEFAULT_URL), model: s.openrouterJevModel || OPENROUTER_JEV_MODEL, via: 'openrouter' }
+  }
+  return { ...(s.jevApiKey ? { key: s.jevApiKey } : {}), baseUrl: trim(s.jevBaseUrl || JEV_DEFAULT_URL), model: s.jevModel ?? JEV_DEFAULT_MODEL }
 }
+
+// How the decision text names the route.
+export const jevName = (via?: string): string => (via === 'openrouter' ? 'jev via openrouter' : 'jev')
 
 export function jevBody(text: string, model: string, q: Question): unknown {
   return {
@@ -36,6 +47,7 @@ export function parseJev(json: unknown, q: Question, minConfidence = DECIDE_MIN_
 }
 
 export const askJev: Provider = async (io, cfg, model, text, q, timeoutMs = DECIDE_TIMEOUT_MS, minConfidence = DECIDE_MIN_CONFIDENCE) => {
-  if (cfg.key === undefined) return { note: 'jev unavailable: no key' }
-  return post(io, 'jev', `${cfg.baseUrl}/v1/systemone`, cfg.key, jevBody(text, model, q), timeoutMs, json => parseJev(json, q, minConfidence))
+  const name = jevName((cfg as { via?: string }).via)
+  if (cfg.key === undefined) return { note: `${name} unavailable: no key` }
+  return post(io, name, `${cfg.baseUrl}/v1/systemone`, cfg.key, jevBody(text, model, q), timeoutMs, json => parseJev(json, q, minConfidence))
 }

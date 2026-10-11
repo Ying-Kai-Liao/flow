@@ -119,6 +119,15 @@ const toolIo = (f: FetchLike, written: Record<string, string> = {}) => ({
 })
 const settings = { decisionApi: 'jev' as const, jevApiKey: 'sk-secret', maxContinues: 2 }
 
+test('decide_eval works on the OpenRouter route', async () => {
+  const urls: string[] = []
+  const f: FetchLike = async (u, i) => { urls.push(u); return jevFetch(0.9)(u, i) }
+  const out = await decideEvalTool(toolIo(f), { decisionApi: 'jev' as const, openrouterApiKey: 'or-secret', maxContinues: 2 }, { features: ['inbox'] }, undefined)
+  expect(out).toContain('== inbox')
+  expect(out).not.toContain('or-secret')
+  expect(urls.length > 0 && urls.every(u => u === 'https://openrouter.ai/api/v1/systemone')).toBe(true)
+})
+
 test('decide_eval: main only, refused when decision_api is off, dry run makes no call, a run writes no text and no key', async () => {
   let calls = 0
   const f: FetchLike = async (u, i) => { calls++; return jevFetch(0.9)(u, i) }
