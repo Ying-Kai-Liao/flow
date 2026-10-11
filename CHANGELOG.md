@@ -56,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `decide_eval` gets a `size` feature: replays spawn sizing (worker and manager briefs from transcripts, labelled under/ok/over from successors, handoffs, undone size decisions and PR size) and compares Jev, the brief's `Size:` line and always-normal on agreement, under-size rate, over-size rate and estimated cost; `scripts/decide-eval.mjs` prints the key-free part
+### Changed
+
+- The pane's inbox draws each owner as a collapsible card like the tree's agents (chevron, round border, "owner · N decisions", one clipped line per item); the routine decisions are a collapsed card; c (or x) and the chevron fold a card, and a pane too short for all cards draws all but the hot one collapsed. The decision card's header is "id · owner · age".
 
 ## [0.6.57] - 2026-10-12
 

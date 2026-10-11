@@ -184,13 +184,17 @@ test('routine decisions fold into one group row that y keeps whole; pressing the
   const ui = await mount($)
   await open(ui)
   expect(await ui.find({ text: /> +d8 Decision 100/ })).toBeDefined()
-  expect(await ui.find({ text: /▸ 7 routine \(worker-size\)/ })).toBeDefined()
+  expect(await ui.find({ text: /▸ routine · 7 \(worker-size\)/ })).toBeDefined()
   expect(await ui.find({ text: /d4 Decision 3/ })).toBeUndefined()
   // y keeps the important one only; the highlight then sits on the group, and y keeps all of it
   await ui.press({ key: 'inbox-yes' })
   expect(stored(w.files).filter(x => x.state === 'open').length).toBe(7)
+  // pressing the card opens it and moves to its first item; c folds it again and parks on the card
   await ui.press({ key: 'row-fold' })
   expect(await ui.find({ text: /d4 Decision 3/ })).toBeDefined()
+  expect(await ui.find({ text: /> +d7 Decision 6/ })).toBeDefined()
+  await ui.press({ key: 'inbox-fold' })
+  expect(await ui.find({ text: /d4 Decision 3/ })).toBeUndefined()
   await ui.press({ key: 'inbox-yes' })
   expect(stored(w.files).filter(x => x.state === 'open').length).toBe(0)
   await ui.unmount()
@@ -202,7 +206,7 @@ test('w keeps folded decisions too, and a finished owner folds its decisions', a
   w.agents[1]!.status = 'completed'
   const ui = await mount($)
   await open(ui)
-  expect(await ui.find({ text: /▸ 2 routine \(worker-size, finished agents\)/ })).toBeDefined()
+  expect(await ui.find({ text: /▸ routine · 2 \(worker-size, finished agents\)/ })).toBeDefined()
   await ui.press({ key: 'inbox-all' })
   expect(stored(w.files).filter(x => x.state === 'open').length).toBe(0)
   await ui.unmount()
@@ -214,7 +218,8 @@ test('pressing a row opens its large card: tags, who, agent status, every option
   const ui = await mount($)
   await open(ui)
   await ui.press({ key: 'row-q1' })
-  expect(await ui.find({ text: /q1 question/ })).toBeDefined()
+  expect(await ui.find({ text: /q1 · csv-worker · / })).toBeDefined()
+  expect(await ui.find({ text: /^question/ })).toBeDefined()
   expect(await ui.find({ text: /BLOCKING/ })).toBeDefined()
   expect(await ui.find({ text: /from csv-worker, for csv-export/ })).toBeDefined()
   expect(await ui.find({ text: /csv-worker is running/ })).toBeDefined()
@@ -224,7 +229,7 @@ test('pressing a row opens its large card: tags, who, agent status, every option
   await ui.press({ key: 'card-opt-1' })
   expect(stateOf(w.files, 'q1')?.answer).toBe('tsv')
   // the next open item's card
-  expect(await ui.find({ text: /q2 question/ })).toBeDefined()
+  expect(await ui.find({ text: /q2 · csv-worker · / })).toBeDefined()
   await ui.input({ key: 'card-answer', text: 'maybe', kind: 'change' })
   await ui.press({ key: 'card-yes' })
   expect(stateOf(w.files, 'q2')?.answer).toBe('yes')
@@ -284,7 +289,8 @@ test('the tree lines are buttons that open the card; Back returns to the tree; d
   expect(await ui.find({ text: /d1 decision/ })).toBeUndefined()
   expect(await ui.find({ text: /Inbox: 1 question for you \(1 blocking\), 2 decisions to keep or undo · i/ })).toBeDefined()
   await ui.press({ key: 'open-q1' })
-  expect(await ui.find({ text: /q1 question/ })).toBeDefined()
+  expect(await ui.find({ text: /q1 · csv-worker · / })).toBeDefined()
+  expect(await ui.find({ text: /^question/ })).toBeDefined()
   await ui.press({ key: 'card-back' })
   expect(await ui.find({ text: /super manager/ })).toBeDefined()
   expect(stateOf(w.files, 'q1')?.state).toBe('open')
@@ -311,7 +317,8 @@ test('the decision preview shows text, why and instead could, with no option lin
   expect(await ui.find({ text: /instead could: poll instead/ })).toBeDefined()
   expect(await ui.find({ text: /a\) / })).toBeUndefined()
   await ui.press({ key: 'row-d1' })
-  expect(await ui.find({ text: /d1 decision · from csv-worker, for csv-export · \d+ \w+ ago/ })).toBeDefined()
+  expect(await ui.find({ text: /d1 · csv-worker · \d+ \w+/ })).toBeDefined()
+  expect(await ui.find({ text: /^decision$/ })).toBeDefined()
   expect(await ui.find({ text: /y Keep/ })).toBeDefined()
   expect(await ui.find({ text: /n Undo/ })).toBeDefined()
   expect(await ui.find({ key: 'card-opt-0' })).toBeUndefined()
@@ -404,19 +411,31 @@ test('a highlight answered meanwhile answers nothing: the highlight moves and th
   await ui.unmount()
 })
 
-// What the pane draws, as lines of text: a column stacks its children, a row sets them side by side with its gap.
-type El = string | { type?: string; props?: { flexDirection?: string; gap?: number; label?: string }; children?: El[] } | null | undefined | false
+// What the pane draws, as lines of text: a column stacks its children, a row sets them side by side with its gap
+// (a child of several lines beside the next one), a border adds its two columns and rows.
+type El = string | { type?: string; props?: { flexDirection?: string; gap?: number; label?: string; borderStyle?: string; paddingX?: number }; children?: El[] } | null | undefined | false
 const plain = (e: El): string => (typeof e === 'string' ? e : e ? (e.children === undefined && e.props?.label !== undefined ? e.props.label : (e.children ?? []).map(plain).join('')) : '')
 const linesOf = (e: El): string[] => {
   if (typeof e === 'string') return [e]
   if (!e) return []
   const kids = (e.children ?? []).filter(Boolean)
   if (e.type === 'Text') return plain(e).split('\n')
-  if (e.props?.flexDirection === 'row') return [kids.map(plain).join(' '.repeat(e.props.gap ?? 0))]
-  return kids.flatMap(linesOf)
+  // A Button with a plain string child carries it as its label.
+  if (e.children === undefined && e.props?.label !== undefined) return [e.props.label]
+  let lines: string[]
+  if (e.props?.flexDirection === 'row') {
+    const cols = kids.map(linesOf).filter(c => c.length > 0)
+    const widths = cols.map(c => Math.max(...c.map(l => l.length)))
+    lines = Array.from({ length: Math.max(0, ...cols.map(c => c.length)) }, (_, i) => cols.map((c, k) => (c[i] ?? '').padEnd(widths[k]!)).join(' '.repeat(e.props!.gap ?? 0)).trimEnd())
+  } else lines = kids.flatMap(linesOf)
+  if (e.props?.borderStyle === undefined) return lines
+  const pad = ' '.repeat(e.props.paddingX ?? 0)
+  const w = Math.max(0, ...lines.map(l => l.length)) + 2 * pad.length
+  return [`╭${'─'.repeat(w)}╮`, ...lines.map(l => `│${pad}${l.padEnd(w - 2 * pad.length)}${pad}│`), `╰${'─'.repeat(w)}╯`]
 }
 
-test('at 60 columns by 30 rows every list row is one line of the pane width and both footer rows are drawn', async ($, on) => {
+// The 60-column inbox: three managers with decisions and a question, and five routine sizing calls.
+async function cardsWorld($: Dollar, on: On) {
   const agents: AgentInfo[] = [
     { id: 'm1', name: 'ctx-init-tip', description: 'm', type: 'flow:manager', status: 'running' },
     { id: 'm2', name: 'plain-capability-use', description: 'm', type: 'flow:manager', status: 'running' },
@@ -427,18 +446,74 @@ test('at 60 columns by 30 rows every list row is one line of the pane width and 
     { decision: 'Show the context-trim tip once per session, not on every init, because repeating it trains people to ignore it', why: 'noisy otherwise', topic: 'tip-frequency' },
     { decision: 'Word the tip as a question', why: 'softer', topic: 'tip-wording' },
   ])
-  await fyi($, 'm2', [F(1), { decision: 'Name the capability in plain words in the docs and in every error message the plugin prints', why: 'readers' }, F(3)])
-  await fyi($, 'm3', [{ decision: 'Say "update available" once, quietly', why: 'less nagging' }])
+  await fyi($, 'm2', [
+    { decision: 'Call it a capability in the docs, not a permission, since that is what users search for', why: 'search terms', topic: 'docs-wording' },
+    { decision: 'Name the capability in plain words in the docs and in every error message the plugin prints', why: 'readers', topic: 'plain-names' },
+    { decision: 'Keep the old flag name as an alias for one release', why: 'no breakage', topic: 'flag-alias' },
+  ])
+  await fyi($, 'm3', [{ decision: 'Say "update available" once, quietly', why: 'less nagging', topic: 'update-notice' }])
   await fyi($, 'm1', Array.from({ length: 3 }, (_, i) => F(10 + i, 'manager-size')))
   await fyi($, 'm2', Array.from({ length: 2 }, (_, i) => F(20 + i, 'worker-size')))
+  await ask($, 'm1', [{ question: 'Should the tip also show in the status line?', options: ['yes', 'no'], default: 'no', blocking: false }])
+}
+
+const rendered = async (ui: Ui) => linesOf((await ui.drawn()) as El)
+const shape = (lines: string[], rows: number) => {
+  expect(lines.length).toBeLessThanOrEqual(rows)
+  for (const l of lines) expect(l.length).toBeLessThanOrEqual(60)
+  expect(lines.some(l => /j next/.test(l) && /k prev/.test(l))).toBe(true)
+  expect(lines.some(l => /y (keep|default)/.test(l) && /n undo/.test(l) && /i back/.test(l))).toBe(true)
+}
+
+test('at 60 columns by 30 rows each owner is a card: a chevron, a round border, one clipped line per item; the routine card is collapsed', async ($, on) => {
+  await cardsWorld($, on)
   const ui = await mount($, 30, 60)
   await open(ui)
-  const lines = linesOf((await ui.drawn()) as El)
-  expect(lines.length).toBeLessThanOrEqual(30)
-  for (const l of lines) expect(l.length).toBeLessThanOrEqual(60)
-  expect(lines.some(l => /▸ 5 routine \((manager-size, worker-size|worker-size, manager-size)\)/.test(l))).toBe(true)
-  expect(lines.some(l => /j next/.test(l) && /k prev/.test(l))).toBe(true)
-  expect(lines.some(l => /y keep/.test(l) && /n undo/.test(l) && /i back/.test(l))).toBe(true)
+  const lines = await rendered(ui)
+  shape(lines, 30)
+  expect(lines.some(l => /▾ ╭/.test(l))).toBe(true)
+  expect(lines.some(l => /│ ctx-init-tip · 2 decisions · asks +│/.test(l))).toBe(true)
+  expect(lines.some(l => /> q1 ctx-init-tip: Should/.test(l))).toBe(true)
+  expect(lines.some(l => /▾ ╭/.test(l) && /quiet-update-notice/.test(lines[lines.indexOf(l) + 1]!))).toBe(true)
+  expect(lines.some(l => /^▸ routine · 5 \((manager-size, worker-size|worker-size, manager-size)\)$/.test(l))).toBe(true)
+  expect(lines.some(l => /c collapse/.test(l))).toBe(true)
+  // the card closes with c, then the highlight sits on its one line
+  await ui.press({ key: 'inbox-fold' })
+  expect(await ui.find({ text: /^ctx-init-tip$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('at 60 columns by 30 rows a card collapsed by its chevron is one line without a border, and j/k step over it', async ($, on) => {
+  await cardsWorld($, on)
+  const ui = await mount($, 30, 60)
+  await open(ui)
+  await ui.press({ key: 'fold-grp:plain-capability-use' })
+  const lines = await rendered(ui)
+  shape(lines, 30)
+  expect(lines.some(l => /^▸ plain-capability-use · 3 decisions$/.test(l))).toBe(true)
+  expect(lines.some(l => /Name the capability/.test(l))).toBe(false)
+  // the cursor went to the card's line; k steps to the card above, j twice over it to the routine card
+  await ui.press({ key: 'inbox-prev' })
+  expect(await ui.find({ text: /> +d6 Say "update available"/ })).toBeDefined()
+  await ui.press({ key: 'inbox-next' })
+  await ui.press({ key: 'inbox-next' })
+  expect(await ui.find({ text: /routine · 5/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('at 60 columns by 20 rows the cards that do not fit are drawn collapsed but the hot one, and the keys stay', async ($, on) => {
+  await cardsWorld($, on)
+  const ui = await mount($, 20, 60)
+  await open(ui)
+  const lines = await rendered(ui)
+  shape(lines, 20)
+  expect(lines.some(l => /^▸ plain-capability-use · 3 decisions$/.test(l))).toBe(true)
+  expect(lines.some(l => /^▸ quiet-update-notice · 1 decision$/.test(l))).toBe(true)
+  expect(lines.some(l => /> q1 /.test(l))).toBe(true)
+  // moving down opens the next card as the hot one and folds the first
+  for (let i = 0; i < 3; i++) await ui.press({ key: 'inbox-next' })
+  expect(await ui.find({ text: /^▸ ctx-init-tip · 2 decisions · asks$/ })).toBeDefined()
+  expect(await ui.find({ text: /> +d6 / })).toBeDefined()
   await ui.unmount()
 })
 
@@ -449,7 +524,7 @@ test('with only a folded group the hot row shows its hint in the nav row; the ke
   await open(ui)
   const lines = linesOf((await ui.drawn()) as El)
   expect(lines.length).toBeLessThanOrEqual(20)
-  expect(lines.some(l => /j next/.test(l) && /y keeps all 3 · Enter expands/.test(l))).toBe(true)
+  expect(lines.some(l => /j next/.test(l) && /y keeps all 3 · c expands/.test(l))).toBe(true)
   expect(lines.some(l => /y keep/.test(l) && /i back/.test(l))).toBe(true)
   await ui.unmount()
 })

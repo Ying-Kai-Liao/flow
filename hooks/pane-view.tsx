@@ -9,8 +9,8 @@ import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELL
 import { COLOR, GLYPH, handoffOf, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
-import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
-import type { Inbox, PaneRow, Question } from './inbox'
+import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, groupTitle, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
+import type { Inbox, PaneGroup, PaneRow, Question } from './inbox'
 import { MANAGER } from './core'
 import type { PushState } from './pushgate'
 import type { PushAct } from './pushgate-run'
@@ -253,8 +253,8 @@ export type InboxCtx = {
     // The card of one item; the view Back returns to.
     open: (id: string, from: 'tree' | 'inbox' | 'archive') => Promise<void>
     leave: (to: 'tree' | 'inbox' | 'archive') => Promise<void>
-    // Expands or folds the group of routine decisions.
-    toggleFold: () => Promise<void>
+    // Opens or folds one card (its fold key); the highlight parks on a folded card and goes to firstKey on an opened one.
+    toggleFold: (key: string, firstKey: string) => Promise<void>
   }
 }
 
@@ -464,23 +464,40 @@ export function inboxView(x: InboxCtx) {
   const minList = Math.min(irows.length + 2, 5)
   const preview = previews.find(p => rows - fixed - p.lines >= minList) ?? previews[previews.length - 1]!
   const budget = Math.max(2, rows - fixed - preview.lines)
-  // Owner headers: a run of decisions of one owner gets a header line; a window starting mid-run repeats it.
-  const owned = (r: PaneRow | undefined) => (r?.q !== undefined && isFyi(r.q) ? r.q.owner : undefined)
-  const runCount = (i: number) => {
-    let from = i
-    while (from > 0 && owned(irows[from - 1]) === owned(irows[i])) from--
-    let n = 0
-    while (owned(irows[from + n]) === owned(irows[i])) n++
-    return n
+  // The rows are cards: consecutive rows of one group (a collapsed card is its single header row).
+  type Seg = { g: PaneGroup; rows: PaneRow[] }
+  const segs: Seg[] = []
+  for (const r of irows) {
+    const last = segs[segs.length - 1]
+    if (last !== undefined && r.q !== undefined && last.g.key === r.group?.key) last.rows.push(r)
+    else segs.push({ g: r.group!, rows: [r] })
   }
-  const headed = (i: number, top: number) => owned(irows[i]) !== undefined && (i === top || owned(irows[i - 1]) !== owned(irows[i]))
-  let win = viewOf(irows, ihot, Math.max(1, Math.min(irows.length, budget)))
-  for (let n = Math.min(irows.length, budget); n >= 1; n--) {
-    win = viewOf(irows, ihot, n)
-    const heads = win.rows.filter((_, k) => headed(win.top + k, win.top)).length
-    if (n + heads <= budget) break
+  // Like the tree's fullTree: if the cards as they are do not fit, every card but the hot one is drawn collapsed.
+  const forced = new Set<string>()
+  const heightOf = (sg: Seg) => (sg.rows[0]!.q === undefined || forced.has(sg.g.key) ? 1 : sg.rows.length + 3)
+  const hotGroup = hotRow?.group?.key
+  if (segs.reduce((n, sg) => n + heightOf(sg), 0) > budget) for (const sg of segs) if (sg.g.key !== hotGroup) forced.add(sg.g.key)
+  // Still too many: the hot card shows a window of its items beside the one-line others; if even that has
+  // no room, a window of cards around the hot one, and of its items.
+  const hotSeg = Math.max(0, segs.findIndex(sg => sg.g.key === hotGroup))
+  const hidden = (from: number, to: number) => segs.slice(from, to).reduce((n, sg) => n + sg.rows.length, 0)
+  const hotItems = segs[hotSeg]?.rows.length ?? 0
+  const hotOpen = segs[hotSeg] !== undefined && heightOf(segs[hotSeg]!) > 1
+  const hotRoom = budget - segs.reduce((n, sg, k) => n + (k === hotSeg ? 0 : heightOf(sg)), 0) - 3
+  let itemRoom = hotOpen && hotRoom >= 1 && hotRoom < hotItems ? hotRoom : Infinity
+  let sv = viewOf(segs, hotSeg, segs.length)
+  if (itemRoom === Infinity) {
+    for (let n = segs.length; n >= 1; n--) {
+      sv = viewOf(segs, hotSeg, n)
+      const extra = (sv.top > 0 ? 1 : 0) + (sv.top + sv.rows.length < segs.length ? 1 : 0)
+      if (sv.rows.reduce((m, sg) => m + heightOf(sg), 0) + extra <= budget) break
+    }
+    if (hotOpen && sv.rows.length === 1 && hotItems + 3 > budget) itemRoom = Math.max(1, budget - 3 - (sv.top > 0 ? 1 : 0) - (sv.top + 1 < segs.length ? 1 : 0))
   }
-  const iBelow = irows.length - win.top - win.rows.length
+  const iAbove = hidden(0, sv.top)
+  const iBelow = hidden(sv.top + sv.rows.length, segs.length)
+  // What j and k step over: the rows as drawn, a card drawn collapsed standing for its first item.
+  const visible = (rs: PaneRow[]) => rs.filter(r => r.q === undefined || r.group === undefined || !forced.has(r.group.key) || r.key === r.group.firstKey)
   // Every press reads the inbox fresh (never the row drawn), so it acts on what is open now.
   // strict: a highlight that is no longer in the list (answered meanwhile, or folded away) answers nothing;
   // the highlight moves to the first row and the person presses again.
@@ -522,6 +539,7 @@ export function inboxView(x: InboxCtx) {
     if (spot === undefined) return
     const { fresh, i, row } = spot
     if (row === undefined) return
+    if (row.ids.length === 0) return say(`${row.group?.owner ?? 'It'} holds only questions: expand it (c) first.`)
     const lines: string[] = []
     let refused = 0
     for (const id of row.ids) {
@@ -572,8 +590,10 @@ export function inboxView(x: InboxCtx) {
   const move = (d: number) => () => io.serial(async () => {
     const spot = await here(false)
     if (spot === undefined) return
-    const { fresh, i } = spot
-    const to = fresh[Math.min(fresh.length - 1, Math.max(0, i + d))]
+    const { fresh, row } = spot
+    const shown = visible(fresh)
+    const at = Math.max(0, shown.findIndex(r => r.key === row?.key))
+    const to = shown[Math.min(shown.length - 1, Math.max(0, at + d))]
     if (to !== undefined) await io.setCursor(to.key)
   })
   const back = io.back
@@ -582,24 +602,66 @@ export function inboxView(x: InboxCtx) {
   const nQ = ibox.items.filter(x => x.state === 'open' && !isFyi(x)).length
   const nF = ibox.items.filter(x => x.state === 'open' && isFyi(x)).length
   const archived = archiveOf(ibox).length
-  const hasGroup = irows.some(r => r.group !== undefined)
+  const hasGroup = irows.length > 0
+  const foldHot = () => io.serial(async () => {
+    const spot = await here(false)
+    const g = spot?.row?.group
+    if (g !== undefined) await io.toggleFold(g.key, g.firstKey)
+  })
   return (
     <Box flexDirection="column" height={rows}>
       <Text bold>Inbox <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
-      {win.top > 0 && <Text dimColor>  ↑ {win.top} above</Text>}
-      {win.rows.map((r, k) => {
-        const hot = r.key === hotRow?.key
-        const at = win.top + k
-        const q = r.q
-        const row = q !== undefined && isFyi(q)
-          ? <Text inverse={hot}>{hot ? '> ' : '  '}  <Text dimColor>{q.id}</Text> {fit(q.question, W - 5 - q.id.length)}</Text>
-          : <Text inverse={hot} color={q?.blocking ? 'warning' : undefined}>{hot ? '> ' : '  '}{fit(paneRowText(r), W - 2)}</Text>
-        return (
-          <Box key={`line-${r.key}`} flexDirection="column">
-            {headed(at, win.top) && <Text dimColor>{fit(`  ${owned(r)} · ${runCount(at)}`, W)}</Text>}
-            <Button key={`row-${r.key}`} plain onPress={() => void io.serial(async () => { await io.acted(); if (r.group !== undefined) { await io.setCursor(r.key); await io.toggleFold() } else await io.open(r.key, 'inbox') })}>
-              {row}
+      {iAbove > 0 && <Text dimColor>  ↑ {iAbove} above</Text>}
+      {sv.rows.map(sg => {
+        const g = sg.g
+        const header = sg.rows[0]!.q === undefined
+        const drawnOpen = !header && !forced.has(g.key)
+        const hotCard = g.key === hotGroup
+        const hotTitle = header && hotRow?.key === g.key
+        const inner = Math.max(10, W - 6)
+        // A card drawn collapsed only for lack of room is opened by moving onto it; the saved fold is not touched.
+        const press = () => void io.serial(async () => {
+          await io.acted()
+          if (!header && forced.has(g.key)) await io.setCursor(g.firstKey)
+          else await io.toggleFold(g.key, g.firstKey)
+        })
+        const full = groupTitle(g)
+        const width = drawnOpen ? inner : W - 2
+        const title = full.length > width
+          ? <Text inverse={hotTitle} dimColor={!hotTitle}>{fit(full, width)}</Text>
+          : (
+            <Text inverse={hotTitle}>
+              <Text bold>{g.owner}</Text>
+              <Text dimColor>{g.routine ? full.slice(g.owner.length) : g.count > 0 ? ` · ${plural(g.count, 'decision')}` : ''}</Text>
+              {g.asks && !g.routine && <Text color="warning"> · asks</Text>}
+            </Text>
+          )
+        const items = drawnOpen && g.key === hotGroup && sg.rows.length > itemRoom
+          ? viewOf(sg.rows, Math.max(0, sg.rows.findIndex(r => r.key === hotRow?.key)), itemRoom).rows
+          : sg.rows
+        const item = (r: PaneRow) => {
+          const hot = r.key === hotRow?.key
+          const q = r.q!
+          return (
+            <Button key={`row-${r.key}`} plain onPress={() => void io.serial(async () => { await io.acted(); await io.open(r.key, 'inbox') })}>
+              {isFyi(q)
+                ? <Text inverse={hot}>{hot ? '> ' : '  '}<Text dimColor>{q.id}</Text> {fit(q.question, inner - 3 - q.id.length)}</Text>
+                : <Text inverse={hot} color={q.blocking ? 'warning' : undefined}>{hot ? '> ' : '  '}{fit(paneRowText(r), inner - 2)}</Text>}
             </Button>
+          )
+        }
+        return (
+          <Box key={`card-${g.key}`} flexDirection="row">
+            <Button key={`fold-${g.key}`} plain dimColor onPress={press}>{drawnOpen ? '▾ ' : '▸ '}</Button>
+            {drawnOpen ? (
+              // A Button holds Text only, so the border is drawn around the buttons, as for an agent's card.
+              <Box flexDirection="column" borderStyle="round" borderDimColor={!hotCard} borderColor={hotCard ? 'suggestion' : undefined} paddingX={1}>
+                <Button key={`row-${g.key}`} plain onPress={press}>{title}</Button>
+                {items.map(item)}
+              </Box>
+            ) : (
+              <Button key={`row-${g.key}`} plain onPress={press}>{title}</Button>
+            )}
           </Box>
         )
       })}
@@ -634,8 +696,10 @@ export function inboxView(x: InboxCtx) {
       <Box flexDirection="row" gap={2}>
         <Button key="inbox-next" plain dimColor hotkey="j" onPress={move(1)}>j next</Button>
         <Button key="inbox-prev" plain dimColor hotkey="k" onPress={move(-1)}>k prev</Button>
-        {hasGroup && <Button key="inbox-fold" plain dimColor hotkey="x" onPress={() => io.serial(async () => { await io.acted(); await io.toggleFold() })}>x fold</Button>}
-        {hotRow?.group !== undefined && <Text dimColor>{fit(groupHint(hotRow.group), Math.max(8, W - 26))}</Text>}
+        {hasGroup && <Button key="inbox-fold" plain dimColor hotkey="c" onPress={foldHot}>{hotRow?.group?.expanded ? 'c collapse' : 'c expand'}</Button>}
+        {/* x stays as an alias of c, unlabelled. */}
+        {hasGroup && <Button key="inbox-fold-x" plain hotkey="x" onPress={foldHot}>{''}</Button>}
+        {hotRow?.q === undefined && hotRow?.group !== undefined && <Text dimColor>{fit(groupHint(hotRow.group), Math.max(8, W - 32))}</Text>}
       </Box>
       <Box flexDirection="row" gap={2}>
         <Button key="inbox-yes" plain dimColor hotkey="y" onPress={takeDefault}>{hq !== undefined && !isFyi(hq) ? 'y default' : 'y keep'}</Button>
@@ -861,7 +925,8 @@ export function cardView(x: InboxCtx & { id: string | null }) {
         {open && <Button key="card-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
         {open && <Button key="card-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
       </Box>
-      <Text bold>{q.id} {kindOf(q)}{isFyi(q) ? <Text dimColor> · from {who} · {age(now - q.askedAt)} ago</Text> : ''}{q.alias === undefined ? '' : <Text dimColor> (earlier id {q.alias})</Text>}</Text>
+      <Text><Text bold>{q.id}</Text><Text dimColor> · {q.owner || 'unknown'} · {age(now - q.askedAt)}</Text></Text>
+      <Text>{kindOf(q)}{q.alias === undefined ? '' : <Text dimColor> (earlier id {q.alias})</Text>}</Text>
       {tags !== '' && <Text color={q.blocking ? 'warning' : undefined}>{tags}</Text>}
       {isFyi(q) && q.topic && <Text dimColor>[{q.topic}]</Text>}
       {!isFyi(q) && <Text dimColor>from {who} · {age(now - q.askedAt)} ago{q.escalated !== undefined ? ' · escalated to you' : ''}</Text>}
