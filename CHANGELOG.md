@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcp__flow__ask` takes `for: "<qid>"` for managers: it escalates a worker's open question to main. Main's answer to either question closes both and reaches the worker and the manager; no hand relay.
+- `mcp__flow__status` shows an agent that ended its turn on a blocking ask as "waiting on qN".
+
+### Fixed
+
+- The answer to a blocking question wakes an asker that shows as completed or left the roster (workers too); a failed or killed asker, or a send dropped because the agent ended, now sends the answer to main instead of losing it.
+
 ## [0.6.36] - 2026-10-11
 
 ### Added

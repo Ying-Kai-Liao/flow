@@ -4,7 +4,7 @@ import { phaseOf } from './preflight'
 import type { Preflight } from './preflight'
 import { describe } from './dag'
 import type { Plan } from './dag'
-import { inboxHead } from './inbox'
+import { inboxHead, isFyi } from './inbox'
 import type { Inbox } from './inbox'
 import { leftoverLine } from './clean'
 import { behindLines } from './deploy'
@@ -120,7 +120,9 @@ export async function statusTool(io: StatusIo, settings: Settings, input: Record
       const answer = (acts[a.id]?.answer ?? '').trim().split('\n').pop() ?? ''
       const h = handoffOf(a, acts[a.id])
       const hand = h === undefined ? '' : h.kind === 'done' ? ` | ${handoffText(h)}` : ` | handoff: wrapping up${h.percent === undefined ? '' : ` (${h.percent}%)`}`
-      lines.push(`${'  '.repeat(depth)}- ${ROLE[a.type] ?? a.type} ${labelOf(a)}: ${a.status}${hand}${phase ? ` | pre-flight: ${phase}` : ''}${answer ? ` | last: ${answer.slice(0, 160)}` : ''}`)
+      // An agent that ended its turn on a blocking ask is waiting for the answer, not done: it is woken with it.
+      const waits = inb.items.filter(x => x.state === 'open' && x.blocking && !isFyi(x) && x.askerId === a.id).map(x => x.id)
+      lines.push(`${'  '.repeat(depth)}- ${ROLE[a.type] ?? a.type} ${labelOf(a)}: ${a.status}${waits.length > 0 ? ` | waiting on ${waits.join(', ')} (a blocking ask; not its report)` : ''}${hand}${phase ? ` | pre-flight: ${phase}` : ''}${answer ? ` | last: ${answer.slice(0, 160)}` : ''}`)
       for (const c of byParent.get(a.id) ?? []) walk(c, depth + 1)
     }
     for (const a of rows.filter(r => r.parentId === undefined || !ids.has(r.parentId))) walk(a, 0)

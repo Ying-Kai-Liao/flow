@@ -19,6 +19,8 @@ export type AskedQuestion = {
   context?: string
   topic?: string
   guard?: { glob: string; test: string }
+  // The worker's open question this one escalates to main (validated by the ask handler).
+  forQ?: string
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
@@ -54,6 +56,7 @@ export function parseAsk(input: unknown): { questions: AskedQuestion[] } | { err
       question, options, default: def, blocking: q.blocking,
       ...(str(q.context) !== '' ? { context: str(q.context) } : {}),
       ...(str(q.topic) !== '' ? { topic: str(q.topic) } : {}),
+      ...(str(q.for) !== '' ? { forQ: str(q.for).toLowerCase() } : {}),
     })
   }
   return { questions: out }
@@ -177,7 +180,7 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   if (q === undefined) return { kind: 'unknown' }
   if (q.state === 'answered') return { kind: 'answered', q }
   // Main may also answer any decision: the user overrides what a manager has not looked at.
-  if (rule === undefined && !user && !isAddressee(q, by) && !(isFyi(q) && by === 'main')) return { kind: 'refused', q }
+  if (rule === undefined && !user && !isAddressee(q, by) && !(isFyi(q) && by === 'main') && !(q.viaQ !== undefined && by === 'main')) return { kind: 'refused', q }
   const answer = choice === null ? q.default : parseChoice(q.options, choice).text
   if (answer === '') return { kind: 'empty', q }
   // Answering with the default's text counts as the default, however it was typed.
@@ -454,4 +457,28 @@ export function normalizeInbox(raw: unknown): Inbox {
     ...(nextD > 1 ? { nextD } : {}),
     items,
   }
+}
+
+// The ask's `for` links: each must name an open question addressed to this manager that is not escalated yet.
+// An error text refuses the whole batch.
+export function checkEscalations(inbox: Inbox, name: string, isManager: boolean, asked: AskedQuestion[]): string | undefined {
+  for (const a of asked) {
+    if (a.forQ === undefined) continue
+    if (!isManager) return `for: only a manager escalates a worker's question (${a.forQ}).`
+    const w = findItem(inbox, a.forQ)
+    if (w === undefined || w.state !== 'open' || isFyi(w) || !isAddressee(w, name)) return `for: ${a.forQ} is not an open question addressed to ${name}.`
+    if (w.escalated !== undefined || w.viaQ !== undefined) return `for: ${a.forQ} is already escalated to main (${w.escalated ?? w.viaQ}).`
+  }
+  return undefined
+}
+
+// Marks the worker's question escalated by the manager's new one (fresh ones only).
+export function linkEscalations(inbox: Inbox, added: Array<{ q: Question; fresh: boolean }>): Inbox {
+  let items = inbox.items
+  for (const { q, fresh } of added) {
+    if (!fresh || q.forQ === undefined) continue
+    const wid = findItem(inbox, q.forQ)?.id
+    items = items.map(x => (x.id === wid ? { ...x, escalated: `via ${q.id}`, viaQ: q.id } : x))
+  }
+  return { ...inbox, items }
 }
