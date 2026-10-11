@@ -60,6 +60,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
 | `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `test_slots` | 1 | `/config`, file | how many heavy test runs may run at once across all agents (minimum 1) |
+| `test_slot_commands` | `claude plugin test`, `npm run check`, `npm test`, `npm run test` | `/config`, file | Bash commands that run a whole suite; refused unless the caller holds a test slot. Empty list: not enforced |
 | `language` | `English` | `/config`, file | the language agents write reports and PR text in |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
 | `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
@@ -196,6 +197,19 @@ and a message; it confirms with one `acquire` within 2 minutes, else the grant p
 freed when its agent ends, when released, or after a 45 minute lease (with a toast). The Flow
 status line shows `tests 1/1`. The lock lives in this session's plugin state: it covers every
 worktree of the session's agents, not other Claude sessions, and a plugin reload empties it.
+
+A hook enforces it: a Bash call (main session included) that runs a whole suite is denied unless
+the caller holds a confirmed slot (a grant not yet confirmed with `acquire` does not count). The
+deny names who holds the slots, or says they are free; it never acquires for you. A command counts
+as a suite when a segment of a `&&`, `||`, `;`, `|` or newline chain (behind `cd`, `FOO=1`, `time`,
+`bash -c`) starts with one of the `test_slot_commands` and then has no file argument, a glob
+(`tests/*.test.ts`), a directory (an argument without a file extension: `.`, `tests/`,
+`/tmp/copy`), or more than 5 files. Flags are ignored; 1 to 5
+explicit files run freely. An empty `test_slot_commands` turns it off; other stacks list their own
+(`pytest`, `go test ./...`). Workers started in other harnesses (`mcp__flow__session`) do not pass
+through the hook. One `claude plugin test` run already starts one child process per test file, and
+the runner has no jobs or concurrency flag or environment variable, which is why `test_slots`
+defaults to 1.
 
 ## Guard tests
 
