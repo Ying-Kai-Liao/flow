@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.45] - 2026-10-12
+
 ### Changed
 
 - `decision_api` is a dropdown in `/config`: `auto` (the default, same as unset: `size_model` applies if set), `off`, `jev`, `openai`. Explicit values always win.
