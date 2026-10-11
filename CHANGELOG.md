@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.64] - 2026-10-12
+
+### Changed
+
+- Test-slot hook guard: refuse whole-suite runs without a slot (#158)
+
 ## [0.6.63] - 2026-10-12
 
 ### Changed
