@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.56] - 2026-10-12
+
+### Changed
+
+- Decision-API eval: four questions and a replay tool (decide_eval) (#145)
+
 ## [0.6.55] - 2026-10-12
 
 ### Changed
