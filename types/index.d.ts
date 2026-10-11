@@ -258,6 +258,10 @@ export type Question = {
   guard?: { glob: string; test: string }
   // An escalate standing rule holds it for the user: it is blocking and only main may answer it.
   escalated?: string
+  // A manager's question that escalates its worker's open question (ask with `for`): that question's id.
+  forQ?: string
+  // The worker's question a manager escalated: the manager's question id. Main answers either one; the answer closes both.
+  viaQ?: string
 }
 
 // next: the counter of question ids (q1 ...); nextD: the one of decisions (d1 ...), separate so the two never collide.
@@ -433,7 +437,9 @@ declare module 'claude-code' {
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots
-      viewMode: 'tree' | 'graph' | 'inbox'
+      viewMode: 'tree' | 'graph' | 'inbox' | 'card' | 'archive'
+      cardBack: 'tree' | 'inbox' | 'archive'
+      inboxExpanded: boolean
       inboxCursor: string | null
       inboxDraft: string
       inboxNote: string

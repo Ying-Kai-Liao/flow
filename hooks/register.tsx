@@ -30,7 +30,7 @@ import type { Routed, SpawnIo } from './spawn'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
 import {
-  answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner,
+  answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner, endedOwners, foldedOf, FOLD_KEY, hiddenByLink,
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
@@ -48,7 +48,7 @@ import type { Inbox, Marked, Question } from './inbox'
 import { addGuardTest, loadRules, offerSeedsOnce, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
 import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
-import { agentView, card as cardTo, graphModeView, inboxView, managerGraphView, meter as meterTo, treeView } from './pane-view'
+import { agentView, archiveView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, treeView } from './pane-view'
 import type { InboxCtx, PaneCtx, Usage } from './pane-view'
 import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
 import {
@@ -217,9 +217,13 @@ async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
 }
 const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
 // The pane draws the agents as a tree of cards or as the dependency graph; the graph's highlight is a node id.
-const viewMode = atom({ plugin: 'flow', key: 'viewMode' } as const, 'tree' as 'tree' | 'graph' | 'inbox')
+const viewMode = atom({ plugin: 'flow', key: 'viewMode' } as const, 'tree' as 'tree' | 'graph' | 'inbox' | 'card' | 'archive')
 // The inbox view: the highlighted row's key, the expanded groups, the typed answer and the last result line.
 const inboxCursor = atom({ plugin: 'flow', key: 'inboxCursor' } as const, null as string | null)
+// The card view: the highlighted id is inboxCursor; Back returns to where the card was opened from.
+const cardBack = atom({ plugin: 'flow', key: 'cardBack' } as const, 'inbox' as 'tree' | 'inbox' | 'archive')
+// The folded routine decisions are listed under their group row.
+const inboxExpanded = atom({ plugin: 'flow', key: 'inboxExpanded' } as const, false)
 const inboxDraft = atom({ plugin: 'flow', key: 'inboxDraft' } as const, '')
 const inboxNote = atom({ plugin: 'flow', key: 'inboxNote' } as const, '')
 const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
@@ -383,6 +387,7 @@ const commandIoOf = ($: EngineInterface): CommandIo => ({
   preflight: () => read($, preflight),
   roster: () => read($, roster),
   endedManagers: rows => endedManagers(rows),
+  endedOwners: () => endedOwnersOf($),
   panes: async () => [...(await $.ui.panes())],
   close: () => $.ui.close({ id: PANE }),
   open: () => $.ui.open({ id: PANE, title: 'Flow', focus: true }),
@@ -405,6 +410,9 @@ const commandIoOf = ($: EngineInterface): CommandIo => ({
   holdTarget: (name, until, by, reason) => holdTarget($, name, until, by, reason),
   releaseTarget: name => releaseTarget($, name),
   refreshBehind: () => refreshBehind($),
+  closeReturnedEnv: h => closeReturnedEnv($, h),
+  settleBatch: () => settleBatch($),
+  tellManager: (name, text) => tellManager($, name, text),
 })
 
 function limitsLine(rows: AgentRow[], workers: number): string {
@@ -720,7 +728,8 @@ const messagingIoOf = ($: EngineInterface): MessagingIo => ({
 // The one way a question gets answered (messaging-run.ts): marks it, tells the asker, notes the decision.
 const answerQuestion = ($: EngineInterface, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> =>
   answerQuestionTo(messagingIoOf($), wanted, choice, by, options, user)
-const paneInboxRows = ($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> => paneInboxRowsTo(messagingIoOf($))
+const paneInboxRows = async ($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> => paneInboxRowsTo(messagingIoOf($), await read($, inboxExpanded))
+const endedOwnersOf = async ($: EngineInterface): Promise<Set<string>> => endedOwners(await read($, roster), await read($, seenAgents))
 
 // Pane presses run one after another, so a second press sees the first one's answer and highlight.
 let paneChain: Promise<unknown> = Promise.resolve()
@@ -1107,12 +1116,24 @@ const staleIoOf = ($: EngineInterface, base: string): StaleIo => ({
       return new Map((list as { number: number; mergeCommit?: { oid?: string } | null }[]).filter(p => typeof p?.number === 'number').map(p => [p.number, p.mergeCommit?.oid ?? '']))
     } catch { return undefined }
   },
+  closedPrs: async () => {
+    // gh's closed state excludes merged PRs.
+    const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'closed', '--limit', '50', '--json', 'number'])
+    if (r.exitCode !== 0) return undefined
+    try {
+      const list: unknown = JSON.parse(r.stdout)
+      if (!Array.isArray(list)) return undefined
+      return new Set((list as { number: number }[]).filter(p => typeof p?.number === 'number').map(p => p.number))
+    } catch { return undefined }
+  },
   save: async h => {
     await update($, handovers, hs => ({ ...hs, [String(h.pr)]: h }))
     await best($, 'saving a handover', async () => {
       await saveHandover($, h)
       if (h.status === 'done') await appendLog($, { event: 'done', owner: h.reportTo, pr: h.pr, branch: h.branch, text: h.report })
+      if (h.status === 'returned') await appendLog($, { event: 'back', owner: h.reportTo, pr: h.pr, branch: h.branch, text: h.reason })
     })
+    if (h.status === 'returned') await closeReturnedEnv($, h)
   },
 })
 
@@ -1648,8 +1669,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and the decisions agents made (/flow inbox decisions lists them all, /flow inbox <id> shows one in full), /flow ok keeps every open decision (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] undoes a decision, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox [all|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|resume|approve <pr>|push [back <pr>|drop]|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and the decisions agents made (/flow inbox decisions lists them all, /flow inbox <id> shows one in full), /flow ok keeps every open decision (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] undoes a decision, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (alias /flow drop) turns down a handover that awaits approval or is pending, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox [all|archive [all]|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|resume|approve <pr>|reject <pr> [reason]|push [back <pr>|drop]|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
@@ -2131,16 +2152,20 @@ export const register: Register = (on, options) => {
     ])
     const leftover = leftoverLine(leftCounts)
     // The push item is drawn as the banner on top, not as a question.
-    const openQs = openAll(await read($, inbox)).filter(q => !isFyi(q) && q.kind !== PUSH_KIND).sort((a, b) => Number(b.blocking) - Number(a.blocking))
+    const boxNow = await read($, inbox)
+    const openQs = openAll(boxNow).filter(q => !isFyi(q) && q.kind !== PUSH_KIND && !hiddenByLink(boxNow, q)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
     const gate = (await read($, pushState)).batch
     const breakerNote = breakerLine(await read($, reviewerBreaker), t)
     const askers = askingNames(await read($, inbox))
     const fyiCount = openAll(await read($, inbox)).filter(isFyi).length
+    // The decisions worth a line in the tree: not the routine ones, nor those of finished agents.
+    const openItems = [...openQs, ...foldedOf(await read($, inbox), await endedOwnersOf($)).shown.filter(q => q.kind !== PUSH_KIND).reverse()]
     // The key row is drawn when any key in it works: the agents' keys, the reviewer's, or the inbox's.
-    const anyOpen = openAll(await read($, inbox)).length > 0
+    // The inbox key also opens the archive, so answered items keep it drawn.
+    const anyOpen = (await read($, inbox)).items.length > 0
     const checksLine = paneChecksLine(await read($, checks), installed)
     // One inbox line (counts and the key) follows the listed questions.
-    const inboxRows = Math.min(openQs.length, 5) + (openQs.length > 5 ? 1 : 0) + (openQs.length > 0 || fyiCount > 0 ? 1 : 0) + (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
+    const inboxRows = Math.min(openItems.length, 5) + (openItems.length > 5 ? 1 : 0) + (openQs.length > 0 || fyiCount > 0 ? 1 : 0) + (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
     const deployLines = behindLines(mirror.deployInfos, await read($, deploys), await read($, behind)).slice(0, 3)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
@@ -2255,14 +2280,14 @@ export const register: Register = (on, options) => {
     if (agent !== undefined && agent.type === MANAGER && mode === 'graph') return managerGraphView(ctx, agent, planOwner(plans, agent.name))
     if (agent !== undefined) return agentView(ctx, agent)
 
-    if (mode === 'inbox') {
+    if (mode === 'inbox' || mode === 'card' || mode === 'archive') {
       // Only some surfaces have an Input; without one the keys still answer.
       const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
-      const [ibox, icur, draft, note] = await Promise.all([read($, inbox), read($, inboxCursor), read($, inboxDraft), read($, inboxNote)])
+      const [ibox, icur, draft, note, from] = await Promise.all([read($, inbox), read($, inboxCursor), read($, inboxDraft), read($, inboxNote), read($, cardBack)])
       // The same rows a press reads, so what is drawn and what is pressed fold alike.
       const irows = (await paneInboxRows($)).rows
-      return inboxView({
-        els: { Box, Text, Button }, Input, rows, ibox, icur, draft, note, irows,
+      const ictx: InboxCtx = {
+        els: { Box, Text, Button }, Input, rows, ibox, icur, draft, note, irows, list, now: t, from,
         io: {
           acted,
           rows: async () => (await paneInboxRows($)).rows,
@@ -2280,8 +2305,27 @@ export const register: Register = (on, options) => {
             await acted()
             await update($, viewMode, () => 'tree')
           },
+          open: async (id, origin) => {
+            await update($, inboxCursor, () => id)
+            await update($, cardBack, () => origin)
+            await update($, inboxNote, () => '')
+            await update($, viewMode, () => 'card')
+          },
+          leave: async to => {
+            await update($, inboxNote, () => '')
+            await update($, viewMode, () => to === 'tree' ? 'tree' : to)
+          },
+          toggleFold: async () => {
+            const was = await read($, inboxExpanded)
+            await update($, inboxExpanded, () => !was)
+            // A folded-away highlight would move on the next press; park it on the group row.
+            if (was) await update($, inboxCursor, () => FOLD_KEY)
+          },
         },
-      })
+      }
+      if (mode === 'card') return cardView({ ...ictx, id: icur })
+      if (mode === 'archive') return archiveView(ictx)
+      return inboxView(ictx)
     }
     if (mode === 'graph') return graphModeView(ctx)
     const mainTime = usage?.startedAt === undefined ? '' : elapsed(t - usage.startedAt)
@@ -2289,7 +2333,7 @@ export const register: Register = (on, options) => {
       : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
 
     return treeView({
-      ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, fyiCount, anyOpen, checksLine, gate, breakerNote, inboxRows, deployLines, mainU, mainModel: shortModel(mainModel), mainTime,
+      ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, openItems, fyiCount, anyOpen, checksLine, gate, breakerNote, inboxRows, deployLines, mainU, mainModel: shortModel(mainModel), mainTime,
       mergeQueueKey: MERGE_QUEUE_KEY, warnOf, meter, toggleFold, toggleQueue,
       readCursor: () => read($, cursor),
       setCursor: id => update($, cursor, () => id),
@@ -2298,6 +2342,12 @@ export const register: Register = (on, options) => {
         await acted()
         await update($, inboxCursor, () => null)
         await update($, viewMode, () => 'inbox')
+      },
+      openCard: async id => {
+        await acted()
+        await update($, inboxCursor, () => id)
+        await update($, cardBack, () => 'tree')
+        await update($, viewMode, () => 'card')
       },
     })
     })()

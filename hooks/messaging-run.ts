@@ -5,7 +5,7 @@ import { MANAGER } from './core'
 import { LIVE } from './deliver'
 import type { DeliverOptions } from './deliver'
 import { ENV_KIND } from './deploy'
-import { answerMessage, findItem, isFyi, markAnswered, needsMessage, notesOwner, overridesManager, paneRows } from './inbox'
+import { answerMessage, findItem, isAddressee, isFyi, markAnswered, needsMessage, notesOwner, overridesManager, endedOwners, paneRows } from './inbox'
 import type { Inbox, Marked, PaneRow, Question } from './inbox'
 import { PUSH_KIND } from './pushgate'
 import { backNote } from './routing'
@@ -52,7 +52,7 @@ export async function answerQuestionTo(io: MessagingIo, wanted: string, choice: 
   const marked = await io.withInbox((cur): { inbox: Inbox; out: Marked | { kind: 'escalated'; q: Question } } => {
     // A standing rule made this the user's decision: only main answers it.
     const held = cur.items.find(x => x.id === id)
-    if (held !== undefined && held.state === 'open' && held.escalated !== undefined && by !== 'main') return { inbox: cur, out: { kind: 'escalated', q: held } }
+    if (held !== undefined && held.state === 'open' && held.escalated !== undefined && by !== 'main' && !(held.viaQ !== undefined && isAddressee(held, by))) return { inbox: cur, out: { kind: 'escalated', q: held } }
     const m = markAnswered(cur, id, choice, by, at, undefined, user)
     return { inbox: m.kind === 'ok' ? m.inbox : cur, out: m }
   })
@@ -69,20 +69,25 @@ export async function answerQuestionTo(io: MessagingIo, wanted: string, choice: 
   let delivered = true
   let hint = ''
   if (needsMessage(q, isDefault)) {
-    const asker = q.askerId === undefined ? undefined : (await io.agents()).find(a => a.id === q.askerId)
-    delivered = false
-    const alive = (a: AgentInfo | undefined): a is AgentInfo => a !== undefined && (LIVE.has(a.status) || a.status === 'idle')
-    if (alive(asker)) {
-      delivered = await io.deliver(asker.id, answerMessage(q, answer, who, isDefault), { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
-    } else if (isFyi(q) && q.addressee !== 'main') {
-      // A finished owner cannot act on an undo: its manager (the notes owner) gets it, naming the owner.
-      const mgr = (await io.agents()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && alive(a))
-      if (mgr !== undefined) {
-        delivered = await io.deliver(mgr.id, `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s decision; ${q.owner} is no longer running, so act on it yourself or with a new worker.)`, { urgent: q.blocking === true, onGone: () => undefined }).catch(() => false)
+    if (!isFyi(q)) {
+      delivered = await tellAskerTo(io, q, answerMessage(q, answer, who, isDefault), by)
+    } else {
+      const alive = (a: AgentInfo | undefined): a is AgentInfo => a !== undefined && (LIVE.has(a.status) || a.status === 'idle')
+      const asker = q.askerId === undefined ? undefined : (await io.agents()).find(a => a.id === q.askerId)
+      delivered = false
+      if (alive(asker)) {
+        delivered = await io.deliver(asker.id, answerMessage(q, answer, who, isDefault), { urgent: false, onGone: () => undefined }).catch(() => false)
+      } else if (q.addressee !== 'main') {
+        // A finished owner cannot act on an undo: its manager (the notes owner) gets it, naming the owner.
+        const mgr = (await io.agents()).find(a => a.type === MANAGER && a.name !== undefined && noteKey(a.name) === noteKey(q.addressee) && alive(a))
+        if (mgr !== undefined) {
+          delivered = await io.deliver(mgr.id, `${answerMessage(q, answer, by, isDefault)} (This was ${q.owner}'s decision; ${q.owner} is no longer running, so act on it yourself or with a new worker.)`, { urgent: false, onGone: () => undefined }).catch(() => false)
+        }
       }
     }
     if (!delivered) hint = `; ${q.owner} is gone: main should relay it to ${noteKey(q.owner)}-2`
   }
+  await linkedEscalation(io, q, answer, by, at)
   await io.withInbox(cur => ({
     inbox: { ...cur, items: cur.items.map(x => (x.id === id ? { ...x, delivered } : x)) }, out: undefined,
   }))
@@ -97,10 +102,63 @@ export async function answerQuestionTo(io: MessagingIo, wanted: string, choice: 
   return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.${guard}${deployNote}`
 }
 
+// Where an answer to a question goes: the asker if it runs (or idles); else, for a blocking question, its
+// continuation (`name-2`) or the asker itself resumed (it ended its turn to wait, so it is not finished).
+// Undefined when it failed, was killed or cannot be found.
+async function askerTargetTo(io: MessagingIo, q: Question): Promise<string | undefined> {
+  const rows = await io.agents()
+  const up = (a: AgentInfo | undefined): a is AgentInfo => a !== undefined && (LIVE.has(a.status) || a.status === 'idle')
+  const row = rows.find(a => a.id === q.askerId)
+  const status = row?.status
+  if (up(row)) return row.id
+  const next = rows.find(a => a.id !== q.askerId && a.name !== undefined && a.name !== q.owner && noteKey(a.name) === noteKey(q.owner) && a.type === (q.askerIsManager ? MANAGER : a.type) && up(a))
+  if (next !== undefined) return next.id
+  if (!q.blocking || q.askerId === undefined) return undefined
+  const seen = (await io.seen())[q.owner]
+  if (status === undefined ? seen?.status === 'failed' || seen?.status === 'killed' : status !== 'completed') return undefined
+  return q.askerId
+}
+
+// Tells the asker of a question: wakes one that ended its turn to wait. Text that cannot be delivered, or whose
+// send is dropped because the agent ended meanwhile, goes to main (noted for the owner), never nowhere.
+// quiet: the answerer is main itself, who sees the result line. True when it reached the asker.
+async function tellAskerTo(io: MessagingIo, q: Question, text: string, by: string): Promise<boolean> {
+  const toMain = (t: string) => by === 'main' ? Promise.resolve() : tellMainTo(io, notesOwner(q), `${t} (asked by ${q.owner}.)`)
+  const id = await askerTargetTo(io, q)
+  if (id === undefined) {
+    await toMain(text)
+    return false
+  }
+  if (!(await io.agents()).some(a => a.id === id && (LIVE.has(a.status) || a.status === 'idle'))) io.markResumable(id)
+  return io.deliver(id, text, { urgent: q.blocking === true, onGone: toMain }).catch(() => false)
+}
+
+// A worker's question that its manager escalated (ask with `for`) and the manager's own question are one
+// decision: the answer to either closes the other and reaches both askers. A counterpart already answered stays.
+async function linkedEscalation(io: MessagingIo, q: Question, answer: string, by: string, at: number): Promise<void> {
+  const otherId = q.forQ ?? q.viaQ
+  if (otherId === undefined) return
+  const other = await io.withInbox((cur): { inbox: Inbox; out: Question | undefined } => {
+    const o = cur.items.find(x => x.id === otherId)
+    if (o === undefined || o.state !== 'open') return { inbox: cur, out: undefined }
+    const done: Question = { ...o, state: 'answered', answer, answeredBy: by, answeredAt: at, delivered: true }
+    return { inbox: { ...cur, items: cur.items.map(x => (x.id === otherId ? done : x)) }, out: done }
+  })
+  if (other === undefined) return
+  if (q.forQ !== undefined) {
+    // main answered the manager's escalation: the worker hears it as main's answer, via its manager.
+    if (needsMessage(other, answer === other.default)) await tellAskerTo(io, other, answerMessage(other, answer, `main (via ${q.owner})`, answer === other.default), by)
+  } else if (by === 'main') {
+    await tellAskerTo(io, other, `flow: main answered ${q.id}, which your worker ${q.owner} asked and you escalated as ${other.id}: ${answer}. Both are closed; the worker has the answer.`, by)
+  } else {
+    io.toMain(`${by} answered ${q.id} (${q.owner}'s question) itself: ${answer}. That closes its escalation ${other.id} to you.`)
+  }
+}
+
 // The pane's inbox rows, read fresh.
-export async function paneInboxRowsTo(io: MessagingIo): Promise<{ rows: PaneRow[]; now: number }> {
-  const [box, now] = await Promise.all([io.inbox(), io.now()])
-  return { rows: paneRows(box), now }
+export async function paneInboxRowsTo(io: MessagingIo, expanded = false): Promise<{ rows: PaneRow[]; now: number }> {
+  const [box, now, rows, seen] = await Promise.all([io.inbox(), io.now(), io.agents(), io.seen()])
+  return { rows: paneRows(box, endedOwners(rows, seen), expanded), now }
 }
 
 // A message for the manager that owns a PR: sent when it is alive, else noted for it and sent to main.

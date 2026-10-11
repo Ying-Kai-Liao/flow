@@ -60,18 +60,19 @@ fix X" is enough.
 | Command | What it does |
 |---|---|
 | `/flow` | Opens the pane: managers, workers, and what needs you first. |
-| `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the decisions agents made as one flat table (newest 15; `/flow inbox decisions` lists all, `/flow inbox d12` one item in full) and what standing answers did. |
+| `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the decisions agents made as one flat table (newest 15; routine `worker-size` / `manager-size` decisions and those of finished agents are folded into one line; `/flow inbox decisions` lists all, `/flow inbox d12` one item in full) and what standing answers did. `/flow inbox archive` lists the answered questions and kept or undone decisions, newest first (50; `/flow inbox archive all` lists every one). |
 | `/flow ok [d10 d11 \| owner \| topic]` | Keeps decisions (no words: every open decision) or takes the default of an ordinary question. Never answers a deploy, push, env or guard item. |
 | `/flow no d12 [what instead]` | Undoes a decision; the agent is told what to do instead. |
 | `/flow answer q3 <choice>` | Answers any question addressed to main (option letter, number, text, or your own words), deploy, push and env items included. |
 | `/flow checks` | Lists the after-deploy checks that only a person can do as one table (id, PR, title, what it needs, age). `/flow checks <id>` shows one in full; `pass`, `fail` and `skip <id...> <why>` close them. |
 | `/flow approve <n>` | Approves PR `n` when it is waiting for you. |
+| `/flow reject <n> [reason]` | Turns down PR `n` while it awaits approval or is pending (alias `/flow drop`). The manager is told; the GitHub PR and branch are left alone. |
 | `/flow push` | Pushes the batch the reviewer built and checked, when `push_mode` is `confirm`. `/flow push back <pr>` returns one PR, `/flow push drop` all of them. |
 | `/flow hold <target>` / `/flow release <target>` | Keeps a deploy target from deploying, or lets it go again. |
 | `/flow resume` | Picks up unfinished work after a restart. |
 | `/flow clean` | Lists leftover worktrees and branches. Add `--yes` to remove them. |
 
-Questions, approvals and checks also show up in the pane and as notifications. With anything open, press `i` in the pane to read and answer the inbox there (`j`/`k` move, a digit or letter picks an option, `y` takes the default or keeps a decision, `w` keeps all decisions, `n` undoes, `r` types an answer); you may answer any question, a manager's too. The key row sits at the pane's bottom.
+Questions, approvals and checks also show up in the pane and as notifications. With anything open, press `i` in the pane to read and answer the inbox there (`j`/`k` move, a digit or letter picks an option, `y` takes the default or keeps a decision, `w` keeps all decisions, `n` undoes, `r` types an answer); you may answer any question, a manager's too. Pressing a row (or an open question or decision in the pane's tree) opens it as a large card with its full text, why, who asked and for whom, the asking agent's status and every option as a button (digits and letters are hotkeys, `y` the default or keep, `n` undoes a decision, the input takes your own words; `b` goes back, `j`/`k` move to the next item). The routine decisions sit in one folded row (`y` keeps all of them, `x` or pressing the row lists them) and `v` opens the archive. The key row sits at the pane's bottom.
 
 ## Settings
 

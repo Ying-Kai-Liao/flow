@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.38] - 2026-10-11
+
+### Added
+
+- Inbox pane: pressing a row (or an open question or decision in the tree) opens a large card with the full text, why, who asked and for whom, the asker's status, and every option as a button plus an input for your own words. After an answer the next item's card opens. An item answered meanwhile shows its answer and answers nothing again.
+- Inbox archive: answered questions and kept or undone decisions, newest first, with answer, who and when (pane key `v`, `/flow inbox archive [all]`; 50 shown unless `all`). Archived cards are read-only.
+- The tree lists important open decisions under the agent summary, and its question lines are buttons.
+
+### Changed
+
+- An escalated pair (a manager's question and the worker's question behind it) is one inbox item: the worker's question is hidden while the manager's is open, its tag reads `ESCALATED via qN`, and the manager's card shows "escalated from <worker>'s qN" with the worker's text.
+- The inbox list and `/flow inbox` fold routine decisions (topics `worker-size` and `manager-size`) and the decisions of finished agents into one group row; `y` and `w` (and `/flow ok`) keep them all, pressing the row (or `x`) lists them. They stay open and undoable.
+
+## [0.6.37] - 2026-10-11
+
+### Added
+
+- `mcp__flow__ask` takes `for: "<qid>"` for managers: it escalates a worker's open question to main. Main's answer to either question closes both and reaches the worker and the manager; no hand relay.
+- `mcp__flow__status` shows an agent that ended its turn on a blocking ask as "waiting on qN".
+
+### Fixed
+
+- The answer to a blocking question wakes an asker that shows as completed or left the roster (workers too); a failed or killed asker, or a send dropped because the agent ended, now sends the answer to main instead of losing it.
+
+## [0.6.36] - 2026-10-11
+
+### Added
+
+- `/flow reject <pr> [reason]` (alias `/flow drop`) turns down an awaiting or pending handover; handovers whose PR was closed on GitHub are returned automatically, including awaiting ones.
+
 ## [0.6.35] - 2026-10-11
 
 ### Added

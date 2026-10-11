@@ -11,7 +11,7 @@ const ok = (stdout = '') => ({ value: { exitCode: 0, stdout, stderr: '', isStdou
 
 // A manager "csv-export" (m1, under main) with one worker (w1); `agents` is the live roster the tests edit.
 function world(on: On) {
-  mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: 1_000_000 })
   const agents: AgentInfo[] = [
     { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
     { id: 'w1', name: 'csv-worker', description: 'w', type: 'flow:worker', status: 'running', parentId: 'm1' },
@@ -19,6 +19,8 @@ function world(on: On) {
   const files = new Map<string, string>()
   const sent: { to: string; text: string }[] = []
   const toasts: string[] = []
+  const submitted: string[] = []
+  on('prompt.submit', (_, e) => { submitted.push(e.text); return { text: e.text } })
   on('agent.list', () => ({ value: agents }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
@@ -44,7 +46,7 @@ function world(on: On) {
     }
     return ok()
   })
-  return { agents, files, sent, toasts }
+  return { agents, files, sent, toasts, submitted, clock }
 }
 
 const ask = ($: Dollar, agentId: string | null, questions: unknown[]) =>
@@ -94,7 +96,7 @@ test('the manager answers: the worker is told, the decision is noted, the inbox 
   expect(msg?.text).toContain('Which format?')
   expect(msg?.text).toContain('tsv')
   expect(notes(w.files)).toContain('decision: "q1 Which format?: tsv"')
-  expect(await inbox($)).toBe('No open questions.')
+  expect(await inbox($)).toBe('No open questions.\nArchive: 1 answered item (/flow inbox archive).')
 })
 
 test('main answers a manager\'s questions with defaults; a non-blocking default sends no message', async ($, on) => {
@@ -111,10 +113,10 @@ test('main answers a manager\'s questions with defaults; a non-blocking default 
   expect(w.sent[0]!.text).toContain('Which format?')
 })
 
-test('an answer for an asker that is gone is undelivered and says who relays it', async ($, on) => {
+test('an answer for an asker that was killed is undelivered and says who relays it', async ($, on) => {
   const w = world(on)
   await ask($, 'w1', [BLOCK])
-  w.agents.splice(1, 1)
+  w.agents[1]!.status = 'killed'
   const r = await answer($, 'm1', { answers: [{ id: 'q1', choice: 'tsv' }] })
   expect(r).toContain('undelivered')
   expect(r).toContain('main should relay')
@@ -157,7 +159,7 @@ test('a decision is recorded quietly, listed, and acked with defaults without a 
   expect(text).toMatch(/d1 +csv-worker +Use a 30 s timeout +0 min/)
   expect(await answer($, 'm1', { defaults: true })).toContain('d1: Keep (default)')
   expect(w.sent).toEqual([])
-  expect(await inbox($)).toBe('No open questions.')
+  expect(await inbox($)).toBe('No open questions.\nArchive: 1 answered item (/flow inbox archive).')
 })
 
 test('undoing a decision messages the owner; with the owner gone, its manager', async ($, on) => {
@@ -304,4 +306,92 @@ test('mcp__flow__answer accepts the old q-id of a decision, also in defaults ids
   expect(await answer($, 'm1', { defaults: true, ids: ['q10'] })).toContain('d1: Keep (default)')
   expect(await answer($, 'm1', { answers: [{ id: 'q11', choice: 'Undo' }] })).toContain('d2: Undo')
   expect(w.sent.some(s => s.to === 'w1' && s.text.includes('undid your decision d2'))).toBe(true)
+})
+
+test('an answer wakes a blocking asker that completed (still in the roster) and is not lost', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [BLOCK])
+  w.agents[1]!.status = 'completed'
+  const r = await answer($, 'm1', { answers: [{ id: 'q1', choice: 'tsv' }] })
+  expect(r).toContain('q1: tsv, delivered')
+  expect(w.sent.find(s => s.to === 'w1')?.text).toContain('tsv')
+})
+
+test('an answer wakes a blocking asker dropped from the roster', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [BLOCK])
+  w.agents.splice(1, 1)
+  expect(await answer($, 'm1', { answers: [{ id: 'q1', choice: 'tsv' }] })).toContain('q1: tsv, delivered')
+  expect(w.sent.find(s => s.to === 'w1')?.text).toContain('tsv')
+})
+
+test('an answer that cannot be delivered (asker failed) reaches main, noted for the owner', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [BLOCK])
+  w.agents[1]!.status = 'failed'
+  const r = await answer($, 'm1', { answers: [{ id: 'q1', choice: 'tsv' }] })
+  expect(r).toContain('undelivered')
+  await w.clock.advance(5)
+  expect(w.submitted.join('\n')).toContain('tsv')
+  expect(notes(w.files)).toContain('tsv')
+})
+
+test('a manager escalates a worker question with for: the batch is accepted and linked', async ($, on) => {
+  world(on)
+  await ask($, 'w1', [BLOCK])
+  const e = await ask($, 'm1', [{ ...BLOCK, question: 'Escalated: which format?', for: 'q1' }])
+  expect(e).toContain('q2: q1 is escalated to main')
+})
+
+test('main answers the manager question: the worker question is answered and both are told, once', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [BLOCK])
+  await ask($, 'm1', [{ ...BLOCK, question: 'Escalated: which format?', for: 'q1' }])
+  w.sent.length = 0
+  expect(await answer($, null, { answers: [{ id: 'q2', choice: 'tsv' }] })).toContain('q2: tsv')
+  expect(w.sent.find(s => s.to === 'w1')?.text).toContain('main (via csv-export) answered q1')
+  expect(w.sent.find(s => s.to === 'm1')?.text).toContain('q2')
+  expect(await inbox($)).toBe('No open questions.\nArchive: 2 answered items (/flow inbox archive).')
+  w.sent.length = 0
+  expect(await answer($, null, { answers: [{ id: 'q1', choice: 'csv' }] })).toContain('already answered')
+  expect(w.sent).toEqual([])
+})
+
+test('main answers the worker question directly: the escalation closes and the manager is told', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [BLOCK])
+  await ask($, 'm1', [{ ...BLOCK, question: 'Escalated: which format?', for: 'q1' }])
+  w.sent.length = 0
+  await answer($, null, { answers: [{ id: 'q1', choice: 'tsv' }] })
+  expect(w.sent.find(s => s.to === 'w1')?.text).toContain('tsv')
+  expect(w.sent.find(s => s.to === 'm1')?.text).toContain('escalated as q2')
+  expect(await answer($, null, { answers: [{ id: 'q2', choice: 'csv' }] })).toContain('already answered')
+})
+
+test('the manager may still answer its escalated worker question: it closes the escalation and main is told', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [BLOCK])
+  await ask($, 'm1', [{ ...BLOCK, question: 'Escalated: which format?', for: 'q1' }])
+  const r = await answer($, 'm1', { answers: [{ id: 'q1', choice: 'tsv' }] })
+  expect(r).not.toContain('refused')
+  await w.clock.advance(5)
+  expect(w.submitted.join('\n')).toContain('closes its escalation q2')
+  expect(await inbox($)).toBe('No open questions.\nArchive: 2 answered items (/flow inbox archive).')
+})
+
+test('for must name an open question addressed to the asking manager; the batch is refused whole', async ($, on) => {
+  const w = world(on)
+  expect(await ask($, 'm1', [{ ...BLOCK, for: 'q9' }])).toContain('not an open question addressed to csv-export')
+  await ask($, 'w1', [BLOCK])
+  expect(await ask($, 'w1', [{ ...SOFT, for: 'q1' }])).toContain('only a manager')
+  expect(w.sent.length).toBe(1)
+  expect(await inbox($)).not.toContain('Quote')
+})
+
+test('status shows an agent that ended on a blocking ask as waiting', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [BLOCK])
+  w.agents[1]!.status = 'completed'
+  const r = await $.tool.call({ tool: 'mcp__flow__status' } as never).then(x => String(x.result))
+  expect(r).toContain('waiting on q1')
 })

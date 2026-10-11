@@ -54,7 +54,7 @@ add login-redirect  after: csv-export
   Click a card to see the agent's activity, when it was last active, and its last report or question. The agents under it
   are cards too: click one to open it. **Message** starts a message to it in your prompt;
   **Back** returns to the agent above it, or to the tree from a top-level agent.
-  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow checks` lists the after-deploy checks that need a person (see Person checks), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
+  `/flow inbox` lists the open questions (see Questions and the inbox), `/flow checks` lists the after-deploy checks that need a person (see Person checks), `/flow close` closes the pane, `/flow resume` picks up unfinished work, `/flow approve <n>` approves a PR waiting for you and `/flow reject <n> [reason]` (alias `/flow drop`) turns one down (see Merge mode), `/flow preflight` shows the pre-flight round (see Pre-flight), `/flow clean` lists leftover worktrees and branches (both below). It stays closed while agents keep running, until the next
   `/flow` or a newly started agent opens it again.
 - **Pane keys**: `j` / `k` move the highlight down and up the tree, `o` opens the highlighted agent,
   `c` collapses or expands the highlighted card, `q` the Reviewer section. In an agent's detail, `b` goes back and `m` starts a message.
@@ -126,13 +126,21 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   gets an id (`q7`); asking the same open question twice returns the existing id. They are kept in
   `<git-common-dir>/flow/inbox.json`, so they survive restarts.
 - **Non-blocking**: the agent goes ahead on the default and says in its report or PR that it
-  assumed it; a message comes only if the answer differs. **Blocking**: it ends its turn and the
-  answer arrives by message.
+  assumed it; a message comes only if the answer differs. **Blocking**: it ends its turn and waits;
+  the answer wakes it as a message, also when it showed as completed or left the roster (it is not
+  finished, and `status` shows "waiting on q7"), and it continues from the answer. An asker that
+  failed or was killed cannot be woken: the answer is noted for its owner and sent to main. A worker
+  continued as `name-2` gets the answer instead.
+- **Escalation**: a manager passes a worker's blocking question to you with `mcp__flow__ask` and
+  `for: "q7"` (the worker's open question addressed to it). The worker's question then shows as
+  escalated; your answer to either question closes both, the worker hears "main answered q7 via
+  <manager>" and the manager is told. A second answer to the other one is refused as already answered.
+  The manager may still answer q7 itself; that closes its escalation and tells main.
 - `/flow inbox` is the person's view: a one-line summary, the questions (blocking first; deploy, push,
   env and guard items tagged NEEDS YOU) with the options on one line (default marked) and age, the decisions
   as one flat table (id, from, headline, age; newest first, the newest 15 and a `+M more` line, `/flow inbox decisions`
   lists all), then what standing answers did. Rows never wrap and headlines are cut with an ellipsis;
-  `/flow inbox <id>` prints one item in full, with its why. Nothing is grouped or folded away, and nothing expires or is acked by itself. `status` and the Flow pane show the open inbox first. An agent
+  `/flow inbox <id>` prints one item in full, with its why. Routine decisions (topics `worker-size`, `manager-size`) and those of agents that are over are folded into one line (`/flow inbox decisions` lists them, `/flow ok` keeps them with the rest); nothing expires or is acked by itself. `/flow inbox archive` lists what was answered, newest first (50; `archive all` for every one). `status` and the Flow pane show the open inbox first. An agent
   with an open blocking question shows as asking in the pane, the toasts and the task graph.
 - You answer from the prompt: `/flow ok` keeps every open decision, `/flow ok d10 d11` or `/flow ok <owner|topic>`
   keeps those (an ordinary question named by id takes its default), `/flow no d12 <what instead>` undoes
@@ -147,7 +155,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   and `why:`. Keys: `j`/`k` move, `1`-`9` or `a`-`h` pick that option of the highlighted item, `y` takes a
   question's default or keeps a decision, `w` keeps all open decisions, `n` undoes the
   highlighted decision (with what you typed in the answer field as "what instead"), `r` types a free-text answer
-  (Enter sends), `i` goes back. Deploy, env, push and guard items are never
+  (Enter sends), `x` folds or expands the group of routine decisions, `v` opens the archive, `i` goes back. Pressing a row opens the item as a large card (also from an open question or decision listed in the tree): full text and why, who asked and for whom, the asker's status, every option as a button (digits and `a`-`h` except `b`, which is Back), the input for your own words (a decision's input is "what instead"), `y`, `n`, `j`/`k`; after an answer the next card opens. The archive's cards are read-only. Deploy, env, push and guard items are never
   answered by `y` or `w`: only their own digit or letter, or free text, answers them. Every answer
   goes through the same path as the `/flow` commands.
   The addressee answers with `mcp__flow__answer` (you, from the prompt or the pane, may answer anything): your main session for managers' questions (tell it "defaults", "1 b,
@@ -295,6 +303,8 @@ and nothing else) to put it in the reviewer. The approval is tied to the head co
 branch moves and the manager hands it over again, you approve again. The reviewer re-reads the labels
 and head when it takes a PR; a PR still unapproved answers "Held:" and is skipped, and if `gh` fails
 the labels count as none, so it never merges something it could not check.
+
+Run `/flow reject <n> [reason]` (alias `/flow drop`; yours only) to turn a handover down instead. It works on awaiting and pending handovers, not on one the reviewer has taken. The handover becomes `returned` ("declined by the user" plus your reason), its env items close, the manager is messaged, and the GitHub PR and branch are not touched. Separately, a handover whose PR was closed on GitHub without a merge is returned on its own ("PR closed on GitHub"); merged PRs count as done.
 
 ## Push gate
 
