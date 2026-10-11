@@ -103,7 +103,7 @@ import type { CommandIo } from './command'
 import { elapsed, tokensDown, LARGE_WINDOW, labelOf, limitLabel, thresholdOf, warnPercent, windowOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
 import {
-  allowed, allowList, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
+  allowed, allowList, flowActive, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
 import { flowCatch, toolCatch } from './toolguard'
@@ -1444,7 +1444,10 @@ const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
 // the caller's shell runs when that is known: the main session and managers run in the
 // session's directory; a worker's or the reviewer's worktree isn't known here, so their relative
 // paths are let through and only absolute ones judged.
-async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>, cwd: () => Promise<string | undefined>, allow: string[]): Promise<string | undefined> {
+// The main session (and a non-flow subagent of it) is guarded only while flow has work in this
+// repo: a flow worktree, or a live flow agent. `flowCaller` says the caller is itself a flow
+// agent, which is guarded regardless.
+async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>, cwd: () => Promise<string | undefined>, allow: string[], flowCaller: () => Promise<boolean>): Promise<string | undefined> {
   let targets: WriteTarget[]
   if (WRITE_TOOLS.includes(String(e.tool))) {
     const file = e.file_path ?? e.notebook_path
@@ -1461,9 +1464,14 @@ async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>,
   const wt = await $.process.run(['git', 'worktree', 'list', '--porcelain'], { timeoutMs: 10_000 }).catch(() => undefined)
   const co = wt?.exitCode === 0 ? parseWorktrees(wt.stdout) : undefined
   if (co === undefined) return undefined
+  // Judged lazily: only a write into the main checkout needs the activity signal.
+  let active: boolean | undefined
+  const guarded = async () => active ??= (await flowCaller()) || flowActive(co) ||
+    (await $.agent.list()).some(a => (a.type === MANAGER || WORKERS.has(a.type) || isReviewer(a.type)) && (LIVE_STATUS.has(a.status) || a.status === 'idle'))
   for (const t of targets) {
     const rel = mainRelative(t.path, co)
     if (rel === undefined) continue
+    if (!(await guarded())) return undefined
     // A git command changes the whole checkout, whichever directory of it runs it.
     if (t.git) return mainCheckoutRefusal(co.main, `\`git\` in ${t.path}`, allow)
     if (!allowed(rel, allow)) return mainCheckoutRefusal(co.main, t.path, allow)
@@ -2190,7 +2198,11 @@ export const register: Register = (on, options) => {
     }
     if (settings.mainGuard) {
       const cwd = async () => (id === undefined || (await whoAmI())?.type === MANAGER ? $.session.cwd() : undefined)
-      const why = await mainCheckoutGuard($, e as unknown as Record<string, unknown>, cwd, settings.mainAllow)
+      const flowCaller = async () => {
+        const type = id === undefined ? undefined : (await whoAmI())?.type
+        return type !== undefined && (type === MANAGER || WORKERS.has(type) || isReviewer(type))
+      }
+      const why = await mainCheckoutGuard($, e as unknown as Record<string, unknown>, cwd, settings.mainAllow, flowCaller)
       if (why !== undefined) return { deny: why }
     }
     if (e.tool === 'SendMessage') {

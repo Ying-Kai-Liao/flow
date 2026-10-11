@@ -517,10 +517,19 @@ export function allowed(rel: string, allow: string[]): boolean {
   return allow.some(a => a.endsWith('/') ? rel.startsWith(a) : rel === a || rel.startsWith(`${a}/`))
 }
 
+// Flow has work in this repo when one of its worktrees (under <main>/.claude/worktrees/) exists;
+// the user's own worktree elsewhere doesn't count.
+export function flowActive(co: Checkouts): boolean {
+  return co.worktrees.some(w => under(w, `${co.main}/.claude/worktrees`) && w !== `${co.main}/.claude/worktrees`)
+}
+
 export function mainCheckoutRefusal(main: string, what: string, allow: string[]): string {
-  return `flow: ${what} is in ${main}, the repo's main checkout, and nothing in the flow changes it. ` +
-    'Build the change in a worktree: put it in a flow:worker\'s brief, or send it to the worker whose worktree owns the file. ' +
+  return `flow: ${what} is in the repo's main checkout. "Main checkout" means the repo's original folder (${main}), ` +
+    'not the main branch: the branch you are on and pushes are irrelevant. It is guarded because flow has work in this repo ' +
+    '(a worktree under .claude/worktrees/ or a live flow agent). ' +
+    'Build the change in a worker\'s worktree: put it in a flow:worker\'s brief, or send it to the worker whose worktree owns the file. ' +
     `Still writable there: ${allow.length ? allow.join(', ') : 'nothing'}. ` +
     'Don\'t route around this through another tool or a shell command. If the user wants the main checkout changed, ' +
-    'tell them; the main_checkout_guard and main_checkout_allow settings are theirs to change.'
+    'tell them the exact fix: set main_checkout_guard to false to turn the guard off, or list the files or directories to keep writable in ' +
+    'main_checkout_allow, via /config -> flow, or in a settings file (.claude/flow.json, or the personal .g\u0069t/flow/config.json).'
 }

@@ -78,7 +78,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `big_files` | none | file only | files workers grep and never read whole (a list) |
 | `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
 | `migrations_dir` | none | file only | the directory of migrations: workers number new ones after the highest on the base branch, and the reviewer renumbers a clash (see Reviewer rules) |
-| `main_checkout_guard` | on | `/config`, file | every agent and the main session: writes to the main checkout are refused (see Guards) |
+| `main_checkout_guard` | on | `/config`, file | flow's agents always, the main session only while flow has a worktree or live agent in the repo: writes to the main checkout (the repo's folder, not the main branch) are refused (see Guards) |
 | `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 | `guard_tests` | none | file only | path globs mapped to repo-wide tests a worker must run when its diff touches a matching path, e.g. `{"src/routes/**": ["test/admin.test.ts"]}` (see Guard tests) |
 | `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |

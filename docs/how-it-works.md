@@ -422,7 +422,7 @@ session included. A rule in a prompt can be skipped; a refused tool call can't.
   `-sTCP:LISTEN`. Every flow agent lives in this one Claude Code session, so a broad kill stops
   the whole flow. `kill <pid>` stays allowed: find the pid with `lsof -i :PORT` or
   `pgrep -fl <pattern>`.
-- **Nothing changes the main checkout.** Edit, Write and NotebookEdit aimed at the repo's main
+- **Nothing changes the main checkout** (the repo's original folder, not the main branch) while flow has work in the repo: a worktree under `.claude/worktrees/` or a live flow manager, worker or reviewer. A repo where flow was never used is never guarded for the main session; flow's own agents are guarded always. Leftover flow worktrees keep the guard on until cleaned up (or `main_checkout_guard` is off). Edit, Write and NotebookEdit aimed at the repo's main
   checkout are refused, and so are obvious shell writes there: `>`/`>>` redirects, `tee`,
   `sed -i`/`perl -i`, `cp`/`mv` targets, `rm`, `touch`, and git commands that change the
   checkout (`commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `am`, `apply`, `reset`,

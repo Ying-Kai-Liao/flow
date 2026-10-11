@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The main-checkout guard covers the main session only while flow has work in the repo (a flow worktree or a live flow agent), and its refusal now says "main checkout" means the repo folder, not the main branch, and names the settings to change
+
 ## [0.6.60] - 2026-10-12
 
 ### Changed

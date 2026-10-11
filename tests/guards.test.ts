@@ -21,11 +21,20 @@ const AGENTS: AgentInfo[] = [
 ]
 
 // The repo at /repo with two linked worktrees; the session runs in the main checkout.
-function repo(on: On) {
+function repo(on: On, agents: AgentInfo[] = AGENTS) {
   mock.clock(on, { now: 0 })
-  on('agent.list', () => ({ value: AGENTS }))
+  on('agent.list', () => ({ value: agents }))
   on('session.cwd', () => ({ value: ROOT }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: PORCELAIN, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('tool.call', () => ({ result: 'ran' }))
+}
+
+// The same repo with no flow worktree and no flow agent: flow has never been used here.
+function plainRepo(on: On, agents: AgentInfo[] = [{ id: 'x1', name: 'look', description: 'e', type: 'Explore', status: 'running' }]) {
+  mock.clock(on, { now: 0 })
+  on('agent.list', () => ({ value: agents }))
+  on('session.cwd', () => ({ value: ROOT }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: `worktree ${ROOT}\nHEAD abc\nbranch refs/heads/ying-kai\n\nworktree ${ELSEWHERE}\nHEAD 1\nbranch refs/heads/x\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('tool.call', () => ({ result: 'ran' }))
 }
 
@@ -180,6 +189,34 @@ test('cleanup from the main checkout is not refused: worktree remove, prune, bra
     expect(writeTargets(command, ROOT)).toEqual([])
     expect([command, (await $.tool.call({ tool: 'Bash', command } as never)).result]).toEqual([command, 'ran'])
   }
+})
+
+test('the main session is not guarded in a repo where flow has no work', async ($, on) => {
+  plainRepo(on)
+  for (const call of [
+    { tool: 'Write', file_path: '/repo/README.md', content: 'x' },
+    { tool: 'NotebookEdit', notebook_path: '/repo/a.ipynb', new_source: 'x' },
+    { tool: 'Bash', command: 'echo x > src/app.ts && g\u0069t commit -am wip' },
+  ]) expect([JSON.stringify(call), (await $.tool.call(call as never)).result]).toEqual([JSON.stringify(call), 'ran'])
+})
+
+test('the main session is guarded while a flow agent is live, even with no flow worktree', async ($, on) => {
+  plainRepo(on, AGENTS)
+  const r = await $.tool.call({ tool: 'Write', file_path: '/repo/README.md', content: 'x' } as never)
+  expect(denied(r)).toBe(true)
+  expect(JSON.stringify(r)).toContain('not the main branch')
+  expect(JSON.stringify(r)).toContain('main_checkout_guard')
+  expect(JSON.stringify(r)).toContain('flow/config.json')
+})
+
+test('the main session is guarded while a flow worktree exists, even with no live agent', async ($, on) => {
+  repo(on, [])
+  expect(denied(await $.tool.call({ tool: 'Write', file_path: '/repo/README.md', content: 'x' } as never))).toBe(true)
+})
+
+test('flow subagents are guarded even when flow shows no other activity', async ($, on) => {
+  plainRepo(on, [{ id: 'm1', name: 'a', description: 'm', type: 'flow:manager', status: 'running' }])
+  expect(denied(await $.tool.call({ tool: 'Bash', command: 'echo x > src/app.ts', agentId: 'm1' } as never))).toBe(true)
 })
 
 test('main_checkout_guard off lets every write through', { options: { main_checkout_guard: false } }, async ($, on) => {
