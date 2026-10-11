@@ -231,6 +231,8 @@ export type InboxCtx = {
   draft: string
   note: string
   irows: PaneRow[]
+  // Which items are expanded into cards, by id.
+  iopen: Record<string, boolean>
   // The roster and the clock, for the card's agent line and ages.
   list: AgentRow[]
   now: number
@@ -255,6 +257,8 @@ export type InboxCtx = {
     leave: (to: 'tree' | 'inbox' | 'archive') => Promise<void>
     // Opens or folds one card (its fold key); the highlight parks on a folded card and goes to firstKey on an opened one.
     toggleFold: (key: string, firstKey: string) => Promise<void>
+    // Expands or collapses one item's card; the highlight goes to it.
+    toggleItem: (id: string) => Promise<void>
   }
 }
 
@@ -444,93 +448,44 @@ export function graphModeView(c: PaneCtx) {
 // The waiting "?" in warning colour: bold when bright, dim when not.
 const askMark = (Text: Els['Text'], now: number) => <Text color="warning" bold={askBright(now)} dimColor={!askBright(now)}>{ICON.ask}</Text>
 
-// A question inside its owner's card: the id (dim), BLOCKING in warning colour, other tags, the text;
-// the owner is the card's title, so only a linked escalation names who it is for.
-function questionRow(Text: Els['Text'], q: Question, hot: boolean, inner: number) {
-  const other = tagsOf(q).replace(/^BLOCKING ?/, '')
-  const forWho = isAddressee(q, 'main') ? '' : `, for ${q.addressee}`
-  const used = 2 + q.id.length + (q.blocking ? 9 : 0) + (other === '' ? 0 : other.length + 1) + 1 + forWho.length
-  return (
-    <Text inverse={hot}>{hot ? '> ' : '  '}<Text dimColor>{q.id}</Text>{q.blocking && <Text color="warning"> BLOCKING</Text>}{other === '' ? '' : ` ${other}`} {fit(q.question, inner - used)}{forWho}</Text>
-  )
-}
+// How many lines an expanded card gives its text, its "why:" and its "instead could:", roomiest tier first;
+// a short pane takes a lower one.
+const CARD_TIERS = [[3, 2, 2], [2, 1, 1], [1, 0, 0]] as const
+
+// One drawn piece of the inbox list: an owner's header line, a collapsed item's line or an expanded item's card.
+type InboxBlock = { key: string; height: number; hot: boolean; node: JSX.Element; rows: number }
 
 export function inboxView(x: InboxCtx) {
-    const { Input, ibox, icur, draft, note, irows, io } = x
+  const { Input, ibox, icur, draft, note, irows, iopen, io } = x
   const { Box, Text, Button } = x.els
   const rows = x.rows
   const ihot = Math.max(0, irows.findIndex(r => r.key === icur))
   const hotRow = irows[ihot]
   const hq = hotRow?.q
   const W = Math.max(20, x.columns)
-  const hotFyi = hq !== undefined && isFyi(hq)
-  // The preview's wrapped lines are estimated from its text, cut to what its tier allows; a short pane takes a lower tier.
-  const lineCap = Math.max(8, W - 8)
-  const wrapped = (text: string, lines: number) => { const t = fit(text, lines * lineCap); return { text: t, n: Math.max(1, Math.ceil(t.length / lineCap)) } }
-  const fixed = 1 + 2 + (hq !== undefined ? 2 : 1) + (note !== '' ? 1 : 0) + (Input !== undefined ? 1 : 0) + (hq !== undefined && !isFyi(hq) && hq.options.length > 0 ? 1 : 0) + 3
-  const previews = [[3, 2, 2], [2, 1, 1], [1, 1, 0], [1, 0, 0]].map(([t, w, i]) => {
-    const text = hq === undefined ? undefined : wrapped(hq.question, t!)
-    const why = hq?.context && w! > 0 ? wrapped(hq.context, w!) : undefined
-    const alt = hotFyi && hq.alternative && i! > 0 ? wrapped(hq.alternative, i!) : undefined
-    const opts = hq !== undefined && !isFyi(hq) ? hq.options.length : 0
-    return { text, why, alt, lines: (text?.n ?? 0) + (why?.n ?? 0) + (alt?.n ?? 0) + opts }
-  })
-  const minList = Math.min(irows.length + 2, 5)
-  const preview = previews.find(p => rows - fixed - p.lines >= minList) ?? previews[previews.length - 1]!
-  const budget = Math.max(2, rows - fixed - preview.lines)
-  // The rows are cards: consecutive rows of one group (a collapsed card is its single header row).
-  type Seg = { g: PaneGroup; rows: PaneRow[] }
-  const segs: Seg[] = []
-  for (const r of irows) {
-    const last = segs[segs.length - 1]
-    if (last !== undefined && r.q !== undefined && last.g.key === r.group?.key) last.rows.push(r)
-    else segs.push({ g: r.group!, rows: [r] })
-  }
-  // Like the tree's fullTree: if the cards as they are do not fit, every card but the hot one is drawn collapsed.
-  const forced = new Set<string>()
-  const heightOf = (sg: Seg) => (sg.rows[0]!.q === undefined || forced.has(sg.g.key) ? 1 : sg.rows.length + 3)
-  const hotGroup = hotRow?.group?.key
-  if (segs.reduce((n, sg) => n + heightOf(sg), 0) > budget) for (const sg of segs) if (sg.g.key !== hotGroup) forced.add(sg.g.key)
-  // Still too many: the hot card shows a window of its items beside the one-line others; if even that has
-  // no room, a window of cards around the hot one, and of its items.
-  const hotSeg = Math.max(0, segs.findIndex(sg => sg.g.key === hotGroup))
-  const hidden = (from: number, to: number) => segs.slice(from, to).reduce((n, sg) => n + sg.rows.length, 0)
-  const hotItems = segs[hotSeg]?.rows.length ?? 0
-  const hotOpen = segs[hotSeg] !== undefined && heightOf(segs[hotSeg]!) > 1
-  const hotRoom = budget - segs.reduce((n, sg, k) => n + (k === hotSeg ? 0 : heightOf(sg)), 0) - 3
-  let itemRoom = hotOpen && hotRoom >= 1 && hotRoom < hotItems ? hotRoom : Infinity
-  let sv = viewOf(segs, hotSeg, segs.length)
-  if (itemRoom === Infinity) {
-    for (let n = segs.length; n >= 1; n--) {
-      sv = viewOf(segs, hotSeg, n)
-      const extra = (sv.top > 0 ? 1 : 0) + (sv.top + sv.rows.length < segs.length ? 1 : 0)
-      if (sv.rows.reduce((m, sg) => m + heightOf(sg), 0) + extra <= budget) break
-    }
-    if (hotOpen && sv.rows.length === 1 && hotItems + 3 > budget) itemRoom = Math.max(1, budget - 3 - (sv.top > 0 ? 1 : 0) - (sv.top + 1 < segs.length ? 1 : 0))
-  }
-  const iAbove = hidden(0, sv.top)
-  const iBelow = hidden(sv.top + sv.rows.length, segs.length)
-  // What j and k step over: the rows as drawn, a card drawn collapsed standing for its first item.
-  const visible = (rs: PaneRow[]) => rs.filter(r => r.q === undefined || r.group === undefined || !forced.has(r.group.key) || r.key === r.group.firstKey)
+  // A decision is kept or undone with y and n; only a question has options to pick.
+  const nOpts = hq === undefined || isFyi(hq) ? 0 : hq.options.length
   // Every press reads the inbox fresh (never the row drawn), so it acts on what is open now.
   // strict: a highlight that is no longer in the list (answered meanwhile, or folded away) answers nothing;
-  // the highlight moves to the first row and the person presses again.
-  const here = async (strict = true) => {
+  // the highlight moves to the first row and the person presses again. `at`: an inline button's own item
+  // instead of the highlight; a gone one answers nothing and leaves the highlight alone.
+  const here = async (strict = true, at?: string) => {
     await io.acted()
     const fresh = await io.rows()
-    const c = await io.readCursor()
-    const at = fresh.findIndex(r => r.key === c)
-    if (strict && c !== null && at < 0) {
+    const c = at ?? await io.readCursor()
+    const found = fresh.findIndex(r => r.key === c)
+    if (strict && c !== null && found < 0) {
       const was = (await io.readInbox()).items.find(x => x.id === c)
       const by = was?.state === 'answered' ? ` (by ${was.answeredBy ?? '?'})` : ''
-      await io.setCursor(fresh[0]?.key ?? null)
-      await io.setNote(`${c} ${was?.state === 'answered' ? 'was answered meanwhile' : 'moved out of the list'}${by}; the highlight moved, press again.`)
+      if (at === undefined) await io.setCursor(fresh[0]?.key ?? null)
+      await io.setNote(`${c} ${was?.state === 'answered' ? 'was answered meanwhile' : 'moved out of the list'}${by}; ${at === undefined ? 'the highlight moved, press again' : 'nothing was changed'}.`)
       return undefined
     }
-    const i = Math.max(0, at)
+    const i = Math.max(0, found)
     return { fresh, i, row: fresh[i] }
   }
   // After an answer the highlight goes to the next row (else the one before), and the result is shown.
+  // The next item keeps its own expanded state: it is not opened for the person.
   const done = async (lines: string[], fresh: PaneRow[], i: number) => {
     const near = fresh[i + 1] ?? fresh[i - 1]
     await io.setCursor(near?.key ?? null)
@@ -540,16 +495,16 @@ export function inboxView(x: InboxCtx) {
   }
   const say = (text: string) => io.setNote(text)
   const answerRow = (id: string, choice: string | null) => io.answer(id, choice)
-  const pickOption = (n: number) => () => io.serial(async () => {
-    const spot = await here()
+  const pickOption = (n: number, at?: string) => () => io.serial(async () => {
+    const spot = await here(true, at)
     if (spot === undefined) return
     const { fresh, i, row } = spot
     if (row?.q === undefined) return say('Move to a question or a decision first.')
     if (n >= row.q.options.length) return
     await done([await answerRow(row.q.id, row.q.options[n]!)], fresh, i)
   })
-  const takeDefault = () => io.serial(async () => {
-    const spot = await here()
+  const takeDefault = (at?: string) => io.serial(async () => {
+    const spot = await here(true, at)
     if (spot === undefined) return
     const { fresh, i, row } = spot
     if (row === undefined) return
@@ -577,8 +532,8 @@ export function inboxView(x: InboxCtx) {
     const kept = lines.filter(l => l.includes(': Keep (default)')).length
     await done([`Kept ${kept} decision${kept === 1 ? '' : 's'}.`, ...lines.filter(l => !l.includes(': Keep (default)'))], fresh, i)
   })
-  const undo = () => io.serial(async () => {
-    const spot = await here()
+  const undo = (at?: string) => io.serial(async () => {
+    const spot = await here(true, at)
     if (spot === undefined) return
     const { fresh, i, row } = spot
     if (row?.q === undefined || !isFyi(row.q)) return say('n undoes one decision: move to it first.')
@@ -586,8 +541,9 @@ export function inboxView(x: InboxCtx) {
     await io.setDraft('')
     await done([await answerRow(row.q.id, text === '' ? OVERTURN : text)], fresh, i)
   })
-  const reply = () => io.serial(async () => {
+  const reply = (at?: string) => io.serial(async () => {
     await io.acted()
+    if (at !== undefined) await io.setCursor(at)
     await say('Type your answer and press Enter.')
     void io.focus('inbox-answer')
   })
@@ -605,14 +561,11 @@ export function inboxView(x: InboxCtx) {
     const spot = await here(false)
     if (spot === undefined) return
     const { fresh, row } = spot
-    const shown = visible(fresh)
-    const at = Math.max(0, shown.findIndex(r => r.key === row?.key))
-    const to = shown[Math.min(shown.length - 1, Math.max(0, at + d))]
+    const at = Math.max(0, fresh.findIndex(r => r.key === row?.key))
+    const to = fresh[Math.min(fresh.length - 1, Math.max(0, at + d))]
     if (to !== undefined) await io.setCursor(to.key)
   })
   const back = io.back
-  // A decision is kept or undone with y and n; only a question has options to pick.
-  const nOpts = hq === undefined || isFyi(hq) ? 0 : hq.options.length
   const nQ = ibox.items.filter(x => x.state === 'open' && !isFyi(x)).length
   const nF = ibox.items.filter(x => x.state === 'open' && isFyi(x)).length
   const archived = archiveOf(ibox).length
@@ -622,79 +575,142 @@ export function inboxView(x: InboxCtx) {
     const g = spot?.row?.group
     if (g !== undefined) await io.toggleFold(g.key, g.firstKey)
   })
+  // e opens or closes the hot item's card (the hot owner row: its group).
+  const toggleHot = () => io.serial(async () => {
+    const spot = await here(false)
+    const r = spot?.row
+    if (r?.q !== undefined) await io.toggleItem(r.key)
+    else if (r?.group !== undefined) await io.toggleFold(r.group.key, r.group.firstKey)
+  })
+  const foldGroup = (g: PaneGroup) => () => void io.serial(async () => { await io.acted(); await io.toggleFold(g.key, g.firstKey) })
+  const toggleItem = (id: string) => () => void io.serial(async () => { await io.acted(); await io.toggleItem(id) })
+
+  // The list as blocks. Owner headers are plain lines; each item is a collapsed line or, once opened, a card.
+  const build = (tier: readonly [number, number, number]): InboxBlock[] => {
+    const lineCap = Math.max(8, W - 14)
+    const wrapped = (text: string, lines: number, lead = 0) => {
+      const t = fit(text, lines * lineCap - lead)
+      return { text: t, n: Math.max(1, Math.ceil((t.length + lead) / lineCap)) }
+    }
+    const blocks: InboxBlock[] = []
+    const header = (g: PaneGroup, hot: boolean) => {
+      const full = g.routine ? groupTitle(g) : `${g.owner} · ${g.total}${g.asks ? ' asks' : ''}`
+      const width = W - 3
+      const shown = fit(full, width)
+      const text = g.routine || shown !== full || !g.asks
+        ? <Text inverse={hot} dimColor={!hot}>{shown}</Text>
+        : <Text inverse={hot}><Text dimColor>{`${g.owner} · ${g.total}`}</Text><Text color="warning"> asks</Text></Text>
+      blocks.push({
+        key: `hdr-${g.key}`, height: 1, hot, rows: g.expanded ? 0 : 1,
+        node: (
+          <Box key={`hdr-${g.key}`} flexDirection="row">
+            <Button key={`fold-${g.key}`} plain dimColor onPress={foldGroup(g)}>{g.expanded ? '▾ ' : '▸ '}</Button>
+            <Button key={`row-${g.key}`} plain onPress={foldGroup(g)}>{text}</Button>
+          </Box>
+        ),
+      })
+    }
+    const item = (r: PaneRow) => {
+      const q = r.q!
+      const hot = r.key === hotRow?.key
+      const fyi = isFyi(q)
+      const open = iopen[q.id] === true
+      if (!open) {
+        const other = fyi ? '' : tagsOf(q).replace(/^BLOCKING ?/, '')
+        const lead = `  ▸ ${q.id}${q.blocking && !fyi ? ' BLOCKING' : ''}${other === '' ? '' : ` ${other}`} `
+        const line = (
+          <Text inverse={hot}>
+            {'  ▸ '}<Text dimColor={!hot}>{q.id}</Text>{q.blocking && !fyi && <Text color="warning"> BLOCKING</Text>}{other === '' ? '' : ` ${other}`} {fit(q.question, W - 1 - lead.length)}
+          </Text>
+        )
+        blocks.push({ key: `item-${q.id}`, height: 1, hot, rows: 1, node: <Button key={`item-${q.id}`} plain onPress={toggleItem(q.id)}>{line}</Button> })
+        return
+      }
+      const text = wrapped(q.question, tier[0])
+      const why = q.context ? wrapped(q.context, tier[1], 5) : undefined
+      const alt = fyi && q.alternative && tier[2] > 0 ? wrapped(q.alternative, tier[2], 14) : undefined
+      const shownOpts = fyi ? [] : q.options.slice(0, 9)
+      const buttons = fyi ? 1 : shownOpts.length + 1
+      const height = 2 + 1 + text.n + (why?.n ?? 0) + (alt?.n ?? 0) + buttons
+      const who = fyi || isAddressee(q, 'main') ? '' : `, for ${q.addressee}`
+      blocks.push({
+        key: `item-${q.id}`, height, hot, rows: 1,
+        node: (
+          <Box key={`item-${q.id}`} flexDirection="row" paddingLeft={2}>
+            <Button key={`fold-${q.id}`} plain dimColor onPress={toggleItem(q.id)}>{'▾ '}</Button>
+            {/* A Button holds Text only, so the border is drawn around the buttons, as for an agent's card. */}
+            <Box flexDirection="column" width={W - 6} borderStyle="round" borderDimColor={!hot} borderColor={hot ? 'suggestion' : undefined} paddingX={1}>
+              <Button key={`head-${q.id}`} plain onPress={toggleItem(q.id)}>
+                <Text wrap="truncate-end">
+                  <Text bold>{q.id}</Text>
+                  <Text dimColor> · {age(x.now - q.askedAt)} ago{fyi && q.topic ? ` [${q.topic}]` : ''}{who}</Text>
+                  {!fyi && tagsOf(q) !== '' && <Text color={q.blocking ? 'warning' : undefined}> {tagsOf(q)}</Text>}
+                </Text>
+              </Button>
+              <Text>{text.text}</Text>
+              {why !== undefined && <Text><Text dimColor>why: </Text>{why.text}</Text>}
+              {alt !== undefined && <Text><Text dimColor>instead could: </Text>{alt.text}</Text>}
+              {fyi ? (
+                <Box flexDirection="row" gap={2}>
+                  <Button key={`keep-${q.id}`} plain onPress={() => takeDefault(q.id)}>y Keep</Button>
+                  <Button key={`undo-${q.id}`} plain onPress={() => undo(q.id)}>n Undo</Button>
+                </Box>
+              ) : (
+                <Box flexDirection="column">
+                  {shownOpts.map((o, k) => (
+                    <Button key={`opt-${q.id}-${k}`} plain onPress={pickOption(k, q.id)}>{`${k + 1}/${String.fromCharCode(97 + k)} ${fit(o, lineCap - 6)}${o === q.default ? ' (default)' : ''}`}</Button>
+                  ))}
+                  <Button key={`reply-${q.id}`} plain onPress={() => reply(q.id)}>r reply</Button>
+                </Box>
+              )}
+            </Box>
+          </Box>
+        ),
+      })
+    }
+    const seen = new Set<string>()
+    for (const r of irows) {
+      const g = r.group!
+      if (r.q === undefined) { header(g, r.key === hotRow?.key); continue }
+      if (!seen.has(g.key)) { seen.add(g.key); header(g, false) }
+      item(r)
+    }
+    return blocks
+  }
+  // Fit: the roomiest text tier whose whole list fits; else a window of blocks around the hot one, with a
+  // line each for "↑ N above" and "↓ N more". The footer is outside this budget, so it is always drawn.
+  const footerLines = (note !== '' ? 1 : 0) + (Input !== undefined ? 1 : 0) + (nOpts > 0 ? 1 : 0) + 2
+  const budget = Math.max(2, rows - 1 - footerLines)
+  const hotAt = (bs: InboxBlock[]) => Math.max(0, bs.findIndex(b => b.hot))
+  const sum = (bs: InboxBlock[]) => bs.reduce((n, b) => n + b.height, 0)
+  let blocks = build(CARD_TIERS[CARD_TIERS.length - 1]!)
+  for (const t of CARD_TIERS) {
+    const bs = build(t)
+    if (sum(bs) <= budget || bs[hotAt(bs)]!.height + 4 <= budget) { blocks = bs; break }
+  }
+  let lo = 0
+  let hi = blocks.length - 1
+  if (sum(blocks) > budget) {
+    const hot = hotAt(blocks)
+    lo = hi = hot
+    let used = blocks[hot]!.height
+    const extra = (first: number, last: number) => (first > 0 ? 1 : 0) + (last < blocks.length - 1 ? 1 : 0)
+    for (let grew = true; grew;) {
+      grew = false
+      if (hi + 1 < blocks.length && used + blocks[hi + 1]!.height + extra(lo, hi + 1) <= budget) { used += blocks[++hi]!.height; grew = true }
+      if (lo > 0 && used + blocks[lo - 1]!.height + extra(lo - 1, hi) <= budget) { used += blocks[--lo]!.height; grew = true }
+    }
+  }
+  const countRows = (from: number, to: number) => blocks.slice(from, to).reduce((n, b) => n + b.rows, 0)
+  const iAbove = countRows(0, lo)
+  const iBelow = countRows(hi + 1, blocks.length)
   return (
     <Box flexDirection="column" height={rows}>
       <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Text bold><Text color={irows.length === 0 ? undefined : 'warning'} dimColor={irows.length === 0}>{ICON.inbox}</Text> Inbox{nQ > 0 && <Text> {askMark(Text, x.now)}</Text>} <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
       {iAbove > 0 && <Text dimColor>  ↑ {iAbove} above</Text>}
-      {sv.rows.map(sg => {
-        const g = sg.g
-        const header = sg.rows[0]!.q === undefined
-        const drawnOpen = !header && !forced.has(g.key)
-        const hotCard = g.key === hotGroup
-        const hotTitle = header && hotRow?.key === g.key
-        const inner = Math.max(10, W - 6)
-        // A card drawn collapsed only for lack of room is opened by moving onto it; the saved fold is not touched.
-        const press = () => void io.serial(async () => {
-          await io.acted()
-          if (!header && forced.has(g.key)) await io.setCursor(g.firstKey)
-          else await io.toggleFold(g.key, g.firstKey)
-        })
-        const full = groupTitle(g)
-        const width = drawnOpen ? inner : W - 2
-        const title = full.length > width
-          ? <Text inverse={hotTitle} dimColor={!hotTitle}>{fit(full, width)}</Text>
-          : (
-            <Text inverse={hotTitle}>
-              <Text bold>{g.owner}</Text>
-              <Text dimColor>{g.routine ? full.slice(g.owner.length) : g.count > 0 ? ` · ${plural(g.count, 'decision')}` : ''}</Text>
-              {g.asks && !g.routine && <Text color="warning"> · asks</Text>}
-            </Text>
-          )
-        const items = drawnOpen && g.key === hotGroup && sg.rows.length > itemRoom
-          ? viewOf(sg.rows, Math.max(0, sg.rows.findIndex(r => r.key === hotRow?.key)), itemRoom).rows
-          : sg.rows
-        const item = (r: PaneRow) => {
-          const hot = r.key === hotRow?.key
-          const q = r.q!
-          return (
-            <Button key={`row-${r.key}`} plain onPress={() => void io.serial(async () => { await io.acted(); await io.open(r.key, 'inbox') })}>
-              {isFyi(q)
-                ? <Text inverse={hot}>{hot ? '> ' : '  '}<Text dimColor>{q.id}</Text> {fit(q.question, inner - 3 - q.id.length)}</Text>
-                : questionRow(Text, q, hot, inner)}
-            </Button>
-          )
-        }
-        return (
-          <Box key={`card-${g.key}`} flexDirection="row">
-            <Button key={`fold-${g.key}`} plain dimColor onPress={press}>{drawnOpen ? '▾ ' : '▸ '}</Button>
-            {drawnOpen ? (
-              // A Button holds Text only, so the border is drawn around the buttons, as for an agent's card.
-              <Box flexDirection="column" width={W - 2} borderStyle="round" borderDimColor={!hotCard} borderColor={hotCard ? 'suggestion' : undefined} paddingX={1}>
-                <Button key={`row-${g.key}`} plain onPress={press}>{title}</Button>
-                {items.map(item)}
-              </Box>
-            ) : (
-              <Button key={`row-${g.key}`} plain onPress={press}>{title}</Button>
-            )}
-          </Box>
-        )
-      })}
+      {blocks.slice(lo, hi + 1).map(b => b.node)}
       {iBelow > 0 && <Text dimColor>  ↓ {iBelow} more</Text>}
-      {hq !== undefined && (
-        <Box flexDirection="column">
-          <Text dimColor>{'─'.repeat(W)}</Text>
-          <Text>
-            <Text bold>{hq.id}</Text>
-            <Text dimColor> · {isAddressee(hq, 'main') || isFyi(hq) ? hq.owner : `${hq.owner}, for ${hq.addressee}`} · {age(x.now - hq.askedAt)} ago{isFyi(hq) && hq.topic ? ` · [${hq.topic}]` : ''}</Text>
-            {!isFyi(hq) && tagsOf(hq) !== '' && <Text color={hq.blocking ? 'warning' : undefined}> {tagsOf(hq)}</Text>}
-          </Text>
-          <Text>{preview.text?.text}</Text>
-          {!isFyi(hq) && hq.options.map((o, k) => <Text key={`opt-${k}`}>  {String.fromCharCode(97 + k)}) {fit(o, W - 6)}{o === hq.default ? ' (default)' : ''}</Text>)}
-          {preview.why !== undefined && <Text><Text dimColor>why: </Text>{preview.why.text}</Text>}
-          {preview.alt !== undefined && <Text><Text dimColor>instead could: </Text>{preview.alt.text}</Text>}
-        </Box>
-      )}
       {hotRow === undefined && <Text dimColor>Nothing to answer.</Text>}
       </Box>
       <Box flexDirection="column" flexShrink={0}>
@@ -712,21 +728,25 @@ export function inboxView(x: InboxCtx) {
       <Box flexDirection="row" gap={2}>
         <Button key="inbox-next" plain dimColor hotkey="j" onPress={move(1)}>j next</Button>
         <Button key="inbox-prev" plain dimColor hotkey="k" onPress={move(-1)}>k prev</Button>
-        {/* The hint joins the c button, so a hot collapsed card reads "c expand · y keeps all 3". */}
+        {/* The hint joins the c button, so a hot collapsed owner reads "c expand · y keeps all 3". */}
         {hasGroup && (
           <Box flexDirection="row" gap={1}>
             <Button key="inbox-fold" plain dimColor hotkey="c" onPress={foldHot}>{hotRow?.group?.expanded ? 'c collapse' : 'c expand'}</Button>
             {hotRow?.q === undefined && hotRow?.group !== undefined && <Text dimColor>{fit(`· ${groupHint(hotRow.group)}`, Math.max(8, W - 32))}</Text>}
           </Box>
         )}
-        {/* x stays as an alias of c, unlabelled. */}
+        {hq !== undefined && hotRow !== undefined && (
+          <Button key="inbox-open" plain dimColor hotkey="o" onPress={() => io.serial(async () => { await io.acted(); await io.open(hotRow.key, 'inbox') })}>o open</Button>
+        )}
+        {/* x stays as an alias of c, and e opens or closes the hot item's card (a hotkey is one letter, so not Enter); neither is labelled. */}
         {hasGroup && <Button key="inbox-fold-x" plain hotkey="x" onPress={foldHot}>{''}</Button>}
+        {hasGroup && <Button key="inbox-toggle" plain hotkey="e" onPress={toggleHot}>{''}</Button>}
       </Box>
       <Box flexDirection="row" gap={2}>
-        <Button key="inbox-yes" plain dimColor hotkey="y" onPress={takeDefault}>{hq !== undefined && !isFyi(hq) ? 'y default' : 'y keep'}</Button>
-        <Button key="inbox-no" plain dimColor hotkey="n" onPress={undo}>n undo</Button>
+        <Button key="inbox-yes" plain dimColor hotkey="y" onPress={() => takeDefault()}>{hq !== undefined && !isFyi(hq) ? 'y default' : 'y keep'}</Button>
+        <Button key="inbox-no" plain dimColor hotkey="n" onPress={() => undo()}>n undo</Button>
         <Button key="inbox-all" plain dimColor hotkey="w" onPress={keepAll}>w keep all</Button>
-        <Button key="inbox-reply" plain dimColor hotkey="r" onPress={reply}>r reply</Button>
+        <Button key="inbox-reply" plain dimColor hotkey="r" onPress={() => reply()}>r reply</Button>
         <Button key="inbox-archive" plain dimColor hotkey="v" onPress={() => io.serial(async () => { await io.acted(); await io.leave('archive') })}>v archive{archived > 0 ? ` (${archived})` : ''}</Button>
         <Button key="inbox-back" plain dimColor hotkey="i" onPress={back}>i back</Button>
       </Box>

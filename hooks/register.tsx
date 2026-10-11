@@ -247,6 +247,8 @@ const inboxCursor = atom({ plugin: 'flow', key: 'inboxCursor' } as const, null a
 const cardBack = atom({ plugin: 'flow', key: 'cardBack' } as const, 'inbox' as 'tree' | 'inbox' | 'archive')
 // Which inbox cards are open, by fold key (grp:<owner>, fold): true is open; a key not here takes the card's default.
 const inboxFolds = atom({ plugin: 'flow', key: 'inboxFolds' } as const, {} as Record<string, boolean>)
+// Which inbox items are expanded into cards, by item id; a key not here is collapsed. Ids of items that left the list linger harmlessly.
+const inboxOpen = atom({ plugin: 'flow', key: 'inboxOpen' } as const, {} as Record<string, boolean>)
 const inboxDraft = atom({ plugin: 'flow', key: 'inboxDraft' } as const, '')
 const inboxNote = atom({ plugin: 'flow', key: 'inboxNote' } as const, '')
 const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
@@ -2687,11 +2689,11 @@ export const register: Register = (on, options) => {
     if (mode === 'inbox' || mode === 'card' || mode === 'archive') {
       // Only some surfaces have an Input; without one the keys still answer.
       const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
-      const [ibox, icur, draft, note, from] = await Promise.all([read($, inbox), read($, inboxCursor), read($, inboxDraft), read($, inboxNote), read($, cardBack)])
+      const [ibox, icur, draft, note, from, iopen] = await Promise.all([read($, inbox), read($, inboxCursor), read($, inboxDraft), read($, inboxNote), read($, cardBack), read($, inboxOpen)])
       // The same rows a press reads, so what is drawn and what is pressed fold alike.
       const irows = (await paneInboxRows($)).rows
       const ictx: InboxCtx = {
-        els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, list, now: t, from,
+        els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, iopen, list, now: t, from,
         io: {
           acted,
           rows: async () => (await paneInboxRows($)).rows,
@@ -2725,6 +2727,11 @@ export const register: Register = (on, options) => {
             await update($, inboxFolds, f => ({ ...f, [key]: !was }))
             // A folded-away highlight would move on the next press; park it on the card's row, and on opening go to its first item.
             await update($, inboxCursor, () => was ? key : firstKey)
+          },
+          // Expands or collapses one item's card; the highlight goes to it.
+          toggleItem: async id => {
+            await update($, inboxOpen, o => ({ ...o, [id]: !o[id] }))
+            await update($, inboxCursor, () => id)
           },
         },
       }
