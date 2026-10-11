@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import { test } from './support'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, markAnswered, needsMessage, normalizeInbox,
-  openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, findItem, DECISIONS_SHOWN, overridesManager, needsExplicitAnswer, paneRows, paneRowText, protectedWhy,
+  openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, findItem, DECISIONS_SHOWN, overridesManager, needsExplicitAnswer, paneRows, paneRowText, groupTitle, groupHint, groupExpanded, protectedWhy,
   endedOwners, foldedOf, tagsOf, hiddenByLink, archiveOf, renderArchive, FOLD_KEY,
 } from '../hooks/inbox'
 import type { AskedQuestion, Inbox } from '../hooks/inbox'
@@ -436,7 +436,7 @@ test('predicates: the user may answer anything, over a manager when it is addres
   expect(stillOpen(EMPTY_INBOX)).toBe('Nothing is left open.')
 })
 
-test('paneRows: questions blocking first, then every decision newest first, one flat row each', () => {
+test('paneRows: one card per owner in order of first appearance, its questions before its decisions (newest first)', () => {
   let box = store([ask('soft'), ask('hard', { blocking: true })])
   box = fyis(box, 'mgr-a', ['a1', 'a2', 'a3', 'a4'], 'db', 10_440_000)
   box = fyis(box, 'mgr-c', ['c1'], undefined, 0)
@@ -444,6 +444,25 @@ test('paneRows: questions blocking first, then every decision newest first, one 
   expect(rows.map(r => r.key)).toEqual(['q2', 'q1', 'd4', 'd3', 'd2', 'd1', 'd5'])
   expect(paneRowText(rows[0]!)).toContain('q2 BLOCKING worker-1, for mgr: hard')
   expect(paneRowText(rows[2]!)).toBe('d4 mgr-a [db]: a4')
+  expect(rows.map(r => r.group!.key)).toEqual(['grp:worker-1', 'grp:worker-1', 'grp:mgr-a', 'grp:mgr-a', 'grp:mgr-a', 'grp:mgr-a', 'grp:mgr-c'])
+  expect(rows[0]!.group).toMatchObject({ count: 0, asks: true, blocking: true, firstKey: 'q2' })
+  expect(groupTitle(rows[0]!.group!)).toBe('worker-1 · asks')
+  expect(groupTitle(rows[2]!.group!)).toBe('mgr-a · 4 decisions')
+  expect(groupTitle(rows[6]!.group!)).toBe('mgr-c · 1 decision')
+})
+
+test('paneRows: a collapsed owner is one row holding its decisions; questions only is still one row with no ids', () => {
+  let box = store([ask('soft')])
+  box = fyis(box, 'mgr-a', ['a1', 'a2'], 'db', 10)
+  const rows = paneRows(box, undefined, { 'grp:mgr-a': false, 'grp:worker-1': false })
+  expect(rows.map(r => r.key)).toEqual(['grp:worker-1', 'grp:mgr-a'])
+  expect(rows.map(r => r.q)).toEqual([undefined, undefined])
+  expect(rows[0]!.ids).toEqual([])
+  expect(rows[1]!.ids).toEqual(['d2', 'd1'])
+  expect(paneRowText(rows[1]!)).toBe('▸ mgr-a · 2 decisions')
+  expect(groupHint(rows[1]!.group!)).toBe('y keeps all 2 · c expands')
+  // a fold key of a group that is gone does nothing
+  expect(paneRows(box, undefined, { 'grp:nobody': false }).length).toBe(3)
 })
 
 test('protectedWhy names the explicit way for deploy, env, push and guard items only', () => {
@@ -471,17 +490,19 @@ test('foldedOf: routine topics and finished owners fold; protected and unknown o
   expect(foldedOf(box, undefined).folded.map(q => q.id)).toEqual(['d1', 'd2', 'd3'])
 })
 
-test('paneRows: one group row after the important items, its ids are every folded decision; expanded lists them under it', () => {
+test('paneRows: the routine card is last and closed by default, its ids every folded decision; opened lists them under its owners', () => {
   let box = store([ask('soft'), ask('hard', { blocking: true })])
   box = fyis(box, 'mgr-a', ['a1', 'a2'], 'worker-size', 0)
   box = fyis(box, 'mgr-c', ['c1'], 'db', 5)
   const rows = paneRows(box)
   expect(rows.map(r => r.key)).toEqual(['q2', 'q1', 'd3', FOLD_KEY])
   expect(rows[3]!.ids).toEqual(['d2', 'd1'])
-  expect(paneRowText(rows[3]!)).toBe('▸ 2 routine (worker-size)')
-  const open = paneRows(box, undefined, true)
-  expect(open.map(r => r.key)).toEqual(['q2', 'q1', 'd3', FOLD_KEY, 'd2', 'd1'])
-  expect(paneRowText(open[3]!)).toContain('▾')
+  expect(paneRowText(rows[3]!)).toBe('▸ routine · 2 (worker-size)')
+  expect(groupExpanded({}, FOLD_KEY)).toBe(false)
+  expect(groupExpanded({}, 'grp:x')).toBe(true)
+  const open = paneRows(box, undefined, { [FOLD_KEY]: true })
+  expect(open.map(r => r.key)).toEqual(['q2', 'q1', 'd3', 'd2', 'd1'])
+  expect(open[3]!.group).toMatchObject({ key: FOLD_KEY, routine: true, expanded: true, firstKey: 'd2' })
   // answered ones drop out of the group
   const kept = markAnswered(box, 'd1', null, 'main', 9, undefined, true)
   expect(kept.kind === 'ok' && paneRows(kept.inbox)[3]!.ids).toEqual(['d2'])
