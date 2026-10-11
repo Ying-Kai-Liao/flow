@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The demo is a free replay in the Flow pane by default (canned agents, a question and a decision you answer, a handover and merge; no agents, no tokens, nothing written, labelled DEMO). `/flow init demo live` runs a real throwaway demo (uses tokens) in its own worktree, with nothing pushed, and cleans up after itself.
 - Tools `settings` (show, and write to the repo or personal file with validation: known keys, kinds and choices only, merged into the existing file, `null` removes a key, secrets refused, invalid JSON never overwritten) and `demo` (replay start/stop, cleanup of a real demo's worktree and branch). Both main only.
 - First-run hint at session start: while neither settings file exists and `/flow init` never ran in the repo (marker `<git-common-dir>/flow/init-done`), one line points at `/flow init`.
+### Changed
+
+- Renamed local `h` variables and parameters in the .tsx hooks so the plugin directory's JSX check (MOD_CAPABILITY_USE_NOT_PLAIN) passes; no behaviour change
 
 ## [0.6.42] - 2026-10-12
 
