@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A flow tool whose hook fails (a handler throws, a `$` call rejects, the hook outruns its budget or its worker is replaced) now answers "flow: <tool> did not finish (<reason>) ... call it again" instead of the host's "no tool.call hook answered this call"; the generic tool.call hook's catch swallowed such failures before the tool hook's own could answer
+
 ## [0.6.28] - 2026-10-11
 
 ### Changed

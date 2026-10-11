@@ -83,6 +83,7 @@ import {
   allowed, allowList, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
+import { isFlowTool, toolCatch, toolFailText } from './toolguard'
 import {
   ago, claudeLimits, harnessesOf, runsOutIn, SESSION, sessionKey, sessionRow,
 } from './sessions'
@@ -1929,7 +1930,8 @@ export const register: Register = (on, options) => {
   // checkout. Then, for a subagent: refuse code edits from managers (a change goes into a
   // worker's brief), and keep the call as a line of the agent's activity log. The guards judge
   // before `next`, so the catch passes the call on only when the hook failed before it ran: a
-  // broken guard must not block every call.
+  // broken guard must not block every call. A failure beneath `next` (a flow tool's own hook throwing)
+  // reaches this catch, not the tool hook's own, so a flow tool that did not finish is answered here too.
   on('tool.call', async ($, e, next) => {
     const id = e.agentId
     if (e.tool === 'Bash') {
@@ -1988,17 +1990,17 @@ export const register: Register = (on, options) => {
       })
     }
     return wrapUpReminder($, e, await next(e), settings, mainModel, mainWindow)
-  }).catch(($, e, next) => next(e))
+  }).catch((_$, e, next) => (isFlowTool(e.tool) && !next.called ? { result: toolFailText(e.tool, next) } : next(e)))
 
-  on('tool.call', { tool: 'mcp__flow__handover' }, ($, e) => handoverTool(handoverIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__handover' }, ($, e) => handoverTool(handoverIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 
-  on('tool.call', { tool: 'mcp__flow__release' }, ($, e) => releaseTool(releaseIoOf($), settings, e as unknown as Record<string, unknown>))
+  on('tool.call', { tool: 'mcp__flow__release' }, ($, e) => releaseTool(releaseIoOf($), settings, e as unknown as Record<string, unknown>)).catch(toolCatch)
 
-  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, ($, e) => reviewerToolRun(reviewerIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId))
+  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, ($, e) => reviewerToolRun(reviewerIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 
-  on('tool.call', { tool: 'mcp__flow__plan' }, ($, e) => planTool(planIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__plan' }, ($, e) => planTool(planIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 
-  on('tool.call', { tool: 'mcp__flow__test_slot' }, ($, e) => testSlotTool(slotsIoOf($), settings, e as unknown as Record<string, unknown>))
+  on('tool.call', { tool: 'mcp__flow__test_slot' }, ($, e) => testSlotTool(slotsIoOf($), settings, e as unknown as Record<string, unknown>)).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__guard_tests' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
@@ -2022,14 +2024,14 @@ export const register: Register = (on, options) => {
       files = [...diff.stdout.split('\n').map(l => l.trim()).filter(Boolean), ...(dirty.exitCode === 0 ? pathsFromStatus(dirty.stdout) : [])]
     }
     return { result: guardReport(guardTestsFor(files, map), true) }
-  })
+  }).catch(toolCatch)
 
-  on('tool.call', { tool: 'mcp__flow__ask' }, ($, e) => askTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId))
-  on('tool.call', { tool: 'mcp__flow__fyi' }, ($, e) => fyiTool(inboxIoOf($), e as unknown as Record<string, unknown>, e.agentId))
-  on('tool.call', { tool: 'mcp__flow__preflight' }, ($, e) => preflightTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId))
-  on('tool.call', { tool: 'mcp__flow__answer' }, ($, e) => answerTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId))
-  on('tool.call', { tool: 'mcp__flow__standing' }, ($, e) => standingTool(standingIoOf($), options, e as unknown as Record<string, unknown>, e.agentId))
-  on('tool.call', { tool: 'mcp__flow__check' }, ($, e) => checkTool(checksIoOf($), installed, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__ask' }, ($, e) => askTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+  on('tool.call', { tool: 'mcp__flow__fyi' }, ($, e) => fyiTool(inboxIoOf($), e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+  on('tool.call', { tool: 'mcp__flow__preflight' }, ($, e) => preflightTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+  on('tool.call', { tool: 'mcp__flow__answer' }, ($, e) => answerTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+  on('tool.call', { tool: 'mcp__flow__standing' }, ($, e) => standingTool(standingIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+  on('tool.call', { tool: 'mcp__flow__check' }, ($, e) => checkTool(checksIoOf($), installed, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
@@ -2045,7 +2047,7 @@ export const register: Register = (on, options) => {
     if (!await appendNote($, manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
     await best($, 'logging a note', () => appendLog($, { event: 'note', owner: noteKey(manager), text }))
     return { result: `Noted in ${await notesPath($, manager)}.` }
-  })
+  }).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__clean' }, async ($, e) => {
     const apply = (e as unknown as Record<string, unknown>).apply === true
@@ -2053,21 +2055,21 @@ export const register: Register = (on, options) => {
       return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await sweep($, settings.base, false)}` }
     }
     return { result: await sweep($, settings.base, apply) }
-  })
+  }).catch(toolCatch)
 
-  on('tool.call', { tool: 'mcp__flow__migrations' }, ($, e) => migrationsTool(migrationsIoOf($), settings, e as unknown as Record<string, unknown>))
+  on('tool.call', { tool: 'mcp__flow__migrations' }, ($, e) => migrationsTool(migrationsIoOf($), settings, e as unknown as Record<string, unknown>)).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__session' }, async ($, e) => {
     const id = e.agentId
     const caller: Caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await ownerNameOf($, id) }
     return { result: await sessionTool($, e as unknown as Record<string, unknown>, caller, settings) }
-  })
+  }).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__deploy' }, async ($, e) => {
     const isMain = e.agentId === undefined
     const caller = isMain ? 'main' : await ownerNameOf($, e.agentId!)
     return { result: await deployTool($, options, e as unknown as Record<string, unknown>, isMain, caller) }
-  })
+  }).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__push' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
@@ -2085,9 +2087,9 @@ export const register: Register = (on, options) => {
       return { result: await pushAct($, { kind: 'back', pr }, 'main') }
     }
     return { result: 'Unknown action: use list, push, send-back or drop.' }
-  })
+  }).catch(toolCatch)
 
-  on('tool.call', { tool: 'mcp__flow__status' }, ($, e) => statusTool(statusIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId))
+  on('tool.call', { tool: 'mcp__flow__status' }, ($, e) => statusTool(statusIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
   // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
   // Re-armed when usage drops back below the threshold (after a /compact).
   const mainWarn = { warned: false }
