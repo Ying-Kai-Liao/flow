@@ -183,7 +183,7 @@ test('routine decisions fold into one group row that y keeps whole; pressing the
   const ui = await mount($)
   await open(ui)
   expect(await ui.find({ text: /> d8 csv-export: Decision 100/ })).toBeDefined()
-  expect(await ui.find({ text: /▸ 7 routine decisions \(worker-size\) - y keeps all of them, Enter expands/ })).toBeDefined()
+  expect(await ui.find({ text: /▸ 7 routine \(worker-size\)/ })).toBeDefined()
   expect(await ui.find({ text: /d4 csv-export \[worker-size\]/ })).toBeUndefined()
   // y keeps the important one only; the highlight then sits on the group, and y keeps all of it
   await ui.press({ key: 'inbox-yes' })

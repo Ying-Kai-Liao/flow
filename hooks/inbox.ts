@@ -264,6 +264,13 @@ export function clip(text: string, max = 100): string {
   return t.length <= max ? t : `${t.slice(0, Math.max(0, max - 3)).trimEnd()}...`
 }
 
+// Exactly one line of at most `width` columns: whitespace folded, cut with a single "…".
+export function fit(text: string, width: number): string {
+  const t = text.replace(/\s+/g, ' ').trim()
+  const w = Math.max(1, width)
+  return t.length <= w ? t : `${t.slice(0, w - 1).trimEnd()}…`
+}
+
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
 // "2 questions (1 blocking), 9 decisions." for what is open.
@@ -400,13 +407,16 @@ export const foldText = (count: number, labels: string[]): string => `${plural(c
 // A row's one line in the pane's list.
 export function paneRowText(r: PaneRow): string {
   if (r.group !== undefined) {
-    return `${r.group.expanded ? '▾' : '▸'} ${foldText(r.group.count, r.group.labels)} - y keeps all of them, Enter ${r.group.expanded ? 'folds' : 'expands'}`
+    return `${r.group.expanded ? '▾' : '▸'} ${r.group.count} routine (${r.group.labels.join(', ')})`
   }
   const q = r.q!
   if (isFyi(q)) return `${q.id} ${q.owner}${q.topic ? ` [${q.topic}]` : ''}: ${clip(q.question, 80)}`
   const tags = tagsOf(q)
   return `${q.id}${tags === '' ? '' : ` ${tags}`} ${isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`}: ${q.guard !== undefined ? q.question : clip(q.question, 80)}`
 }
+
+// What y and Enter do on the folded group's row; the pane's key line shows it while that row is hot.
+export const groupHint = (g: NonNullable<PaneRow['group']>): string => `y keeps all ${g.count} · Enter ${g.expanded ? 'folds' : 'expands'}`
 
 // Why `y`, `w` and a group keep refuse an item, and the explicit way. undefined: the item may be answered by default.
 export function protectedWhy(q: Question): string | undefined {

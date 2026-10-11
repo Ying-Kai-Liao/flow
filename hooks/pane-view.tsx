@@ -9,7 +9,7 @@ import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELL
 import { COLOR, GLYPH, handoffOf, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
-import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
+import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
 import type { Inbox, PaneRow, Question } from './inbox'
 import { MANAGER } from './core'
 import type { PushState } from './pushgate'
@@ -224,6 +224,8 @@ export type InboxCtx = {
   els: Els
   Input: ((p: InputProps) => null) | undefined
   rows: number
+  // The pane's width: list rows are cut to one line of it.
+  columns: number
   ibox: Inbox
   icur: string | null
   draft: string
@@ -446,9 +448,38 @@ export function inboxView(x: InboxCtx) {
   const ihot = Math.max(0, irows.findIndex(r => r.key === icur))
   const hotRow = irows[ihot]
   const hq = hotRow?.q
-  const detail = hq !== undefined ? 2 + hq.options.length + (hq.context ? 1 : 0) : 1
-  const size = Math.max(2, rows - 1 - detail - 4 - 2)
-  const win = viewOf(irows, ihot, size)
+  const W = Math.max(20, x.columns)
+  const hotFyi = hq !== undefined && isFyi(hq)
+  // The preview's wrapped lines are estimated from its text, cut to what its tier allows; a short pane takes a lower tier.
+  const lineCap = Math.max(8, W - 8)
+  const wrapped = (text: string, lines: number) => { const t = clip(text, lines * lineCap); return { text: t, n: Math.max(1, Math.ceil(t.length / lineCap)) } }
+  const fixed = 1 + 2 + (hq !== undefined ? 2 : 1) + (note !== '' ? 1 : 0) + (Input !== undefined ? 1 : 0) + (hq !== undefined && !isFyi(hq) && hq.options.length > 0 ? 1 : 0) + 2
+  const previews = [[3, 2, 2], [2, 1, 1], [1, 1, 0], [1, 0, 0]].map(([t, w, i]) => {
+    const text = hq === undefined ? undefined : wrapped(hq.question, t!)
+    const why = hq?.context && w! > 0 ? wrapped(hq.context, w!) : undefined
+    const alt = hotFyi && hq.alternative && i! > 0 ? wrapped(hq.alternative, i!) : undefined
+    const opts = hq !== undefined && !isFyi(hq) ? hq.options.length : 0
+    return { text, why, alt, lines: (text?.n ?? 0) + (why?.n ?? 0) + (alt?.n ?? 0) + opts }
+  })
+  const minList = Math.min(irows.length + 2, 5)
+  const preview = previews.find(p => rows - fixed - p.lines >= minList) ?? previews[previews.length - 1]!
+  const budget = Math.max(2, rows - fixed - preview.lines)
+  // Owner headers: a run of decisions of one owner gets a header line; a window starting mid-run repeats it.
+  const owned = (r: PaneRow | undefined) => (r?.q !== undefined && isFyi(r.q) ? r.q.owner : undefined)
+  const runCount = (i: number) => {
+    let from = i
+    while (from > 0 && owned(irows[from - 1]) === owned(irows[i])) from--
+    let n = 0
+    while (owned(irows[from + n]) === owned(irows[i])) n++
+    return n
+  }
+  const headed = (i: number, top: number) => owned(irows[i]) !== undefined && (i === top || owned(irows[i - 1]) !== owned(irows[i]))
+  let win = viewOf(irows, ihot, Math.max(1, Math.min(irows.length, budget)))
+  for (let n = Math.min(irows.length, budget); n >= 1; n--) {
+    win = viewOf(irows, ihot, n)
+    const heads = win.rows.filter((_, k) => headed(win.top + k, win.top)).length
+    if (n + heads <= budget) break
+  }
   const iBelow = irows.length - win.top - win.rows.length
   // Every press reads the inbox fresh (never the row drawn), so it acts on what is open now.
   // strict: a highlight that is no longer in the list (answered meanwhile, or folded away) answers nothing;
@@ -555,19 +586,35 @@ export function inboxView(x: InboxCtx) {
     <Box flexDirection="column" height={rows}>
       <Text bold>Inbox <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
       {win.top > 0 && <Text dimColor>  ↑ {win.top} above</Text>}
-      {win.rows.map(r => (
-        <Button key={`row-${r.key}`} plain onPress={() => void io.serial(async () => { await io.acted(); if (r.group !== undefined) { await io.setCursor(r.key); await io.toggleFold() } else await io.open(r.key, 'inbox') })}>
-          <Text inverse={r.key === hotRow?.key} color={r.q?.blocking ? 'warning' : undefined} wrap="truncate-end">{r.key === hotRow?.key ? '> ' : '  '}{paneRowText(r)}</Text>
-        </Button>
-      ))}
+      {win.rows.map((r, k) => {
+        const hot = r.key === hotRow?.key
+        const at = win.top + k
+        const q = r.q
+        const row = q !== undefined && isFyi(q)
+          ? <Text inverse={hot}>{hot ? '> ' : '  '}  <Text dimColor>{q.id}</Text> {fit(q.question, W - 5 - q.id.length)}</Text>
+          : <Text inverse={hot} color={q?.blocking ? 'warning' : undefined}>{hot ? '> ' : '  '}{fit(paneRowText(r), W - 2)}</Text>
+        return (
+          <Box key={`line-${r.key}`} flexDirection="column">
+            {headed(at, win.top) && <Text dimColor>{fit(`  ${owned(r)} · ${runCount(at)}`, W)}</Text>}
+            <Button key={`row-${r.key}`} plain onPress={() => void io.serial(async () => { await io.acted(); if (r.group !== undefined) { await io.setCursor(r.key); await io.toggleFold() } else await io.open(r.key, 'inbox') })}>
+              {row}
+            </Button>
+          </Box>
+        )
+      })}
       {iBelow > 0 && <Text dimColor>  ↓ {iBelow} more</Text>}
       {hq !== undefined && (
         <Box flexDirection="column">
-          <Text bold>{hq.id} {isFyi(hq) ? 'decision' : 'question'} {tagsOf(hq)}</Text>
-          <Text>{hq.question}</Text>
-          {!isFyi(hq) && hq.options.map((o, k) => <Text key={`opt-${k}`}>  {String.fromCharCode(97 + k)}) {o}{o === hq.default ? ' (default)' : ''}</Text>)}
-          {hq.context && <Text dimColor>why: {clip(hq.context, 200)}</Text>}
-          {isFyi(hq) && hq.alternative && <Text dimColor>instead could: {clip(hq.alternative, 200)}</Text>}
+          <Text dimColor>{'─'.repeat(W)}</Text>
+          <Text>
+            <Text bold>{hq.id}</Text>
+            <Text dimColor> · {isAddressee(hq, 'main') || isFyi(hq) ? hq.owner : `${hq.owner}, for ${hq.addressee}`} · {age(x.now - hq.askedAt)} ago{isFyi(hq) && hq.topic ? ` · [${hq.topic}]` : ''}</Text>
+            {!isFyi(hq) && tagsOf(hq) !== '' && <Text color={hq.blocking ? 'warning' : undefined}> {tagsOf(hq)}</Text>}
+          </Text>
+          <Text>{preview.text?.text}</Text>
+          {!isFyi(hq) && hq.options.map((o, k) => <Text key={`opt-${k}`}>  {String.fromCharCode(97 + k)}) {fit(o, W - 6)}{o === hq.default ? ' (default)' : ''}</Text>)}
+          {preview.why !== undefined && <Text><Text dimColor>why: </Text>{preview.why.text}</Text>}
+          {preview.alt !== undefined && <Text><Text dimColor>instead could: </Text>{preview.alt.text}</Text>}
         </Box>
       )}
       {hotRow === undefined && <Text dimColor>Nothing to answer.</Text>}
