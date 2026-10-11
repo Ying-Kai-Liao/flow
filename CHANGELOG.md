@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - ask_cards: main shows blocking flow items as AskUserQuestion cards (#127)
 - Flow pane: PR card and push batch card (see and act on what you approve) (#128)
+- Add MIT license, directory-listing metadata and fix install command (#129)
 
 ## [0.6.41] - 2026-10-12
 
@@ -22,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `ask_cards` setting (default on): the messages to the main session tell it to show blocking questions, env changes and deploy approvals as AskUserQuestion cards (clickable options plus Other); new short notices for a blocking ask to main, env items and deploy approvals, and a hint on a manager report that ends in a question.
+- MIT license (`LICENSE`) and plugin metadata for the Claude plugin directory listing: `license`, `homepage`, `repository` and `keywords` in `plugin.json`.
+
+### Fixed
+
+- The README install command: `/plugin marketplace add Ying-Kai-Liao/flow`, then `/plugin install flow@flow`.
 
 ## [0.6.40] - 2026-10-12
 

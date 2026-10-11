@@ -32,7 +32,8 @@ you ── main session
 In a Claude Code session:
 
 ```
-/plugin install flow --marketplace Ying-Kai-Liao/flow
+/plugin marketplace add Ying-Kai-Liao/flow
+/plugin install flow@flow
 ```
 
 ## Your first run
@@ -133,3 +134,7 @@ npm run check            # typecheck, validate and the plugin tests
 
 Add your changelog lines under `## [Unreleased]` in `CHANGELOG.md`. Don't change the version; the
 reviewer does that at merge. More in the [reference](docs/reference.md#develop-it).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
