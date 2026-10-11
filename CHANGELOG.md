@@ -7,45 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.43] - 2026-10-12
+## [0.6.44] - 2026-10-12
+
+Ships the changes that the 0.6.42 and 0.6.43 entries listed but their tags did not contain: two reviewers released at the same time, so those tags were cut before these merges.
 
 ### Added
 
-- `/flow init`: a re-runnable onboarding. A short walkthrough, a demo and the Core settings, driven by the new `flow:init` skill. Detects test and check commands (package.json, Makefile, pyproject, Cargo, go.mod), the base branch, the remote and `gh`; nothing is written unless you choose it. `/flow init settings`, `/flow init demo`, `/flow init demo live` and `/flow init demo stop` jump to a part.
-- The demo is a free replay in the Flow pane by default (canned agents, a question and a decision you answer, a handover and merge; no agents, no tokens, nothing written, labelled DEMO). `/flow init demo live` runs a real throwaway demo (uses tokens) in its own worktree, with nothing pushed, and cleans up after itself.
-- Tools `settings` (show, and write to the repo or personal file with validation: known keys, kinds and choices only, merged into the existing file, `null` removes a key, secrets refused, invalid JSON never overwritten) and `demo` (replay start/stop, cleanup of a real demo's worktree and branch). Both main only.
-- First-run hint at session start: while neither settings file exists and `/flow init` never ran in the repo (marker `<git-common-dir>/flow/init-done`), one line points at `/flow init`.
+- `ask_cards` setting (default on): the messages to the main session tell it to show blocking questions, env changes and deploy approvals as AskUserQuestion cards (clickable options plus Other); new short notices for a blocking ask to main, env items and deploy approvals, and a hint on a manager report that ends in a question. (#127)
+- Flow pane: PR card and push batch card. Press a PR line (or the awaiting / ready-to-push line) to see who handed it over and why it awaits you, its Verification evidence, env changes, after-deploy checks and changed files, with Approve, Reject and Open on GitHub; the push batch card has Push, Send one back and Drop. GitHub details load in the background and are cached. (#128)
+- `/flow init`: a re-runnable onboarding. A short walkthrough, a demo and the Core settings, driven by the new `flow:init` skill. Detects test and check commands (package.json, Makefile, pyproject, Cargo, go.mod), the base branch, the remote and `gh`; nothing is written unless you choose it. `/flow init settings`, `/flow init demo`, `/flow init demo live` and `/flow init demo stop` jump to a part. (#130)
+- The demo is a free replay in the Flow pane by default (canned agents, a question and a decision you answer, a handover and merge; no agents, no tokens, nothing written, labelled DEMO). `/flow init demo live` runs a real throwaway demo (uses tokens) in its own worktree, with nothing pushed, and cleans up after itself. (#130)
+- Tools `settings` (show, and write to the repo or personal file with validation: known keys, kinds and choices only, merged into the existing file, `null` removes a key, secrets refused, invalid JSON never overwritten) and `demo` (replay start/stop, cleanup of a real demo's worktree and branch). Both main only. (#130)
+- First-run hint at session start: while neither settings file exists and `/flow init` never ran in the repo (marker `<git-common-dir>/flow/init-done`), one line points at `/flow init`. (#130)
+
+### Fixed
+
+- A reviewer's message to a finished manager is refused as a `deny` (the "Not sent" text) instead of a string result, which the host rejected as "SendMessage output is not an object". (#131)
+- An explicit `decision_api` (including `off`) now always wins over the deprecated `size_model`, which is read only while `decision_api` is unset. `decision_api` has no default in `/config` so unset stays distinguishable; an unknown value means off. (#126)
+
+## [0.6.43] - 2026-10-12
+
 ### Changed
 
-- Renamed local `h` variables and parameters in the .tsx hooks so the plugin directory's JSX check (MOD_CAPABILITY_USE_NOT_PLAIN) passes; no behaviour change
+- Renamed local `h` variables and parameters in the .tsx hooks so the plugin directory's JSX check (MOD_CAPABILITY_USE_NOT_PLAIN) passes; no behaviour change (#132)
 
 ## [0.6.42] - 2026-10-12
 
-### Changed
+### Added
 
-- ask_cards: main shows blocking flow items as AskUserQuestion cards (#127)
-- Flow pane: PR card and push batch card (see and act on what you approve) (#128)
-- Add MIT license, directory-listing metadata and fix install command (#129)
+- MIT license (`LICENSE`) and plugin metadata for the Claude plugin directory listing: `license`, `homepage`, `repository` and `keywords` in `plugin.json`. (#129)
+
+### Fixed
+
+- The README install command: `/plugin marketplace add Ying-Kai-Liao/flow`, then `/plugin install flow@flow`. (#129)
 
 ## [0.6.41] - 2026-10-12
 
 ### Changed
 
 - Continue-on-branch spawn never fails with the flow:continue refusal (#125)
-### Added
-
-- `ask_cards` setting (default on): the messages to the main session tell it to show blocking questions, env changes and deploy approvals as AskUserQuestion cards (clickable options plus Other); new short notices for a blocking ask to main, env items and deploy approvals, and a hint on a manager report that ends in a question.
-- MIT license (`LICENSE`) and plugin metadata for the Claude plugin directory listing: `license`, `homepage`, `repository` and `keywords` in `plugin.json`.
-
-### Fixed
-
-- The README install command: `/plugin marketplace add Ying-Kai-Liao/flow`, then `/plugin install flow@flow`.
-### Fixed
-
-- A reviewer's message to a finished manager is refused as a `deny` (the "Not sent" text) instead of a string result, which the host rejected as "SendMessage output is not an object".
-### Fixed
-
-- An explicit `decision_api` (including `off`) now always wins over the deprecated `size_model`, which is read only while `decision_api` is unset. `decision_api` has no default in `/config` so unset stays distinguishable; an unknown value means off.
 
 ## [0.6.40] - 2026-10-12
 
