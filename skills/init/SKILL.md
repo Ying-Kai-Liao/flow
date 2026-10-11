@@ -83,6 +83,8 @@ If the user skips the demo, go on to settings.
    `docs/reference.md`: `size_model` and the decision API (its keys live in env, never in settings),
    `deploy_targets` (several deploy targets with gates), `guard_tests` (tests required for matching files),
    standing answers (`/flow inbox` suggests rules for questions you keep answering the same way).
+   Suggest `decision_api` `jev` for worker model sizing: it halved under-sized spawns in flow's own history, and it
+   sends the brief text to the provider (api.typesafe.ai).
 
 Finish with the next step: ask for work in this session (for example "Add CSV export to the reports page"), and
 `/flow` to watch it. Running `/flow init` again shows the current settings and lets them change any.

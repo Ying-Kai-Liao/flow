@@ -56,7 +56,7 @@ export async function post(io: DecideIo, name: string, url: string, key: string,
 // `after` is a one-shot timer that `cancel()` stops, as the engine's $.clock.after.
 export type DecideIo = { fetch: FetchLike; after: (ms: number, fn: () => void) => { cancel: () => void } }
 // The keys and base URLs are /config options (sensitive keys), never read from the environment or a file.
-export type DecideSettings = { decisionApi?: DecisionApi; jevModel?: string; openaiModel?: string; jevApiKey?: string; jevBaseUrl?: string; openrouterApiKey?: string; openrouterBaseUrl?: string; openrouterJevModel?: string; openaiApiKey?: string; openaiBaseUrl?: string }
+export type DecideSettings = { decisionApi?: DecisionApi; jevModel?: string; openaiModel?: string; jevApiKey?: string; jevBaseUrl?: string; openrouterApiKey?: string; openrouterBaseUrl?: string; openrouterJevModel?: string; openaiApiKey?: string; openaiBaseUrl?: string; sizeMinConfidence?: number }
 
 // How the decision text names the provider ("jev", "openai gpt-4.1-mini").
 export const sourceOf = (s: DecideSettings): string => (s.decisionApi === 'openai' ? `openai ${s.openaiModel ?? OPENAI_DEFAULT_MODEL}` : jevName(jevConfig(s).via))

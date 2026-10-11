@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `size_min_confidence` (default 0): the least confidence the decision API's answer needs for spawn sizing to use it, below which the brief's `Size:` line is used
+
+### Changed
+
+- Spawn sizing now uses the decision API's answer at any confidence (was 0.5 or more); in flow's own history this raised agreement with the right size from 58% to 72%. Set `size_min_confidence` 0.5 for the old behaviour
+
 ## [0.6.58] - 2026-10-12
 
 ### Added

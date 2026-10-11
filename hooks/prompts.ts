@@ -40,6 +40,8 @@ export type Settings = {
   decideInbox?: boolean
   decideHandoff?: boolean
   decideMinConfidence?: number
+  // Spawn sizing has its own floor (default 0: every answer counts), since a low-confidence size is still better than the Size line.
+  sizeMinConfidence?: number
   conflictModel?: string
   managerModel: string
   managerModelSmall?: string
