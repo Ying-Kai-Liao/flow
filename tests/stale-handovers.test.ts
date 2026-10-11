@@ -16,6 +16,7 @@ function world(list: Handover[], extra: Partial<StaleIo> = {}, roster: { id: str
     agents: async () => roster,
     isAncestor: async () => { calls.git++; return false },
     mergedPrs: async () => { calls.gh++; return new Map() },
+    closedPrs: async () => new Set<number>(),
     save: async x => { db[String(x.pr)] = x },
     ...extra,
   }
@@ -53,11 +54,11 @@ test('taken goes back to pending only when no reviewer is live', async () => {
   expect(alive.db['5']!.status).toBe('taken')
 })
 
-test('awaiting, ready, returned and done are never touched', async () => {
+test('ready, returned and done are never touched', async () => {
   resetStaleThrottle()
-  const w = world((['awaiting', 'ready', 'returned', 'done'] as const).map((s, i) => h(10 + i, s)), { isAncestor: async () => true })
+  const w = world((['ready', 'returned', 'done'] as const).map((s, i) => h(10 + i, s)), { isAncestor: async () => true })
   await reconcileStale(w.io)
-  expect(Object.values(w.db).map(x => x.status)).toEqual(['awaiting', 'ready', 'returned', 'done'])
+  expect(Object.values(w.db).map(x => x.status)).toEqual(['ready', 'returned', 'done'])
   expect(w.calls.git).toBe(0)
 })
 
@@ -82,4 +83,27 @@ test('a handover that changed meanwhile is not overwritten', async () => {
   w.io.handovers = async () => (++reads > 1 ? { '8': { ...h(8, 'returned') } } : base())
   await reconcileStale(w.io)
   expect(w.db['8']!.status).toBe('pending')
+})
+
+test('a PR closed on GitHub returns its pending, awaiting and taken handovers; open ones stay; a merged one is done', async () => {
+  resetStaleThrottle()
+  const w = world([h(20, 'awaiting'), h(21, 'pending'), h(22, 'taken'), h(23, 'awaiting'), h(24, 'awaiting')], {
+    closedPrs: async () => new Set([20, 21, 22, 24]),
+    mergedPrs: async () => new Map([[24, 'abcdef1234567']]),
+  }, [{ id: 'q', type: 'flow:reviewer', status: 'running' }])
+  await reconcileStale(w.io)
+  for (const n of ['20', '21', '22']) expect(w.db[n]).toMatchObject({ status: 'returned', reason: 'PR closed on GitHub' })
+  expect(w.db['23']!.status).toBe('awaiting')
+  expect(w.db['24']!.status).toBe('done')
+})
+
+test('a failing closed-PR lookup leaves awaiting handovers alone', async () => {
+  resetStaleThrottle()
+  const w = world([h(30, 'awaiting')], { closedPrs: async () => undefined })
+  await reconcileStale(w.io)
+  expect(w.db['30']!.status).toBe('awaiting')
+  resetStaleThrottle()
+  const boom = world([h(31, 'awaiting')], { closedPrs: async () => { throw new Error('x') } })
+  await reconcileStale(boom.io)
+  expect(boom.db['31']!.status).toBe('awaiting')
 })

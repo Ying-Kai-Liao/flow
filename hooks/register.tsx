@@ -404,6 +404,9 @@ const commandIoOf = ($: EngineInterface): CommandIo => ({
   holdTarget: (name, until, by, reason) => holdTarget($, name, until, by, reason),
   releaseTarget: name => releaseTarget($, name),
   refreshBehind: () => refreshBehind($),
+  closeReturnedEnv: h => closeReturnedEnv($, h),
+  settleBatch: () => settleBatch($),
+  tellManager: (name, text) => tellManager($, name, text),
 })
 
 function limitsLine(rows: AgentRow[], workers: number): string {
@@ -1109,12 +1112,24 @@ const staleIoOf = ($: EngineInterface, base: string): StaleIo => ({
       return new Map((list as { number: number; mergeCommit?: { oid?: string } | null }[]).filter(p => typeof p?.number === 'number').map(p => [p.number, p.mergeCommit?.oid ?? '']))
     } catch { return undefined }
   },
+  closedPrs: async () => {
+    // gh's closed state excludes merged PRs.
+    const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'closed', '--limit', '50', '--json', 'number'])
+    if (r.exitCode !== 0) return undefined
+    try {
+      const list: unknown = JSON.parse(r.stdout)
+      if (!Array.isArray(list)) return undefined
+      return new Set((list as { number: number }[]).filter(p => typeof p?.number === 'number').map(p => p.number))
+    } catch { return undefined }
+  },
   save: async h => {
     await update($, handovers, hs => ({ ...hs, [String(h.pr)]: h }))
     await best($, 'saving a handover', async () => {
       await saveHandover($, h)
       if (h.status === 'done') await appendLog($, { event: 'done', owner: h.reportTo, pr: h.pr, branch: h.branch, text: h.report })
+      if (h.status === 'returned') await appendLog($, { event: 'back', owner: h.reportTo, pr: h.pr, branch: h.branch, text: h.reason })
     })
+    if (h.status === 'returned') await closeReturnedEnv($, h)
   },
 })
 
@@ -1650,8 +1665,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and the decisions agents made (/flow inbox decisions lists them all, /flow inbox <id> shows one in full), /flow ok keeps every open decision (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] undoes a decision, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox [all|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|resume|approve <pr>|push [back <pr>|drop]|clean]',
+      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and the decisions agents made (/flow inbox decisions lists them all, /flow inbox <id> shows one in full), /flow ok keeps every open decision (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] undoes a decision, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (alias /flow drop) turns down a handover that awaits approval or is pending, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
+      argumentHint: '[inbox [all|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|resume|approve <pr>|reject <pr> [reason]|push [back <pr>|drop]|clean]',
     })
     await $.command.register({
       name: 'flow-tasks',
