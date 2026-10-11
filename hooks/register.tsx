@@ -33,7 +33,7 @@ import type { Routed, SpawnIo } from './spawn'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
 import {
-  answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner, endedOwners, foldedOf, FOLD_KEY, hiddenByLink,
+  answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner, endedOwners, foldedOf, FOLD_KEY, groupExpanded, hiddenByLink,
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
@@ -240,12 +240,12 @@ const prShown = atom({ plugin: 'flow', key: 'prShown' } as const, null as number
 const prBack = atom({ plugin: 'flow', key: 'prBack' } as const, 'tree' as 'tree' | 'batch')
 const batchPick = atom({ plugin: 'flow', key: 'batchPick' } as const, null as number | null)
 const prDetails = atom({ plugin: 'flow', key: 'prDetails' } as const, {} as DetailsCache)
-// The inbox view: the highlighted row's key, the expanded groups, the typed answer and the last result line.
+// The inbox view: the highlighted row's key, the typed answer and the last result line.
 const inboxCursor = atom({ plugin: 'flow', key: 'inboxCursor' } as const, null as string | null)
 // The card view: the highlighted id is inboxCursor; Back returns to where the card was opened from.
 const cardBack = atom({ plugin: 'flow', key: 'cardBack' } as const, 'inbox' as 'tree' | 'inbox' | 'archive')
-// The folded routine decisions are listed under their group row.
-const inboxExpanded = atom({ plugin: 'flow', key: 'inboxExpanded' } as const, false)
+// Which inbox cards are open, by fold key (grp:<owner>, fold): true is open; a key not here takes the card's default.
+const inboxFolds = atom({ plugin: 'flow', key: 'inboxFolds' } as const, {} as Record<string, boolean>)
 const inboxDraft = atom({ plugin: 'flow', key: 'inboxDraft' } as const, '')
 const inboxNote = atom({ plugin: 'flow', key: 'inboxNote' } as const, '')
 const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
@@ -925,7 +925,7 @@ function messagingIoOf($: EngineInterface): MessagingIo {
 function answerQuestion($: EngineInterface, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> {
   return answerQuestionTo(messagingIoOf($), wanted, choice, by, options, user)
 }
-async function paneInboxRows($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> { return paneInboxRowsTo(messagingIoOf($), await read($, inboxExpanded)) }
+async function paneInboxRows($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> { return paneInboxRowsTo(messagingIoOf($), await read($, inboxFolds)) }
 async function endedOwnersOf($: EngineInterface): Promise<Set<string>> { return endedOwners(await read($, roster), await read($, seenAgents)) }
 
 // Pane presses run one after another, so a second press sees the first one's answer and highlight.
@@ -2712,11 +2712,12 @@ export const register: Register = (on, options) => {
             await update($, inboxNote, () => '')
             await update($, viewMode, () => to === 'tree' ? 'tree' : to)
           },
-          toggleFold: async () => {
-            const was = await read($, inboxExpanded)
-            await update($, inboxExpanded, () => !was)
-            // A folded-away highlight would move on the next press; park it on the group row.
-            if (was) await update($, inboxCursor, () => FOLD_KEY)
+          toggleFold: async (key, firstKey) => {
+            // Read fresh, so rapid presses each flip once.
+            const was = groupExpanded(await read($, inboxFolds), key)
+            await update($, inboxFolds, f => ({ ...f, [key]: !was }))
+            // A folded-away highlight would move on the next press; park it on the card's row, and on opening go to its first item.
+            await update($, inboxCursor, () => was ? key : firstKey)
           },
         },
       }

@@ -353,13 +353,29 @@ function questionLines(q: Question, now: number): string[] {
 // --- The pane's inbox view: the same order as renderInbox, as rows a person moves over. ---
 
 export type PaneRow = {
-  // The question's or decision's id; FOLD_KEY for the folded group's row.
+  // The question's or decision's id; the group's fold key (grp:<owner>, FOLD_KEY) for a collapsed group's row.
   key: string
   ids: string[]
-  // Absent on the folded group's row.
+  // Absent on a collapsed group's row.
   q?: Question
-  // The folded group's row: how many decisions it holds and whether they are listed below it.
-  group?: { count: number; labels: string[]; expanded: boolean }
+  // The card the row belongs to: on a collapsed group's single row, and on every item row of an expanded one.
+  group?: PaneGroup
+}
+
+// An owner's decisions and questions drawn as one card; the routine decisions are one such card too.
+export type PaneGroup = {
+  // grp:<owner>, or FOLD_KEY for the routine card; the key of its fold state.
+  key: string
+  owner: string
+  // How many decisions it holds (the questions are not counted) and whether any question is among its items.
+  count: number
+  asks: boolean
+  blocking: boolean
+  labels: string[]
+  routine: boolean
+  expanded: boolean
+  // The first item row: where the highlight goes when the card opens.
+  firstKey: string
 }
 
 export const FOLD_KEY = 'fold'
@@ -396,35 +412,56 @@ export function foldedOf(inbox: Inbox | undefined, ended: Set<string> | undefine
   return { folded, shown, labels }
 }
 
-// Blocking questions, then the other questions, then the important open decisions (newest first), then one
-// group row for the folded ones; expanded lists them under it. Folded decisions stay open and undoable.
-export function paneRows(inbox: Inbox | undefined, ended?: Set<string>, expanded = false): PaneRow[] {
+// Whether a card shows its items: its entry in the fold map, else open for an owner and closed for the routine card.
+export const groupExpanded = (folds: Record<string, boolean>, key: string): boolean => folds[key] ?? key !== FOLD_KEY
+
+export const groupKey = (owner: string): string => `grp:${owner}`
+
+// The inbox as cards, one per owner in the order the owners first appear (blocking questions first, then
+// the open decisions, newest first), the routine card last. An expanded card lists its questions, then its
+// decisions; a collapsed one is a single row. Folded decisions stay open and undoable.
+export function paneRows(inbox: Inbox | undefined, ended?: Set<string>, folds: Record<string, boolean> = {}): PaneRow[] {
   const { folded, shown, labels } = foldedOf(inbox, ended)
-  const rows: PaneRow[] = [...ordered(questionsOf(inbox)), ...[...shown].reverse()].map(q => ({ key: q.id, ids: [q.id], q }))
-  if (folded.length > 0) {
-    const newest = [...folded].reverse()
-    rows.push({ key: FOLD_KEY, ids: newest.map(q => q.id), group: { count: folded.length, labels, expanded } })
-    if (expanded) rows.push(...newest.map(q => ({ key: q.id, ids: [q.id], q })))
+  const flat = [...ordered(questionsOf(inbox)), ...[...shown].reverse()]
+  const owners: string[] = []
+  for (const q of flat) if (!owners.includes(q.owner)) owners.push(q.owner)
+  const rows: PaneRow[] = []
+  const card = (items: Question[], info: Pick<PaneGroup, 'key' | 'owner' | 'labels' | 'routine'>) => {
+    const decisions = items.filter(isFyi)
+    const group: PaneGroup = {
+      ...info, count: decisions.length, asks: items.some(q => !isFyi(q)), blocking: items.some(q => !isFyi(q) && q.blocking),
+      expanded: groupExpanded(folds, info.key), firstKey: items[0]!.id,
+    }
+    if (group.expanded) rows.push(...items.map(q => ({ key: q.id, ids: [q.id], q, group })))
+    else rows.push({ key: group.key, ids: decisions.map(q => q.id), group })
   }
+  for (const owner of owners) {
+    const own = flat.filter(q => q.owner === owner)
+    card([...own.filter(q => !isFyi(q)), ...own.filter(isFyi)], { key: groupKey(owner), owner, labels: [], routine: false })
+  }
+  if (folded.length > 0) card([...folded].reverse(), { key: FOLD_KEY, owner: 'routine', labels, routine: true })
   return rows
 }
 
 // "12 routine decisions (worker-size, finished agents)".
 export const foldText = (count: number, labels: string[]): string => `${plural(count, 'routine decision')} (${labels.join(', ')})`
 
+// A card's title line: "ctx-init-tip · 2 decisions · asks", "routine · 5 (manager-size, worker-size)".
+export const groupTitle = (g: PaneGroup): string => g.routine
+  ? `routine · ${g.count} (${g.labels.join(', ')})`
+  : [g.owner, ...(g.count > 0 ? [plural(g.count, 'decision')] : []), ...(g.asks ? ['asks'] : [])].join(' · ')
+
 // A row's one line in the pane's list.
 export function paneRowText(r: PaneRow): string {
-  if (r.group !== undefined) {
-    return `${r.group.expanded ? '▾' : '▸'} ${r.group.count} routine (${r.group.labels.join(', ')})`
-  }
+  if (r.q === undefined) return `${r.group!.expanded ? '▾' : '▸'} ${groupTitle(r.group!)}`
   const q = r.q!
   if (isFyi(q)) return `${q.id} ${q.owner}${q.topic ? ` [${q.topic}]` : ''}: ${clip(q.question, 80)}`
   const tags = tagsOf(q)
   return `${q.id}${tags === '' ? '' : ` ${tags}`} ${isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`}: ${q.guard !== undefined ? q.question : clip(q.question, 80)}`
 }
 
-// What y and Enter do on the folded group's row; the pane's key line shows it while that row is hot.
-export const groupHint = (g: NonNullable<PaneRow['group']>): string => `y keeps all ${g.count} · Enter ${g.expanded ? 'folds' : 'expands'}`
+// What y and c do on a collapsed card's row; the pane's key line shows it while that row is hot.
+export const groupHint = (g: PaneGroup): string => g.count > 0 ? `y keeps all ${g.count} · c expands` : 'c expands to answer its questions'
 
 // Why `y`, `w` and a group keep refuse an item, and the explicit way. undefined: the item may be answered by default.
 export function protectedWhy(q: Question): string | undefined {
