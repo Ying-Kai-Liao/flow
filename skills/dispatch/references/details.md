@@ -1,0 +1,27 @@
+# Dispatch details
+
+Rare procedures for the super manager. SKILL.md points here.
+
+## Env changes
+A handover can declare env or secret changes per deploy target. Each becomes inbox items of kind env ("Set NAME=value on <target>?", "Secret NAME on <target> is set by you ...", "Do this yourself: ..."). They go to the user every time with their options: never answer one on your own judgment, never with `defaults`, never make one standing (`always` makes no rule). A login step is the user's own; you cannot do it for them. A declined change holds its target until the user says to release it (`mcp__flow__deploy` `release`, which drops the declined changes). Never put a secret value in a message, a note or the PR text. With `ask_cards` on, show them as cards (no Recommended mark).
+
+## Deploy approvals
+A deploy target in `confirm` mode puts an inbox item of kind deploy ("Deploy <target> at <sha>?", options `deploy` / `not now`) in front of you. It goes to the user every time, with the commits it ships: never answer it on your own judgment, never with `defaults`, never make it standing. Answering `deploy` starts a deploy-only reviewer run for that sha. When the user says "demo only, hold production" (or "hold <target>", "don't deploy <target> yet"), call `mcp__flow__deploy` `hold` with that target and `until` "batch" (just the next batch) or "released" (until they say so); `release` when they lift it. `mcp__flow__deploy` `list` shows each target's mode, hold and how far it is behind; `mcp__flow__status` says "<target> behind by N commits". With `ask_cards` on, show the approval as a card too (no Recommended mark).
+
+## Person checks
+After-deploy checks that need a person (see `/flow checks`). When a reviewer report or the post-update prompt lists them, put them in front of the user as ONE list grouped by version (needs install of X and a restart, ready, no version), with id, PR and steps. Close them with `mcp__flow__check` only on the user's word: `pass` with `ids`, or `fail` with `id` and the user's note. On a fail, start a manager on the follow-up (PR, steps, note), then call `started` with the check id and the manager name. Never pass or fail a check yourself.
+
+## Standing answers
+Make an answer standing (`always: true`) only when the user says so ("always", "from now on", "every time"). When putting questions to the user, say if one looks recurring (same `topic` as before) and offer "always". `mcp__flow__standing` `list` shows rules and suggestions (questions answered the same way 3+ times): offer a suggestion, don't add it unasked. `remove` a rule when the user wants it revoked. Auto-answered questions show in `/flow inbox`. When the plugin offers "Suggested starting rules (not applied)" (in `standing list`, and once in the first `status` when no rules exist), put them to the user once as a question; add only accepted ones with `standing` `add` and `seed: "<id>"` (or `seeds: [ids]`). Questions flagged ESCALATED (an `escalate` rule) are in your inbox even when a worker asked: put them to the user, then answer them yourself; the asker gets the answer.
+
+## Lite mode and Pre-flight: skip
+A single small change may go to one manager whose prompt has the line `Pre-flight: skip`; neither it nor the single-worker path is gated by pre-flight. Lite mode (`Mode: lite`) supersedes `Pre-flight: skip` for most of these: the lite manager skips pre-flight and size decisions, merges its own PR instead of starting a reviewer, and gives a short final report.
+
+## Cleanup
+Merged workers' worktrees and local branches are removed by the plugin's sweep (setting `cleanup`, default `auto`) and by managers and the reviewer after each merge. You sweep what's left: when all managers are finished, or when the user asks, run `mcp__flow__clean` (dry run) and show what it lists. With `cleanup: auto` you may apply the safe sweep (`apply: true`); the user can also run `/flow clean --yes`. Anything it keeps (uncommitted, unpushed, locked or live work) goes in front of the user to decide; never delete it.
+
+## Resume
+The roster is empty after a restart, but branches, PRs and `.claude/worktrees/` stay. `/flow resume` hands you what it found as hidden instructions. When they name an owner and its notes, the manager's prompt says to read those notes first. Do not start workers for it yourself.
+
+## Settings
+Plugin options (`/config`, flow): the test command, the full check, the deploy command, the merge method, whether there is a reviewer, `max_managers` and the worker limit, `preflight` (on/off), `preflight_wait` (minutes the main session waits for a round, default 10), `ask_cards` (on by default: blocking items arrive with an instruction to show them as AskUserQuestion cards; off keeps plain text). An unset full check or deploy is a step the reviewer skips and reports; it never improvises one.

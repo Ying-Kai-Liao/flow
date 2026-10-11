@@ -7,17 +7,14 @@ description: Onboard a user to flow after /flow init. A short walkthrough of how
 
 The user ran `/flow init`. The command already gave you the detected facts (base branch, remote, gh, test and
 check command candidates, and what each settings layer holds). Do the **part** you were told: `all` (walkthrough,
-then demo, then settings), `settings`, or `live` (only the real demo). Keep every step short, say what comes next,
-and let the user skip ahead ("skip", "next", "settings"). Be plain and generic: nothing here is specific to one
-project. Do not start managers or workers for anything except the real demo, and only after the user confirms.
+then demo, then settings), `settings`, or `live` (only the real demo). Keep steps short and let the user skip ahead ("skip", "next", "settings"). Do not start managers or workers for anything except the real demo, and only after the user confirms.
 
 Some tools are deferred: load `mcp__flow__settings` and `mcp__flow__demo` with ToolSearch first
 (`select:mcp__flow__settings,mcp__flow__demo`).
 
 ## 1. Walkthrough (part: all)
 
-Give these as a few short messages, not one wall of text. After each, ask whether to go on, skip to the demo or skip
-to settings. Say only what is true in the README ("A day with flow"); do not invent commands.
+Give these as a few short messages. After each, ask whether to go on or skip to the demo or settings. Say only what is true in the README ("A day with flow"); do not invent commands.
 
 1. **Roles.** You (main) hand over tasks. flow starts one **manager** per task. A manager plans the task and
    starts **workers**, each building one piece in its own git worktree and opening a PR. One **reviewer**
@@ -74,8 +71,7 @@ If the user skips the demo, go on to settings.
 5. Write with `mcp__flow__settings` `{"action":"write","layer":"repo"|"personal","values":{...}}`. It merges into
    the file, keeps other keys, and `null` removes a key. It refuses unknown keys, wrong kinds, values outside the
    allowed choices, and anything that looks like a secret. Never put API keys or tokens in settings: they stay in
-   env variables or files under `~/.config`. Report what it answered. flow reloads the files within a few seconds,
-   so the new values apply without a restart. If the repo file was written, tell the user to commit it.
+   env variables or files under `~/.config`. Report what it answered. Values apply within seconds, no restart. If the repo file was written, tell the user to commit it.
 6. Mention, one line each and without asking, the advanced settings and where they are documented in
    `docs/reference.md`: `size_model` and the decision API (its keys live in env, never in settings),
    `deploy_targets` (several deploy targets with gates), `guard_tests` (tests required for matching files),

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Cut the dispatch skill to about half its size; rare procedures moved to skills/dispatch/references/details.md
+
 ## [0.6.50] - 2026-10-12
 
 ### Changed
