@@ -150,18 +150,31 @@
       "default": "haiku",
       "options": ["haiku", "sonnet", "opus"]
     },
+    "decision_api": {
+      "type": "string",
+      "title": "Decision API",
+      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev decides the size at spawn (the brief text is sent to api.typesafe.ai; key from JEV_API_KEY or ~/.config/jev/env). openai: an OpenAI chat model decides it (the brief text is sent to api.openai.com or the OPENAI_BASE_URL host; key from OPENAI_API_KEY). The Size line is the fallback if the provider is unavailable.",
+      "default": "off",
+      "options": ["off", "jev", "openai"]
+    },
     "size_model": {
       "type": "string",
-      "title": "Size model",
-      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev classifier decides the size at spawn (the brief text is sent to api.typesafe.ai; key from JEV_API_KEY or ~/.config/jev/env); the Size line is the fallback if Jev is unavailable.",
+      "title": "Size model (deprecated)",
+      "description": "Deprecated alias of decision_api, read only while decision_api is unset.",
       "default": "off",
-      "options": ["off", "jev"]
+      "options": ["off", "jev", "openai"]
     },
     "jev_model": {
       "type": "string",
       "title": "Jev model",
-      "description": "Advanced: Jev model name used when size_model is jev.",
+      "description": "Advanced: Jev model name used when decision_api is jev.",
       "default": "jev-latest"
+    },
+    "openai_model": {
+      "type": "string",
+      "title": "OpenAI model",
+      "description": "Advanced: OpenAI chat model used when decision_api is openai. It must support structured outputs and logprobs (not a reasoning model).",
+      "default": "gpt-4.1-mini"
     },
     "conflict_model": {
       "type": "string",

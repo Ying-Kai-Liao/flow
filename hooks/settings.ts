@@ -36,8 +36,10 @@ export const KEYS: Record<string, Kind> = {
   worker_model_small: 'string',
   worker_model_normal: 'string',
   explore_model: 'string',
+  decision_api: 'string',
   size_model: 'string',
   jev_model: 'string',
+  openai_model: 'string',
   conflict_model: 'string',
   manager_model: 'string',
   manager_model_small: 'string',
@@ -77,7 +79,7 @@ export const KEYS: Record<string, Kind> = {
 }
 
 // String settings with a closed set of values: another value is dropped with a warning.
-export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev'] }
+export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['off', 'jev', 'openai'] }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
@@ -266,8 +268,11 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     workerModelSmall: model('worker_model_small', 'haiku'),
     workerModelNormal: model('worker_model_normal', 'sonnet'),
     exploreModel: model('explore_model', 'haiku'),
-    sizeModel: str('size_model', 'off') === 'jev' ? 'jev' as const : 'off' as const,
+    // size_model is the 0.6.35 name. It applies while decision_api is unset or still the plugin default "off",
+    // so a 0.6.35 config keeps working; decision_api jev or openai wins.
+    decisionApi: ((v: string) => v === 'jev' || v === 'openai' ? v : 'off' as const)(str('decision_api', 'off') === 'off' ? str('size_model', 'off') : str('decision_api', 'off')),
     jevModel: str('jev_model', 'jev-latest'),
+    openaiModel: str('openai_model', 'gpt-4.1-mini'),
     conflictModel: model('conflict_model', 'opus'),
     managerModel: model('manager_model', 'opus'),
     managerModelSmall: model('manager_model_small', 'sonnet'),
