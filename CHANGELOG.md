@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Move the pane's graph, agent detail, inbox and tree views out of register.tsx into pane-view.tsx (pure refactor)
+
 ## [0.6.28] - 2026-10-11
 
 ### Changed
