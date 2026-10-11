@@ -83,6 +83,8 @@ type Ui = {
 }
 const mount = ($: Dollar, rows = 40, columns = 100) => $.ui.mount({ plugin: 'flow', surface: 'terminal', ...PANE, viewport: { columns, rows } } as never) as unknown as Promise<Ui>
 const open = async (ui: Ui) => { await ui.press({ key: 'nav-inbox' }) }
+// Expands an item's card, then opens its full-screen card (o).
+const openCard = async (ui: Ui, id: string) => { await ui.press({ key: `item-${id}` }); await ui.press({ key: 'inbox-open' }) }
 // Whole drawn lines, for text that is made of several styled pieces.
 const has = async (ui: Ui, re: RegExp) => linesOf((await ui.drawn()) as El).some(l => re.test(l))
 
@@ -96,17 +98,19 @@ test('the inbox view opens with i, lists blocking first with the addressee, move
   await open(ui)
   expect(await ui.find({ text: /Inbox/ })).toBeDefined()
   // Blocking first; the worker's question is for its manager.
-  expect(await has(ui, /> q2 BLOCKING Which format\?, for csv-export/)).toBe(true)
-  expect(await ui.find({ text: /a\) csv \(default\)/ })).toBeDefined()
+  expect(await has(ui, /▸ q2 BLOCKING Which format\?/)).toBe(true)
+  expect(await has(ui, /▸ q1 Quote fields\?/)).toBe(true)
+  // Collapsed by default: no options or why until the item is opened.
+  expect(await ui.find({ text: /why: the export needs one/ })).toBeUndefined()
+  await ui.press({ key: 'item-q2' })
+  expect(await has(ui, /1\/a csv \(default\)/)).toBe(true)
   expect(await ui.find({ text: /why: the export needs one/ })).toBeDefined()
   await ui.press({ key: 'inbox-next' })
-  expect(await has(ui, /> q1 Quote fields\?, for csv-export/)).toBe(true)
   await ui.press({ key: 'inbox-prev' })
-  expect(await has(ui, /> q2 BLOCKING/)).toBe(true)
-  // A letter answers q2 over the manager's head; the highlight moves on.
+  // A letter answers q2 over the manager's head; the highlight moves on to q1, which stays collapsed.
   await ui.press({ key: 'pick-b' })
   expect(stateOf(w.files, 'q2')?.answer).toBe('tsv')
-  expect(await has(ui, /> q1 /)).toBe(true)
+  expect(await has(ui, /▸ q1 /)).toBe(true)
   // A digit answers the next one.
   await ui.press({ key: 'pick-2' })
   expect(stateOf(w.files, 'q1')?.answer).toBe('no')
@@ -189,7 +193,7 @@ test('routine decisions fold into one group row that y keeps whole; pressing the
   await fyi($, 'm1', [...fs, F(100)])
   const ui = await mount($)
   await open(ui)
-  expect(await ui.find({ text: /> +d8 Decision 100/ })).toBeDefined()
+  expect(await has(ui, /▸ d8 Decision 100/)).toBe(true)
   expect(await ui.find({ text: /▸ routine · 7 \(worker-size\)/ })).toBeDefined()
   expect(await ui.find({ text: /d4 Decision 3/ })).toBeUndefined()
   // y keeps the important one only; the highlight then sits on the group, and y keeps all of it
@@ -197,8 +201,9 @@ test('routine decisions fold into one group row that y keeps whole; pressing the
   expect(stored(w.files).filter(x => x.state === 'open').length).toBe(7)
   // pressing the card opens it and moves to its first item; c folds it again and parks on the card
   await ui.press({ key: 'row-fold' })
-  expect(await ui.find({ text: /d4 Decision 3/ })).toBeDefined()
-  expect(await ui.find({ text: /> +d7 Decision 6/ })).toBeDefined()
+  expect(await has(ui, /▸ d4 Decision 3/)).toBe(true)
+  // its decisions are collapsed item cards
+  expect(await ui.find({ text: /why: conservative/ })).toBeUndefined()
   await ui.press({ key: 'inbox-fold' })
   expect(await ui.find({ text: /d4 Decision 3/ })).toBeUndefined()
   await ui.press({ key: 'inbox-yes' })
@@ -223,7 +228,7 @@ test('pressing a row opens its large card: tags, who, agent status, every option
   await ask($, 'w1', [Q, SOFT])
   const ui = await mount($)
   await open(ui)
-  await ui.press({ key: 'row-q1' })
+  await openCard(ui, 'q1')
   expect(await ui.find({ text: /q1 · csv-worker · / })).toBeDefined()
   expect(await ui.find({ text: /^question/ })).toBeDefined()
   expect(await ui.find({ text: /BLOCKING/ })).toBeDefined()
@@ -266,7 +271,7 @@ test('the inbox and a question card pin the answer input and hotkeys to the pane
   expect(v.footer.some(l => /answer /.test(l)) && v.footer.some(l => /y default/.test(l)) && v.footer.some(l => /r reply/.test(l))).toBe(true)
   expect(v.lines.length).toBeLessThanOrEqual(12)
   expect(v.lines.slice(-v.footer.length)).toEqual(v.footer)
-  await ui.press({ key: 'row-q1' })
+  await openCard(ui, 'q1')
   v = visible((await ui.drawn()) as El, 12)
   expect(v.content.length).toBeGreaterThan(12)
   expect(v.footer.some(l => /answer /.test(l)) && v.footer.some(l => /y default/.test(l)) && v.footer.some(l => /r reply/.test(l))).toBe(true)
@@ -279,7 +284,7 @@ test('a short card keeps its footer in a box at the bottom, not right after the 
   await ask($, 'w1', [Q])
   const ui = await mount($, 40, 100)
   await ui.press({ key: 'nav-inbox' })
-  await ui.press({ key: 'row-q1' })
+  await openCard(ui, 'q1')
   const root = (await ui.drawn()) as { props?: { height?: number } }
   expect(root.props?.height).toBe(40)
   const boxes = boxesOf(root as El)
@@ -307,7 +312,7 @@ test('a card answers free text through its Input; a decision card undoes with th
   await fyi($, 'w1', [F(1)])
   const ui = await mount($)
   await open(ui)
-  await ui.press({ key: 'row-d1' })
+  await openCard(ui, 'd1')
   await ui.input({ key: 'card-answer', text: 'use 10 s' })
   expect(stateOf(w.files, 'd1')?.answer).toBe('use 10 s')
   expect(w.sent.some(s => s.to === 'w1' && s.text.includes('undid your decision d1'))).toBe(true)
@@ -319,7 +324,7 @@ test('a card for an item answered meanwhile shows the answer and answers nothing
   await ask($, 'm1', [SOFT])
   const ui = await mount($)
   await open(ui)
-  await ui.press({ key: 'row-q1' })
+  await openCard(ui, 'q1')
   await cmd($, 'answer q1 b')
   // drawn again, the card is read-only: the answer, no buttons
   expect(await ui.find({ text: /Answered: no \(by main/ })).toBeDefined()
@@ -334,7 +339,7 @@ test('a protected card: y never answers it, an option press does', async ($, on)
   await fyi($, 'w1', [F(1)])
   const ui = await mount($)
   await open(ui)
-  await ui.press({ key: 'row-q1' })
+  await openCard(ui, 'q1')
   await ui.press({ key: 'card-yes' })
   expect(stateOf(w.files, 'q1')?.state).toBe('open')
   expect(await ui.find({ text: /q1 is a deploy approval: y never answers it/ })).toBeDefined()
@@ -370,24 +375,78 @@ test('a tree with only decisions shows just the Inbox line, singular and plural'
   await ui.unmount()
 })
 
-test('the decision preview shows text, why and instead could, with no option lines; a card shows Keep and Undo only', async ($, on) => {
+test('an expanded decision shows text, why, instead could and Keep/Undo buttons, no option lines; the o card shows Keep and Undo only', async ($, on) => {
   const w = world(on)
   await fyi($, 'w1', [{ decision: 'Use 5 s timeout', why: 'slow CI', alternative: 'poll instead' }])
   const ui = await mount($)
   await open(ui)
+  // collapsed by default: one line, none of the detail
+  expect(await has(ui, /▸ d1 Use 5 s timeout/)).toBe(true)
+  expect(await ui.find({ text: /why: slow CI/ })).toBeUndefined()
+  await ui.press({ key: 'item-d1' })
   expect(await ui.find({ text: /Use 5 s timeout/ })).toBeDefined()
   expect(await ui.find({ text: /why: slow CI/ })).toBeDefined()
   expect(await ui.find({ text: /instead could: poll instead/ })).toBeDefined()
-  expect(await ui.find({ text: /a\) / })).toBeUndefined()
-  await ui.press({ key: 'row-d1' })
-  expect(await ui.find({ text: /d1 · csv-worker · \d+ \w+/ })).toBeDefined()
-  expect(await ui.find({ text: /^decision$/ })).toBeDefined()
   expect(await ui.find({ text: /y Keep/ })).toBeDefined()
   expect(await ui.find({ text: /n Undo/ })).toBeDefined()
+  expect(await ui.find({ text: /a\) / })).toBeUndefined()
+  await ui.press({ key: 'inbox-open' })
+  expect(await ui.find({ text: /d1 · csv-worker · \d+ \w+/ })).toBeDefined()
+  expect(await ui.find({ text: /^decision$/ })).toBeDefined()
   expect(await ui.find({ key: 'card-opt-0' })).toBeUndefined()
   expect(await ui.find({ key: 'card-pick-a' })).toBeUndefined()
   await ui.press({ key: 'card-yes' })
   expect(stateOf(w.files, 'd1')?.state).toBe('answered')
+  await ui.unmount()
+})
+
+test('an item expands on its row and stays expanded; the inline buttons answer their own item and the next one stays collapsed', async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [SOFT])
+  await fyi($, 'w1', [F(1), F(2)])
+  const ui = await mount($, 30, 60)
+  await open(ui)
+  const lines = async () => rendered(ui)
+  expect((await lines()).some(l => /╭/.test(l))).toBe(false)
+  // the owner of the decisions is a plain header, not a card
+  expect((await lines()).some(l => /^▾ csv-worker · 2$/.test(l))).toBe(true)
+  expect((await lines()).some(l => /^▾ csv-export · 1 asks$/.test(l))).toBe(true)
+  await ui.press({ key: 'item-d2' })
+  expect((await lines()).some(l => /d2 · /.test(l))).toBe(true)
+  // moving away and back leaves it expanded
+  await ui.press({ key: 'inbox-prev' })
+  await ui.press({ key: 'inbox-next' })
+  expect((await lines()).some(l => /╭/.test(l))).toBe(true)
+  // the inline Keep answers d2 and not the highlight's item; d1 is next and collapsed
+  await ui.press({ key: 'keep-d2' })
+  expect(stateOf(w.files, 'd2')?.answer).toBe('Keep')
+  expect(stateOf(w.files, 'd1')?.state).toBe('open')
+  const after = await lines()
+  expect(after.some(l => /╭/.test(l))).toBe(false)
+  expect(after.some(l => /▸ d1 Decision 1/.test(l))).toBe(true)
+  // the keys now act on d1
+  await ui.press({ key: 'inbox-yes' })
+  expect(stateOf(w.files, 'd1')?.answer).toBe('Keep')
+  await ui.unmount()
+})
+
+test('an inline Undo uses the typed words; an expanded question lists its options as buttons that answer it', async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [SOFT])
+  await fyi($, 'w1', [F(1)])
+  const ui = await mount($, 30, 60)
+  await open(ui)
+  await ui.press({ key: 'item-q1' })
+  expect(await has(ui, /1\/a yes \(default\)/)).toBe(true)
+  expect(await has(ui, /2\/b no/)).toBe(true)
+  expect(await has(ui, /r reply/)).toBe(true)
+  await ui.press({ key: 'item-d1' })
+  await ui.input({ key: 'inbox-answer', text: 'use 10 s', kind: 'change' })
+  await ui.press({ key: 'undo-d1' })
+  expect(stateOf(w.files, 'd1')?.answer).toBe('use 10 s')
+  // the option button answers q1 itself
+  await ui.press({ key: 'opt-q1-1' })
+  expect(stateOf(w.files, 'q1')?.answer).toBe('no')
   await ui.unmount()
 })
 
@@ -507,7 +566,7 @@ async function cardsWorld($: Dollar, on: On) {
     { id: 'm2', name: 'plain-capability-use', description: 'm', type: 'flow:manager', status: 'running' },
     { id: 'm3', name: 'quiet-update-notice', description: 'm', type: 'flow:manager', status: 'running' },
   ]
-  world(on, agents)
+  const w = world(on, agents)
   await fyi($, 'm1', [
     { decision: 'Show the context-trim tip once per session, not on every init, because repeating it trains people to ignore it', why: 'noisy otherwise', topic: 'tip-frequency' },
     { decision: 'Word the tip as a question', why: 'softer', topic: 'tip-wording' },
@@ -521,6 +580,7 @@ async function cardsWorld($: Dollar, on: On) {
   await fyi($, 'm1', Array.from({ length: 3 }, (_, i) => F(10 + i, 'manager-size')))
   await fyi($, 'm2', Array.from({ length: 2 }, (_, i) => F(20 + i, 'worker-size')))
   await ask($, 'm1', [{ question: 'Should the tip also show in the status line?', options: ['yes', 'no'], default: 'no', blocking: false }])
+  return w
 }
 
 const rendered = async (ui: Ui) => linesOf((await ui.drawn()) as El)
@@ -531,63 +591,82 @@ const shape = (lines: string[], rows: number) => {
   expect(lines.some(l => /y (keep|default)/.test(l) && /n undo/.test(l) && /i back/.test(l))).toBe(true)
 }
 
-test('at 60 columns by 30 rows each owner is a card: a chevron, a round border, one clipped line per item; the routine card is collapsed', async ($, on) => {
+test('at 60 columns by 30 rows each owner is a plain header and each item a collapsed line; the routine group is collapsed', async ($, on) => {
   await cardsWorld($, on)
   const ui = await mount($, 30, 60)
   await open(ui)
   const lines = await rendered(ui)
   shape(lines, 30)
-  // every open card is the pane's full width, the short one included
-  const tops = lines.filter(l => /▾ ╭/.test(l))
-  expect(tops).toHaveLength(3)
-  for (const l of tops) expect(cols(l)).toBe(60)
-  // a question row: the id, BLOCKING when it blocks, the text; no owner prefix
-  expect(lines.some(l => /ctx-init-tip: /.test(l) && /q1/.test(l))).toBe(false)
-  expect(lines.some(l => /^ +│ +> q1 Should the tip also show in the status line\? +│$/.test(l))).toBe(true)
-  expect(lines.some(l => /▾ ╭/.test(l))).toBe(true)
-  expect(lines.some(l => /│ ctx-init-tip · 2 decisions · asks +│/.test(l))).toBe(true)
-  expect(lines.some(l => /> q1 Should the tip/.test(l))).toBe(true)
-  expect(lines.some((l, i) => /▾ ╭/.test(l) && /quiet-update-notice/.test(lines[i + 1]!))).toBe(true)
+  // nothing is bordered until an item is opened
+  expect(lines.some(l => /[╭╮╰╯]/.test(l))).toBe(false)
+  expect(lines.some(l => /^▾ ctx-init-tip · 3 asks$/.test(l))).toBe(true)
+  expect(lines.some(l => /^▾ plain-capability-use · 3$/.test(l))).toBe(true)
+  expect(lines.some(l => /^▾ quiet-update-notice · 1$/.test(l))).toBe(true)
+  expect(lines.some(l => /^ *▸ q1 Should the tip also show in the status line\?$/.test(l))).toBe(true)
+  // long text is clipped to one line
+  expect(lines.some(l => /▸ d1 Show the context-trim tip once per session.*…$/.test(l))).toBe(true)
   expect(lines.some(l => /^▸ routine · 5 \((manager-size, worker-size|worker-size, manager-size)\)$/.test(l))).toBe(true)
-  expect(lines.some(l => /c collapse/.test(l))).toBe(true)
-  // the card closes with c, then the highlight sits on its one line
-  await ui.press({ key: 'inbox-fold' })
-  expect(await ui.find({ text: /^ctx-init-tip$/ })).toBeDefined()
+  expect(lines.some(l => /c collapse/.test(l) && /o open/.test(l))).toBe(true)
   await ui.unmount()
 })
 
-test('at 60 columns by 30 rows a card collapsed by its chevron is one line without a border, and j/k step over it', async ($, on) => {
+test('at 60 columns by 30 rows an opened decision and an opened question are round cards with inline buttons; no line is wider than 60', async ($, on) => {
   await cardsWorld($, on)
+  const ui = await mount($, 30, 60)
+  await open(ui)
+  // (the render helper does not wrap text, so a short decision stands in for the wide one)
+  await ui.press({ key: 'item-d2' })
+  let lines = await rendered(ui)
+  shape(lines, 30)
+  expect(lines.some(l => /▾ ╭/.test(l))).toBe(true)
+  expect(lines.some(l => /│ d2 · \d+ \w+ ago \[tip-wording\] +│/.test(l))).toBe(true)
+  expect(lines.some(l => /│ why: softer +│/.test(l))).toBe(true)
+  expect(lines.some(l => /│ y Keep +n Undo +│/.test(l))).toBe(true)
+  await ui.press({ key: 'item-q1' })
+  lines = await rendered(ui)
+  shape(lines, 30)
+  expect(lines.filter(l => /▾ ╭/.test(l))).toHaveLength(2)
+  expect(lines.some(l => /│ 1\/a yes +│/.test(l))).toBe(true)
+  expect(lines.some(l => /│ 2\/b no \(default\) +│/.test(l))).toBe(true)
+  expect(lines.some(l => /│ r reply +│/.test(l))).toBe(true)
+  await ui.unmount()
+})
+
+test('at 60 columns by 30 rows an owner collapsed by its chevron is one line, and j/k step over its items', async ($, on) => {
+  const w = await cardsWorld($, on)
   const ui = await mount($, 30, 60)
   await open(ui)
   await ui.press({ key: 'fold-grp:plain-capability-use' })
   const lines = await rendered(ui)
   shape(lines, 30)
-  expect(lines.some(l => /^▸ plain-capability-use · 3 decisions$/.test(l))).toBe(true)
+  expect(lines.some(l => /^▸ plain-capability-use · 3$/.test(l))).toBe(true)
   expect(lines.some(l => /Name the capability/.test(l))).toBe(false)
-  // the cursor went to the card's line; k steps to the card above, j twice over it to the routine card
+  // the cursor went to the owner's line; k steps to the item above, j twice to the routine group
   await ui.press({ key: 'inbox-prev' })
-  expect(await ui.find({ text: /> +d6 Say "update available"/ })).toBeDefined()
-  await ui.press({ key: 'inbox-next' })
-  await ui.press({ key: 'inbox-next' })
-  expect(await ui.find({ text: /routine · 5/ })).toBeDefined()
+  await ui.press({ key: 'inbox-yes' })
+  expect(stored(w.files).some(x => x.id === 'd6' && x.state === 'answered')).toBe(true)
   await ui.unmount()
 })
 
-test('at 60 columns by 20 rows the cards that do not fit are drawn collapsed but the hot one, and the keys stay', async ($, on) => {
+test('at 60 columns by 14 rows expanded cards are windowed around the hot item and the footer is still drawn', async ($, on) => {
   await cardsWorld($, on)
-  const ui = await mount($, 20, 60)
+  const ui = await mount($, 14, 60)
   await open(ui)
+  await ui.press({ key: 'item-q1' })
+  await ui.press({ key: 'inbox-next' })
+  await ui.press({ key: 'inbox-toggle' })
   const lines = await rendered(ui)
-  shape(lines, 20)
-  expect(lines.some(l => /^▸ plain-capability-use · 3 decisions$/.test(l))).toBe(true)
-  expect(lines.some(l => /^▸ quiet-update-notice · 1 decision$/.test(l))).toBe(true)
-  expect(lines.some(l => /> q1 /.test(l))).toBe(true)
-  // moving down opens the next card as the hot one and folds the first
-  for (let i = 0; i < 3; i++) await ui.press({ key: 'inbox-next' })
-  expect(await ui.find({ text: /^▸ ctx-init-tip · 2 decisions · asks$/ })).toBeDefined()
-  expect(await ui.find({ text: /> +d6 / })).toBeDefined()
+  shape(lines, 14)
+  expect(lines.some(l => /▾ ╭/.test(l))).toBe(true)
+  expect(lines.some(l => /↓ \d+ more/.test(l))).toBe(true)
   await ui.unmount()
+  // a collapsed list that cannot fit is windowed too
+  const shortUi = await mount($, 9, 60)
+  // an opened card taller than the pane is cut by the content box; the footer is its own box and stays
+  const v = visible((await shortUi.drawn()) as El, 9)
+  expect(v.lines.length).toBeLessThanOrEqual(9)
+  expect(v.footer.some(l => /j next/.test(l)) && v.footer.some(l => /i back/.test(l))).toBe(true)
+  await shortUi.unmount()
 })
 
 test('with only a folded group the hot row shows its hint in the nav row; the keys row is drawn on a short pane', async ($, on) => {

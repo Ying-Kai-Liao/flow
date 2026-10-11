@@ -459,6 +459,7 @@ declare module 'claude-code' {
       prDetails: Record<string, { fetchedAt: number; fetching?: true; error?: string; details?: { url: string; additions: number; deletions: number; files: { path: string; additions: number; deletions: number }[]; labels: string[]; headRefOid?: string } }>
       cardBack: 'tree' | 'inbox' | 'archive'
       inboxFolds: Record<string, boolean>
+      inboxOpen: Record<string, boolean>
       inboxCursor: string | null
       inboxDraft: string
       inboxNote: string

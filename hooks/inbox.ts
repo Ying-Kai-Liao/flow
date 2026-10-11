@@ -369,6 +369,8 @@ export type PaneGroup = {
   owner: string
   // How many decisions it holds (the questions are not counted) and whether any question is among its items.
   count: number
+  // How many items it holds, decisions and questions together: the number its header shows.
+  total: number
   asks: boolean
   blocking: boolean
   labels: string[]
@@ -429,7 +431,7 @@ export function paneRows(inbox: Inbox | undefined, ended?: Set<string>, folds: R
   const card = (items: Question[], info: Pick<PaneGroup, 'key' | 'owner' | 'labels' | 'routine'>) => {
     const decisions = items.filter(isFyi)
     const group: PaneGroup = {
-      ...info, count: decisions.length, asks: items.some(q => !isFyi(q)), blocking: items.some(q => !isFyi(q) && q.blocking),
+      ...info, count: decisions.length, total: items.length, asks: items.some(q => !isFyi(q)), blocking: items.some(q => !isFyi(q) && q.blocking),
       expanded: groupExpanded(folds, info.key), firstKey: items[0]!.id,
     }
     if (group.expanded) rows.push(...items.map(q => ({ key: q.id, ids: [q.id], q, group })))
