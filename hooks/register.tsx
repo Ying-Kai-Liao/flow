@@ -3,6 +3,7 @@
 // pure or taking an io object of closures (see deliver.ts), because the engine refuses `$` across an
 // import and wants atoms declared in this file.
 import { atom, read, update } from 'claude-code'
+import { lastLineAsks, REPORT_HINT } from './askcards'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
 import type { Activity, AgentRow, Breaker, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
@@ -683,7 +684,7 @@ async function preflightTick($: EngineInterface, rows: AgentRow[]): Promise<void
   const members = due.round.members.map(k => due.state.entries[k])
   // A round of skipped managers only has nothing to say.
   if (members.every(e => e === undefined || e.phase === 'skipped')) return
-  const text = renderRound(due.state, await read($, inbox), due.round, ended, t, due.timedOut)
+  const text = renderRound(due.state, await read($, inbox), due.round, ended, t, due.timedOut, mirror.askCards)
   $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
 }
 
@@ -812,6 +813,7 @@ const deployIoOf = ($: EngineInterface): DeployIo => ({
   noteText,
   best: (what, fn) => best($, what, fn),
   toast: text => { void $.ui.toast(text) },
+  toMain: text => toMain($, text),
 })
 
 const refreshBehind = ($: EngineInterface): Promise<void> => refreshBehindTo(deployIoOf($))
@@ -1573,6 +1575,7 @@ export const register: Register = (on, options) => {
   mirror.decisionPhrases = settings.decisionPhrases
   mirror.preflightOn = settings.preflight
   mirror.preflightWaitMs = settings.preflightWait * 60_000
+  mirror.askCards = settings.askCards
   // Settings reloads: the files' paths and mtimes, the detected base branch, whether a check runs.
   let paths: string[] = []
   let seen = ''
@@ -1590,6 +1593,7 @@ export const register: Register = (on, options) => {
     mirror.decisionPhrases = s.decisionPhrases
     mirror.preflightOn = s.preflight
     mirror.preflightWaitMs = s.preflightWait * 60_000
+    mirror.askCards = s.askCards
   }
   // Set once a `[1m]` model was refused for a sub-agent: later spawns go straight to the plain one.
   let noLong = false
@@ -2173,7 +2177,7 @@ export const register: Register = (on, options) => {
         // The host may deliver the answer to main itself (a task notification): give it a moment to land,
         // then relay only when main's transcript lacks it.
         $.clock.after(RELAY_DELAY_MS, () => void (async () => {
-          if (!(await mainHasAnswer($, answer))) toMain($, `Report from manager ${me.name}:\n${answer}`)
+          if (!(await mainHasAnswer($, answer))) toMain($, `Report from manager ${me.name}:\n${answer}${mirror.askCards && lastLineAsks(answer) ? `\n${REPORT_HINT}` : ''}`)
         })().catch(() => undefined))
       }
       // `HANDOFF: manager <name>` is a manager's own note, not a worker's branch.

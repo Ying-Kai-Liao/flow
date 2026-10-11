@@ -72,6 +72,7 @@ export const KEYS: Record<string, Kind> = {
   min_quota: 'number',
   preflight: 'string',
   preflight_wait: 'number',
+  ask_cards: 'string',
   release: 'string',
   release_github: 'string',
   release_files: 'list',
@@ -79,7 +80,7 @@ export const KEYS: Record<string, Kind> = {
 }
 
 // String settings with a closed set of values: another value is dropped with a warning.
-export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['off', 'jev', 'openai'] }
+export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['off', 'jev', 'openai'] }
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
@@ -232,7 +233,7 @@ export type WarnSettings = { contextWarn: number; contextWarn1m: number; context
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-export function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
+export function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; askCards: boolean; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
@@ -249,6 +250,7 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
     preflight: str('preflight', 'on') !== 'off',
     preflightWait: Math.max(1, num('preflight_wait', 10)),
+    askCards: str('ask_cards', 'on') !== 'off',
     verifyPaths: strs('verify_paths'),
     cleanup: str('cleanup', 'auto') === 'off' ? 'off' : 'auto',
     base: str('base_branch', base),

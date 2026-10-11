@@ -1,6 +1,7 @@
 // The inbox-side tools: ask, fyi, preflight and answer. The engine refuses `$` across an import, so
 // register.tsx builds an InboxIo of closures (inboxIoOf) and the atom-backed helpers reach this module that way.
 import type { AgentRow } from '../types'
+import { cardsNotice, cardsOn } from './askcards'
 import { MANAGER } from './core'
 import type { DeliverOptions } from './deliver'
 import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, linkEscalations, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
@@ -63,6 +64,7 @@ export async function askTool(io: InboxIo, options: Record<string, unknown>, inp
     await io.deliver(parent.id, `${lines.join('\n')}\nAnswer with mcp__flow__answer.`, { held: !fresh.some(q => q.blocking), urgent: fresh.some(q => q.blocking) }).catch(() => undefined)
   } else if (addressee === 'main' && fresh.some(q => q.blocking)) {
     io.toast(`${name} asks: ${fresh.length} question(s) in /flow inbox`)
+    if (cardsOn(options)) io.submitLater(cardsNotice(`${name} asks ${fresh.filter(q => q.blocking).length} blocking question(s) for the user`, fresh.filter(q => q.blocking).map(q => q.id)))
   }
   return {
     result: added.map(({ q, fresh: isNew }) => {
@@ -129,7 +131,7 @@ export async function preflightTool(io: InboxIo, options: Record<string, unknown
     return { state: f.state, out: f.send ? f.state : undefined }
   })
   if (late !== undefined) {
-    const text = renderFollowUp(late, await io.standing.inbox(), name, at)
+    const text = renderFollowUp(late, await io.standing.inbox(), name, at, cardsOn(options))
     io.submitLater(text)
   }
   await io.preflightTick(rows)

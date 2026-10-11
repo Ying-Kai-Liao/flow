@@ -10,6 +10,7 @@ import {
 import type { Deploys, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
 import { AUTO, matchRule } from './standing'
 import type { Resolved } from './standing'
+import { cardsNotice, cardsOn } from './askcards'
 import { markAnswered, notesOwner } from './inbox'
 import type { Inbox, Question } from './inbox'
 
@@ -40,6 +41,8 @@ export type DeployIo = {
   noteText: (q: Question) => string
   best: (what: string, fn: () => Promise<void>) => Promise<void>
   toast: (text: string) => void
+  // A prompt to the main session (the ask_cards notices).
+  toMain: (text: string) => void
 }
 
 // Deploy gate changes run one after another, like the inbox's.
@@ -239,6 +242,7 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
   if (gate.kind === 'envAwaits') return `Awaits env: ${gate.qids.join(', ')}. ${skipText(target)}`
   if (gate.kind === 'envAsk') {
     const qids: string[] = [...gate.open]
+    const created: string[] = []
     const moved: Array<{ pr: number; name: string; field: 'qid' | 'loginQid'; qid: string }> = []
     await io.withInbox(cur => {
       let next = cur
@@ -246,6 +250,7 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
         const r = openApplyItem(next, e, at)
         next = r.inbox
         qids.push(r.q.id)
+        created.push(r.q.id)
       }
       // An item answered "not yet" is replaced by a fresh copy, so the change keeps one open item.
       for (const re of gate.reopen) {
@@ -254,6 +259,7 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
         const r = reopenItem(next, old, at)
         next = r.inbox
         qids.push(r.q.id)
+        created.push(r.q.id)
         moved.push({ pr: re.entry.pr, name: re.entry.change.name, field: re.field, qid: r.q.id })
       }
       return { inbox: next, out: undefined }
@@ -269,6 +275,7 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
       await io.best('saving a handover', () => io.saveHandover(next))
     }
     io.toast(`Env on ${target} awaits you: /flow inbox (${qids.join(', ')})`)
+    if (created.length > 0 && cardsOn(options)) io.toMain(cardsNotice(`Env on ${target} awaits the user`, created))
     return `Awaits env: ${qids.join(', ')}. ${skipText(target)}`
   }
   const last = (await io.deploys()).targets[target]?.deployedSha
@@ -301,6 +308,7 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
     }
   }
   io.toast(`Deploy ${target} awaits your approval: /flow inbox (${q.id})`)
+  if (cardsOn(options)) io.toMain(cardsNotice(`Deploy ${target} awaits the user's approval`, [q.id]))
   return `Awaits approval: ${q.id}. ${skipText(target)}`
 }
 
@@ -372,6 +380,7 @@ export async function openHandoverEnv(
     const ib = await io.inbox()
     const stillOpen = fresh.filter(q => ib.items.find(x => x.id === q.id)?.state === 'open')
     if (stillOpen.length > 0) io.toast(`PR #${h.pr} has ${stillOpen.length} env item${stillOpen.length === 1 ? '' : 's'} for you: /flow inbox`)
+    if (stillOpen.length > 0 && cardsOn(options)) io.toMain(cardsNotice(`PR #${h.pr} has ${stillOpen.length} env item${stillOpen.length === 1 ? '' : 's'} for the user`, stillOpen.map(q => q.id)))
   }
   if (changes.length === 0) return ''
   const ib = await io.inbox()

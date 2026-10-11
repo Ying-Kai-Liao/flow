@@ -8,6 +8,7 @@ import {
 } from '../hooks/preflight'
 import type { Preflight } from '../hooks/preflight'
 import { mergeLayers } from '../hooks/settings'
+import { cardsNotice, cardsOn, CARDS_TEXT, lastLineAsks } from '../hooks/askcards'
 
 const OK = { summary: 'export csv', criteria: ['a file downloads'], shipped: [], depends: [] }
 const NONE = new Set<string>()
@@ -168,4 +169,48 @@ test('closeStale closes undelivered rounds with no live member, keeps the rest',
   const c = closeStale(s, [], 5)
   expect(c.rounds[0]!.delivered).toBe(true)
   expect(dueRound(c, NONE, 99 * MIN, MIN)).toBeUndefined()
+})
+
+test('ask_cards: round and late-filing texts carry the card instruction only with cards on and a blocking question open', () => {
+  let inbox: Inbox = EMPTY_INBOX
+  const ask = (name: string, blocking: boolean) => {
+    inbox = addQuestions(inbox, { name, isManager: true }, 'main', [{ question: `${name} Q?`, options: ['a', 'b'], default: 'a', blocking }], 2).inbox
+  }
+  ask('a', true)
+  ask('b', false)
+  const roundOf = (names: string[], blockingIds: Record<string, string[]>) => {
+    let s = names.reduce((acc, n) => recordSpawn(acc, n, false, 0, 10 * MIN), EMPTY_PREFLIGHT)
+    for (const n of names) s = filed(s, n, OK, { asked: [n === 'a' ? 'q1' : 'q2'], blocking: blockingIds[n] ?? [] })
+    return s
+  }
+  const mixed = roundOf(['a', 'b'], { a: ['q1'] })
+  const off = renderRound(mixed, inbox, mixed.rounds[0]!, NONE, 5, false)
+  const on = renderRound(mixed, inbox, mixed.rounds[0]!, NONE, 5, false, true)
+  expect(off).not.toContain('AskUserQuestion')
+  expect(on.startsWith(off)).toBe(true)
+  expect(on).toContain(CARDS_TEXT)
+  // A round with only non-blocking questions is the same text either way.
+  const soft = roundOf(['b'], {})
+  expect(renderRound(soft, inbox, soft.rounds[0]!, NONE, 5, false, true)).toBe(renderRound(soft, inbox, soft.rounds[0]!, NONE, 5, false))
+  // Late filing.
+  let late = markDelivered(roundOf(['b'], {}), 1, 9)
+  late = filed(late, 'a', OK, { asked: ['q1'], blocking: ['q1'] })
+  const f0 = renderFollowUp(late, inbox, 'a', 5)
+  const f1 = renderFollowUp(late, inbox, 'a', 5, true)
+  expect(f0).not.toContain('AskUserQuestion')
+  expect(f1.startsWith(f0)).toBe(true)
+  expect(f1).toContain(CARDS_TEXT)
+  const lateSoft = filed(markDelivered(roundOf(['a'], { a: ['q1'] }), 1, 9), 'b', OK, { asked: ['q2'], blocking: [] })
+  expect(renderFollowUp(lateSoft, inbox, 'b', 5, true)).toBe(renderFollowUp(lateSoft, inbox, 'b', 5))
+})
+
+test('askcards helper: the instruction covers every rule; the report hint fires on a question last line only', () => {
+  for (const part of ['AskUserQuestion', 'at most 4', '12 chars', '(Recommended)', 'more than 4 options', 'ONE mcp__flow__answer', 'quoted', 'Never answer env/deploy', 'how many remain', 'Non-blocking']) expect(CARDS_TEXT).toContain(part)
+  expect(cardsOn({})).toBe(true)
+  expect(cardsOn({ ask_cards: 'on' })).toBe(true)
+  expect(cardsOn({ ask_cards: 'off' })).toBe(false)
+  expect(cardsNotice('Deploy x awaits', ['q1', 'q2'])).toBe(`Deploy x awaits (q1, q2). ${CARDS_TEXT}`)
+  expect(lastLineAsks('done\nShip it?\n')).toBe(true)
+  expect(lastLineAsks('Ship it?\ndone')).toBe(false)
+  expect(lastLineAsks('')).toBe(false)
 })

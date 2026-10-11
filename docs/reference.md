@@ -30,6 +30,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `reviewer` | on | `/config`, file | off: managers merge themselves with `merge_method` |
 | `merge_method` | `squash` | `/config`, file | managers, when there is no reviewer |
 | `preflight` | `on` | `/config`, file | `off`: managers are not gated and no round is sent (see Pre-flight) |
+| `ask_cards` | `on` | `/config`, file | `off`: messages to main do not tell it to show blocking questions, env changes and deploy approvals as AskUserQuestion cards (no extra notices either) |
 | `preflight_wait` | 10 | `/config`, file | minutes the main session waits for managers to file before sending the round |
 | `state_file` | none | file only | the reviewer: a status file it updates after each deploy, a path or `{path, keep, archive}` (see Deploying) |
 | `release_files` | none (`package.json` at the repo root when there is one) | file only | repo-relative JSON or TOML files whose version the release bumps, a list; the first one gives the current version |

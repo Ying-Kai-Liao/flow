@@ -432,3 +432,37 @@ test('a waiting answer that names another PR leaves the manager finished', async
   w.agents[0]!.status = 'idle'
   expect(await send($, 'q1', 'csv-export', 'PR #7 merged')).toContain('Not sent')
 })
+
+test('manager report: the card hint is added when the last line is a question and ask_cards is on', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  await handover($, 'm1', { pr: 8 })
+  await send($, 'q1', 'csv-export', 'PR #7 merged')
+  await $.turn.complete({ turnId: 't', agentId: 'm1', answer: 'Merged.\nShip it today?' } as never)
+  await w.flushLong()
+  const p = w.prompts.find(x => x.includes('Report from manager csv-export'))
+  expect(p).toContain('AskUserQuestion')
+  expect(p).toContain('SendMessage')
+})
+
+test('manager report: no hint when the last line is not a question', async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  await handover($, 'm1', { pr: 8 })
+  await send($, 'q1', 'csv-export', 'PR #7 merged')
+  await $.turn.complete({ turnId: 't', agentId: 'm1', answer: 'Should we ship?\nDone.' } as never)
+  await w.flushLong()
+  expect(w.prompts.find(x => x.includes('Report from manager csv-export'))).not.toContain('AskUserQuestion')
+})
+
+test('manager report: no hint with ask_cards off', { options: { ask_cards: 'off' } }, async ($, on) => {
+  const w = world(on)
+  w.agents[0]!.status = 'idle'
+  await handover($, 'm1', { pr: 8 })
+  await send($, 'q1', 'csv-export', 'PR #7 merged')
+  await $.turn.complete({ turnId: 't', agentId: 'm1', answer: 'Ship it today?' } as never)
+  await w.flushLong()
+  const p = w.prompts.find(x => x.includes('Report from manager csv-export'))
+  expect(p).toContain('Ship it today?')
+  expect(p).not.toContain('AskUserQuestion')
+})

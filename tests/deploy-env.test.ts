@@ -107,7 +107,9 @@ const CONFIG = [
 const OPTS = { deploy_targets: JSON.stringify(CONFIG) }
 
 function world(on: On) {
-  mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const prompts: string[] = []
+  on('prompt.submit', (_, e) => { prompts.push(e.text); return { text: e.text } })
   const agents: AgentInfo[] = [{ id: 'q1', name: 'merge-queue-1', description: 'q', type: 'flow:queue', status: 'running' }]
   const files = new Map<string, string>()
   const log: string[] = []
@@ -141,7 +143,7 @@ function world(on: On) {
     }
     return ok()
   })
-  return { agents, files, log, toasts }
+  return { agents, files, log, toasts, prompts, flush: async () => { await clock.advance(1); await clock.settle() } }
 }
 
 type Env = Record<string, unknown>
@@ -357,4 +359,33 @@ test('"not yet" is still waiting: a fresh item is opened (one open per change), 
   expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Held: env change EXTRA declined')
   expect(await $.command.run({ command: 'flow', args: 'release production' } as never).then(r => r.text ?? '')).toContain('Dropped the declined env changes: EXTRA')
   expect(read(w.files, 'deploys.json').targets.production.envDone.map((d: any) => [d.name, d.how])).toEqual([['EXTRA', 'dropped']])
+})
+
+test('ask_cards on: a handover with env items and the env gate each notify main once with the card instruction', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [MAIL])
+  await w.flush()
+  expect(w.prompts).toHaveLength(1)
+  expect(w.prompts[0]).toContain('PR #3 has 1 env item for the user (q1)')
+  expect(w.prompts[0]).toContain('AskUserQuestion')
+  expect(w.toasts.join('\n')).toContain('PR #3 has 1 env item')
+  // Sent again with the same change: the item is not new, so no second notice.
+  await handover($, 3, [MAIL])
+  await w.flush()
+  expect(w.prompts).toHaveLength(1)
+  // The gate finds the item already open: nothing new to announce.
+  await queue($, 'take', 3)
+  await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })
+  await w.flush()
+  expect(w.prompts).toHaveLength(1)
+})
+
+test('ask_cards off: env items send no notice, the toast stays', { options: { ...OPTS, ask_cards: 'off' } }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [MAIL])
+  await queue($, 'take', 3)
+  await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })
+  await w.flush()
+  expect(w.prompts).toEqual([])
+  expect(w.toasts.join('\n')).toContain('PR #3 has 1 env item')
 })
