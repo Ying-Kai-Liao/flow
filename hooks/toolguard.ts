@@ -37,3 +37,16 @@ export function toolFailText(tool: string, failed: FailedCall): string {
 export function toolCatch(_: unknown, e: { tool: string }, next: FailedCall): { result: string } {
   return { result: toolFailText(e.tool, next) }
 }
+
+/**
+ * The generic tool.call hook's catch. A flow tool that did not run (`next` not called) is answered with
+ * the retry text; one whose `next` was called replays what it settled to, and a replay that rejects again
+ * becomes the retry text too. Any other tool is passed on untouched. A failure before `next` on a flow
+ * tool cannot be told apart from one beneath it, so the tool does not run then either.
+ */
+export function flowCatch<R>(e: { tool: string }, next: FailedCall & ((e: never) => R | PromiseLike<R>)): R | { result: string } | Promise<R | { result: string }> {
+  if (!isFlowTool(e.tool)) return Promise.resolve(next(e as never))
+  const text = { result: toolFailText(e.tool, next) }
+  if (!next.called) return text
+  return Promise.resolve(next(e as never)).catch(() => text)
+}

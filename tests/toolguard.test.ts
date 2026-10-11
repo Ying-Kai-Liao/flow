@@ -2,7 +2,7 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
-import { failReason, toolCatch, toolFailText } from '../hooks/toolguard'
+import { failReason, flowCatch, toolCatch, toolFailText } from '../hooks/toolguard'
 
 type On = Parameters<TestBody>[1]
 
@@ -44,6 +44,21 @@ test('a flow tool hook that fails for a subagent answers with a retry message', 
   expect(String(r.result)).toContain('flow: status did not finish')
   expect(String(r.result)).toContain('agent.list')
   expect(String(r.result)).toContain('Call it again')
+})
+
+const nextOf = (called: boolean, run: () => unknown) =>
+  Object.assign((_: unknown) => run(), { error: throws, called }) as never
+
+test('flowCatch: a flow tool that did not run is answered; a replay that rejects again is too; other tools pass on', async () => {
+  const notRun = await flowCatch({ tool: 'mcp__flow__handover' }, nextOf(false, () => { throw new Error('must not run') }))
+  expect((notRun as { result: string }).result).toContain('flow: handover did not finish')
+  const replayFails = await flowCatch({ tool: 'mcp__flow__handover' }, nextOf(true, () => Promise.reject(new Error('again'))))
+  expect((replayFails as { result: string }).result).toContain('flow: handover did not finish')
+  const replayOk = await flowCatch({ tool: 'mcp__flow__handover' }, nextOf(true, () => ({ result: 'recorded' })))
+  expect(replayOk).toEqual({ result: 'recorded' })
+  const other = await flowCatch({ tool: 'Bash' }, nextOf(false, () => ({ result: 'ran' })))
+  expect(other).toEqual({ result: 'ran' })
+  await expect(flowCatch({ tool: 'Bash' }, nextOf(true, () => Promise.reject(new Error('x'))))).rejects.toThrow('x')
 })
 
 test('the same call works when nothing fails', async ($, on) => {

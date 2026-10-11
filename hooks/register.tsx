@@ -83,7 +83,7 @@ import {
   allowed, allowList, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
-import { isFlowTool, toolCatch, toolFailText } from './toolguard'
+import { flowCatch, toolCatch } from './toolguard'
 import {
   ago, claudeLimits, harnessesOf, runsOutIn, SESSION, sessionKey, sessionRow,
 } from './sessions'
@@ -1990,7 +1990,7 @@ export const register: Register = (on, options) => {
       })
     }
     return wrapUpReminder($, e, await next(e), settings, mainModel, mainWindow)
-  }).catch((_$, e, next) => (isFlowTool(e.tool) && !next.called ? { result: toolFailText(e.tool, next) } : next(e)))
+  }).catch((_$, e, next) => flowCatch(e, next))
 
   on('tool.call', { tool: 'mcp__flow__handover' }, ($, e) => handoverTool(handoverIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 
