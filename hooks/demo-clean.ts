@@ -9,6 +9,8 @@ import type { Worktree } from './clean'
 export const DEMO_BRANCH = /^flow\/flow-demo(?:-[a-z0-9-]+)?$/
 export const DEMO_AGENT = /^flow-demo(?:-[a-z0-9-]+)?$/
 export const DEMO_FILE = 'flow-demo.md'
+// The one diff --name-status line of a demo commit: DEMO_FILE added. Kept literal, in sync with DEMO_FILE.
+export const DEMO_DIFF_LINE = 'A\tflow-demo.md'
 
 export type DemoCleanup = { worktrees: { path: string; branch?: string }[]; branches: string[]; kept: string[] }
 
@@ -18,7 +20,7 @@ export function toInspect(porcelain: string): Worktree[] {
 }
 
 // `git diff --name-status HEAD~1 HEAD` of the worktree is exactly the demo file added, and `git status --porcelain` is empty.
-export const isDemoCommit = (diff: string, status: string): boolean => status.trim() === '' && diff.trim() === `A\t${DEMO_FILE}`
+export const isDemoCommit = (diff: string, status: string): boolean => status.trim() === '' && diff.trim() === DEMO_DIFF_LINE
 
 // `porcelain` is `git worktree list --porcelain` (the main checkout first), `branches` the local branch names,
 // `confirmed` the paths of other worktrees the caller tied to the demo by isDemoCommit.
