@@ -395,3 +395,26 @@ test('status shows an agent that ended on a blocking ask as waiting', async ($, 
   const r = await $.tool.call({ tool: 'mcp__flow__status' } as never).then(x => String(x.result))
   expect(r).toContain('waiting on q1')
 })
+
+const CARD = 'AskUserQuestion'
+
+test('ask_cards on: a blocking ask to main sends main a notice with the card instruction; a non-blocking one does not', async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [SOFT])
+  await w.clock.advance(1); await w.clock.settle()
+  expect(w.submitted).toEqual([])
+  await ask($, 'm1', [BLOCK])
+  await w.clock.advance(1); await w.clock.settle()
+  expect(w.submitted).toHaveLength(1)
+  expect(w.submitted[0]).toContain('csv-export asks 1 blocking question(s) for the user (q2)')
+  expect(w.submitted[0]).toContain(CARD)
+  expect(w.toasts.join('\n')).toContain('/flow inbox')
+})
+
+test('ask_cards off: a blocking ask to main sends no notice, the toast stays', { options: { ask_cards: 'off' } }, async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [BLOCK])
+  await w.clock.advance(1); await w.clock.settle()
+  expect(w.submitted).toEqual([])
+  expect(w.toasts.join('\n')).toContain('/flow inbox')
+})

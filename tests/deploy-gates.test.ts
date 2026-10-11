@@ -162,7 +162,9 @@ const TARGETS = [
 ]
 
 function world(on: On) {
-  mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const prompts: string[] = []
+  on('prompt.submit', (_, e) => { prompts.push(e.text); return { text: e.text } })
   const agents: AgentInfo[] = [{ id: 'q1', name: 'merge-queue-1', description: 'q', type: 'flow:queue', status: 'running' }]
   const files = new Map<string, string>()
   const spawned: string[] = []
@@ -197,7 +199,7 @@ function world(on: On) {
     }
     return ok()
   })
-  return { agents, files, spawned, toasts, setBehind: (n: string) => { behind = n } }
+  return { agents, files, spawned, toasts, prompts, flush: async () => { await clock.advance(1); await clock.settle() }, setBehind: (n: string) => { behind = n } }
 }
 
 const deploy = ($: Dollar, args: Record<string, unknown>, agentId: string | null = null) =>
@@ -340,4 +342,25 @@ test('a standing rule without kinds never answers a deploy approval', { options:
   const w = world(on)
   expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')).toContain('Awaits approval: q1')
   expect(inboxOf(w.files).items[0]).toMatchObject({ state: 'open' })
+})
+
+test('ask_cards on: a new deploy approval sends main one notice with the card instruction, not repeated for the same open item', { options: { deploy_targets: JSON.stringify(TARGETS) } }, async ($, on) => {
+  const w = world(on)
+  await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')
+  await w.flush()
+  expect(w.prompts).toHaveLength(1)
+  expect(w.prompts[0]).toContain('Deploy production awaits the user\'s approval (q1)')
+  expect(w.prompts[0]).toContain('AskUserQuestion')
+  expect(w.toasts.join('\n')).toContain('production awaits your approval')
+  await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')
+  await w.flush()
+  expect(w.prompts).toHaveLength(1)
+})
+
+test('ask_cards off: a deploy approval sends no notice, the toast stays', { options: { deploy_targets: JSON.stringify(TARGETS), ask_cards: 'off' } }, async ($, on) => {
+  const w = world(on)
+  await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')
+  await w.flush()
+  expect(w.prompts).toEqual([])
+  expect(w.toasts.join('\n')).toContain('production awaits your approval')
 })
