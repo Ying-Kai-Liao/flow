@@ -196,15 +196,15 @@ export function unhandedPrs(
   const out: Unhanded[] = []
   for (const p of prs) {
     if (p.isDraft || !p.headRefName.startsWith('flow/')) continue
-    const h = handovers[String(p.number)]
-    if (h !== undefined && h.status !== 'returned') continue
+    const ho = handovers[String(p.number)]
+    if (ho !== undefined && ho.status !== 'returned') continue
     const slug = p.headRefName.slice('flow/'.length)
     const mine = roster.filter(a => a.name === slug || (a.name?.startsWith(`${slug}-`) === true && /^\d+$/.test(a.name.slice(slug.length + 1))))
     if (mine.some(a => !ENDED.has(a.status))) continue
     const endedAt = Math.max(...mine.map(a => activity[a.id]?.endedAt ?? activity[a.id]?.lastAt ?? 0))
     if (mine.length > 0 && endedAt > 0 && t - endedAt < graceMs) continue
     const last = mine.length > 0 ? mine.reduce((x, y) => (activity[y.id]?.endedAt ?? 0) >= (activity[x.id]?.endedAt ?? 0) ? y : x) : undefined
-    const note = h !== undefined ? `returned: ${h.reason ?? ''}`
+    const note = ho !== undefined ? `returned: ${ho.reason ?? ''}`
       : last === undefined ? 'no agent in this session'
         : `no handover, worker ${labelOf(last)} ended${endedAt > 0 ? ` ${ago(t - endedAt)} ago` : ''}`
     out.push({ pr: p.number, title: p.title, branch: p.headRefName, note })
@@ -249,8 +249,8 @@ async function settleSlots($: EngineInterface, rows: AgentRow[], t: number, pre:
     notes.push(...r.notes, ...g.notes)
     // The caller of acquire is here to hear it: its grant is confirmed on the spot, with no signal.
     const state = me === undefined ? g.state
-      : { ...g.state, holders: g.state.holders.map(h => h.key === me ? { ...h, claimed: true } : h) }
-    granted = g.granted.filter(h => h.key !== me)
+      : { ...g.state, holders: g.state.holders.map(holder => holder.key === me ? { ...holder, claimed: true } : holder) }
+    granted = g.granted.filter(holder => holder.key !== me)
     const stay = new Set([...state.holders, ...state.waiters].map(e => e.key))
     left = [...st.holders, ...st.waiters].map(e => e.key).filter(k => !stay.has(k))
     return state
@@ -299,11 +299,11 @@ const handoverIoOf = ($: EngineInterface, options: Record<string, unknown>): Han
   run: argv => $.process.run(argv),
   now: () => $.clock.now(),
   handovers: () => read($, handovers),
-  putHandover: async (pr, h) => { await update($, handovers, hs => ({ ...hs, [pr]: h })) },
+  putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },
   resolveReportTo: (given, callerId) => resolveReportTo($, given, callerId),
-  openEnv: (h, drafts, prev, at) => openHandoverEnv($, options, h, drafts, prev, at),
+  openEnv: (ho, drafts, prev, at) => openHandoverEnv($, options, ho, drafts, prev, at),
   best: (what, fn) => best($, what, fn),
-  saveHandover: h => saveHandover($, h),
+  saveHandover: ho => saveHandover($, ho),
   appendLog: event => appendLog($, event),
   toast: text => { void $.ui.toast(text) },
   refresh: () => refresh($),
@@ -403,9 +403,9 @@ const commandIoOf = ($: EngineInterface): CommandIo => ({
   notesPath: owner => notesPath($, owner),
   readNotes: owner => readNotes($, owner),
   sweep: (base, apply, dryHint) => sweep($, base, apply, dryHint),
-  putHandover: async (pr, h) => { await update($, handovers, hs => ({ ...hs, [pr]: h })) },
+  putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },
   best: (what, fn) => best($, what, fn),
-  saveHandover: h => saveHandover($, h),
+  saveHandover: ho => saveHandover($, ho),
   appendLog: event => appendLog($, event),
   toast: text => { void $.ui.toast(text) },
   ensureQueue: () => ensureQueue($),
@@ -415,7 +415,7 @@ const commandIoOf = ($: EngineInterface): CommandIo => ({
   holdTarget: (name, until, by, reason) => holdTarget($, name, until, by, reason),
   releaseTarget: name => releaseTarget($, name),
   refreshBehind: () => refreshBehind($),
-  closeReturnedEnv: h => closeReturnedEnv($, h),
+  closeReturnedEnv: ho => closeReturnedEnv($, ho),
   settleBatch: () => settleBatch($),
   tellManager: (name, text) => tellManager($, name, text),
 })
@@ -638,25 +638,25 @@ async function versionAt($: EngineInterface, sha: string | undefined, steps: str
 
 // Adds a check for each needs-a-person line in a done PR's report (the same PR and steps never twice). Live: the
 // handover's verify_command rides along, unless verify_paths says no changed file warrants it. Returns the new ones.
-async function captureChecks($: EngineInterface, h: Handover, verifyPaths: string[], live: boolean): Promise<Check[]> {
-  const needs = parseNeeds(h.report)
+async function captureChecks($: EngineInterface, ho: Handover, verifyPaths: string[], live: boolean): Promise<Check[]> {
+  const needs = parseNeeds(ho.report)
   if (needs.length === 0) return []
-  let command = live && h.verifyCommand ? h.verifyCommand : undefined
+  let command = live && ho.verifyCommand ? ho.verifyCommand : undefined
   let note: string | undefined
   if (command !== undefined && verifyPaths.length > 0) {
     // gh failing runs the command anyway: fail toward verifying.
-    const r = await $.process.run(['gh', 'pr', 'view', String(h.pr), '--json', 'files'])
+    const r = await $.process.run(['gh', 'pr', 'view', String(ho.pr), '--json', 'files'])
     let files: string[] | undefined
     try { files = r.exitCode === 0 ? (JSON.parse(r.stdout) as { files: { path: string }[] }).files.map(f => f.path) : undefined } catch { files = undefined }
     if (files !== undefined && !anyMatch(verifyPaths, files)) { command = undefined; note = SKIP_NOTE }
   }
-  const t = live ? await $.clock.now() : h.at
+  const t = live ? await $.clock.now() : ho.at
   const items = await Promise.all(needs.map(async n => ({
-    steps: n.steps, version: await versionAt($, h.sha, n.steps),
-    ...(n.pr === h.pr && command !== undefined ? { verifyCommand: command } : {}), ...(n.pr === h.pr && note !== undefined ? { note } : {}),
+    steps: n.steps, version: await versionAt($, ho.sha, n.steps),
+    ...(n.pr === ho.pr && command !== undefined ? { verifyCommand: command } : {}), ...(n.pr === ho.pr && note !== undefined ? { note } : {}),
   })))
   return withChecks($, cur => {
-    const r = addChecks(cur, h.pr, h.title, h.sha, items, t)
+    const r = addChecks(cur, ho.pr, ho.title, ho.sha, items, t)
     return { checks: r.checks, out: r.added }
   })
 }
@@ -801,7 +801,7 @@ const deployIoOf = ($: EngineInterface): DeployIo => ({
   now: () => $.clock.now(),
   handovers: () => read($, handovers),
   updateHandovers: async fn => { await update($, handovers, fn) },
-  saveHandover: h => saveHandover($, h),
+  saveHandover: ho => saveHandover($, ho),
   inbox: () => read($, inbox),
   withInbox: fn => withInbox($, fn),
   ensureQueue: () => ensureQueue($),
@@ -823,9 +823,9 @@ const releaseTarget = ($: EngineInterface, name: string): Promise<string> => rel
 const deployTool = ($: EngineInterface, options: Record<string, unknown>, input: Record<string, unknown>, isMain: boolean, caller: string): Promise<string> =>
   deployToolTo(deployIoOf($), options, input, isMain, caller)
 const openHandoverEnv = (
-  $: EngineInterface, options: Record<string, unknown>, h: Handover, drafts: Draft[], prev: EnvChange[], at: number,
-): Promise<string> => openHandoverEnvTo(deployIoOf($), options, h, drafts, prev, at)
-const closeReturnedEnv = ($: EngineInterface, h: Handover): Promise<void> => closeReturnedEnvTo(deployIoOf($), h)
+  $: EngineInterface, options: Record<string, unknown>, ho: Handover, drafts: Draft[], prev: EnvChange[], at: number,
+): Promise<string> => openHandoverEnvTo(deployIoOf($), options, ho, drafts, prev, at)
+const closeReturnedEnv = ($: EngineInterface, ho: Handover): Promise<void> => closeReturnedEnvTo(deployIoOf($), ho)
 
 
 // ---- the push gate (pushgate.ts) ----
@@ -845,12 +845,12 @@ const pushIoOf = ($: EngineInterface): PushIo => ({
   now: () => $.clock.now(),
   handovers: () => read($, handovers),
   updateHandovers: async fn => { await update($, handovers, fn) },
-  saveHandover: h => saveHandover($, h),
+  saveHandover: ho => saveHandover($, ho),
   appendLog: event => appendLog($, event),
   best: (what, fn) => best($, what, fn),
   withInbox: fn => withInbox($, fn),
   ensureQueue: () => ensureQueue($),
-  closeReturnedEnv: h => closeReturnedEnv($, h),
+  closeReturnedEnv: ho => closeReturnedEnv($, ho),
   sizeBackNote: branch => sizeBackNote($, branch),
   tellManager: (name, text) => tellManager($, name, text),
   dropRelease: async key => {
@@ -964,10 +964,10 @@ const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => t
 const validEvidence = (e: unknown): boolean => typeof e === 'object' && e !== null && isStrs((e as Evidence).ran) && typeof (e as Evidence).exercised === 'string' && isStrs((e as Evidence).notVerified)
 
 // One file per PR, rewritten whole on every change. `version` is for readers of the file.
-async function saveHandover($: EngineInterface, h: Handover): Promise<void> {
+async function saveHandover($: EngineInterface, ho: Handover): Promise<void> {
   const dir = await stateDir($)
   if (dir === undefined) return
-  await writeJsonAtomic($, `${dir}/handovers/${h.pr}.json`, { version: 1, ...h })
+  await writeJsonAtomic($, `${dir}/handovers/${ho.pr}.json`, { version: 1, ...ho })
 }
 
 // Handovers earlier sessions left, keyed by PR. Unknown fields are kept; an unparsable file is absent.
@@ -982,10 +982,10 @@ async function loadHandovers($: EngineInterface): Promise<Record<string, Handove
     return out
   }
   for (const name of names) {
-    const h = await readJson($, `${dir}/handovers/${name}`) as Handover | undefined
-    if (typeof h !== 'object' || h === null || !Number.isInteger(h.pr) || !STATUSES.has(h.status)) continue
-    if (h.evidence !== undefined && !validEvidence(h.evidence)) delete h.evidence
-    out[String(h.pr)] = h
+    const ho = await readJson($, `${dir}/handovers/${name}`) as Handover | undefined
+    if (typeof ho !== 'object' || ho === null || !Number.isInteger(ho.pr) || !STATUSES.has(ho.status)) continue
+    if (ho.evidence !== undefined && !validEvidence(ho.evidence)) delete ho.evidence
+    out[String(ho.pr)] = ho
   }
   return out
 }
@@ -1171,14 +1171,14 @@ const staleIoOf = ($: EngineInterface, base: string): StaleIo => ({
       return new Set((list as { number: number }[]).filter(p => typeof p?.number === 'number').map(p => p.number))
     } catch { return undefined }
   },
-  save: async h => {
-    await update($, handovers, hs => ({ ...hs, [String(h.pr)]: h }))
+  save: async ho => {
+    await update($, handovers, hs => ({ ...hs, [String(ho.pr)]: ho }))
     await best($, 'saving a handover', async () => {
-      await saveHandover($, h)
-      if (h.status === 'done') await appendLog($, { event: 'done', owner: h.reportTo, pr: h.pr, branch: h.branch, text: h.report })
-      if (h.status === 'returned') await appendLog($, { event: 'back', owner: h.reportTo, pr: h.pr, branch: h.branch, text: h.reason })
+      await saveHandover($, ho)
+      if (ho.status === 'done') await appendLog($, { event: 'done', owner: ho.reportTo, pr: ho.pr, branch: ho.branch, text: ho.report })
+      if (ho.status === 'returned') await appendLog($, { event: 'back', owner: ho.reportTo, pr: ho.pr, branch: ho.branch, text: ho.reason })
     })
-    if (h.status === 'returned') await closeReturnedEnv($, h)
+    if (ho.status === 'returned') await closeReturnedEnv($, ho)
   },
 })
 
@@ -1186,7 +1186,7 @@ const reviewerIoOf = ($: EngineInterface, base: string): ReviewerIo => ({
   reconcile: () => reconcileStale(staleIoOf($, base)),
   run: argv => $.process.run(argv),
   handovers: () => read($, handovers),
-  putHandover: async (pr, h) => { await update($, handovers, hs => ({ ...hs, [pr]: h })) },
+  putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },
   batch: async () => (await read($, pushState)).batch,
   deploys: () => read($, deploys),
   inbox: () => read($, inbox),
@@ -1194,15 +1194,15 @@ const reviewerIoOf = ($: EngineInterface, base: string): ReviewerIo => ({
   noteRunWork: (id, f) => noteRunWork($, id, f),
   recordReady: (settings, input) => recordReady($, settings, input),
   best: (what, fn) => best($, what, fn),
-  saveHandover: h => saveHandover($, h),
+  saveHandover: ho => saveHandover($, ho),
   appendLog: event => appendLog($, event),
   toast: text => { void $.ui.toast(text) },
   refresh: () => refresh($),
-  closeReturnedEnv: h => closeReturnedEnv($, h),
+  closeReturnedEnv: ho => closeReturnedEnv($, ho),
   settleBatch: () => settleBatch($),
   autoSweep: () => autoSweep($),
   withCost: (branch, report) => withCost($, branch, report),
-  captureChecks: (h, verifyPaths, live) => captureChecks($, h, verifyPaths, live),
+  captureChecks: (ho, verifyPaths, live) => captureChecks($, ho, verifyPaths, live),
   suggestGuardTests: (input, pr, queueName, agentId, map) => suggestGuardTests(standingIoOf($), input, pr, queueName, agentId, map),
   sizeBackNote: branch => sizeBackNote($, branch),
 })
@@ -1298,7 +1298,7 @@ const resumeIoOf = ($: EngineInterface): ResumeIo => ({
   sessions: async () => Object.values(await read($, sessions)),
   log: () => readLog($),
   loadHandovers: () => loadHandovers($),
-  saveHandover: h => saveHandover($, h),
+  saveHandover: ho => saveHandover($, ho),
   best: (what, fn) => best($, what, fn),
   mergeHandovers: async all => { await update($, handovers, cur => ({ ...all, ...cur })) },
 })
@@ -1617,7 +1617,7 @@ export const register: Register = (on, options) => {
       const disk = await loadHandovers($)
       if (Object.keys(disk).length === 0) return
       await update($, handovers, hs => ({ ...disk, ...hs }))
-      queueDue = Object.values(disk).some(h => h.status === 'pending')
+      queueDue = Object.values(disk).some(ho => ho.status === 'pending')
     })
     // Reviewer worktrees left over from before a restart or reload.
     autoSweep($)
@@ -1642,9 +1642,9 @@ export const register: Register = (on, options) => {
       const disk = normalizeChecks(await readJson($, `${dir}/checks.json`))
       await update($, checks, () => disk)
       // Done handovers from before checks existed (or a session that died first) get theirs once.
-      for (const h of Object.values(await read($, handovers))) {
+      for (const ho of Object.values(await read($, handovers))) {
         // A PR that already has a check (any state) runs no git calls on a normal restart.
-        if (h.status === 'done' && !(await read($, checks)).items.some(c => c.pr === h.pr)) await captureChecks($, h, settings.verifyPaths, false)
+        if (ho.status === 'done' && !(await read($, checks)).items.some(c => c.pr === ho.pr)) await captureChecks($, ho, settings.verifyPaths, false)
       }
       // Once per installed version: the checks it now covers go to main as a prompt.
       const due = dueForPrompt(await read($, checks), installed)

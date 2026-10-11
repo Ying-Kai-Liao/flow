@@ -473,17 +473,17 @@ export function inboxView(x: InboxCtx) {
   const say = (text: string) => io.setNote(text)
   const answerRow = (id: string, choice: string | null) => io.answer(id, choice)
   const pickOption = (n: number) => () => io.serial(async () => {
-    const h = await here()
-    if (h === undefined) return
-    const { fresh, i, row } = h
+    const spot = await here()
+    if (spot === undefined) return
+    const { fresh, i, row } = spot
     if (row?.q === undefined) return say('Move to a question or a decision first.')
     if (n >= row.q.options.length) return
     await done([await answerRow(row.q.id, row.q.options[n]!)], fresh, i)
   })
   const takeDefault = () => io.serial(async () => {
-    const h = await here()
-    if (h === undefined) return
-    const { fresh, i, row } = h
+    const spot = await here()
+    if (spot === undefined) return
+    const { fresh, i, row } = spot
     if (row === undefined) return
     const lines: string[] = []
     let refused = 0
@@ -498,9 +498,9 @@ export function inboxView(x: InboxCtx) {
     await done(lines, fresh, i)
   })
   const keepAll = () => io.serial(async () => {
-    const h = await here(false)
-    if (h === undefined) return
-    const { fresh, i } = h
+    const spot = await here(false)
+    if (spot === undefined) return
+    const { fresh, i } = spot
     const open = (await io.readInbox()).items.filter(x => x.state === 'open' && isFyi(x) && protectedWhy(x) === undefined)
     if (open.length === 0) return say('No open decisions to keep.')
     const lines: string[] = []
@@ -509,9 +509,9 @@ export function inboxView(x: InboxCtx) {
     await done([`Kept ${kept} decision${kept === 1 ? '' : 's'}.`, ...lines.filter(l => !l.includes(': Keep (default)'))], fresh, i)
   })
   const undo = () => io.serial(async () => {
-    const h = await here()
-    if (h === undefined) return
-    const { fresh, i, row } = h
+    const spot = await here()
+    if (spot === undefined) return
+    const { fresh, i, row } = spot
     if (row?.q === undefined || !isFyi(row.q)) return say('n undoes one decision: move to it first.')
     const text = (await io.readDraft()).trim()
     await io.setDraft('')
@@ -525,17 +525,17 @@ export function inboxView(x: InboxCtx) {
   const submit = (value: string) => void io.serial(async () => {
     const text = value.trim()
     if (text === '') return
-    const h = await here()
-    if (h === undefined) return
-    const { fresh, i, row } = h
+    const spot = await here()
+    if (spot === undefined) return
+    const { fresh, i, row } = spot
     if (row?.q === undefined) return say('Move to a question or a decision first.')
     await io.setDraft('')
     await done([await answerRow(row.q.id, text)], fresh, i)
   })
   const move = (d: number) => () => io.serial(async () => {
-    const h = await here(false)
-    if (h === undefined) return
-    const { fresh, i } = h
+    const spot = await here(false)
+    if (spot === undefined) return
+    const { fresh, i } = spot
     const to = fresh[Math.min(fresh.length - 1, Math.max(0, i + d))]
     if (to !== undefined) await io.setCursor(to.key)
   })
