@@ -35,7 +35,7 @@ export function parseJev(json: unknown, q: Question): Decision {
   return { answer: a.choice, confidence: a.confidence }
 }
 
-export const askJev: Provider = async (fetchFn, cfg, model, text, q, timeoutMs = DECIDE_TIMEOUT_MS) => {
+export const askJev: Provider = async (io, cfg, model, text, q, timeoutMs = DECIDE_TIMEOUT_MS) => {
   if (cfg.key === undefined) return { note: 'jev unavailable: no key' }
-  return post(fetchFn, 'jev', `${cfg.baseUrl}/v1/systemone`, cfg.key, jevBody(text, model, q), timeoutMs, json => parseJev(json, q))
+  return post(io, 'jev', `${cfg.baseUrl}/v1/systemone`, cfg.key, jevBody(text, model, q), timeoutMs, json => parseJev(json, q))
 }

@@ -26,4 +26,6 @@ if [ ! -f "$types/tsconfig.json" ]; then
   ln -s "$src" "$types"
 fi
 
+# The plugin directory's plain-capability rule, on the source (the test sandbox cannot read it).
+node scripts/plain-names.mjs
 exec node_modules/.bin/tsc -p .

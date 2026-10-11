@@ -140,6 +140,14 @@ default, flow makes no HTTP request at all. The keys are `/config` options marke
 they are kept in secure storage; flow never reads them from your environment or a file, and they
 never appear in a note, log or prompt.
 
+The hosts flow contacts:
+
+- `api.openai.com`, the default `openai_base_url`, only with `decision_api` at `openai`.
+- `api.typesafe.ai`, the default `jev_base_url`, only with `decision_api` at `jev`.
+- `github.com`, through `gh` and `git` (or wherever your `origin` points).
+
+Both base URLs can be changed in `/config`; flow then contacts the host you set instead.
+
 The agents flow starts do their own pushing and merging with `git` and `gh`, as their prompts
 say: workers push their branch and open a PR, the reviewer merges and pushes `<base>`.
 
@@ -166,6 +174,8 @@ The plugin runs these programs through `$.process.run`, each with a fixed argume
   `git push`. This happens only when you pick a session harness. The default workers are
   in-session agents, and they keep the session's normal permission mode.
 - A harness's `quota` command from your `harnesses` setting, to read how much quota is left.
+- `uname -s`, once, and then `open`, `xdg-open` or `explorer` with a PR's URL: only when you press
+  the PR card's open key in the pane.
 
 Your own commands are run by flow's agents through their Bash tool, under your permission mode,
 not by the plugin: `test_command` by workers, `full_check_command` and the deploy steps

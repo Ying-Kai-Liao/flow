@@ -1,6 +1,8 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 import { register } from '../hooks/register'
+import * as demoView from '../hooks/demo-view'
+import * as paneView from '../hooks/pane-view'
 
 // The engine compiles JSX with `h` as the factory (jsxFactory in .claude-plugin/types/tsconfig.json),
 // so any scope that contains JSX and also binds `h` calls that binding instead of the factory:
@@ -195,4 +197,34 @@ test('no scope in the compiled pane that calls the JSX factory binds h', () => {
   const src = String(register)
   expect(src).toContain('h(Text')
   expect(shadowsOfFactory(src).map(x => `${x.line}: ${x.text}`)).toEqual([])
+})
+
+// The plugin directory flags a .tsx file that names anything h or Fragment, a property included: h is
+// written only to call it. scripts/plain-names.mjs checks the source (types too); this checks what runs.
+function otherUsesOfFactory(src: string): string[] {
+  const s = mask(src)
+  const out: string[] = []
+  const names = /(^|[^\w$])(h|Fragment)(?![\w$])/g
+  let m: RegExpExecArray | null
+  while ((m = names.exec(s)) !== null) {
+    const at = m.index + m[1]!.length
+    const before = s.slice(0, at)
+    if (m[2] === 'h' && /^\s*\(/.test(s.slice(at + 1)) && !/\.\s*$/.test(before)) continue
+    if (m[2] === 'Fragment' && /\bh\(\s*$/.test(before)) continue
+    const line = before.split('\n').length
+    out.push(`${line}: ${src.split('\n')[line - 1]!.trim()}`)
+  }
+  return out
+}
+
+test('the factory scan flags h or Fragment used as a name, and passes the compiled calls', () => {
+  for (const src of ['const h = 1', 'f({ h, a })', 'x.h', 'x.h()', 'const o = { h: 1 }', 'let Fragment = 2', 'g(h)'])
+    expect(otherUsesOfFactory(src).length).toBeGreaterThan(0)
+  expect(otherUsesOfFactory("h(Box, null, h(Fragment, null, h(Text, { hotkey: 'h' }, 'h')))")).toEqual([])
+})
+
+test('the .tsx modules use h only to call it and Fragment only as its fragment', () => {
+  const fns = [register, ...Object.values(paneView), ...Object.values(demoView)].filter(f => typeof f === 'function')
+  expect(fns.length).toBeGreaterThan(3)
+  for (const f of fns) expect(otherUsesOfFactory(String(f))).toEqual([])
 })

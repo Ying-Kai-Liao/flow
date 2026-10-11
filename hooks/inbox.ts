@@ -1,5 +1,5 @@
 import { noteKey } from './state'
-import { renderTable, termWidth } from './table'
+import { DEFAULT_WIDTH, renderTable } from './table'
 import type { Inbox, Question } from '../types'
 
 export type { Inbox, Question }
@@ -416,7 +416,7 @@ export function protectedWhy(q: Question): string | undefined {
 export const DECISIONS_SHOWN = 15
 
 // The decisions as one flat table, newest first: id, from, headline, age. The full text and the why are in /flow inbox <id>.
-export function decisionRows(decisions: Question[], now: number, all: boolean, width = termWidth()): string[] {
+export function decisionRows(decisions: Question[], now: number, all: boolean, width = DEFAULT_WIDTH): string[] {
   const newest = [...decisions].reverse()
   return renderTable(
     [{ header: 'id' }, { header: 'from', max: 16, drop: 1 }, { header: 'decision', flex: true, min: 20 }, { header: 'age', align: 'right' }],

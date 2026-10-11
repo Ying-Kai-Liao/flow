@@ -21,7 +21,7 @@ export type DemoCtx = {
     answer: (id: string, choice: string | null) => Promise<string>
     toast: (text: string) => void
     focus: (key: string) => Promise<unknown>
-    next: () => Promise<void>
+    advance: () => Promise<void>
     stop: () => Promise<void>
   }
 }
@@ -75,7 +75,7 @@ export function demoView(c: DemoCtx) {
       {(step.notes ?? []).map((n, i) => <Text key={`demo-note-${i}`} dimColor>{n}</Text>)}
       <Box flexGrow={1} />
       <Box flexDirection="row" gap={1}>
-        {!isLast(c.state) && <Button key="demo-next" plain dimColor hotkey="m" onPress={() => void c.io.next()}>m next</Button>}
+        {!isLast(c.state) && <Button key="demo-next" plain dimColor hotkey="m" onPress={() => void c.io.advance()}>m next</Button>}
         {stop}
       </Box>
     </Box>

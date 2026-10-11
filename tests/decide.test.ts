@@ -22,6 +22,11 @@ const ok = (json: unknown): FetchLike => async () => ({ ok: true, status: 200, j
 // Probabilities come back through exp(log(p)): compare them rounded.
 const rounded = (d: Decision): Decision => ('confidence' in d && d.confidence !== undefined ? { ...d, confidence: Math.round(d.confidence * 1e4) / 1e4 } : d)
 const failing = (e: () => unknown): FetchLike => async () => { throw e() }
+// The timer `post` races the fetch against: `fire` runs out at once (a timeout test), else it never does.
+const net = (f: FetchLike, fire = false): DecideIo => ({
+  fetch: f,
+  after: (_ms, fn) => { if (fire) void Promise.resolve().then(fn); return { cancel: () => undefined } },
+})
 
 test('answerConfidence multiplies the probabilities of the answer tokens only', () => {
   const content = '{"answer":"small"}'
@@ -55,13 +60,13 @@ test('openaiConfig reads the /config options only and trims the base url', () =>
 
 test('a timeout ends the wait even when the fetch ignores the signal', async () => {
   const deaf: FetchLike = () => new Promise(() => undefined)
-  expect(await askOpenai(deaf, cfg, 'm', 'p', SIZE_QUESTION, 20)).toEqual({ note: 'openai unavailable: timeout' })
+  expect(await askOpenai(net(deaf, true), cfg, 'm', 'p', SIZE_QUESTION, 20)).toEqual({ note: 'openai unavailable: timeout' })
 })
 
 test('openai request: URL, bearer key, strict schema enum, Size line stripped, text capped', async () => {
   let seen: { url: string; auth: string; body: Record<string, unknown> } | undefined
   const spy: FetchLike = async (url, init) => { seen = { url, auth: init.headers.Authorization!, body: JSON.parse(init.body) as Record<string, unknown> }; return { ok: true, status: 200, json: async () => completion('normal', Math.log(0.9)) } }
-  const r = await askOpenai(spy, { key: 'sk-test', baseUrl: 'https://oai.example/v1///' }, 'gpt-4.1-mini', `Size: small\n${'a'.repeat(9000)}`, SIZE_QUESTION)
+  const r = await askOpenai(net(spy), { key: 'sk-test', baseUrl: 'https://oai.example/v1///' }, 'gpt-4.1-mini', `Size: small\n${'a'.repeat(9000)}`, SIZE_QUESTION)
   expect(rounded(r)).toEqual({ answer: 'normal', confidence: 0.9 })
   expect(seen?.url).toBe('https://oai.example/v1/chat/completions')
   expect(seen?.auth).toBe('Bearer sk-test')
@@ -78,7 +83,7 @@ test('openai request: URL, bearer key, strict schema enum, Size line stripped, t
 })
 
 test('openai failures are named without leaking the key or the body', async () => {
-  const ask = (f: FetchLike, c: { key?: string; baseUrl: string } = cfg, t?: number) => askOpenai(f, c, 'm', 'p', SIZE_QUESTION, t)
+  const ask = (f: FetchLike, c: { key?: string; baseUrl: string } = cfg, t?: number) => askOpenai(net(f, t !== undefined), c, 'm', 'p', SIZE_QUESTION, t)
   expect(await ask(ok({}), { baseUrl: 'x' })).toEqual({ note: 'openai unavailable: no key' })
   expect(await ask(async () => ({ ok: false, status: 401, json: async () => ({ detail: 'sk-test' }) }))).toEqual({ note: 'openai unavailable: HTTP 401' })
   expect(await ask(async () => ({ ok: true, status: 200, json: async () => { throw new Error('sk-test') } }))).toEqual({ note: 'openai unavailable: bad response' })
@@ -87,7 +92,7 @@ test('openai failures are named without leaking the key or the body', async () =
   expect(await ask(hang, cfg, 20)).toEqual({ note: 'openai unavailable: timeout' })
 })
 
-const io = (f: FetchLike): DecideIo => ({ fetch: f })
+const io = (f: FetchLike): DecideIo => net(f)
 
 test('decide through jev: choice and yes/no', async () => {
   const jev = ok({ answers: { size: { choice: 'large', confidence: 0.9 } } })
