@@ -153,7 +153,7 @@ export function factLines(d: Detected): string[] {
 
 // --- The settings write ---
 
-// Keys never go in settings: they stay in env or ~/.config files.
+// Keys never go in settings: flow's own keys go in /config (sensitive options), others in env.
 const SECRET_VALUE = [
   /\bsk-[A-Za-z0-9_-]{16,}/, /\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9]{16,}/, /\bxox[abprs]-[A-Za-z0-9-]{10,}/, /\bAKIA[0-9A-Z]{16}\b/, /\bAIza[0-9A-Za-z_-]{30,}/,
   /\b[A-Z0-9_]*(?:API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD)[A-Z0-9_]*\s*=\s*\S+/i, /\bBearer\s+[A-Za-z0-9._-]{16,}/i, /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
@@ -172,7 +172,7 @@ export function refuse(key: string, v: unknown): string | undefined {
     if (typeof v !== 'number' || !Number.isFinite(v) || v < 1 || !Number.isInteger(v)) return `"${key}" must be a whole number of 1 or more`
   } else if (typeof v !== kind) return `"${key}" must be a ${kind}`
   const texts = typeof v === 'string' ? [v] : Array.isArray(v) ? (v as string[]) : []
-  if (texts.some(looksSecret)) return `"${key}" looks like it holds a secret or API key; keys never go in settings (keep them in env or ~/.config files)`
+  if (texts.some(looksSecret)) return `"${key}" looks like it holds a secret or API key; keys never go in settings (flow's own keys go in /config; others in env)`
   const choices = choicesOf(key)
   if (choices !== undefined && !choices.includes(v as string)) return `"${key}" must be one of ${choices.join(', ')}`
   if (MODEL_KEYS.includes(key) && isFable(v)) return `"${key}": sub-agents don't run on Fable`

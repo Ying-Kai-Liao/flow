@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The settings-write test uses obviously fake placeholder secrets (YOUR_API_KEY, sk-EXAMPLE..., xxxx) so the plugin directory no longer flags SECRET_IN_SCRIPT, and the secret refusal now points flow's own keys to /config
+
 ## [0.6.47] - 2026-10-12
 
 ### Changed
