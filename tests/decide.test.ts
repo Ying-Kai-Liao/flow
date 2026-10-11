@@ -5,7 +5,7 @@ import { decide, sourceOf } from '../hooks/decide'
 import type { DecideIo, Decision, FetchLike, Question } from '../hooks/decide'
 import { jevBody } from '../hooks/jev'
 import { answerConfidence, askOpenai, openaiBody, openaiConfig, parseOpenai } from '../hooks/openai'
-import { settingsOf } from '../hooks/settings'
+import { mergeLayers, settingsOf } from '../hooks/settings'
 import { SIZE_QUESTION } from '../hooks/spawn'
 
 const YESNO: Question = { id: 'docs', type: 'yesno', instructions: 'Is this only documentation?' }
@@ -130,11 +130,21 @@ test('settings: decision_api, the size_model alias and unknown values', () => {
   expect(api({ size_model: 'jev' })).toBe('jev')
   expect(api({ size_model: 'openai' })).toBe('openai')
   expect(api({ size_model: 'off' })).toBe('off')
-  expect(api({ decision_api: 'off', size_model: 'jev' })).toBe('jev')
+  expect(api({ decision_api: 'off', size_model: 'jev' })).toBe('off')
   expect(api({ decision_api: 'openai', size_model: 'jev' })).toBe('openai')
   expect(api({ decision_api: 'bogus', size_model: 'jev' })).toBe('off')
   expect(api({ size_model: 'bogus' })).toBe('off')
   expect(settingsOf({}, 'main').openaiModel).toBe('gpt-4.1-mini')
   expect(settingsOf({ openai_model: 'gpt-x' }, 'main').openaiModel).toBe('gpt-x')
   expect(settingsOf({}, 'main').jevModel).toBe('jev-latest')
+})
+
+test('settings: an explicit decision_api wins over size_model through the layers too', () => {
+  const api = (config: Record<string, unknown>, file?: string) => settingsOf(mergeLayers(config, [{ path: '/repo/flow.json', text: file }]).raw, 'main').decisionApi
+  expect(api({ decision_api: 'off', size_model: 'jev' })).toBe('off')
+  expect(api({ size_model: 'jev' })).toBe('jev')
+  expect(api({ decision_api: 'bogus', size_model: 'jev' })).toBe('off')
+  expect(api({ size_model: 'jev' }, '{"decision_api":"off"}')).toBe('off')
+  expect(api({ decision_api: 'off' }, '{"size_model":"jev"}')).toBe('off')
+  expect(api({ decision_api: 'openai' }, '{"decision_api":"off"}')).toBe('off')
 })

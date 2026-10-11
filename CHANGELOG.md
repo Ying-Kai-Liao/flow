@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An explicit `decision_api` (including `off`) now always wins over the deprecated `size_model`, which is read only while `decision_api` is unset. `decision_api` has no default in `/config` so unset stays distinguishable; an unknown value means off.
+
 ## [0.6.40] - 2026-10-12
 
 ### Added
