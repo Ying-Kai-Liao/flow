@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.64] - 2026-10-12
+
+### Changed
+
+- manager_model_normal: third manager model tier routed by Size (#156)
+- decide_eval size: per-role split and normal-managers-on-sonnet counterfactual (#155)
+
 ## [0.6.63] - 2026-10-12
 
 ### Changed
