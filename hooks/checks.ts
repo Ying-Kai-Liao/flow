@@ -173,7 +173,7 @@ export function resumeChecksLines(c: Checks, installed: string | undefined): str
   ]
 }
 
-// The open checks the installed version now covers, if it differs from the version main was last prompted for.
+// The open checks the installed version now covers, if it differs from the version the user was last notified of.
 export function dueForPrompt(c: Checks, installed: string | undefined): Check[] {
   if (installed === undefined || c.promptedVersion === installed) return []
   return openChecks(c).filter(x => x.version !== undefined && compareVersions(x.version, installed) <= 0)

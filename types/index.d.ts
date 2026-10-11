@@ -296,7 +296,7 @@ export type Check = {
 export type Checks = {
   next: number
   items: Check[]
-  // The installed version main was last prompted for after an update.
+  // The installed version the user was last notified of after an update.
   promptedVersion?: string
 }
 
