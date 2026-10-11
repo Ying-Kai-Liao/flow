@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import { test } from './support'
 
 import { decisionText } from '../hooks/decide'
-import type { FetchLike, Question } from '../hooks/decide'
+import type { DecideIo, FetchLike, Question } from '../hooks/decide'
 import { askJev as askJevQ, jevBody as jevBodyQ, jevConfig, parseJev as parseJevQ } from '../hooks/jev'
 import { routeManager, routeWorker, SIZE_QUESTION, sizeWith } from '../hooks/spawn'
 import type { SpawnIo } from '../hooks/spawn'
@@ -15,7 +15,12 @@ const jevState = decisionText
 const jevBody = (p: string, m: string) => jevBodyQ(p, m, SIZE_QUESTION)
 const parseJev = (j: unknown) => parseJevQ(j, SIZE_QUESTION)
 // The sizing call as spawn makes it: the fixed question through the Jev provider.
-const askJev = (f: FetchLike, c: { key?: string; baseUrl: string }, m: string, p: string, t?: number) => sizeWith((text, q: Question) => askJevQ(f, c, m, text, q, t), 'jev')(p)
+// The timer `post` races the fetch against: `fire` runs out at once (a timeout test), else it never does.
+const net = (f: FetchLike, fire = false): DecideIo => ({
+  fetch: f,
+  after: (_ms, fn) => { if (fire) void Promise.resolve().then(fn); return { cancel: () => undefined } },
+})
+const askJev = (f: FetchLike, c: { key?: string; baseUrl: string }, m: string, p: string, t?: number) => sizeWith((text, q: Question) => askJevQ(net(f, t !== undefined), c, m, text, q, t), 'jev')(p)
 const cfg = { key: 'fake-key', baseUrl: 'https://jev.example' }
 
 function ioWith(ledger: Ledger = {}): SpawnIo {

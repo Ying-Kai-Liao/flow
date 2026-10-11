@@ -59,7 +59,7 @@ import { demoView } from './demo-view'
 import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
 import { agentView, archiveView, batchCardView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, prCardView, treeView } from './pane-view'
 import type { InboxCtx, PaneCtx, Usage } from './pane-view'
-import { approvePr, detailsKey, detailsStale, fetchDetails, openerFor, rejectPr, urlNote } from './prcard'
+import { approvePr, detailsKey, detailsStale, fetchDetails, openerFor, platformOfUname, rejectPr, urlNote } from './prcard'
 import type { DetailsCache } from './prcard'
 import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
 import {
@@ -293,150 +293,168 @@ async function signalSlots($: EngineInterface, granted: SlotEntry[], left: strin
 // The last batch the release tool cut, so a retried push does not release twice.
 let lastRelease: { key: string; version: string } | undefined
 
-const releaseIoOf = ($: EngineInterface): ReleaseIo => ({
-  exec: (argv, cwd) => cwd === undefined ? $.process.run(argv) : $.process.run(argv, { cwd }),
-  sleep: ms => $.clock.sleep(ms),
-  now: () => $.clock.now(),
-  exists: path => $.fs.exists(path),
-  read: path => $.fs.read(path),
-  write: async (path, text) => { await $.fs.write(path, text) },
-  stateDir: () => stateDir($),
-  readJson: path => readJson($, path),
-  writeJsonAtomic: (path, obj) => writeJsonAtomic($, path, obj),
-  getLast: () => lastRelease,
-  setLast: last => { lastRelease = last },
-  handovers: () => read($, handovers),
-  batch: async () => (await read($, pushState)).batch,
-})
+function releaseIoOf($: EngineInterface): ReleaseIo {
+  return {
+    exec: (argv, cwd) => cwd === undefined ? $.process.run(argv) : $.process.run(argv, { cwd }),
+    sleep: ms => $.clock.sleep(ms),
+    now: () => $.clock.now(),
+    exists: path => $.fs.exists(path),
+    read: path => $.fs.read(path),
+    write: async (path, text) => { await $.fs.write(path, text) },
+    stateDir: () => stateDir($),
+    readJson: path => readJson($, path),
+    writeJsonAtomic: (path, obj) => writeJsonAtomic($, path, obj),
+    getLast: () => lastRelease,
+    setLast: last => { lastRelease = last },
+    handovers: () => read($, handovers),
+    batch: async () => (await read($, pushState)).batch,
+  }
+}
 
-const handoverIoOf = ($: EngineInterface, options: Record<string, unknown>): HandoverIo => ({
-  run: argv => $.process.run(argv),
-  now: () => $.clock.now(),
-  handovers: () => read($, handovers),
-  putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },
-  resolveReportTo: (given, callerId) => resolveReportTo($, given, callerId),
-  openEnv: (ho, drafts, prev, at) => openHandoverEnv($, options, ho, drafts, prev, at),
-  best: (what, fn) => best($, what, fn),
-  saveHandover: ho => saveHandover($, ho),
-  appendLog: event => appendLog($, event),
-  toast: text => { void $.ui.toast(text) },
-  refresh: () => refresh($),
-  ensureQueue: () => ensureQueue($),
-  liteManager: agentId => liteManagerOf($, agentId),
-})
+function handoverIoOf($: EngineInterface, options: Record<string, unknown>): HandoverIo {
+  return {
+    run: argv => $.process.run(argv),
+    now: () => $.clock.now(),
+    handovers: () => read($, handovers),
+    putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },
+    resolveReportTo: (given, callerId) => resolveReportTo($, given, callerId),
+    openEnv: (ho, drafts, prev, at) => openHandoverEnv($, options, ho, drafts, prev, at),
+    best: (what, fn) => best($, what, fn),
+    saveHandover: ho => saveHandover($, ho),
+    appendLog: event => appendLog($, event),
+    toast: text => { void $.ui.toast(text) },
+    refresh: () => refresh($),
+    ensureQueue: () => ensureQueue($),
+    liteManager: agentId => liteManagerOf($, agentId),
+  }
+}
 
-const planIoOf = ($: EngineInterface): PlanIo => ({
-  refresh: () => refresh($),
-  plans: () => read($, plan),
-  planOwner: (plans, name) => planOwner(plans, name),
-  limitsLine: (rows, workers) => limitsLine(rows, workers),
-  syncPlans: (rows, edit, quietOwner) => syncPlans($, rows, edit, quietOwner),
-})
+function planIoOf($: EngineInterface): PlanIo {
+  return {
+    refresh: () => refresh($),
+    plans: () => read($, plan),
+    planOwner: (plans, name) => planOwner(plans, name),
+    limitsLine: (rows, workers) => limitsLine(rows, workers),
+    syncPlans: (rows, edit, quietOwner) => syncPlans($, rows, edit, quietOwner),
+  }
+}
 
-const inboxIoOf = ($: EngineInterface): InboxIo => ({
-  standing: standingIoOf($),
-  refresh: () => refresh($),
-  deliver: (id, text, opts) => deliver($, id, text, opts),
-  toast: text => { void $.ui.toast(text) },
-  ownerNameOf: id => ownerNameOf($, id),
-  answerQuestion: (wanted, choice, by, options, user) => answerQuestion($, wanted, choice, by, options, user),
-  withPreflight: fn => withPreflight($, fn),
-  preflightTick: rows => preflightTick($, rows),
-  submitLater: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
-})
+function inboxIoOf($: EngineInterface): InboxIo {
+  return {
+    standing: standingIoOf($),
+    refresh: () => refresh($),
+    deliver: (id, text, opts) => deliver($, id, text, opts),
+    toast: text => { void $.ui.toast(text) },
+    ownerNameOf: id => ownerNameOf($, id),
+    answerQuestion: (wanted, choice, by, options, user) => answerQuestion($, wanted, choice, by, options, user),
+    withPreflight: fn => withPreflight($, fn),
+    preflightTick: rows => preflightTick($, rows),
+    submitLater: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
+  }
+}
 
-const checksIoOf = ($: EngineInterface): ChecksIo => ({
-  agents: () => $.agent.list(),
-  checks: () => read($, checks),
-  now: () => $.clock.now(),
-  withChecks: fn => withChecks($, fn),
-})
+function checksIoOf($: EngineInterface): ChecksIo {
+  return {
+    agents: () => $.agent.list(),
+    checks: () => read($, checks),
+    now: () => $.clock.now(),
+    withChecks: fn => withChecks($, fn),
+  }
+}
 
-const slotsIoOf = ($: EngineInterface): SlotsIo => ({
-  refresh: () => refresh($),
-  now: () => $.clock.now(),
-  sleep: ms => $.clock.sleep(ms),
-  slots: () => read($, testSlots),
-  settleSlots: (rows, t, pre, me) => settleSlots($, rows, t, pre, me),
-  best: (what, fn) => best($, what, fn),
-  testFails: () => read($, testFails),
-  setTestFails: async state => { await update($, testFails, () => state) },
-  appendLog: event => appendLog($, event),
-  slotDir: () => slotDir,
-})
+function slotsIoOf($: EngineInterface): SlotsIo {
+  return {
+    refresh: () => refresh($),
+    now: () => $.clock.now(),
+    sleep: ms => $.clock.sleep(ms),
+    slots: () => read($, testSlots),
+    settleSlots: (rows, t, pre, me) => settleSlots($, rows, t, pre, me),
+    best: (what, fn) => best($, what, fn),
+    testFails: () => read($, testFails),
+    setTestFails: async state => { await update($, testFails, () => state) },
+    appendLog: event => appendLog($, event),
+    slotDir: () => slotDir,
+  }
+}
 
-const migrationsIoOf = ($: EngineInterface): MigrationsIo => ({
-  runCmd: argv => runCmd($, argv),
-})
+function migrationsIoOf($: EngineInterface): MigrationsIo {
+  return {
+    runCmd: argv => runCmd($, argv),
+  }
+}
 
-const statusIoOf = ($: EngineInterface, options: Record<string, unknown>, base: string): StatusIo => ({
-  reconcile: () => reconcileStale(staleIoOf($, base)),
-  now: () => $.clock.now(),
-  handovers: () => read($, handovers),
-  readLog: () => readLog($),
-  prCache: () => read($, prCache),
-  fetchPrs: () => fetchPrs($),
-  refresh: () => refresh($),
-  activity: () => read($, activity),
-  unhanded: () => currentUnhanded($),
-  leftovers: () => read($, leftovers),
-  costLines: (prs, keep) => costLines($, prs, keep),
-  ledger: () => read($, ledger),
-  preflight: () => read($, preflight),
-  inbox: () => read($, inbox),
-  plans: () => read($, plan),
-  slots: () => read($, testSlots),
-  offerSeeds: () => offerSeedsOnce(standingIoOf($), options),
-  pushState: () => read($, pushState),
-  breaker: () => read($, reviewerBreaker),
-  deploys: () => read($, deploys),
-  behind: () => read($, behind),
-  limitsLine: (rows, workers) => limitsLine(rows, workers),
-  stateDir: () => stateDir($),
-})
+function statusIoOf($: EngineInterface, options: Record<string, unknown>, base: string): StatusIo {
+  return {
+    reconcile: () => reconcileStale(staleIoOf($, base)),
+    now: () => $.clock.now(),
+    handovers: () => read($, handovers),
+    readLog: () => readLog($),
+    prCache: () => read($, prCache),
+    fetchPrs: () => fetchPrs($),
+    refresh: () => refresh($),
+    activity: () => read($, activity),
+    unhanded: () => currentUnhanded($),
+    leftovers: () => read($, leftovers),
+    costLines: (prs, keep) => costLines($, prs, keep),
+    ledger: () => read($, ledger),
+    preflight: () => read($, preflight),
+    inbox: () => read($, inbox),
+    plans: () => read($, plan),
+    slots: () => read($, testSlots),
+    offerSeeds: () => offerSeedsOnce(standingIoOf($), options),
+    pushState: () => read($, pushState),
+    breaker: () => read($, reviewerBreaker),
+    deploys: () => read($, deploys),
+    behind: () => read($, behind),
+    limitsLine: (rows, workers) => limitsLine(rows, workers),
+    stateDir: () => stateDir($),
+  }
+}
 
-const commandIoOf = ($: EngineInterface): CommandIo => ({
-  now: () => $.clock.now(),
-  inbox: () => read($, inbox),
-  checks: () => read($, checks),
-  answerQuestion: (wanted, choice, by, options, user) => answerQuestion($, wanted, choice, by, options, user),
-  withChecks: fn => withChecks($, fn),
-  costLines: prs => costLines($, prs),
-  handovers: () => read($, handovers),
-  preflight: () => read($, preflight),
-  roster: () => read($, roster),
-  endedManagers: rows => endedManagers(rows),
-  endedOwners: () => endedOwnersOf($),
-  panes: async () => [...(await $.ui.panes())],
-  close: () => $.ui.close({ id: PANE }),
-  open: () => $.ui.open({ id: PANE, title: 'Flow', focus: true }),
-  gatherLeftovers: (base, resumed) => gatherLeftovers($, base, resumed),
-  pushState: () => read($, pushState),
-  after: (ms, fn) => { $.clock.after(ms, fn) },
-  submit: text => $.prompt.submit({ text }),
-  notesPath: owner => notesPath($, owner),
-  readNotes: owner => readNotes($, owner),
-  sweep: (base, apply, dryHint) => sweep($, base, apply, dryHint),
-  putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },
-  best: (what, fn) => best($, what, fn),
-  saveHandover: ho => saveHandover($, ho),
-  appendLog: event => appendLog($, event),
-  toast: text => { void $.ui.toast(text) },
-  ensureQueue: () => ensureQueue($),
-  releaseReviewerHalt: () => releaseHaltTo(breakerIoOf($), 'user'),
-  refresh: () => refresh($),
-  pushAct: (act, by) => pushAct($, act, by),
-  holdTarget: (name, until, by, reason) => holdTarget($, name, until, by, reason),
-  releaseTarget: name => releaseTarget($, name),
-  refreshBehind: () => refreshBehind($),
-  closeReturnedEnv: ho => closeReturnedEnv($, ho),
-  settleBatch: () => settleBatch($),
-  tellManager: (name, text) => tellManager($, name, text),
-  initDetect: options => initDetect(initIoOf($), options),
-  initMark: d => writeMarker(initIoOf($), d),
-  demoStart: () => demoStart($),
-  demoStop: () => demoStop($),
-})
+function commandIoOf($: EngineInterface): CommandIo {
+  return {
+    now: () => $.clock.now(),
+    inbox: () => read($, inbox),
+    checks: () => read($, checks),
+    answerQuestion: (wanted, choice, by, options, user) => answerQuestion($, wanted, choice, by, options, user),
+    withChecks: fn => withChecks($, fn),
+    costLines: prs => costLines($, prs),
+    handovers: () => read($, handovers),
+    preflight: () => read($, preflight),
+    roster: () => read($, roster),
+    endedManagers: rows => endedManagers(rows),
+    endedOwners: () => endedOwnersOf($),
+    panes: async () => [...(await $.ui.panes())],
+    close: () => $.ui.close({ id: PANE }),
+    open: () => $.ui.open({ id: PANE, title: 'Flow', focus: true }),
+    gatherLeftovers: (base, resumed) => gatherLeftovers($, base, resumed),
+    pushState: () => read($, pushState),
+    after: (ms, fn) => { $.clock.after(ms, fn) },
+    submit: text => $.prompt.submit({ text }),
+    notesPath: owner => notesPath($, owner),
+    readNotes: owner => readNotes($, owner),
+    sweep: (base, apply, dryHint) => sweep($, base, apply, dryHint),
+    putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },
+    best: (what, fn) => best($, what, fn),
+    saveHandover: ho => saveHandover($, ho),
+    appendLog: event => appendLog($, event),
+    toast: text => { void $.ui.toast(text) },
+    ensureQueue: () => ensureQueue($),
+    releaseReviewerHalt: () => releaseHaltTo(breakerIoOf($), 'user'),
+    refresh: () => refresh($),
+    pushAct: (act, by) => pushAct($, act, by),
+    holdTarget: (name, until, by, reason) => holdTarget($, name, until, by, reason),
+    releaseTarget: name => releaseTarget($, name),
+    refreshBehind: () => refreshBehind($),
+    closeReturnedEnv: ho => closeReturnedEnv($, ho),
+    settleBatch: () => settleBatch($),
+    tellManager: (name, text) => tellManager($, name, text),
+    initDetect: options => initDetect(initIoOf($), options),
+    initMark: d => writeMarker(initIoOf($), d),
+    demoStart: () => demoStart($),
+    demoStop: () => demoStop($),
+  }
+}
 
 function limitsLine(rows: AgentRow[], workers: number): string {
   return `Limits: managers ${liveManagers(rows).length}/${mirror.maxManagers}, workers per manager ${workers}`
@@ -444,21 +462,23 @@ function limitsLine(rows: AgentRow[], workers: number): string {
 
 // --- /flow init: the io detection works through, and the demo replay (demo-replay.ts) ---
 
-const initIoOf = ($: EngineInterface): InitIo => ({
-  readFile: path => readText($, path),
-  exists: path => $.fs.exists(path).then(Boolean, () => false),
-  writeFile: async (path, text) => {
-    try {
-      const tmp = `${path}.${Date.now()}.tmp`
-      await $.fs.write(tmp, text)
-      return (await $.process.run(['mv', tmp, path])).exitCode === 0
-    } catch {
-      return false
-    }
-  },
-  mkdirp: dir => $.process.run(['mkdir', '-p', dir]),
-  run: argv => runCmd($, argv, 15_000),
-})
+function initIoOf($: EngineInterface): InitIo {
+  return {
+    readFile: path => readText($, path),
+    exists: path => $.fs.exists(path).then(Boolean, () => false),
+    writeFile: async (path, text) => {
+      try {
+        const tmp = `${path}.${Date.now()}.tmp`
+        await $.fs.write(tmp, text)
+        return (await $.process.run(['mv', tmp, path])).exitCode === 0
+      } catch {
+        return false
+      }
+    },
+    mkdirp: dir => $.process.run(['mkdir', '-p', dir]),
+    run: argv => runCmd($, argv, 15_000),
+  }
+}
 
 // The replay's state is this atom alone: no agent, handover or inbox row of the real flow is touched, and a
 // restart loses it. Each start gets a new generation, so a timer of an earlier run does nothing.
@@ -472,12 +492,12 @@ function demoMove($: EngineInterface, fn: (s: DemoState, t: number) => DemoState
   return paneSerial(async () => {
     const cur = await read($, demo)
     if (cur === null || (gen !== undefined && cur.gen !== gen)) return
-    const next = fn(cur, await $.clock.now())
-    if (next === cur) return
-    await update($, demo, () => next)
-    if (next.step === cur.step) return
-    if (demoIsLast(next)) void $.ui.toast(DEMO_DONE)
-    demoArm($, next)
+    const moved = fn(cur, await $.clock.now())
+    if (moved === cur) return
+    await update($, demo, () => moved)
+    if (moved.step === cur.step) return
+    if (demoIsLast(moved)) void $.ui.toast(DEMO_DONE)
+    demoArm($, moved)
   })
 }
 
@@ -542,44 +562,47 @@ async function demoTool($: EngineInterface, input: Record<string, unknown>, agen
   return { result: `Replay: ${(await read($, demo)) === null ? 'not running' : 'running'}. Real demo agents: ${agents.join(', ') || 'none'}.` }
 }
 
-const rosterIoOf =($: EngineInterface): RosterIo => ({
-  list: () => $.agent.list(),
-  now: () => $.clock.now(),
-  plan: () => read($, plan),
-  updatePlan: fn => update($, plan, fn).then(() => undefined),
-  activity: () => read($, activity),
-  updateActivity: fn => update($, activity, fn).then(() => undefined),
-  handovers: () => read($, handovers),
-  seen: () => read($, seenAgents),
-  setSeen: known => update($, seenAgents, () => known).then(() => undefined),
-  log: () => readLog($),
-  inbox: () => read($, inbox),
-  roster: () => read($, roster),
-  setRoster: rows => update($, roster, () => rows).then(() => undefined),
-  setNow: t => update($, now, () => t).then(() => undefined),
-  sessions: () => read($, sessions),
-  testSlots: () => read($, testSlots),
-  toast: text => { void $.ui.toast(text) },
-  status: line => $.ui.status(line),
-  wakeMain: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
-  autoSweep: () => autoSweep($),
-  settleSlots: (rows, t) => settleSlots($, rows, t),
-  unhanded: async () => (await currentUnhanded($)).length,
-  preflightTick: rows => preflightTick($, rows),
-  deliver: (id, text, opts) => deliver($, id, text, opts),
-  tellMain: (name, text) => tellMain($, name, text),
-  markResumable: id => { resumable.add(id) },
-  decisionPhrases: () => mirror.decisionPhrases,
-  maxManagers: () => mirror.maxManagers,
-  slotLimit: () => mirror.slotLimit,
-})
+function rosterIoOf($: EngineInterface): RosterIo {
+  return {
+    list: () => $.agent.list(),
+    now: () => $.clock.now(),
+    plan: () => read($, plan),
+    updatePlan: fn => update($, plan, fn).then(() => undefined),
+    activity: () => read($, activity),
+    updateActivity: fn => update($, activity, fn).then(() => undefined),
+    handovers: () => read($, handovers),
+    seen: () => read($, seenAgents),
+    setSeen: known => update($, seenAgents, () => known).then(() => undefined),
+    log: () => readLog($),
+    inbox: () => read($, inbox),
+    roster: () => read($, roster),
+    setRoster: rows => update($, roster, () => rows).then(() => undefined),
+    setNow: t => update($, now, () => t).then(() => undefined),
+    sessions: () => read($, sessions),
+    testSlots: () => read($, testSlots),
+    toast: text => { void $.ui.toast(text) },
+    status: line => $.ui.status(line),
+    wakeMain: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
+    autoSweep: () => autoSweep($),
+    settleSlots: (rows, t) => settleSlots($, rows, t),
+    unhanded: async () => (await currentUnhanded($)).length,
+    preflightTick: rows => preflightTick($, rows),
+    deliver: (id, text, opts) => deliver($, id, text, opts),
+    tellMain: (name, text) => tellMain($, name, text),
+    markResumable: id => { resumable.add(id) },
+    decisionPhrases: () => mirror.decisionPhrases,
+    maxManagers: () => mirror.maxManagers,
+    slotLimit: () => mirror.slotLimit,
+  }
+}
 
 // Settles every plan against the roster and handovers in one update, then tells each owner once (roster-run.ts).
-const syncPlans = ($: EngineInterface, rows: AgentRow[], edit?: (p: Plan) => Plan, quietOwner?: string): Promise<Plan> =>
-  syncPlansTo(rosterIoOf($), rows, edit, quietOwner)
+function syncPlans($: EngineInterface, rows: AgentRow[], edit?: (p: Plan) => Plan, quietOwner?: string): Promise<Plan> {
+  return syncPlansTo(rosterIoOf($), rows, edit, quietOwner)
+}
 
 // The roster as the board shows it: every agent of the session, with its role (roster-run.ts).
-const refresh = ($: EngineInterface): Promise<AgentRow[]> => refreshTo(rosterIoOf($))
+function refresh($: EngineInterface): Promise<AgentRow[]> { return refreshTo(rosterIoOf($)) }
 
 async function openPane($: EngineInterface): Promise<void> {
   const r = await $.ui.open({ id: PANE, title: 'Flow' })
@@ -645,24 +668,27 @@ async function readJson($: EngineInterface, path: string): Promise<unknown> {
 }
 
 // --- Cost ledger ---
-const costIoOf = ($: EngineInterface): CostIo => ({
-  stateDir: () => stateDir($),
-  readJson: path => readJson($, path),
-  writeJsonAtomic: (path, obj) => writeJsonAtomic($, path, obj),
-  mkdirp: async dir => { await $.process.run(['mkdir', '-p', dir]) },
-  now: () => $.clock.now(),
-  after: (ms, fn) => { $.clock.after(ms, fn) },
-  ledger: () => read($, ledger),
-  updateLedger: async fn => { await update($, ledger, fn) },
-  startedAt: async () => (await $.session.usage().then(x => x, () => undefined))?.startedAt,
-  liveIds: async () => (await read($, roster)).map(a => a.id),
-  hasSessions: async () => Object.keys(await read($, sessions)).length > 0,
-})
-const loadLedger = ($: EngineInterface): Promise<void> => loadLedgerTo(costIoOf($))
-const changeLedger = ($: EngineInterface, fn: (l: Ledger, now: number) => Ledger): Promise<void> => changeLedgerTo(costIoOf($), fn)
-const mainKey = ($: EngineInterface): Promise<string> => mainKeyTo(costIoOf($))
-const costLines = ($: EngineInterface, prs: { pr: number; branch: string }[], keep?: (e: Ledger[string]) => boolean): Promise<string[]> =>
-  costLinesTo(costIoOf($), prs, keep)
+function costIoOf($: EngineInterface): CostIo {
+  return {
+    stateDir: () => stateDir($),
+    readJson: path => readJson($, path),
+    writeJsonAtomic: (path, obj) => writeJsonAtomic($, path, obj),
+    mkdirp: async dir => { await $.process.run(['mkdir', '-p', dir]) },
+    now: () => $.clock.now(),
+    after: (ms, fn) => { $.clock.after(ms, fn) },
+    ledger: () => read($, ledger),
+    updateLedger: async fn => { await update($, ledger, fn) },
+    startedAt: async () => (await $.session.usage().then(x => x, () => undefined))?.startedAt,
+    liveIds: async () => (await read($, roster)).map(a => a.id),
+    hasSessions: async () => Object.keys(await read($, sessions)).length > 0,
+  }
+}
+function loadLedger($: EngineInterface): Promise<void> { return loadLedgerTo(costIoOf($)) }
+function changeLedger($: EngineInterface, fn: (l: Ledger, now: number) => Ledger): Promise<void> { return changeLedgerTo(costIoOf($), fn) }
+function mainKey($: EngineInterface): Promise<string> { return mainKeyTo(costIoOf($)) }
+function costLines($: EngineInterface, prs: { pr: number; branch: string }[], keep?: (e: Ledger[string]) => boolean): Promise<string[]> {
+  return costLinesTo(costIoOf($), prs, keep)
+}
 
 // Inbox changes run one after another: two answers at once must not each start from the same file.
 let inboxChain: Promise<unknown> = Promise.resolve()
@@ -673,13 +699,13 @@ function withInbox<T>($: EngineInterface, fn: (cur: Inbox) => { inbox: Inbox; ou
   const run = async (): Promise<T> => {
     const dir = await stateDir($)
     const cur = dir === undefined ? await read($, inbox) : normalizeInbox(await readJson($, `${dir}/inbox.json`))
-    const { inbox: next, out } = fn(cur)
-    if (next !== cur) {
+    const { inbox: changed, out } = fn(cur)
+    if (changed !== cur) {
       if (dir !== undefined) {
         await $.process.run(['mkdir', '-p', dir])
-        await writeJsonAtomic($, `${dir}/inbox.json`, next)
+        await writeJsonAtomic($, `${dir}/inbox.json`, changed)
       }
-      await update($, inbox, () => next)
+      await update($, inbox, () => changed)
     }
     return out
   }
@@ -717,13 +743,13 @@ function withChecks<T>($: EngineInterface, fn: (cur: Checks) => { checks: Checks
   const run = async (): Promise<T> => {
     const dir = await stateDir($)
     const cur = dir === undefined ? await read($, checks) : normalizeChecks(await readJson($, `${dir}/checks.json`))
-    const { checks: next, out } = fn(cur)
-    if (next !== cur) {
+    const { checks: changed, out } = fn(cur)
+    if (changed !== cur) {
       if (dir !== undefined) {
         await $.process.run(['mkdir', '-p', dir])
-        await writeJsonAtomic($, `${dir}/checks.json`, next)
+        await writeJsonAtomic($, `${dir}/checks.json`, changed)
       }
-      await update($, checks, () => next)
+      await update($, checks, () => changed)
     }
     return out
   }
@@ -794,8 +820,8 @@ async function preflightTick($: EngineInterface, rows: AgentRow[]): Promise<void
   const due = await withPreflight($, cur => {
     const d = dueRound(cur, ended, t, mirror.preflightWaitMs)
     if (d === undefined) return { state: cur, out: undefined }
-    const next = markDelivered(cur, d.round.id, t)
-    return { state: next, out: { ...d, state: next } }
+    const changed = markDelivered(cur, d.round.id, t)
+    return { state: changed, out: { ...d, state: changed } }
   })
   if (due === undefined) return
   const members = due.round.members.map(k => due.state.entries[k])
@@ -858,41 +884,44 @@ async function toolCallerOf($: EngineInterface, agentId: string | undefined): Pr
 async function recordManager($: EngineInterface, name: string, prompt: string, liteMode: boolean): Promise<void> {
   const t = await $.clock.now()
   const opened = await withPreflight($, cur => {
-    const next = recordSpawn(cur, name, isSkip(prompt) || liteMode, t, mirror.preflightWaitMs)
-    return { state: next, out: next.rounds.length > cur.rounds.length }
+    const changed = recordSpawn(cur, name, isSkip(prompt) || liteMode, t, mirror.preflightWaitMs)
+    return { state: changed, out: changed.rounds.length > cur.rounds.length }
   })
   if (opened) $.clock.after(mirror.preflightWaitMs, () => void refresh($).catch(() => undefined))
 }
 
 const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOString().slice(0, 10)
 
-const messagingIoOf = ($: EngineInterface): MessagingIo => ({
-  inbox: () => read($, inbox),
-  withInbox: fn => withInbox($, fn),
-  now: () => $.clock.now(),
-  today: () => today($),
-  agents: () => $.agent.list(),
-  seen: () => read($, seenAgents),
-  deliver: (id, text, opts) => deliver($, id, text, opts),
-  appendNote: (name, line) => appendNote($, name, line),
-  best: (what, fn) => best($, what, fn),
-  toMain: text => toMain($, text),
-  markResumable: id => { resumable.add(id) },
-  managerFinished: (ids, name, rows) => managerFinished($, ids, name, rows),
-  addGuardTest: (options, glob, test) => addGuardTest(standingIoOf($), options, glob, test),
-  onDeployAnswer: (q, answer) => onDeployAnswer($, q, answer),
-  onEnvAnswer: (q, answer) => onEnvAnswer($, q, answer),
-  onPushAnswer: (q, answer, by) => onPushAnswer($, q, answer, by),
-  onReviewerAnswer: (answer, by) => onReviewerAnswer($, answer, by),
-  loadLedger: () => loadLedger($),
-  ledger: () => read($, ledger),
-})
+function messagingIoOf($: EngineInterface): MessagingIo {
+  return {
+    inbox: () => read($, inbox),
+    withInbox: fn => withInbox($, fn),
+    now: () => $.clock.now(),
+    today: () => today($),
+    agents: () => $.agent.list(),
+    seen: () => read($, seenAgents),
+    deliver: (id, text, opts) => deliver($, id, text, opts),
+    appendNote: (name, line) => appendNote($, name, line),
+    best: (what, fn) => best($, what, fn),
+    toMain: text => toMain($, text),
+    markResumable: id => { resumable.add(id) },
+    managerFinished: (ids, name, rows) => managerFinished($, ids, name, rows),
+    addGuardTest: (options, glob, test) => addGuardTest(standingIoOf($), options, glob, test),
+    onDeployAnswer: (q, answer) => onDeployAnswer($, q, answer),
+    onEnvAnswer: (q, answer) => onEnvAnswer($, q, answer),
+    onPushAnswer: (q, answer, by) => onPushAnswer($, q, answer, by),
+    onReviewerAnswer: (answer, by) => onReviewerAnswer($, answer, by),
+    loadLedger: () => loadLedger($),
+    ledger: () => read($, ledger),
+  }
+}
 
 // The one way a question gets answered (messaging-run.ts): marks it, tells the asker, notes the decision.
-const answerQuestion = ($: EngineInterface, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> =>
-  answerQuestionTo(messagingIoOf($), wanted, choice, by, options, user)
-const paneInboxRows = async ($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> => paneInboxRowsTo(messagingIoOf($), await read($, inboxExpanded))
-const endedOwnersOf = async ($: EngineInterface): Promise<Set<string>> => endedOwners(await read($, roster), await read($, seenAgents))
+function answerQuestion($: EngineInterface, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> {
+  return answerQuestionTo(messagingIoOf($), wanted, choice, by, options, user)
+}
+async function paneInboxRows($: EngineInterface): Promise<{ rows: PaneRow[]; now: number }> { return paneInboxRowsTo(messagingIoOf($), await read($, inboxExpanded)) }
+async function endedOwnersOf($: EngineInterface): Promise<Set<string>> { return endedOwners(await read($, roster), await read($, seenAgents)) }
 
 // Pane presses run one after another, so a second press sees the first one's answer and highlight.
 let paneChain: Promise<unknown> = Promise.resolve()
@@ -904,88 +933,94 @@ const paneSerial = <T,>(fn: () => Promise<T>): Promise<T> => {
 
 // ---- the deploy gate (deploy.ts, deploy-run.ts) ----
 
-const deployIoOf = ($: EngineInterface): DeployIo => ({
-  stateDir: () => stateDir($),
-  readJson: path => readJson($, path),
-  writeJson: (path, obj) => writeJsonAtomic($, path, obj),
-  mkdir: dir => $.process.run(['mkdir', '-p', dir]),
-  deploys: () => read($, deploys),
-  setDeploys: async next => { await update($, deploys, () => next) },
-  behind: () => read($, behind),
-  setBehind: async next => { await update($, behind, () => next) },
-  infos: () => mirror.deployInfos,
-  base: () => mirror.cleanupBase,
-  exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
-  now: () => $.clock.now(),
-  handovers: () => read($, handovers),
-  updateHandovers: async fn => { await update($, handovers, fn) },
-  saveHandover: ho => saveHandover($, ho),
-  inbox: () => read($, inbox),
-  withInbox: fn => withInbox($, fn),
-  ensureQueue: () => ensureQueue($),
-  loadRules: options => loadRules(standingIoOf($), options),
-  appendNote: (name, line) => appendNote($, name, line),
-  appendLog: event => appendLog($, event),
-  today: () => today($),
-  noteText,
-  best: (what, fn) => best($, what, fn),
-  toast: text => { void $.ui.toast(text) },
-  toMain: text => toMain($, text),
-})
+function deployIoOf($: EngineInterface): DeployIo {
+  return {
+    stateDir: () => stateDir($),
+    readJson: path => readJson($, path),
+    writeJson: (path, obj) => writeJsonAtomic($, path, obj),
+    mkdir: dir => $.process.run(['mkdir', '-p', dir]),
+    deploys: () => read($, deploys),
+    setDeploys: async changed => { await update($, deploys, () => changed) },
+    behind: () => read($, behind),
+    setBehind: async changed => { await update($, behind, () => changed) },
+    infos: () => mirror.deployInfos,
+    base: () => mirror.cleanupBase,
+    exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
+    now: () => $.clock.now(),
+    handovers: () => read($, handovers),
+    updateHandovers: async fn => { await update($, handovers, fn) },
+    saveHandover: ho => saveHandover($, ho),
+    inbox: () => read($, inbox),
+    withInbox: fn => withInbox($, fn),
+    ensureQueue: () => ensureQueue($),
+    loadRules: options => loadRules(standingIoOf($), options),
+    appendNote: (name, line) => appendNote($, name, line),
+    appendLog: event => appendLog($, event),
+    today: () => today($),
+    noteText,
+    best: (what, fn) => best($, what, fn),
+    toast: text => { void $.ui.toast(text) },
+    toMain: text => toMain($, text),
+  }
+}
 
-const refreshBehind = ($: EngineInterface): Promise<void> => refreshBehindTo(deployIoOf($))
-const onDeployAnswer = ($: EngineInterface, q: Question, answer: string): Promise<string> => onDeployAnswerTo(deployIoOf($), q, answer)
-const onEnvAnswer = ($: EngineInterface, q: Question, answer: string): Promise<string> => onEnvAnswerTo(deployIoOf($), q, answer)
-const holdTarget = ($: EngineInterface, name: string, until: Hold['until'], by: string, reason: string | undefined): Promise<string> =>
-  holdTargetTo(deployIoOf($), name, until, by, reason)
-const releaseTarget = ($: EngineInterface, name: string): Promise<string> => releaseTargetTo(deployIoOf($), name)
-const deployTool = ($: EngineInterface, options: Record<string, unknown>, input: Record<string, unknown>, isMain: boolean, caller: string): Promise<string> =>
-  deployToolTo(deployIoOf($), options, input, isMain, caller)
-const openHandoverEnv = (
+function refreshBehind($: EngineInterface): Promise<void> { return refreshBehindTo(deployIoOf($)) }
+function onDeployAnswer($: EngineInterface, q: Question, answer: string): Promise<string> { return onDeployAnswerTo(deployIoOf($), q, answer) }
+function onEnvAnswer($: EngineInterface, q: Question, answer: string): Promise<string> { return onEnvAnswerTo(deployIoOf($), q, answer) }
+function holdTarget($: EngineInterface, name: string, until: Hold['until'], by: string, reason: string | undefined): Promise<string> {
+  return holdTargetTo(deployIoOf($), name, until, by, reason)
+}
+function releaseTarget($: EngineInterface, name: string): Promise<string> { return releaseTargetTo(deployIoOf($), name) }
+function deployTool($: EngineInterface, options: Record<string, unknown>, input: Record<string, unknown>, isMain: boolean, caller: string): Promise<string> {
+  return deployToolTo(deployIoOf($), options, input, isMain, caller)
+}
+function openHandoverEnv(
   $: EngineInterface, options: Record<string, unknown>, ho: Handover, drafts: Draft[], prev: EnvChange[], at: number,
-): Promise<string> => openHandoverEnvTo(deployIoOf($), options, ho, drafts, prev, at)
-const closeReturnedEnv = ($: EngineInterface, ho: Handover): Promise<void> => closeReturnedEnvTo(deployIoOf($), ho)
+): Promise<string> { return openHandoverEnvTo(deployIoOf($), options, ho, drafts, prev, at) }
+function closeReturnedEnv($: EngineInterface, ho: Handover): Promise<void> { return closeReturnedEnvTo(deployIoOf($), ho) }
 
 
 // ---- the push gate (pushgate.ts) ----
 
-const tellManager = ($: EngineInterface, name: string, text: string): Promise<void> => tellManagerTo(messagingIoOf($), name, text)
-const tellMain = ($: EngineInterface, name: string, text: string): Promise<void> => tellMainTo(messagingIoOf($), name, text)
-const sizeBackNote = ($: EngineInterface, branch: string): Promise<string | undefined> => sizeBackNoteTo(messagingIoOf($), branch)
+function tellManager($: EngineInterface, name: string, text: string): Promise<void> { return tellManagerTo(messagingIoOf($), name, text) }
+function tellMain($: EngineInterface, name: string, text: string): Promise<void> { return tellMainTo(messagingIoOf($), name, text) }
+function sizeBackNote($: EngineInterface, branch: string): Promise<string | undefined> { return sizeBackNoteTo(messagingIoOf($), branch) }
 
-const pushIoOf = ($: EngineInterface): PushIo => ({
-  stateDir: () => stateDir($),
-  readJson: path => readJson($, path),
-  writeJson: (path, obj) => writeJsonAtomic($, path, obj),
-  mkdir: dir => $.process.run(['mkdir', '-p', dir]),
-  push: () => read($, pushState),
-  setPush: async next => { await update($, pushState, () => next) },
-  exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
-  now: () => $.clock.now(),
-  handovers: () => read($, handovers),
-  updateHandovers: async fn => { await update($, handovers, fn) },
-  saveHandover: ho => saveHandover($, ho),
-  appendLog: event => appendLog($, event),
-  best: (what, fn) => best($, what, fn),
-  withInbox: fn => withInbox($, fn),
-  ensureQueue: () => ensureQueue($),
-  closeReturnedEnv: ho => closeReturnedEnv($, ho),
-  sizeBackNote: branch => sizeBackNote($, branch),
-  tellManager: (name, text) => tellManager($, name, text),
-  dropRelease: async key => {
-    if (lastRelease?.key === key) {
-      lastRelease = undefined
-      const dir = await stateDir($)
-      if (dir !== undefined) await writeJsonAtomic($, `${dir}/release.json`, {})
-    }
-  },
-  toast: text => { void $.ui.toast(text) },
-})
+function pushIoOf($: EngineInterface): PushIo {
+  return {
+    stateDir: () => stateDir($),
+    readJson: path => readJson($, path),
+    writeJson: (path, obj) => writeJsonAtomic($, path, obj),
+    mkdir: dir => $.process.run(['mkdir', '-p', dir]),
+    push: () => read($, pushState),
+    setPush: async changed => { await update($, pushState, () => changed) },
+    exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
+    now: () => $.clock.now(),
+    handovers: () => read($, handovers),
+    updateHandovers: async fn => { await update($, handovers, fn) },
+    saveHandover: ho => saveHandover($, ho),
+    appendLog: event => appendLog($, event),
+    best: (what, fn) => best($, what, fn),
+    withInbox: fn => withInbox($, fn),
+    ensureQueue: () => ensureQueue($),
+    closeReturnedEnv: ho => closeReturnedEnv($, ho),
+    sizeBackNote: branch => sizeBackNote($, branch),
+    tellManager: (name, text) => tellManager($, name, text),
+    dropRelease: async key => {
+      if (lastRelease?.key === key) {
+        lastRelease = undefined
+        const dir = await stateDir($)
+        if (dir !== undefined) await writeJsonAtomic($, `${dir}/release.json`, {})
+      }
+    },
+    toast: text => { void $.ui.toast(text) },
+  }
+}
 
-const recordReady = ($: EngineInterface, settings: Settings, input: Record<string, unknown>): Promise<string> => recordReadyTo(pushIoOf($), settings, input)
-const settleBatch = ($: EngineInterface): Promise<void> => settleBatchTo(pushIoOf($))
-const pushAct = ($: EngineInterface, act: PushAct, by: string): Promise<string> => pushActTo(pushIoOf($), act, by)
-const onPushAnswer = ($: EngineInterface, q: Question, answer: string, by: string): Promise<string> => onPushAnswerTo(pushIoOf($), q, answer, by)
+function recordReady($: EngineInterface, settings: Settings, input: Record<string, unknown>): Promise<string> { return recordReadyTo(pushIoOf($), settings, input) }
+function settleBatch($: EngineInterface): Promise<void> { return settleBatchTo(pushIoOf($)) }
+function pushAct($: EngineInterface, act: PushAct, by: string): Promise<string> { return pushActTo(pushIoOf($), act, by) }
+function onPushAnswer($: EngineInterface, q: Question, answer: string, by: string): Promise<string> { return onPushAnswerTo(pushIoOf($), q, answer, by) }
 
 // The io closures standing-run.ts works through: each one spells its `$.noun.event(...)` call.
 function standingIoOf($: EngineInterface): StandingIo {
@@ -1140,46 +1175,50 @@ const noteRunWork = ($: EngineInterface, id: string, f: (w: RunWork | undefined)
 // Managers that ended their turn to wait for a merge and have work left: a send resumes them, so they
 // count as idle (messages batch in the window) instead of gone.
 const resumable = new Set<string>()
-const ioOf = ($: EngineInterface): DeliverIo => ({
-  status: async id => {
-    const s = (await $.agent.list()).find(a => a.id === id)?.status
-    return resumable.has(id) && (s === undefined || s === 'completed') ? 'idle' : s
-  },
-  send: async (id, text) => {
-    resumable.delete(id)
-    const r = await $.session.send({ to: { agentId: id }, text })
-    // A refused send is not a delivery: deliver() runs the fallback. The reason is kept for the caller that logs it.
-    if (r?.isDelivered === false) {
-      refusals.set(id, r.reason ?? 'unknown')
-      throw new Error(r.reason ?? 'not delivered')
-    }
-    refusals.delete(id)
-  },
-  after: (ms, fn) => void $.clock.after(ms, fn),
-  name: async id => (await $.agent.list()).find(a => a.id === id)?.name,
-})
+function ioOf($: EngineInterface): DeliverIo {
+  return {
+    status: async id => {
+      const s = (await $.agent.list()).find(a => a.id === id)?.status
+      return resumable.has(id) && (s === undefined || s === 'completed') ? 'idle' : s
+    },
+    send: async (id, text) => {
+      resumable.delete(id)
+      const r = await $.session.send({ to: { agentId: id }, text })
+      // A refused send is not a delivery: deliver() runs the fallback. The reason is kept for the caller that logs it.
+      if (r?.isDelivered === false) {
+        refusals.set(id, r.reason ?? 'unknown')
+        throw new Error(r.reason ?? 'not delivered')
+      }
+      refusals.delete(id)
+    },
+    after: (ms, fn) => void $.clock.after(ms, fn),
+    name: async id => (await $.agent.list()).find(a => a.id === id)?.name,
+  }
+}
 const refusals = new Map<string, string>()
 const deliver = ($: EngineInterface, id: string, text: string, opts?: DeliverOptions) => deliverTo(ioOf($), id, text, opts)
 const flushAgent = ($: EngineInterface, id: string) => flushTo(ioOf($), id)
 const holdForReviewer = ($: EngineInterface, id: string) => holdTo(ioOf($), id)
 const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
 
-const routeIoOf = ($: EngineInterface): RouteIo => ({
-  agents: () => $.agent.list(),
-  activity: () => read($, activity),
-  handovers: () => read($, handovers),
-  plans: () => read($, plan),
-  inbox: () => read($, inbox),
-  seenAgents: () => read($, seenAgents),
-  forwarded: () => read($, forwarded),
-  updateForwarded: fn => update($, forwarded, fn),
-  messages: () => $.session.messages(),
-  planOwner: (plans, name) => planOwner(plans, name),
-  isManagerOf: (owner, name) => isManagerOf(owner, name),
-  appendNote: (name, line) => appendNote($, name, line),
-  today: () => today($),
-  toMain: text => void toMain($, text),
-})
+function routeIoOf($: EngineInterface): RouteIo {
+  return {
+    agents: () => $.agent.list(),
+    activity: () => read($, activity),
+    handovers: () => read($, handovers),
+    plans: () => read($, plan),
+    inbox: () => read($, inbox),
+    seenAgents: () => read($, seenAgents),
+    forwarded: () => read($, forwarded),
+    updateForwarded: fn => update($, forwarded, fn),
+    messages: () => $.session.messages(),
+    planOwner: (plans, name) => planOwner(plans, name),
+    isManagerOf: (owner, name) => isManagerOf(owner, name),
+    appendNote: (name, line) => appendNote($, name, line),
+    today: () => today($),
+    toMain: text => void toMain($, text),
+  }
+}
 const resolveReportTo = ($: EngineInterface, given: unknown, callerId: string | undefined) => resolveReportToTo(routeIoOf($), given, callerId)
 const managerFinished = ($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[], report?: string) => managerFinishedTo(routeIoOf($), ids, name, rows, report)
 const mainHasAnswer = ($: EngineInterface, answer: string) => mainHasAnswerTo(routeIoOf($), answer)
@@ -1244,7 +1283,7 @@ function jevOf($: EngineInterface, settings: DecideSettings): SizeJev | undefine
   if (settings.decisionApi === undefined || settings.decisionApi === 'off') return undefined
   const fetch: FetchLike = (url, init) => $.http.fetch(url, { method: init.method, headers: init.headers, body: init.body })
     .then(r => ({ ok: r.ok, status: r.status, json: async () => JSON.parse(r.text) as unknown }))
-  const io = { fetch }
+  const io = { fetch, after: (ms: number, fn: () => void) => $.clock.after(ms, fn) }
   return sizeWith((text, q) => decide(io, settings, text, q), sourceOf(settings))
 }
 
@@ -1259,109 +1298,117 @@ function ensureQueue($: EngineInterface): Promise<string> {
 }
 
 // Reconciling stale handovers: the git and gh calls stay local to this closure set.
-const staleIoOf = ($: EngineInterface, base: string): StaleIo => ({
-  now: () => $.clock.now(),
-  handovers: () => read($, handovers),
-  agents: () => $.agent.list(),
-  isAncestor: async head => {
-    // The head must resolve to itself first, so a runner that answers every git call with exit 0 proves nothing.
-    const v = await runCmd($, ['git', 'rev-parse', '--verify', `${head}^{commit}`])
-    if (v.exitCode !== 0 || head.length < 7 || !v.stdout.trim().startsWith(head)) return undefined
-    const r = await runCmd($, ['git', 'merge-base', '--is-ancestor', head, `origin/${base}`])
-    // A clear exit 0 with no output only: anything else (a mocked or odd runner) is unknown.
-    if (r.exitCode === 0) return r.stdout.trim() === '' && r.stderr.trim() === '' ? true : undefined
-    return r.exitCode === 1 ? false : undefined
-  },
-  mergedPrs: async () => {
-    const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'merged', '--limit', '50', '--json', 'number,mergeCommit'])
-    if (r.exitCode !== 0) return undefined
-    try {
-      const list: unknown = JSON.parse(r.stdout)
-      if (!Array.isArray(list)) return undefined
-      return new Map((list as { number: number; mergeCommit?: { oid?: string } | null }[]).filter(p => typeof p?.number === 'number').map(p => [p.number, p.mergeCommit?.oid ?? '']))
-    } catch { return undefined }
-  },
-  closedPrs: async () => {
-    // gh's closed state excludes merged PRs.
-    const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'closed', '--limit', '50', '--json', 'number'])
-    if (r.exitCode !== 0) return undefined
-    try {
-      const list: unknown = JSON.parse(r.stdout)
-      if (!Array.isArray(list)) return undefined
-      return new Set((list as { number: number }[]).filter(p => typeof p?.number === 'number').map(p => p.number))
-    } catch { return undefined }
-  },
-  save: async ho => {
-    await update($, handovers, hs => ({ ...hs, [String(ho.pr)]: ho }))
-    await best($, 'saving a handover', async () => {
-      await saveHandover($, ho)
-      if (ho.status === 'done') await appendLog($, { event: 'done', owner: ho.reportTo, pr: ho.pr, branch: ho.branch, text: ho.report })
-      if (ho.status === 'returned') await appendLog($, { event: 'back', owner: ho.reportTo, pr: ho.pr, branch: ho.branch, text: ho.reason })
-    })
-    if (ho.status === 'returned') await closeReturnedEnv($, ho)
-  },
-})
+function staleIoOf($: EngineInterface, base: string): StaleIo {
+  return {
+    now: () => $.clock.now(),
+    handovers: () => read($, handovers),
+    agents: () => $.agent.list(),
+    isAncestor: async head => {
+      // The head must resolve to itself first, so a runner that answers every git call with exit 0 proves nothing.
+      const v = await runCmd($, ['git', 'rev-parse', '--verify', `${head}^{commit}`])
+      if (v.exitCode !== 0 || head.length < 7 || !v.stdout.trim().startsWith(head)) return undefined
+      const r = await runCmd($, ['git', 'merge-base', '--is-ancestor', head, `origin/${base}`])
+      // A clear exit 0 with no output only: anything else (a mocked or odd runner) is unknown.
+      if (r.exitCode === 0) return r.stdout.trim() === '' && r.stderr.trim() === '' ? true : undefined
+      return r.exitCode === 1 ? false : undefined
+    },
+    mergedPrs: async () => {
+      const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'merged', '--limit', '50', '--json', 'number,mergeCommit'])
+      if (r.exitCode !== 0) return undefined
+      try {
+        const list: unknown = JSON.parse(r.stdout)
+        if (!Array.isArray(list)) return undefined
+        return new Map((list as { number: number; mergeCommit?: { oid?: string } | null }[]).filter(p => typeof p?.number === 'number').map(p => [p.number, p.mergeCommit?.oid ?? '']))
+      } catch { return undefined }
+    },
+    closedPrs: async () => {
+      // gh's closed state excludes merged PRs.
+      const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'closed', '--limit', '50', '--json', 'number'])
+      if (r.exitCode !== 0) return undefined
+      try {
+        const list: unknown = JSON.parse(r.stdout)
+        if (!Array.isArray(list)) return undefined
+        return new Set((list as { number: number }[]).filter(p => typeof p?.number === 'number').map(p => p.number))
+      } catch { return undefined }
+    },
+    save: async ho => {
+      await update($, handovers, hs => ({ ...hs, [String(ho.pr)]: ho }))
+      await best($, 'saving a handover', async () => {
+        await saveHandover($, ho)
+        if (ho.status === 'done') await appendLog($, { event: 'done', owner: ho.reportTo, pr: ho.pr, branch: ho.branch, text: ho.report })
+        if (ho.status === 'returned') await appendLog($, { event: 'back', owner: ho.reportTo, pr: ho.pr, branch: ho.branch, text: ho.reason })
+      })
+      if (ho.status === 'returned') await closeReturnedEnv($, ho)
+    },
+  }
+}
 
-const reviewerIoOf = ($: EngineInterface, base: string): ReviewerIo => ({
-  reconcile: () => reconcileStale(staleIoOf($, base)),
-  run: argv => $.process.run(argv),
-  handovers: () => read($, handovers),
-  putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },
-  batch: async () => (await read($, pushState)).batch,
-  deploys: () => read($, deploys),
-  inbox: () => read($, inbox),
-  flaky: async id => (await read($, testFails)).flaky[id],
-  noteRunWork: (id, f) => noteRunWork($, id, f),
-  recordReady: (settings, input) => recordReady($, settings, input),
-  best: (what, fn) => best($, what, fn),
-  saveHandover: ho => saveHandover($, ho),
-  appendLog: event => appendLog($, event),
-  toast: text => { void $.ui.toast(text) },
-  refresh: () => refresh($),
-  closeReturnedEnv: ho => closeReturnedEnv($, ho),
-  settleBatch: () => settleBatch($),
-  autoSweep: () => autoSweep($),
-  withCost: (branch, report) => withCost($, branch, report),
-  captureChecks: (ho, verifyPaths, live) => captureChecks($, ho, verifyPaths, live),
-  suggestGuardTests: (input, pr, queueName, agentId, map) => suggestGuardTests(standingIoOf($), input, pr, queueName, agentId, map),
-  sizeBackNote: branch => sizeBackNote($, branch),
-})
+function reviewerIoOf($: EngineInterface, base: string): ReviewerIo {
+  return {
+    reconcile: () => reconcileStale(staleIoOf($, base)),
+    run: argv => $.process.run(argv),
+    handovers: () => read($, handovers),
+    putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },
+    batch: async () => (await read($, pushState)).batch,
+    deploys: () => read($, deploys),
+    inbox: () => read($, inbox),
+    flaky: async id => (await read($, testFails)).flaky[id],
+    noteRunWork: (id, f) => noteRunWork($, id, f),
+    recordReady: (settings, input) => recordReady($, settings, input),
+    best: (what, fn) => best($, what, fn),
+    saveHandover: ho => saveHandover($, ho),
+    appendLog: event => appendLog($, event),
+    toast: text => { void $.ui.toast(text) },
+    refresh: () => refresh($),
+    closeReturnedEnv: ho => closeReturnedEnv($, ho),
+    settleBatch: () => settleBatch($),
+    autoSweep: () => autoSweep($),
+    withCost: (branch, report) => withCost($, branch, report),
+    captureChecks: (ho, verifyPaths, live) => captureChecks($, ho, verifyPaths, live),
+    suggestGuardTests: (input, pr, queueName, agentId, map) => suggestGuardTests(standingIoOf($), input, pr, queueName, agentId, map),
+    sizeBackNote: branch => sizeBackNote($, branch),
+  }
+}
 
-const queueIoOf = ($: EngineInterface): QueueIo => ({
-  agents: () => $.agent.list(),
-  batch: async () => (await read($, pushState)).batch,
-  handovers: () => read($, handovers),
-  deploys: () => read($, deploys),
-  runs: () => read($, queueRuns),
-  setRuns: n => update($, queueRuns, () => n),
-  spawn: input => $.agent.spawn(input),
-  breaker: breakerIoOf($),
-  wait: ms => {
-    // One timer at a time: several ends or handovers during a wait start at most one reviewer.
-    if (breakerTimer) return
-    breakerTimer = true
-    $.clock.after(ms, () => {
-      breakerTimer = false
-      void best($, 'starting the reviewer', async () => void (await ensureQueue($)))
-    })
-  },
-})
+function queueIoOf($: EngineInterface): QueueIo {
+  return {
+    agents: () => $.agent.list(),
+    batch: async () => (await read($, pushState)).batch,
+    handovers: () => read($, handovers),
+    deploys: () => read($, deploys),
+    runs: () => read($, queueRuns),
+    setRuns: n => update($, queueRuns, () => n),
+    spawn: input => $.agent.spawn(input),
+    breaker: breakerIoOf($),
+    wait: ms => {
+      // One timer at a time: several ends or handovers during a wait start at most one reviewer.
+      if (breakerTimer) return
+      breakerTimer = true
+      $.clock.after(ms, () => {
+        breakerTimer = false
+        void best($, 'starting the reviewer', async () => void (await ensureQueue($)))
+      })
+    },
+  }
+}
 
 let breakerTimer = false
 
-const breakerIoOf = ($: EngineInterface): BreakerIo => ({
-  stateDir: () => stateDir($),
-  readJson: path => readJson($, path),
-  writeJson: (path, obj) => writeJsonAtomic($, path, obj),
-  mkdir: dir => $.process.run(['mkdir', '-p', dir]),
-  get: () => read($, reviewerBreaker),
-  set: async b => { await update($, reviewerBreaker, () => b) },
-  now: () => $.clock.now(),
-  withInbox: fn => withInbox($, fn),
-  toast: text => { void $.ui.toast(text) },
-})
+function breakerIoOf($: EngineInterface): BreakerIo {
+  return {
+    stateDir: () => stateDir($),
+    readJson: path => readJson($, path),
+    writeJson: (path, obj) => writeJsonAtomic($, path, obj),
+    mkdir: dir => $.process.run(['mkdir', '-p', dir]),
+    get: () => read($, reviewerBreaker),
+    set: async b => { await update($, reviewerBreaker, () => b) },
+    now: () => $.clock.now(),
+    withInbox: fn => withInbox($, fn),
+    toast: text => { void $.ui.toast(text) },
+  }
+}
 
-const onReviewerAnswer = ($: EngineInterface, answer: string, by: string): Promise<string> => onReviewerAnswerTo(breakerIoOf($), () => ensureQueue($), answer, by)
+function onReviewerAnswer($: EngineInterface, answer: string, by: string): Promise<string> { return onReviewerAnswerTo(breakerIoOf($), () => ensureQueue($), answer, by) }
 
 const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
 
@@ -1397,35 +1444,40 @@ async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>,
 }
 
 // The reviewer's report with the PR's workers' cost appended, once.
-const withCost = ($: EngineInterface, branch: string, report: string): Promise<string> => withCostTo(costIoOf($), branch, report)
+function withCost($: EngineInterface, branch: string, report: string): Promise<string> { return withCostTo(costIoOf($), branch, report) }
 
 // --- Cleanup: leftover worktrees and local branches of finished work ---------------------------
 
-const cleanIoOf = ($: EngineInterface): CleanIo => ({
-  exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
-  agents: () => $.agent.list(),
-  cwd: () => $.session.cwd(),
-  handoffs: async () => Object.values(await read($, handoffs)),
-  sessions: async () => Object.values(await read($, sessions)),
-  log: () => readLog($),
-  append: event => appendLog($, event),
-  setLeftovers: async counts => { await update($, leftovers, () => counts) },
-})
+function cleanIoOf($: EngineInterface): CleanIo {
+  return {
+    exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
+    agents: () => $.agent.list(),
+    cwd: () => $.session.cwd(),
+    handoffs: async () => Object.values(await read($, handoffs)),
+    sessions: async () => Object.values(await read($, sessions)),
+    log: () => readLog($),
+    append: event => appendLog($, event),
+    setLeftovers: async counts => { await update($, leftovers, () => counts) },
+  }
+}
 
-const resumeIoOf = ($: EngineInterface): ResumeIo => ({
-  exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
-  agents: () => $.agent.list(),
-  sessions: async () => Object.values(await read($, sessions)),
-  log: () => readLog($),
-  loadHandovers: () => loadHandovers($),
-  saveHandover: ho => saveHandover($, ho),
-  best: (what, fn) => best($, what, fn),
-  mergeHandovers: async all => { await update($, handovers, cur => ({ ...all, ...cur })) },
-})
+function resumeIoOf($: EngineInterface): ResumeIo {
+  return {
+    exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
+    agents: () => $.agent.list(),
+    sessions: async () => Object.values(await read($, sessions)),
+    log: () => readLog($),
+    loadHandovers: () => loadHandovers($),
+    saveHandover: ho => saveHandover($, ho),
+    best: (what, fn) => best($, what, fn),
+    mergeHandovers: async all => { await update($, handovers, cur => ({ ...all, ...cur })) },
+  }
+}
 
-const sweep = ($: EngineInterface, base: string, apply: boolean, dryHint?: string, started?: () => void): Promise<string> =>
-  sweepTo(cleanIoOf($), base, apply, dryHint, started)
-const gatherLeftovers = ($: EngineInterface, base: string, resumed: Set<string>): Promise<Gathered> => gatherLeftoversTo(resumeIoOf($), base, resumed)
+function sweep($: EngineInterface, base: string, apply: boolean, dryHint?: string, started?: () => void): Promise<string> {
+  return sweepTo(cleanIoOf($), base, apply, dryHint, started)
+}
+function gatherLeftovers($: EngineInterface, base: string, resumed: Set<string>): Promise<Gathered> { return gatherLeftoversTo(resumeIoOf($), base, resumed) }
 
 // The automatic sweep (cleanup "auto"): in the background, at most one waiting behind a running
 // sweep, failures to the log only.
@@ -1515,9 +1567,9 @@ function usageIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, 
 // redraws the pane. Keyed by PR and head; a fresh entry is not fetched again.
 function fetchPrDetails($: EngineInterface, pr: number): void {
   void (async () => {
-    const h = (await read($, handovers))[String(pr)]
-    if (h === undefined) return
-    const key = detailsKey(h)
+    const ho = (await read($, handovers))[String(pr)]
+    if (ho === undefined) return
+    const key = detailsKey(ho)
     const t = await $.clock.now()
     if (!detailsStale((await read($, prDetails))[key], t)) return
     await update($, prDetails, c => ({ ...c, [key]: { ...c[key], fetchedAt: t, fetching: true as const } }))
@@ -1668,31 +1720,40 @@ async function runCmd($: EngineInterface, argv: string[], timeoutMs = 60_000): P
   }
 }
 
+// The platform, asked once through `uname -s`: the engine has no platform field.
+let platform: Promise<string> | undefined
+function platformOf($: EngineInterface): Promise<string> {
+  platform ??= runCmd($, ['uname', '-s'], 5_000).then(r => platformOfUname(r.exitCode === 0 ? r.stdout : undefined))
+  return platform
+}
+
 // A second press within this long confirms restart or stop from the pane.
 const ARM_MS = 5000
 
-const sessionIoOf = ($: EngineInterface): SessionIo => ({
-  run: (argv, timeoutMs) => runCmd($, argv, timeoutMs),
-  now: () => $.clock.now(),
-  after: (ms, fn) => void $.clock.after(ms, fn),
-  stat: path => $.fs.stat(path),
-  read: path => $.fs.read(path),
-  write: (path, text) => $.fs.write(path, text),
-  sessions: () => read($, sessions),
-  updateSessions: fn => update($, sessions, fn),
-  updateActivity: fn => update($, activity, fn),
-  setLimits: limits => update($, harnessLimits, () => limits),
-  gate: agentId => preflightGate($, agentId),
-  agents: () => $.agent.list(),
-  stateDir: () => stateDir($),
-  log: event => appendLog($, event),
-  warn: (what, err) => warn($, what, err),
-  refresh: () => refresh($),
-  openPane: () => openPane($),
-  submit: text => $.prompt.submit({ text }),
-  deliver: (id, text) => deliver($, id, text),
-  logMax: LOG_MAX,
-})
+function sessionIoOf($: EngineInterface): SessionIo {
+  return {
+    run: (argv, timeoutMs) => runCmd($, argv, timeoutMs),
+    now: () => $.clock.now(),
+    after: (ms, fn) => void $.clock.after(ms, fn),
+    stat: path => $.fs.stat(path),
+    read: path => $.fs.read(path),
+    write: (path, text) => $.fs.write(path, text),
+    sessions: () => read($, sessions),
+    updateSessions: fn => update($, sessions, fn),
+    updateActivity: fn => update($, activity, fn),
+    setLimits: limits => update($, harnessLimits, () => limits),
+    gate: agentId => preflightGate($, agentId),
+    agents: () => $.agent.list(),
+    stateDir: () => stateDir($),
+    log: event => appendLog($, event),
+    warn: (what, err) => warn($, what, err),
+    refresh: () => refresh($),
+    openPane: () => openPane($),
+    submit: text => $.prompt.submit({ text }),
+    deliver: (id, text) => deliver($, id, text),
+    logMax: LOG_MAX,
+  }
+}
 const watchSessions = ($: EngineInterface) => watchSessionsTo(sessionIoOf($))
 const sessionTool = ($: EngineInterface, input: Record<string, unknown>, caller: Caller, s: ReturnType<typeof settingsOf>) =>
   sessionToolTo(sessionIoOf($), input, caller, s)
@@ -1923,7 +1984,7 @@ export const register: Register = (on, options) => {
 
   // A closed pane stays closed: only this command and a newly started agent (openPane) open it,
   // never the roster poll, so `/flow close` holds while agents keep running.
-  on('command.run', { command: 'flow' }, ($, e) => flowCommand(commandIoOf($), settings, installed, resumed, options, e.args))
+  on('command.run', { command: 'flow' }, ($, e) => flowCommand(commandIoOf($), settings, installed, resumed, options, e.args, e.presentation?.columns))
 
   // Hands the request to the main session's model, which runs it with the dispatch skill. A
   // command can't submit a prompt itself (it would wait on its own turn), so a timer queues it
@@ -2388,7 +2449,7 @@ export const register: Register = (on, options) => {
           }),
           toast: text => { void $.ui.toast(text) },
           focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
-          next: () => demoMove($, (s, t) => (canAdvance(s) ? demoAdvance(s, t) : s)),
+          advance: () => demoMove($, (s, t) => (canAdvance(s) ? demoAdvance(s, t) : s)),
           stop: async () => { void $.ui.toast(await demoStop($)) },
         },
       })
@@ -2550,11 +2611,11 @@ export const register: Register = (on, options) => {
           io: { ...common, act: a => pushAct($, a, 'user'), openPr: n => openPr(n, 'batch'), setPick: n => update($, batchPick, () => n), leave },
         })
       }
-      const h = shownPr === null ? undefined : hs[String(shownPr)]
-      const key = h === undefined ? undefined : detailsKey(h)
+      const ho = shownPr === null ? undefined : hs[String(shownPr)]
+      const key = ho === undefined ? undefined : detailsKey(ho)
       const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
       return prCardView({
-        els: { Box, Text, Button }, Input, rows, pr: shownPr, h, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note,
+        els: { Box, Text, Button }, Input, rows, pr: shownPr, ho, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note,
         io: {
           ...common, leave,
           approve: n => approvePr(commandIoOf($), n),
@@ -2564,7 +2625,7 @@ export const register: Register = (on, options) => {
           openUrl: async n => {
             const url = (await read($, prDetails))[detailsKey((await read($, handovers))[String(n)] ?? { pr: n, head: '' })]?.details?.url
             if (url === undefined) return 'No URL yet: the details have not loaded.'
-            const opener = openerFor((globalThis as unknown as { process?: { platform?: string } }).process?.platform ?? '')
+            const opener = openerFor(await platformOf($))
             if (opener === undefined) return urlNote(url)
             const r = await $.process.run([opener, url], { timeoutMs: 5_000 }).catch(() => undefined)
             return r !== undefined && r.exitCode === 0 ? `Opened ${url}` : urlNote(url)

@@ -137,6 +137,15 @@ export type CardRow = { text: string; tone?: 'warning' | 'success' | 'error'; di
 // The platform's opener for a URL; undefined where there is none.
 export const openerFor = (platform: string): string | undefined => platform === 'darwin' ? 'open' : platform === 'linux' ? 'xdg-open' : platform === 'win32' ? 'explorer' : undefined
 
+// The platform as openerFor names it, from `uname -s`: the Windows shells answer MINGW, MSYS or CYGWIN.
+// No answer (no uname at all) is taken as macOS, the common case.
+export function platformOfUname(out: string | undefined): string {
+  const u = (out ?? '').trim().toLowerCase()
+  if (u.startsWith('linux')) return 'linux'
+  if (/^(mingw|msys|cygwin)/.test(u)) return 'win32'
+  return 'darwin'
+}
+
 export function prCardRows(h: Handover, o: { entry: DetailsEntry | undefined; mergeMode: string; now: number }): CardRow[] {
   const rows: CardRow[] = []
   const d = o.entry?.details

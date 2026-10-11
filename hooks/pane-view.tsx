@@ -271,8 +271,8 @@ export function graphView(c: PaneCtx, owner: string, level: AgentRow[], spare: n
   const press = (key: 'h' | 'j' | 'k' | 'l') => async () => {
     await acted()
     const cur = await c.readFocus()
-    const next = moveFocus(layout, nodes, cur !== null && layout.order.includes(cur) ? cur : hot, key)
-    if (next !== undefined) await c.setFocus(next)
+    const target = moveFocus(layout, nodes, cur !== null && layout.order.includes(cur) ? cur : hot, key)
+    if (target !== undefined) await c.setFocus(target)
   }
   const openNode = async (id: string | undefined) => {
     const n = id === undefined ? undefined : byId[id]
@@ -470,8 +470,8 @@ export function inboxView(x: InboxCtx) {
   }
   // After an answer the highlight goes to the next row (else the one before), and the result is shown.
   const done = async (lines: string[], fresh: PaneRow[], i: number) => {
-    const next = fresh[i + 1] ?? fresh[i - 1]
-    await io.setCursor(next?.key ?? null)
+    const near = fresh[i + 1] ?? fresh[i - 1]
+    await io.setCursor(near?.key ?? null)
     const text = lines.join(' ')
     await io.setNote(text)
     io.toast(clip(text, 120))
@@ -779,8 +779,8 @@ export function cardView(x: InboxCtx & { id: string | null }) {
     await io.setNote(text)
     io.toast(clip(text, 120))
     const after = (await io.rows()).filter(r => r.q !== undefined).map(r => r.q!.id)
-    const next = [...before.slice(before.indexOf(fresh.id) + 1), ...before].find(id => id !== fresh.id && after.includes(id))
-    if (next !== undefined) await io.open(next, from)
+    const following = [...before.slice(before.indexOf(fresh.id) + 1), ...before].find(id => id !== fresh.id && after.includes(id))
+    if (following !== undefined) await io.open(following, from)
     else await io.leave(from === 'tree' ? 'tree' : 'inbox')
   })
   const pick = (n: number) => () => void answerWith(q.options[n]!)
@@ -912,7 +912,7 @@ export type PrCardCtx = {
   Input: ((p: InputProps) => null) | undefined
   rows: number
   pr: number | null
-  h: Handover | undefined
+  ho: Handover | undefined
   entry: DetailsEntry | undefined
   mergeMode: string
   now: number
@@ -929,7 +929,7 @@ const toneOf = (r: CardRow): string | undefined => r.tone
 export function prCardView(x: PrCardCtx) {
   const { Input, io, rows, draft, note } = x
   // Not named h: that is the JSX factory.
-  const ho = x.h
+  const ho = x.ho
   const { Box, Text, Button } = x.els
   const back = () => io.serial(async () => { await io.acted(); await io.leave() })
   const backBtn = <Button key="pr-back" hotkey="b" onPress={back}>Back</Button>

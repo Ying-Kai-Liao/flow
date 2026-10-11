@@ -20,8 +20,9 @@ export type Row = string[] | string
 export const DEFAULT_WIDTH = 100
 export const MIN_WIDTH = 40
 
-// The width to render at: the given columns when a positive number, else the default; never below the minimum.
-export const termWidth = (columns: unknown = (globalThis as { process?: { stdout?: { columns?: number } } }).process?.stdout?.columns): number =>
+// The width to render at: the given columns (command.run's presentation.columns) when a positive number, else the
+// default; never below the minimum.
+export const termWidth = (columns: unknown): number =>
   Math.max(MIN_WIDTH, typeof columns === 'number' && Number.isFinite(columns) && columns > 0 ? Math.floor(columns) : DEFAULT_WIDTH)
 
 // Collapses whitespace and cuts to max characters, ending in an ellipsis when something was cut.

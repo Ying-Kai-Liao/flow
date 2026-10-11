@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Clear the plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN finding: the .tsx files no longer name anything `h` or `Fragment` (the PR card's handover is `ho`), every helper taking `$` with a return type is a function declaration, and no local reuses the names `next` or `on`. `scripts/plain-names.mjs`, run by `npm run typecheck`, and a test in `tests/jsx-factory.test.ts` keep it from coming back.
+- No reflective `globalThis` code left: the decision API's timeout uses `$.clock.after`, the PR card's URL opener finds the platform once through `uname -s` (macOS when that fails), and `/flow inbox` and `/flow checks` size their tables from the command's own terminal width. The README's "What flow does on your machine" lists the hosts flow contacts (api.openai.com, api.typesafe.ai, github.com) and says both base URLs are set in `/config`.
+
 ## [0.6.47] - 2026-10-12
 
 ### Changed

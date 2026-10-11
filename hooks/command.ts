@@ -71,6 +71,7 @@ export type CommandIo = {
 
 export async function flowCommand(
   io: CommandIo, settings: Settings, installed: string | undefined, resumed: Set<string>, options: Record<string, unknown>, args: string | undefined,
+  columns?: number,
 ): Promise<{ text: string; context?: string[] }> {
     // A plugin's $.command.run may leave args out.
     const arg = (args ?? '').trim()
@@ -86,7 +87,7 @@ export async function flowCommand(
       // `all` is the older spelling of `decisions`: both list every decision.
       if (w.length > 1 || (w.length === 1 && w[0] !== 'all' && w[0] !== 'decisions')) return { text: 'Usage: /flow inbox, /flow inbox decisions (every decision), /flow inbox archive [all] (answered items), /flow inbox <id> (one item in full)' }
       const sec = inboxChecksSection(await io.checks(), installed)
-      return { text: [renderInbox(box, now, { all: w.length === 1, width: termWidth(), ended: await io.endedOwners?.() }), ...sec].join('\n') }
+      return { text: [renderInbox(box, now, { all: w.length === 1, width: termWidth(columns), ended: await io.endedOwners?.() }), ...sec].join('\n') }
     }
     if (/^(ok|no|answer)(\s|$)/.test(arg)) {
       const [verb = ''] = arg.split(/\s+/)
@@ -115,7 +116,7 @@ export async function flowCommand(
       // Ids are matched in any case; only the id words are lowercased, the reason or note keeps its own.
       for (let n = ['pass', 'fail', 'skip'].includes(w[0] ?? '') ? 1 : 0; /^c\d+$/i.test(w[n] ?? ''); n++) w[n] = w[n]!.toLowerCase()
       const t = await io.now()
-      if (w.length === 0) return { text: renderChecksTable(await io.checks(), installed, termWidth(), t) }
+      if (w.length === 0) return { text: renderChecksTable(await io.checks(), installed, termWidth(columns), t) }
       if (w.length === 1 && !['pass', 'fail', 'skip'].includes(w[0]!)) return { text: renderCheckDetail(await io.checks(), w[0]!, installed, t) }
       if (w[0] === 'pass' && w.length > 1) {
         return { text: await io.withChecks(cur => {

@@ -78,7 +78,7 @@ export function parseOpenai(json: unknown, q: Question): Decision {
   return { answer, confidence }
 }
 
-export const askOpenai: Provider = async (fetchFn, cfg, model, text, q, timeoutMs = DECIDE_TIMEOUT_MS) => {
+export const askOpenai: Provider = async (io, cfg, model, text, q, timeoutMs = DECIDE_TIMEOUT_MS) => {
   if (cfg.key === undefined) return { note: 'openai unavailable: no key' }
-  return post(fetchFn, 'openai', `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, cfg.key, openaiBody(text, model, q), timeoutMs, json => parseOpenai(json, q))
+  return post(io, 'openai', `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, cfg.key, openaiBody(text, model, q), timeoutMs, json => parseOpenai(json, q))
 }
