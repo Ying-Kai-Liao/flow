@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.66] - 2026-10-12
+
 ### Fixed
 
 - The pane's answer row (the input and y/n/r buttons) sits right under the card or inbox content instead of at the bottom of the pane, so it no longer needs a scroll to reach.

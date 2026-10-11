@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.6.65",
+  "version": "0.6.66",
   "description": "Claude Code agents that work like a company, with Jev-assisted routing to keep cost down.",
   "author": {
     "name": "Ying-Kai Liao"
