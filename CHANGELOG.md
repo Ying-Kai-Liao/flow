@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.49] - 2026-10-12
+
 ### Fixed
 
 - Reworded the open-checks help text and made the demo-commit diff line a plain constant so the plugin directory no longer flags MCP_FORWARDS_CREDENTIAL_ENV; no behaviour change
