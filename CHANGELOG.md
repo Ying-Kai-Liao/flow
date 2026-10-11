@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.42] - 2026-10-12
+
+### Changed
+
+- ask_cards: main shows blocking flow items as AskUserQuestion cards (#127)
+- Flow pane: PR card and push batch card (see and act on what you approve) (#128)
+
 ## [0.6.41] - 2026-10-12
 
 ### Changed
