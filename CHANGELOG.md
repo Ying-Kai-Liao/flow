@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.43] - 2026-10-12
+
 ### Added
 
 - `/flow init`: a re-runnable onboarding. A short walkthrough, a demo and the Core settings, driven by the new `flow:init` skill. Detects test and check commands (package.json, Makefile, pyproject, Cargo, go.mod), the base branch, the remote and `gh`; nothing is written unless you choose it. `/flow init settings`, `/flow init demo`, `/flow init demo live` and `/flow init demo stop` jump to a part.
