@@ -85,6 +85,13 @@
       "description": "Advanced: How many heavy test runs (a whole suite, the full check) may run at once across all agents of the session. Minimum 1.",
       "default": 1
     },
+    "test_slot_commands": {
+      "type": "string",
+      "multiple": true,
+      "title": "Test slot commands",
+      "description": "Advanced: Bash commands that run a whole test suite. Flow refuses them unless the caller holds a test slot (mcp__flow__test_slot acquire). Empty: not enforced.",
+      "default": ["claude plugin test", "npm run check", "npm test", "npm run test"]
+    },
     "context_warn_percent": {
       "type": "number",
       "title": "Context warning",

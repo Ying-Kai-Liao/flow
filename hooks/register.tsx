@@ -106,6 +106,7 @@ import {
   allowed, allowList, flowActive, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
+import { slotRefusal, suiteRun } from './testguard'
 import { flowCatch, toolCatch } from './toolguard'
 import {
   ago, claudeLimits, harnessesOf, runsOutIn, SESSION, sessionKey, sessionRow,
@@ -2187,6 +2188,12 @@ export const register: Register = (on, options) => {
     if (e.tool === 'Bash') {
       const why = killRefusal(e.command)
       if (why !== undefined) return { deny: why }
+      // A whole-suite run needs a held test slot. Slot state is read only when the command matches.
+      const suite = suiteRun(e.command, settings.testSlotCommands ?? [])
+      if (suite !== undefined) {
+        const refused = slotRefusal(await read($, testSlots), await refresh($), id ?? 'main', settings.testSlots, await $.clock.now(), suite)
+        if (refused !== undefined) return { deny: refused }
+      }
       // Merged branches are deleted by the plugin on the reviewer's "done"; a subagent never deletes a remote ref.
       const del = id === undefined ? undefined : remoteDeleteRefusal(e.command)
       if (del !== undefined) return { deny: del }

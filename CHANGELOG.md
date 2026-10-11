@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A hook refuses a whole-suite Bash run (`claude plugin test`, `npm run check`, `npm test`, also behind `cd`, `&&`, `|`, `time` and globs like `tests/*.test.ts`) unless the caller holds a confirmed test slot. New setting `test_slot_commands` (empty list turns it off).
+
 ## [0.6.61] - 2026-10-12
 
 ### Changed

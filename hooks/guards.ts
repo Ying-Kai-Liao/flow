@@ -34,7 +34,7 @@ const OPTS_WITH_VALUE: Record<string, Set<string>> = {
 }
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
-const MAX_DEPTH = 5
+export const MAX_DEPTH = 5
 
 const basename = (w: string) => w.split('/').pop() ?? w
 
@@ -240,7 +240,7 @@ export function parse(s: string): Cmd[][] {
 }
 
 // The command words from the real command on, and whether it runs under xargs.
-function resolve(words: string[]): { words: string[]; viaXargs: boolean } {
+export function resolve(words: string[]): { words: string[]; viaXargs: boolean } {
   let i = 0
   let viaXargs = false
   while (i < words.length) {
@@ -264,7 +264,7 @@ function resolve(words: string[]): { words: string[]; viaXargs: boolean } {
 }
 
 // The script a shell runs with -c, or eval's arguments.
-function innerScript(name: string, args: string[]): string | undefined {
+export function innerScript(name: string, args: string[]): string | undefined {
   if (name === 'eval') return args.join(' ')
   if (!SHELLS.has(name)) return undefined
   const k = args.findIndex(a => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a))
