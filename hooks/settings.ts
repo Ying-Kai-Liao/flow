@@ -10,6 +10,7 @@ import { parseRules } from './standing'
 import type { Resolved } from './standing'
 import { mergeGuardTests, parseGuardTests } from './guardtests'
 import type { GuardMap } from './guardtests'
+import { DEFAULT_SUITE_COMMANDS } from './testguard'
 import { harnessesOf } from './sessions'
 import type { HarnessSpec } from './sessions'
 import { allowList } from './guards'
@@ -72,6 +73,7 @@ export const KEYS: Record<string, Kind> = {
   standing_answers: 'objects',
   state_file: 'object',
   test_slots: 'number',
+  test_slot_commands: 'list',
   context_warn_tokens: 'number',
   max_managers: 'number',
   max_continues: 'number',
@@ -288,6 +290,7 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     maxWorkers: num('max_workers', 3),
     maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
     testSlots: Math.max(1, Math.floor(num('test_slots', 1))),
+    testSlotCommands: Array.isArray(options.test_slot_commands) ? strs('test_slot_commands') : DEFAULT_SUITE_COMMANDS,
     workerModel: model('worker_model', DEFAULT_WORKER_MODEL),
     workerModelSmall: model('worker_model_small', 'haiku'),
     workerModelNormal: model('worker_model_normal', 'sonnet'),

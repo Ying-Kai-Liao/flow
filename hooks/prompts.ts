@@ -19,6 +19,8 @@ export type Settings = {
   useReviewer: boolean
   maxWorkers: number
   testSlots: number
+  // Bash commands that run a whole suite and need a held test slot (testguard.ts); empty: not enforced.
+  testSlotCommands?: string[]
   workerModel: string
   // Model routing (routing.ts): the models a brief's Size line maps to, the read-only explorers' and the conflict resolvers'.
   workerModelSmall?: string
@@ -450,7 +452,7 @@ You are running as {{HARNESS}} in a terminal, outside the Claude Code session th
 `
 
 export const REVIEWER_RULE = 'There is a reviewer: never merge yourself.'
-export const NO_REVIEWER_RULE = `There is no reviewer in this repo: you merge. For each approved PR, run the full check ({{FULL_CHECK}}) in a clean worktree on the PR's head (\`git worktree add /tmp/check-<n> <head sha>\`, run it there, then \`git worktree remove\`), then \`gh pr merge <n> --{{MERGE_METHOD}} --delete-branch\`, then \`mcp__flow__clean\` with apply true.`
+export const NO_REVIEWER_RULE = `There is no reviewer in this repo: you merge. For each approved PR, run the full check ({{FULL_CHECK}}) in a clean worktree on the PR's head (\`git worktree add /tmp/check-<n> <head sha>\`, run it there, then \`git worktree remove\`; call \`mcp__flow__test_slot\` action "acquire" before the run and "release" after it, also on a failure), then \`gh pr merge <n> --{{MERGE_METHOD}} --delete-branch\`, then \`mcp__flow__clean\` with apply true.`
 
 export const REVIEWER_PROMPT = `You are the flow reviewer. You alone merge PRs into {{BASE}}, run the full check and deploy, so two sessions never overwrite each other's deploy or run the full suite at once. You run in a clean git worktree of your own.{{LANGUAGE}}
 

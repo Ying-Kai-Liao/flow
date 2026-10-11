@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - manager_model_normal: third manager model tier routed by Size (#156)
 - decide_eval size: per-role split and normal-managers-on-sonnet counterfactual (#155)
+- Test-slot hook guard: refuse whole-suite runs without a slot (#158)
 ### Changed
 
 - The pane's inbox draws each owner as a collapsible card like the tree's agents (chevron, round border, "owner · N decisions", one clipped line per item); the routine decisions are a collapsed card; c (or x) and the chevron fold a card, and a pane too short for all cards draws all but the hot one collapsed. The decision card's header is "id · owner · age".
@@ -29,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - decide_eval: route feature (direct / manager+1 / manager+n) (#152)
+### Added
+- A hook refuses a whole-suite Bash run (`claude plugin test`, `npm run check`, `npm test`, also behind `cd`, `&&`, `|`, `time` and globs like `tests/*.test.ts`) unless the caller holds a confirmed test slot. New setting `test_slot_commands` (empty list turns it off).
 
 ## [0.6.61] - 2026-10-12
 
