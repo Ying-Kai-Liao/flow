@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- README section "What flow does on your machine": what flow sends and where, the programs it runs (including the permission-bypass flags of session harnesses), the files it writes, what it puts in prompts and gives its agents, and what each hook does.
+- Plugin icon at `.claude-plugin/icon.png`.
+
+### Changed
+
+- The decision API keys now come from `/config`: set `openai_api_key` (and `openai_base_url`) instead of the `OPENAI_API_KEY` / `OPENAI_BASE_URL` env vars, and `jev_api_key` (and `jev_base_url`) instead of `JEV_API_KEY` / `JEV_BASE_URL` or `~/.config/jev/env`. The keys are sensitive options kept in secure storage; a settings file that sets one is ignored with a warning. flow no longer reads your environment for them.
+- The OpenAI and Jev requests go through the engine's `$.http.fetch` instead of the global `fetch`.
+
 ## [0.6.42] - 2026-10-12
 
 ### Changed

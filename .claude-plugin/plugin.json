@@ -10,6 +10,7 @@
   "license": "MIT",
   "keywords": ["orchestration", "agents", "worktrees", "parallel", "pull-requests", "code-review", "deploy"],
   "types": "./types/index.d.ts",
+  "icon": "./.claude-plugin/icon.png",
   "userConfig": {
     "test_command": {
       "type": "string",
@@ -157,7 +158,7 @@
     "decision_api": {
       "type": "string",
       "title": "Decision API",
-      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev decides the size at spawn (the brief text is sent to api.typesafe.ai; key from JEV_API_KEY or ~/.config/jev/env). openai: an OpenAI chat model decides it (the brief text is sent to api.openai.com or the OPENAI_BASE_URL host; key from OPENAI_API_KEY). The Size line is the fallback if the provider is unavailable.",
+      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev decides the size at spawn (the brief text is sent to api.typesafe.ai or the jev_base_url host; key from jev_api_key). openai: an OpenAI chat model decides it (the brief text is sent to api.openai.com or the openai_base_url host; key from openai_api_key). The Size line is the fallback if the provider is unavailable.",
       "default": "off",
       "options": ["off", "jev", "openai"]
     },
@@ -173,6 +174,32 @@
       "title": "Jev model",
       "description": "Advanced: Jev model name used when decision_api is jev.",
       "default": "jev-latest"
+    },
+    "jev_api_key": {
+      "type": "string",
+      "title": "Jev API key",
+      "description": "Advanced: The key flow sends to Jev when decision_api is jev. Kept in secure storage; a settings file can't set it.",
+      "sensitive": true,
+      "default": ""
+    },
+    "jev_base_url": {
+      "type": "string",
+      "title": "Jev base URL",
+      "description": "Advanced: Where flow sends the Jev request. Empty: https://api.typesafe.ai.",
+      "default": ""
+    },
+    "openai_api_key": {
+      "type": "string",
+      "title": "OpenAI API key",
+      "description": "Advanced: The key flow sends to the OpenAI-compatible API when decision_api is openai. Kept in secure storage; a settings file can't set it.",
+      "sensitive": true,
+      "default": ""
+    },
+    "openai_base_url": {
+      "type": "string",
+      "title": "OpenAI base URL",
+      "description": "Advanced: Where flow sends the OpenAI request, for a compatible endpoint. Empty: https://api.openai.com/v1.",
+      "default": ""
     },
     "openai_model": {
       "type": "string",

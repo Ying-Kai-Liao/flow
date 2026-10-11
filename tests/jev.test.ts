@@ -3,7 +3,7 @@ import { test } from './support'
 
 import { decisionText } from '../hooks/decide'
 import type { FetchLike, Question } from '../hooks/decide'
-import { askJev as askJevQ, jevBody as jevBodyQ, jevConfig, parseEnvFile, parseJev as parseJevQ } from '../hooks/jev'
+import { askJev as askJevQ, jevBody as jevBodyQ, jevConfig, parseJev as parseJevQ } from '../hooks/jev'
 import { routeManager, routeWorker, SIZE_QUESTION, sizeWith } from '../hooks/spawn'
 import type { SpawnIo } from '../hooks/spawn'
 import type { Ledger } from '../types'
@@ -23,15 +23,10 @@ function ioWith(ledger: Ledger = {}): SpawnIo {
 }
 const spawn = (prompt: string, name = 'csv-docs') => ({ name, description: name, prompt, subagentType: 'flow:worker' }) as never
 
-test('parseEnvFile tolerates export, quotes and comments', () => {
-  const env = parseEnvFile('# c\nexport JEV_API_KEY="fake-1"\nJEV_BASE_URL=https://x.example # note\n\nbad line\nOTHER=\'a b\'\n')
-  expect(env).toEqual({ JEV_API_KEY: 'fake-1', JEV_BASE_URL: 'https://x.example', OTHER: 'a b' })
-})
-
-test('jevConfig prefers env over the file and defaults the base url', () => {
-  expect(jevConfig({ JEV_API_KEY: 'e' }, 'JEV_API_KEY=f\nJEV_BASE_URL=https://f.example/')).toEqual({ key: 'e', baseUrl: 'https://f.example' })
-  expect(jevConfig({}, 'JEV_API_KEY=f')).toEqual({ key: 'f', baseUrl: 'https://api.typesafe.ai' })
-  expect(jevConfig({}, undefined)).toEqual({ baseUrl: 'https://api.typesafe.ai' })
+test('jevConfig reads the /config options only and defaults the base url', () => {
+  expect(jevConfig({ jevApiKey: 'e', jevBaseUrl: 'https://f.example/' })).toEqual({ key: 'e', baseUrl: 'https://f.example' })
+  expect(jevConfig({ jevApiKey: 'f' })).toEqual({ key: 'f', baseUrl: 'https://api.typesafe.ai' })
+  expect(jevConfig({})).toEqual({ baseUrl: 'https://api.typesafe.ai' })
 })
 
 test('the state drops the Size line and is capped at 8000 chars', () => {

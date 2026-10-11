@@ -45,9 +45,17 @@ test('parseOpenai: logprobs give a confidence, none leaves the answer unthreshol
   expect(parseOpenai(completion('yes'), YESNO)).toEqual({ answer: 'yes' })
 })
 
-test('openaiConfig reads the env only and trims the base url', () => {
+test('openaiConfig reads the /config options only and trims the base url', () => {
   expect(openaiConfig({})).toEqual({ baseUrl: 'https://api.openai.com/v1' })
-  expect(openaiConfig({ OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: 'https://gw.example/v1//' })).toEqual({ key: 'sk-test', baseUrl: 'https://gw.example/v1' })
+  expect(openaiConfig({ openaiApiKey: 'sk-test', openaiBaseUrl: 'https://gw.example/v1//' })).toEqual({ key: 'sk-test', baseUrl: 'https://gw.example/v1' })
+  const s = settingsOf({ openai_api_key: 'sk-test', openai_base_url: 'https://gw.example/v1' }, 'main')
+  expect(openaiConfig(s)).toEqual({ key: 'sk-test', baseUrl: 'https://gw.example/v1' })
+  expect(openaiConfig(settingsOf({ openai_api_key: '', openai_base_url: '' }, 'main'))).toEqual({ baseUrl: 'https://api.openai.com/v1' })
+})
+
+test('a timeout ends the wait even when the fetch ignores the signal', async () => {
+  const deaf: FetchLike = () => new Promise(() => undefined)
+  expect(await askOpenai(deaf, cfg, 'm', 'p', SIZE_QUESTION, 20)).toEqual({ note: 'openai unavailable: timeout' })
 })
 
 test('openai request: URL, bearer key, strict schema enum, Size line stripped, text capped', async () => {
@@ -79,28 +87,28 @@ test('openai failures are named without leaking the key or the body', async () =
   expect(await ask(hang, cfg, 20)).toEqual({ note: 'openai unavailable: timeout' })
 })
 
-const io = (f: FetchLike, env: Record<string, string> = {}, file?: string): DecideIo => ({ env, fetch: f, readFile: async () => file })
+const io = (f: FetchLike): DecideIo => ({ fetch: f })
 
 test('decide through jev: choice and yes/no', async () => {
   const jev = ok({ answers: { size: { choice: 'large', confidence: 0.9 } } })
-  expect(await decide(io(jev, { JEV_API_KEY: 'k' }), { decisionApi: 'jev' }, 'text', SIZE_QUESTION)).toEqual({ answer: 'large', confidence: 0.9 })
+  expect(await decide(io(jev), { decisionApi: 'jev', jevApiKey: 'k' }, 'text', SIZE_QUESTION)).toEqual({ answer: 'large', confidence: 0.9 })
   const yn = ok({ answers: { docs: { choice: 'yes', confidence: 0.8 } } })
-  expect(await decide(io(yn, { HOME: '/h' }, 'JEV_API_KEY=k'), { decisionApi: 'jev' }, 'text', YESNO)).toEqual({ answer: 'yes', confidence: 0.8 })
+  expect(await decide(io(yn), { decisionApi: 'jev', jevApiKey: 'k' }, 'text', YESNO)).toEqual({ answer: 'yes', confidence: 0.8 })
   expect(await decide(io(yn), { decisionApi: 'jev' }, 'text', YESNO)).toEqual({ note: 'jev unavailable: no key' })
 })
 
 test('decide through openai: choice and yes/no', async () => {
-  const env = { OPENAI_API_KEY: 'sk-test' }
-  expect(rounded(await decide(io(ok(completion('small', Math.log(0.99))), env), { decisionApi: 'openai' }, 't', SIZE_QUESTION))).toEqual({ answer: 'small', confidence: 0.99 })
-  expect(await decide(io(ok(completion('no')), env), { decisionApi: 'openai', openaiModel: 'gpt-x' }, 't', YESNO)).toEqual({ answer: 'no' })
+  const key = { openaiApiKey: 'sk-test' }
+  expect(rounded(await decide(io(ok(completion('small', Math.log(0.99)))), { decisionApi: 'openai', ...key }, 't', SIZE_QUESTION))).toEqual({ answer: 'small', confidence: 0.99 })
+  expect(await decide(io(ok(completion('no'))), { decisionApi: 'openai', openaiModel: 'gpt-x', ...key }, 't', YESNO)).toEqual({ answer: 'no' })
   expect(await decide(io(ok(completion('no'))), { decisionApi: 'openai' }, 't', YESNO)).toEqual({ note: 'openai unavailable: no key' })
 })
 
 test('decide off makes no network call', async () => {
   let calls = 0
   const f: FetchLike = async () => { calls++; return { ok: true, status: 200, json: async () => ({}) } }
-  expect('note' in await decide(io(f, { OPENAI_API_KEY: 'sk-test', JEV_API_KEY: 'k' }), { decisionApi: 'off' }, 't', SIZE_QUESTION)).toBe(true)
-  expect('note' in await decide(io(f, { OPENAI_API_KEY: 'sk-test' }), {}, 't', SIZE_QUESTION)).toBe(true)
+  expect('note' in await decide(io(f), { decisionApi: 'off', openaiApiKey: 'sk-test', jevApiKey: 'k' }, 't', SIZE_QUESTION)).toBe(true)
+  expect('note' in await decide(io(f), { openaiApiKey: 'sk-test' }, 't', SIZE_QUESTION)).toBe(true)
   expect(calls).toBe(0)
 })
 

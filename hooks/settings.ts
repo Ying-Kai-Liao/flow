@@ -40,6 +40,10 @@ export const KEYS: Record<string, Kind> = {
   size_model: 'string',
   jev_model: 'string',
   openai_model: 'string',
+  jev_api_key: 'string',
+  jev_base_url: 'string',
+  openai_api_key: 'string',
+  openai_base_url: 'string',
   conflict_model: 'string',
   manager_model: 'string',
   manager_model_small: 'string',
@@ -81,6 +85,9 @@ export const KEYS: Record<string, Kind> = {
 
 // String settings with a closed set of values: another value is dropped with a warning.
 export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['off', 'jev', 'openai'] }
+
+// API keys are sensitive /config options (kept in secure storage); a settings file, which may be committed, can't set them.
+export const SECRET_KEYS = ['jev_api_key', 'openai_api_key']
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
@@ -211,7 +218,9 @@ export function mergeLayers(options: Record<string, unknown>, layers: { path: st
     }
     files.push(path)
     for (const [k, v] of Object.entries(checked(path, data as Record<string, unknown>, warnings))) {
-      if (k === 'standing_answers') {
+      if (SECRET_KEYS.includes(k)) {
+        warnings.push(`${path}: "${k}" is set in /config only, as a sensitive option; ignored`)
+      } else if (k === 'standing_answers') {
         hasRules = true
         rules[i > 0 ? 'personal' : 'repo'] = parseRules(v, i > 0 ? 'personal' : 'repo', path, warnings)
       } else if (i > 0 && k === 'guard_tests') {
@@ -275,6 +284,10 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     decisionApi: ((v: string) => v === 'jev' || v === 'openai' ? v : 'off' as const)(str('decision_api', 'off') === 'off' ? str('size_model', 'off') : str('decision_api', 'off')),
     jevModel: str('jev_model', 'jev-latest'),
     openaiModel: str('openai_model', 'gpt-4.1-mini'),
+    ...(str('jev_api_key', '') ? { jevApiKey: str('jev_api_key', '') } : {}),
+    ...(str('jev_base_url', '') ? { jevBaseUrl: str('jev_base_url', '') } : {}),
+    ...(str('openai_api_key', '') ? { openaiApiKey: str('openai_api_key', '') } : {}),
+    ...(str('openai_base_url', '') ? { openaiBaseUrl: str('openai_base_url', '') } : {}),
     conflictModel: model('conflict_model', 'opus'),
     managerModel: model('manager_model', 'opus'),
     managerModelSmall: model('manager_model_small', 'sonnet'),

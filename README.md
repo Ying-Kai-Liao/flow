@@ -115,6 +115,116 @@ with defaults, is in the [reference](docs/reference.md).
 - Workers run as in-session agents by default, so neither Orca nor tmux is needed. See
   [Without Orca](docs/reference.md#without-orca).
 
+## What flow does on your machine
+
+flow is a hooks module. It runs inside your Claude Code session and reaches the outside only
+through the engine's `$` calls. This section lists what it sends, runs, writes and changes.
+
+### What it sends, and where
+
+| To | What | When |
+|---|---|---|
+| GitHub, through `gh` | reads PRs and their files, labels and diffs; creates the `flow:confirm` / `flow:auto` labels and puts them on a PR; creates a GitHub Release | the pane's PR list, handovers, `/flow resume`, `/flow clean`, a release with `release_github` on |
+| your `origin`, through `git` | `git fetch`; pushes a release tag; deletes a merged PR's branch, only once the merge is in `origin/<base>` | fetches as it works; the tag with `release_github` on; the delete when the reviewer reports a PR done |
+| an OpenAI-compatible API | the brief or task text (its `Size:` line removed, at most 8000 characters), a fixed sizing question and its options, sent to `openai_base_url` (default `https://api.openai.com/v1`) with your `openai_api_key` | only when `decision_api` is `openai`, once per manager or worker start |
+| TypeSafe's Jev | the same text and question, sent to `jev_base_url` (default `https://api.typesafe.ai`) with your `jev_api_key` | only when `decision_api` is `jev`, once per manager or worker start |
+| its own agents in this session | messages, through `$.session.send` (see below) | while they run |
+
+The two API calls go through the engine's `$.http.fetch`. With `decision_api` at `off`, the
+default, flow makes no HTTP request at all. The keys are `/config` options marked sensitive, so
+they are kept in secure storage; flow never reads them from your environment or a file, and they
+never appear in a note, log or prompt.
+
+The agents flow starts do their own pushing and merging with `git` and `gh`, as their prompts
+say: workers push their branch and open a PR, the reviewer merges and pushes `<base>`.
+
+### What it runs
+
+The plugin runs these programs through `$.process.run`, each with a fixed argument list:
+
+- `git`: branches, worktrees (`git worktree add/list/remove`), `fetch`, `log`, `diff`,
+  `merge-base`, a fast-forward of your main checkout after a batch (never a stash, reset or force),
+  the release tag push and the merged-branch delete.
+- `gh`: the PR, label and release calls in the table above.
+- `sh -c` with a fixed script and the values passed as separate arguments: create or empty its
+  state directories, append to its log, read `$HOME` to expand `~` in attachment paths, find a
+  harness program on `PATH`.
+- `mkdir`, `rm`, `test`, `tail`, `find`, `ps`: its own state files, and to tell a live worktree
+  from a leftover in `/flow clean`.
+- `tmux` or `orca`: only when a worker runs in another harness (`worker_harness`, or a manager's
+  `mcp__flow__session` call). They create the terminal, type the brief and messages into it, read
+  its screen, and close it.
+- The harness itself, in that terminal: `claude --permission-mode bypassPermissions`,
+  `codex --dangerously-bypass-approvals-and-sandbox`, `gemini --yolo` or `opencode`, or the
+  command you put in `harnesses`. **The built-ins start with permission checks turned off.** Such
+  a worker runs unattended in its own worktree, and nobody sits at that terminal to approve a
+  `git push`. This happens only when you pick a session harness. The default workers are
+  in-session agents, and they keep the session's normal permission mode.
+- A harness's `quota` command from your `harnesses` setting, to read how much quota is left.
+
+Your own commands are run by flow's agents through their Bash tool, under your permission mode,
+not by the plugin: `test_command` by workers, `full_check_command` and the deploy steps
+(`deploy_command`, `deploy_targets`, each target's `env_command`) by the reviewer.
+
+`hooks/guards.ts` only reads the text of a shell command an agent is about to run, including what
+it runs through `sh -c` or `eval`, to refuse broad kills, remote-branch deletes and writes to the
+main checkout. It never downloads or runs anything.
+
+### What it writes
+
+flow writes these files on purpose:
+
+- Its state, in `.git/flow/` (shared by all worktrees, never committed): handovers, the inbox,
+  the log, handoff digests, manager notes, person checks, deploy and push gates, the cost ledger,
+  test-slot grant files and session worker prompt and report files. The full list is in the
+  [reference](docs/reference.md#state-on-disk).
+- `.git/flow/config.json`, your personal settings: flow adds to it when you keep a standing
+  answer (`always`) or accept a suggested guard-test mapping. It removes a standing answer from
+  `.claude/flow.json` only when you ask it to remove that rule. It never writes other settings.
+- Worktrees under `.claude/worktrees/` for session workers. In-session workers and the reviewer
+  get theirs from Claude Code.
+- At a release (only with `release` on, done by the reviewer through `mcp__flow__release`): the
+  changelog (`changelog_file`, default `CHANGELOG.md`) and the version in `release_files`
+  (default `package.json`). Those are build files; flow changes them because cutting the release
+  is its job.
+
+### What it puts in prompts
+
+- `$.prompt.submit` sends text to the main session as if typed: reports from the reviewer and
+  managers, pre-flight rounds, new questions, plan and dependency notices, session worker
+  reports, after-deploy checks for a new version, and what `/flow resume`, `/flow lite` and
+  `/flow-tasks` ask the main session to do.
+- `$.prompt.fill` puts a "Send a message to …" line in your prompt box when you press `m` on an
+  agent in the pane. You send it or not.
+- `$.session.send` sends messages to flow's own agents: a worker's questions to its manager,
+  answers from you or main, decisions you undid, reviewer results, plan notices and the context
+  wrap-up ("commit, push and hand off").
+- A tool result of a flow agent past its context warning gets the same wrap-up text added.
+
+### What it gives the agents it starts
+
+- The brief from the manager or main, behind the role's rules: the `flow:manager`,
+  `flow:worker` and `flow:reviewer` agent definitions in `hooks/prompts.ts`, filled with your
+  settings. A session worker gets the worker rules and the brief in a prompt file.
+- In lite mode, the lite rules in front of the manager's prompt.
+- Attachment paths made absolute, since the worker runs in another worktree.
+- A model picked by size routing (the brief's `Size:` line, or the decision API).
+
+### Its hooks
+
+| Hook | What it does |
+|---|---|
+| `session.start` | Loads its state and settings, registers `/flow`, `/flow-tasks`, its agent types and its `mcp__flow__*` tools, starts its timers, then passes the event on. |
+| `command.run` (`/flow`, `/flow-tasks`) | Answers its own two commands. |
+| `agent.offer` (`flow:continue`) | Keeps the continue type offered, so its own rewrite below can start it. |
+| `agent.spawn` | Refuses: a model's own `flow:continue` spawn; a planned agent whose dependencies are not done; a worker whose manager has not filed its pre-flight; a Fable model; an attachment that does not exist. Changes: the prompt (lite rules, absolute attachment paths), the model (size routing; `explore_model` for a flow agent's Explore sub-agent with no model), a `Continue on branch:` worker into `flow:continue` in the old worktree, and a retry on the plain model when a `[1m]` model is refused. Then passes the spawn on. |
+| `tool.call` (every tool) | Refuses: `pkill`, `killall` and kills of pid -1, 0, 1 or a non-listening `lsof` lookup; a subagent's `git push` that deletes a remote branch; Edit and Write by a manager; with `main_checkout_guard` on, Edit, Write and shell writes aimed at the repo's main checkout. Answers a reviewer's `SendMessage` to an ended manager or a repeat to main itself. Otherwise records the call for the pane and passes it on unchanged. |
+| `tool.call` (`mcp__flow__*`) | Answers flow's own tools. It stands in for no built-in tool. |
+| `turn.step` | Delivers messages held for that agent, then measures its context and cost. |
+| `turn.complete` | Logs the agent's report, relays a reviewer's or manager's report to main, records a worker's handoff and starts a new reviewer when work is left. Passes the event on. |
+| `config.set` (`theme`) | Redraws the pane after a theme change. The setting itself passes on unchanged. |
+| `ui.focus`, `ui.render` | Draw the Flow pane and move its focus. |
+
 ## Limits
 
 - Everything runs inside one session. Close it and the work stops. Your branches and PRs stay,
