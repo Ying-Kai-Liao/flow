@@ -244,6 +244,9 @@ test('decideActive needs the toggle and a provider', () => {
 test('settings: the toggles default off and the threshold is clamped to 0..1', () => {
   expect(settingsOf({}, 'main')).toMatchObject({ decideInbox: false, decideHandoff: false, decideMinConfidence: 0.8 })
   expect(settingsOf({ decide_inbox: true, decide_handoff: true, decide_min_confidence: 3 }, 'main')).toMatchObject({ decideInbox: true, decideHandoff: true, decideMinConfidence: 1 })
+  expect(settingsOf({}, 'main').sizeMinConfidence).toBe(0)
+  expect(settingsOf({ size_min_confidence: 3 }, 'main').sizeMinConfidence).toBe(1)
+  expect(settingsOf({ size_min_confidence: -1 }, 'main').sizeMinConfidence).toBe(0)
   expect(settingsOf({ decide_min_confidence: -1 }, 'main').decideMinConfidence).toBe(0)
 })
 

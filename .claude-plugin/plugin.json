@@ -241,8 +241,14 @@
     "decide_min_confidence": {
       "type": "number",
       "title": "Decision API min confidence",
-      "description": "Advanced: The least confidence (0 to 1) the provider's answer needs for decide_inbox and decide_handoff to act on it. Spawn sizing keeps its own 0.5.",
+      "description": "Advanced: The least confidence (0 to 1) the provider's answer needs for decide_inbox and decide_handoff to act on it. Spawn sizing has its own floor, size_min_confidence.",
       "default": 0.8
+    },
+    "size_min_confidence": {
+      "type": "number",
+      "title": "Sizing min confidence",
+      "description": "Advanced: The least confidence (0 to 1) the provider's answer needs for spawn sizing to use it; below it the brief's Size line is used. 0 uses every answer.",
+      "default": 0
     },
     "conflict_model": {
       "type": "string",

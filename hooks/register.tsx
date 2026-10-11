@@ -25,7 +25,7 @@ import { backNote } from './routing'
 import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
 import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
-import { decide, sourceOf } from './decide'
+import { decide, DECIDE_TIMEOUT_MS, sourceOf } from './decide'
 import type { DecideIo, DecideSettings, FetchLike } from './decide'
 import { adviceLine, adviceSuffix, handoffLean } from './decide-use'
 import type { DecideUseSettings } from './decide-use'
@@ -1295,7 +1295,7 @@ function spawnIoOf($: EngineInterface): SpawnIo {
 function jevOf($: EngineInterface, settings: DecideSettings): SizeJev | undefined {
   if (settings.decisionApi === undefined || settings.decisionApi === 'off') return undefined
   const io = decideIoOf($)
-  return sizeWith((text, q) => decide(io, settings, text, q), sourceOf(settings))
+  return sizeWith((text, q) => decide(io, settings, text, q, DECIDE_TIMEOUT_MS, settings.sizeMinConfidence ?? 0), sourceOf(settings))
 }
 
 // The engine's fetch and timer as the decision API takes them.

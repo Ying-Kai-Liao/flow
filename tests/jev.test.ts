@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 
-import { decisionText } from '../hooks/decide'
+import { decide, decisionText } from '../hooks/decide'
 import type { DecideIo, FetchLike, Question } from '../hooks/decide'
 import { askJev as askJevQ, jevBody as jevBodyQ, jevConfig, parseJev as parseJevQ } from '../hooks/jev'
 import { routeManager, routeWorker, SIZE_QUESTION, sizeWith } from '../hooks/spawn'
@@ -110,4 +110,12 @@ test('the successor floor still raises Jev\'s size', async () => {
   const jev = (p: string) => askJev(ok(answer('small', 0.99)), cfg, 'jev-latest', p)
   const r = await routeWorker(ioWith(ledger), spawn('x', 'csv-docs-2'), MODELS, jev)
   expect(r.routed).toMatchObject({ size: 'large', escalated: true })
+})
+
+// Spawn sizing as register.tsx wires it: decide() with the setting as the floor (default 0).
+const sized = (floor: number) => sizeWith((text, q: Question) => decide(net(ok(answer('large', 0.3))), { decisionApi: 'jev', jevApiKey: 'k' }, text, q, 5000, floor), 'jev')('hello')
+
+test('sizing uses a low-confidence answer with the default floor 0 and falls back to the Size line above it', async () => {
+  expect(await sized(0)).toEqual({ size: 'large', confidence: 0.3, source: 'jev' })
+  expect(await sized(0.5)).toEqual({ note: 'jev unavailable: low confidence 0.30' })
 })
