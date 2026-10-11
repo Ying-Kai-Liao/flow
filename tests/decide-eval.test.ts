@@ -3,9 +3,10 @@ import { test } from './support'
 
 import type { DecideIo, FetchLike } from '../hooks/decide'
 import { decide } from '../hooks/decide'
-import { conflictData, exportJson, handoffData, inboxData, loadDatasets, parseExport, parseLog, formatRoute, recordedSize, reportText, routeBaselines, routeData, runEval, sizeBaselines, sizeData, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
-import type { Ask, LogLine, TranscriptEvent } from '../hooks/decide-eval'
+import { conflictData, exportJson, formatRoute, formatSizeSplit, handoffData, inboxData, loadDatasets, managerCounterfactual, parseExport, parseLog, recordedSize, reportText, routeBaselines, routeData, runEval, sizeBaselines, sizeData, sizeSplit, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
+import type { Ask, EvalRecord, LogLine, SizeMeta, TranscriptEvent } from '../hooks/decide-eval'
 import { decideEvalTool } from '../hooks/decide-eval-run'
+import { costOf } from '../hooks/cost'
 import { parseJev } from '../hooks/jev'
 import { INBOX_ROUTINE_QUESTION, ROUTE_QUESTION } from '../hooks/decide-questions'
 
@@ -328,4 +329,33 @@ test('route: the collapsed table counts needless-manager and wrongly-direct apar
     expect(parseJev({ answers: { route: { choice, confidence: 0.9 } } }, ROUTE_QUESTION)).toEqual({ answer: choice, confidence: 0.9 })
   }
   expect(parseJev({ answers: { route: { choice: 'manager', confidence: 0.9 } } }, ROUTE_QUESTION)).toEqual({ note: 'jev unavailable: unknown choice' })
+})
+
+// Hand-built size records: tokens are 1M output so the prices are easy to read.
+const mrec = (role: SizeMeta['role'], used: SizeMeta['used'], right: SizeMeta['right'], brief?: SizeMeta['used']): EvalRecord => ({
+  id: `${role}-${used}-${right}`, text: 't', label: 'x',
+  size: { role, used, right, ...(brief !== undefined ? { brief } : {}), tokens: { input: 0, write5m: 0, write1h: 0, read: 0, output: 1_000_000 } },
+})
+
+test('size split groups by role and model run on, with agreement, under rate and as-run cost', () => {
+  const rows = sizeSplit([mrec('manager', 'small', 'large'), mrec('manager', 'small', 'small'), mrec('manager', 'large', 'large', 'small'), mrec('worker', 'normal', 'normal')])
+  expect(rows.find(r => r.role === 'manager' && r.model === 'sonnet')).toMatchObject({ n: 2, agreeRun: 1, under: 1 })
+  expect(rows.find(r => r.role === 'manager' && r.model === 'opus')).toMatchObject({ n: 1, agreeRun: 1, agreeLine: 0, under: 0 })
+  expect(rows.find(r => r.role === 'worker' && r.model === 'sonnet')?.n).toBe(1)
+})
+
+test('manager counterfactual: opus-run tokens at sonnet plus the sonnet-run under rate as opus reruns', () => {
+  const cf = managerCounterfactual([mrec('manager', 'small', 'large'), mrec('manager', 'small', 'small'), mrec('manager', 'large', 'large'), mrec('manager', 'large', 'small')])
+  expect(cf).toMatchObject({ n: 2, smallN: 2, underRate: 0.5 })
+  const out = { input: 0, write5m: 0, write1h: 0, read: 0, output: 1_000_000 }
+  expect(cf.currentUsd.toFixed(6)).toBe((2 * costOf('opus', out)!).toFixed(6))
+  expect(cf.counterfactualUsd.toFixed(6)).toBe((2 * (costOf('sonnet', out)! + 0.5 * costOf('opus', out)!)).toFixed(6))
+})
+
+test('size split prints "no data", not NaN, for an empty role', () => {
+  const out = formatSizeSplit(sizeSplit([]), managerCounterfactual([]))
+  expect(out).toContain('worker: no data')
+  expect(out).toContain('manager: no data')
+  expect(out).toContain('normal managers on sonnet: no data')
+  expect(out).not.toContain('NaN')
 })

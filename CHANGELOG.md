@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Manager model tier for `Size: normal`: the new `manager_model_normal` setting (Advanced). Unset it follows `manager_model`, so nothing changes until you set it; small stays on `manager_model_small`, large and no size on `manager_model`.
+- `decide_eval` size report: a per-role split (workers and managers by the model they ran on: n, agreement, under-sized rate, $ as run) and a "normal managers on sonnet" counterfactual for managers, also printed by `scripts/decide-eval.mjs`.
 
 ## [0.6.60] - 2026-10-12
 
