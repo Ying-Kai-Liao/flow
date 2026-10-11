@@ -124,8 +124,8 @@ test('settings write: unknown keys, wrong kinds, bad choices, secrets and nested
   const d = await detected(w)
   const bad: Record<string, unknown>[] = [
     { nonsense_key: 'x' }, { max_workers: 'three' }, { max_workers: 0 }, { push_mode: 'sometimes' }, { merge_mode: 'maybe' }, { release: 'yes' },
-    { test_command: 'API_KEY=abc123 npm test' }, { test_command: 'npm test --token sk-abcdefghijklmnopqrstuvwx' }, { deploy_command: 'curl -H "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"' },
-    { manager_model: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' }, { worker_model: 'fable' }, { deploy_targets: [{ name: 'a' }] }, { guard_tests: {} },
+    { test_command: 'API_KEY=YOUR_API_KEY npm test' }, { test_command: 'npm test --token sk-EXAMPLEEXAMPLEEXAMPLE' }, { deploy_command: 'curl -H "Authorization: Bearer xxxxxxxxxxxxxxxxxxxxxxxx"' },
+    { manager_model: 'ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' }, { worker_model: 'fable' }, { deploy_targets: [{ name: 'a' }] }, { guard_tests: {} },
   ]
   for (const values of bad) {
     const r = await writeSettings(w.io, d, 'repo', values)
@@ -133,6 +133,7 @@ test('settings write: unknown keys, wrong kinds, bad choices, secrets and nested
     expect(r.text).toContain('Not written')
   }
   expect(w.f.size).toBe(0)
+  expect((await writeSettings(w.io, d, 'repo', { test_command: 'API_KEY=YOUR_API_KEY npm test' })).text).toContain('/config')
   // One bad value refuses the whole call.
   expect((await writeSettings(w.io, d, 'repo', { test_command: 'npm test', push_mode: 'x' })).ok).toBe(false)
   expect(w.f.size).toBe(0)
