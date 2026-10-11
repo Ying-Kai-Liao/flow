@@ -170,6 +170,8 @@ const lite = atom({ plugin: 'flow', key: 'lite' } as const, EMPTY_LITE as LiteSt
 const checks = atom({ plugin: 'flow', key: 'checks' } as const, EMPTY_CHECKS as Checks)
 // Tokens spent per agent and model, mirrored (throttled) to <state dir>/ledger.json. Never forgets an ended agent.
 const ledger = atom({ plugin: 'flow', key: 'ledger' } as const, {} as Ledger)
+// Set once the disk history is merged into the ledger atom; the atom outlives a plugin reload, so this must too.
+const ledgerLoaded = atom({ plugin: 'flow', key: 'ledgerLoaded' } as const, false)
 const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The reviewer respawn circuit breaker, mirrored from <state dir>/reviewer-breaker.json.
@@ -683,6 +685,8 @@ function costIoOf($: EngineInterface): CostIo {
     after: (ms, fn) => { $.clock.after(ms, fn) },
     ledger: () => read($, ledger),
     updateLedger: async fn => { await update($, ledger, fn) },
+    loaded: () => read($, ledgerLoaded),
+    markLoaded: async () => { await update($, ledgerLoaded, () => true) },
     startedAt: async () => (await $.session.usage().then(x => x, () => undefined))?.startedAt,
     liveIds: async () => (await read($, roster)).map(a => a.id),
     hasSessions: async () => Object.keys(await read($, sessions)).length > 0,

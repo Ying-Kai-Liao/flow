@@ -13,6 +13,9 @@ export type CostIo = {
   // The ledger atom: read it, or change it with fn.
   ledger: () => Promise<Ledger>
   updateLedger: (fn: (l: Ledger) => Ledger) => Promise<void>
+  // Whether the disk history is already in the atom. Lives in an atom too, so it survives a plugin reload like the ledger does.
+  loaded: () => Promise<boolean>
+  markLoaded: () => Promise<void>
   // When this session started, or undefined when the engine cannot say.
   startedAt: () => Promise<number | undefined>
   liveIds: () => Promise<string[]>
@@ -20,17 +23,24 @@ export type CostIo = {
 }
 
 // Loaded from disk once, before the first change, so what this run counts is added to the history.
+// The promise only dedupes concurrent calls; `io.loaded` is what stops a second merge after a reload
+// (the atom still holds the history, the module variable does not, and merging adds tokens).
 let ledgerLoad: Promise<void> | undefined
 let ledgerSaveDue = false
+
+// A plugin reload starts with this undefined again; tests call it to simulate one.
+export function forgetLedgerLoad(): void { ledgerLoad = undefined }
 
 export function loadLedger(io: CostIo): Promise<void> {
   ledgerLoad ??= (async () => {
     try {
+      if (await io.loaded()) return
       const dir = await io.stateDir()
       if (dir === undefined) return
       const disk = normalizeLedger(await io.readJson(`${dir}/ledger.json`))
       const now = await io.now()
       await io.updateLedger(cur => pruneLedger(mergeLedgers(disk, cur), now))
+      await io.markLoaded()
     } catch {
       // No history: count from here.
     }

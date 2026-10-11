@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The cost ledger no longer multiplies its totals when the plugin reloads: the disk history was merged into the in-memory ledger again on every reload. Ledger totals recorded before this fix may be inflated; existing `ledger.json` files are not repaired.
+
 ## [0.6.60] - 2026-10-12
 
 ### Changed
