@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The main-checkout guard covers the main session only while flow has work in the repo (a flow worktree or a live flow agent), and its refusal now says "main checkout" means the repo folder, not the main branch, and names the settings to change
+### Added
+
+- `scripts/wake-cost.mjs`: counts manager wake-up turns in the transcripts by kind and estimates their cache-write cost, with the share the delivery rules hold and what a 1h cache TTL would change
+
+### Changed
+
+- Fewer manager wake-ups: the "the user answered qN over your head" relay, the "both are closed" copy of a linked escalation and decide_handoff's split advice are held for the manager's next turn (or 10 minutes) instead of waking it; the copy no longer resumes a manager that ended its turn
 
 ## [0.6.60] - 2026-10-12
 

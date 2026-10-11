@@ -198,3 +198,38 @@ test('a queue held for a reviewer is sent by the safety timer when the message n
   await w.advance(1)
   expect(w.sent).toEqual([{ to: 'm1', text: 'plan notice' }])
 })
+
+test('informational texts to an idle agent pile into one send at the cap, not one wake each', async () => {
+  const w = world()
+  await deliver(w.io, 'm1', 'relay 1', { held: true })
+  await w.advance(HOLD_CAP_MS / 2)
+  await deliver(w.io, 'm1', 'relay 2', { held: true })
+  await deliver(w.io, 'm1', 'relay 1', { held: true })
+  await w.advance(HOLD_CAP_MS / 2)
+  expect(w.sent).toEqual([{ to: 'm1', text: 'relay 1\n\nrelay 2' }])
+})
+
+test('an urgent text (a blocking answer, a split notice, a wrap-up) wakes at once and takes the held ones with it', async () => {
+  const w = world()
+  await deliver(w.io, 'm1', 'relay', { held: true })
+  await deliver(w.io, 'm1', 'flow: WRAP UP', { urgent: true })
+  expect(w.sent).toEqual([{ to: 'm1', text: 'relay\n\nflow: WRAP UP' }])
+})
+
+test('a plain text (a plan notice) is not held: it wakes after the window with the held ones', async () => {
+  const w = world()
+  await deliver(w.io, 'm1', 'relay', { held: true })
+  await deliver(w.io, 'm1', 'flow plan: x is ready')
+  await w.advance(WINDOW_MS)
+  expect(w.sent).toEqual([{ to: 'm1', text: 'relay\n\nflow plan: x is ready' }])
+})
+
+test('held texts for an agent that ended meanwhile go to their fallbacks at the cap, never nowhere', async () => {
+  const w = world()
+  const fell: string[] = []
+  await deliver(w.io, 'm1', 'relay', { held: true, onGone: t => void fell.push(t) })
+  w.status.set('m1', 'completed')
+  await w.advance(HOLD_CAP_MS)
+  expect(w.sent).toEqual([])
+  expect(fell).toEqual(['relay'])
+})

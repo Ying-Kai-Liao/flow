@@ -1267,7 +1267,8 @@ async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, o
     await deliver($, me.parentId, `flow: ${branch} has handed off ${count} times (max_continues ${maxContinues}). The package is too big for one worker: split the Remaining part of its handoff note into smaller briefs instead of another plain continuation.${lean === undefined ? '' : adviceSuffix(source, lean)}`, { urgent: true }).catch(() => undefined)
   } else if (lean !== undefined && me.parentId !== undefined) {
     const line = adviceLine(source, branch, lean)
-    if (line !== undefined) await deliver($, me.parentId, line, { urgent: false }).catch(() => undefined)
+    // Advice only: it waits for the manager's next turn (the handoff report itself wakes it).
+    if (line !== undefined) await deliver($, me.parentId, line, { held: true }).catch(() => undefined)
   }
 }
 

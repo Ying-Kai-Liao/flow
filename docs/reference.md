@@ -174,12 +174,14 @@ A message to an idle agent starts a turn, and once the 5-minute prompt cache has
 - A running agent gets a message at once, together with anything queued for it.
 - An idle agent's messages are queued and sent as one wake-up 8 seconds after the first; identical texts go once.
 - Urgent kinds skip the wait and flush the queue: answers to blocking asks (an asker that ended its turn to wait is resumed by it), push-gate send-backs, the max-continues and wrap-up notices.
-- A non-blocking ask is held: it does not wake the manager, and goes out with the next message, on the agent's next turn, or after 10 minutes at the latest. `/flow inbox` still shows it.
+- Informational texts are held: they do not wake an idle manager, and go out with the next message, on the agent's next turn, or after 10 minutes at the latest (several held texts leave as one send). They are a worker's non-blocking ask, the "the user answered qN over your head" relay, the "both are closed" copy of a linked escalation and decide_handoff's split advice below max_continues. `/flow inbox` still shows the asks. A held text never resumes a manager that ended its turn to wait; it falls back as for any ended agent. Plan notices, answers a manager has to act on, test-slot grants, reports and everything urgent still wake at once.
 - A reviewer's message to a manager holds that manager's queue for the turn the message starts, so both arrive in one turn; a 60 second timer sends the queue if the message never lands.
 - If the agent has ended, queued texts go to the message's fallback, else to main. An answer whose send is dropped this way is noted for the asker's owner and sent to main.
 - A send the host refuses to an agent that has not ended (for example one waiting between turns) is put back in the queue as held and goes out on its next turn; if it is refused again at the 10 minute cap, it falls back with a "could not be delivered" note.
 
-The queue is in memory: a plugin reload loses it.
+The queue is in memory: a plugin reload loses it (held texts are at most 10 minutes old and informational; the asks stay in `/flow inbox`).
+
+Measure what wake-ups cost with `node scripts/wake-cost.mjs [projectDir] [--md]`: it reads manager transcripts and lists wake turns by kind with their cache-write tokens and list-price dollars. Most of the cost is cold wake-ups (cache expired) for worker and reviewer reports, which the host delivers and the plugin cannot hold. Claude Code can keep subagent prompt caches for an hour: set `subagentPromptCacheTtl` to `"1h"` in its settings or `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`. The plugin cannot set it (a spawn takes no such parameter), and it applies to workers too (a 1h write costs 1.6x a 5m one).
 
 ## The test lock
 
