@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.38] - 2026-10-11
+
 ### Added
 
 - Inbox pane: pressing a row (or an open question or decision in the tree) opens a large card with the full text, why, who asked and for whom, the asker's status, and every option as a button plus an input for your own words. After an answer the next item's card opens. An item answered meanwhile shows its answer and answers nothing again.
