@@ -219,6 +219,7 @@ export async function alwaysRule(
   if (q.kind === 'deploy') return `${id}: no rule made, a deploy approval is the user's call every time.`
   if (q.kind === ENV_KIND) return `${id}: no rule made, an env change is the user's call every time.`
   if (q.kind === PUSH_KIND) return `${id}: no rule made, pushing a batch is the user's call every time.`
+  if (q.kind === 'reviewer') return `${id}: no rule made, restarting a failing reviewer is the user's call every time.`
   if (parseChoice(q.options, choice).free) return `${id}: no rule made, a free-text answer cannot be a rule; pick one of the options.`
   const rule = ruleFromQuestion(q, q.answer ?? '', await io.today())
   const r = await addRule(io, options, rule)

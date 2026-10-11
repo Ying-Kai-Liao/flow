@@ -200,7 +200,7 @@ export const askingNames = (inbox: Inbox | undefined): string[] =>
 
 // A non-blocking question answered with its default needs no message: the asker already went on it.
 // A guard_tests suggestion is main's alone to decide: the reviewer that filed it is not told.
-export const needsMessage = (q: Question, isDefault: boolean): boolean => q.guard === undefined && q.kind !== 'deploy' && q.kind !== 'env' && q.kind !== 'push' && (q.blocking || !isDefault)
+export const needsMessage = (q: Question, isDefault: boolean): boolean => q.guard === undefined && q.kind !== 'deploy' && q.kind !== 'env' && q.kind !== 'push' && q.kind !== 'reviewer' && (q.blocking || !isDefault)
 
 // What the asker is told when its question is answered.
 export function answerMessage(q: Question, answer: string, by: string, isDefault: boolean): string {
@@ -244,7 +244,7 @@ export const overridesManager = (q: Question): boolean => !isFyi(q) && !isAddres
 
 // Deploy, env and push items and a guard_tests suggestion change something outside the chat: a bulk
 // `/flow ok` never answers them; the person names the choice with `/flow answer`.
-export const needsExplicitAnswer = (q: Question): boolean => q.kind === 'deploy' || q.kind === 'env' || q.kind === 'push' || q.guard !== undefined
+export const needsExplicitAnswer = (q: Question): boolean => q.kind === 'deploy' || q.kind === 'env' || q.kind === 'push' || q.kind === 'reviewer' || q.guard !== undefined
 
 // One line's worth of text: whitespace folded, cut at max with "...".
 export function clip(text: string, max = 100): string {
@@ -303,7 +303,7 @@ export function expandOk(inbox: Inbox | undefined, words: string[]): { ids: stri
 
 export const tagsOf = (q: Question): string => [
   q.blocking ? 'BLOCKING' : '',
-  q.kind === 'deploy' ? 'NEEDS YOU: DEPLOY APPROVAL' : q.kind === 'push' ? 'NEEDS YOU: PUSH' : q.kind === 'env' ? `NEEDS YOU:${envLabel(q)}` : q.guard !== undefined ? 'NEEDS YOU: GUARD TEST' : '',
+  q.kind === 'deploy' ? 'NEEDS YOU: DEPLOY APPROVAL' : q.kind === 'push' ? 'NEEDS YOU: PUSH' : q.kind === 'reviewer' ? 'NEEDS YOU: REVIEWER' : q.kind === 'env' ? `NEEDS YOU:${envLabel(q)}` : q.guard !== undefined ? 'NEEDS YOU: GUARD TEST' : '',
   q.escalated !== undefined ? `ESCALATED (rule ${q.escalated}), for main` : '',
   q.topic && !isFyi(q) ? `[${q.topic}]` : '',
 ].filter(x => x !== '').join(' ')
@@ -348,7 +348,7 @@ export function paneRowText(r: PaneRow): string {
 // Why `y`, `w` and a group keep refuse an item, and the explicit way. undefined: the item may be answered by default.
 export function protectedWhy(q: Question): string | undefined {
   if (!needsExplicitAnswer(q)) return undefined
-  const what = q.kind === 'deploy' ? 'a deploy approval' : q.kind === 'push' ? 'a push' : q.kind === 'env' ? 'an env change' : 'a guard test suggestion'
+  const what = q.kind === 'deploy' ? 'a deploy approval' : q.kind === 'push' ? 'a push' : q.kind === 'reviewer' ? 'a reviewer retry' : q.kind === 'env' ? 'an env change' : 'a guard test suggestion'
   return `${q.id} is ${what}: y never answers it. Press its digit or letter, or r and type your answer.`
 }
 
@@ -397,7 +397,7 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?:
 export function renderItem(inbox: Inbox | undefined, id: string, now: number): string {
   const q = findItem(inbox, id)
   if (q === undefined) return `${id}: no such question or decision.`
-  const kind = isFyi(q) ? 'decision' : q.kind === 'deploy' ? 'deploy approval' : q.kind === 'push' ? 'push' : q.kind === 'env' ? 'env change' : 'question'
+  const kind = isFyi(q) ? 'decision' : q.kind === 'deploy' ? 'deploy approval' : q.kind === 'push' ? 'push' : q.kind === 'reviewer' ? 'reviewer retry' : q.kind === 'env' ? 'env change' : 'question'
   const tags = tagsOf(q)
   const lines = [
     `${q.id} ${kind}${tags === '' ? '' : ` ${tags}`}${isFyi(q) && q.topic ? ` [${q.topic}]` : ''} (from ${q.owner}, for ${q.addressee}, ${age(now - q.askedAt)} ago)${q.alias === undefined ? '' : ` (earlier id ${q.alias})`}`,
