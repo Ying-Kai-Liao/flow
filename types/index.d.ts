@@ -196,6 +196,15 @@ export type Session = {
   // idle: its screen stopped changing with no new report, so it may be asking something.
   status: 'running' | 'reported' | 'idle' | 'exited' | 'stopped'
   startedAt: number
+  // A manager or the reviewer running in a terminal (its flow tools relayed to the main session);
+  // absent on a worker, which is all sessions were before.
+  role?: 'manager' | 'reviewer'
+  // Where it leaves its relayed tool calls and reads the answers: <state dir>/sessions/<name>/relay.
+  relayDir?: string
+  // A manager's terminal, when Orca refused one in the main checkout: the detached Orca worktree hosting it.
+  hostWorktree?: string
+  // Handover numbers already typed into a reviewer terminal.
+  nudged?: number[]
   // The report file's mtime when it was last delivered.
   reportAt?: number
   // When the terminal was last seen alive.

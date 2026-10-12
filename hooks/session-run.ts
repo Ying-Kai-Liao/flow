@@ -5,7 +5,7 @@ import type { Settings } from './prompts'
 import {
   ago, claudeProjectDir, codexLimits, codexRemaining, commandFor, findHandle, findWorktreePath, goneMessage,
   idleMessage, keysOf, NAME_RULE, parseClaudeTranscript, parseCodexRollout, percentOf, pickHost, programOf, reportMessage,
-  screenHash, sessionKey, sessionLine, tmuxName,
+  relayEnv, roleHarnessOf, screenHash, sessionKey, sessionLine, sessionLive, shellQuote, tmuxName,
 } from './sessions'
 import type { Digest, HarnessSpec, Limit } from './sessions'
 
@@ -35,6 +35,10 @@ export type SessionIo = {
   deliver: (id: string, text: string) => Promise<unknown>
   // How many activity lines a card keeps.
   logMax: number
+  // A manager's or the reviewer's report file moved / its terminal went away. When set, the report
+  // goes here instead of to the owner as a message (the caller routes it); when not set, as for a worker.
+  onRoleReport?: (s: Session, report: string) => Promise<unknown>
+  onRoleGone?: (s: Session, tail: string) => Promise<unknown>
 }
 
 export type SessionSettings = Settings & { harnesses: Record<string, HarnessSpec>; minQuota: number }
@@ -64,25 +68,26 @@ const SHELLS = new Set(['zsh', 'bash', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'nu'
 
 export type Caller = { id: string; name: string }
 
-async function startSession(io: SessionIo, input: Record<string, unknown>, caller: Caller, s: SessionSettings): Promise<string> {
-  const gated = await io.gate(caller.id === 'main' ? undefined : caller.id)
-  if (gated !== undefined) return `Refused: ${gated}`
-  const name = String(input.name ?? '').trim()
-  if (!NAME_RULE.test(name)) return 'Refused: name must be letters, digits, "-" or "_" (it becomes the branch flow/<name>).'
-  const brief = String(input.brief ?? '').trim()
-  if (brief === '') return 'Refused: brief is empty.'
-  const old = (await io.sessions())[name]
-  if (old !== undefined && !['exited', 'stopped'].includes(old.status)) return `Refused: session ${name} is already running (${old.harness} in ${old.host}).`
-  if ((await io.agents()).some(a => a.name === name && !ENDED.has(a.status))) return `Refused: an agent named ${name} is running; pick another name.`
-  const harness = String(input.harness ?? (s.workerHarness === 'agent' ? '' : s.workerHarness)).trim()
-  const custom = String(input.command ?? '').trim()
-  const spec: HarnessSpec | undefined = harness === 'command' ? (custom ? { start: custom } : undefined) : s.harnesses[harness]
-  if (harness === 'command' && spec === undefined) return 'Refused: harness "command" needs command, the command line that starts it ({prompt} or {prompt_file} where the prompt goes).'
-  if (spec === undefined) return `Refused: unknown harness "${harness}". Known: ${Object.keys(s.harnesses).join(', ')}; or harness "command" with command.`
-  const template = spec.start
+// What the start of a session needs beyond its harness: who it is for and what it runs in.
+type Launch = {
+  name: string
+  harness: string
+  spec: HarnessSpec
+  owner: Caller
+  hostChoice: string
+  model?: string
+  // Absent on a worker; a manager or the reviewer running in a terminal with its tools relayed.
+  role?: 'manager' | 'reviewer'
+  // The full prompt, once the session's own paths are known.
+  promptOf: (paths: { reportFile: string; branch: string }) => string
+  // The answer's closing sentence.
+  tail: string
+}
 
+// The program must be on PATH and the harness must have quota left; text when it can't start.
+async function checkHarness(io: SessionIo, harness: string, spec: HarnessSpec, s: SessionSettings): Promise<string | undefined> {
   // Installed? Homebrew's prefixes are added: a GUI-started engine often lacks them on PATH.
-  const program = spec.program ?? programOf(template)
+  const program = spec.program ?? programOf(spec.start)
   if (program !== undefined) {
     const found = await io.run(['sh', '-c', 'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin" command -v "$1"', 'sh', program], 10_000)
     if (found.exitCode !== 0) return `Refused: ${program} is not installed (not on PATH). Start this worker as a flow:worker agent instead, or pick another harness.`
@@ -93,58 +98,109 @@ async function startSession(io: SessionIo, input: Record<string, unknown>, calle
       return `Refused: ${harness} has ${left}% of its quota left, below min_quota (${s.minQuota}%). Start this worker as a flow:worker agent instead, or with another harness.`
     }
   }
+  return undefined
+}
 
+// The built-in claude takes the model on its command line; other harnesses choose their own.
+function withModel(harness: string, template: string, model: string | undefined): string {
+  if (model === undefined || model === '' || harness !== 'claude' || !template.startsWith('claude ')) return template
+  return `claude --model ${shellQuote(model)} ${template.slice('claude '.length)}`
+}
+
+// The environment prefix of a session's command line: its role for a role session, else the worker
+// marker that makes a worker's own plugin copy passive.
+export const envPrefixOf = (s: Pick<Session, 'name' | 'role' | 'relayDir'>): string =>
+  s.role !== undefined ? relayEnv(s.role, s.name, s.relayDir) : relayEnv('worker', s.name)
+
+// An Orca terminal for a session. A manager runs in the main checkout: Orca is asked for a terminal
+// there; if it refuses, a detached Orca worktree hosts the terminal and the line starts with `cd`.
+async function orcaTerminal(io: SessionIo, s: { name: string; role?: Session['role']; worktree: string; hostWorktree?: string }, line: string, main: string, base: string): Promise<{ handle: string; hostWorktree?: string } | { error: string }> {
+  const create = (wt: string, cmd: string) => io.run(['orca', 'terminal', 'create', '--worktree', `path:${wt}`, '--title', s.name, '--command', cmd, '--json'])
+  if (s.role !== 'manager') {
+    const r = await create(s.worktree, line)
+    const h = r.exitCode === 0 ? findHandle(r.stdout) : undefined
+    return h === undefined ? { error: why(r) } : { handle: h }
+  }
+  if (s.hostWorktree === undefined) {
+    const r = await create(main, line)
+    const h = r.exitCode === 0 ? findHandle(r.stdout) : undefined
+    if (h !== undefined) return { handle: h }
+  }
+  let host = s.hostWorktree
+  if (host === undefined) {
+    const c = await io.run(['orca', 'worktree', 'create', '--repo', `path:${main}`, '--name', `mgr-${s.name}`, '--base-branch', `origin/${base}`, '--json'], 180_000)
+    host = c.exitCode === 0 ? findWorktreePath(c.stdout) : undefined
+    if (host === undefined) return { error: `Orca refused a terminal in the main checkout and a worktree to host one: ${why(c)}` }
+    await io.run(['git', '-C', host, 'checkout', '--detach'])
+  }
+  const r = await create(host, `cd ${shellQuote(main)} && ${line}`)
+  const h = r.exitCode === 0 ? findHandle(r.stdout) : undefined
+  return h === undefined ? { error: why(r) } : { handle: h, hostWorktree: host }
+}
+
+async function launch(io: SessionIo, l: Launch, s: SessionSettings): Promise<{ error: string } | { session: Session; text: string }> {
+  const { name, harness, spec, role } = l
+  const template = withModel(harness, spec.start, l.model)
   const dir = await io.stateDir()
   const wl = await io.run(['git', 'worktree', 'list', '--porcelain'])
   const main = /^worktree (.+)$/m.exec(wl.stdout)?.[1]
-  if (dir === undefined || main === undefined) return 'Refused: not in a git repo.'
-  const choice = String(input.host ?? s.sessionHost)
+  if (dir === undefined || main === undefined) return { error: 'Refused: not in a git repo.' }
+  const choice = l.hostChoice
   const orcaUp = choice !== 'tmux' && await io.run(['orca', 'status'], 10_000).then(r => r.exitCode === 0 && /runtimeReachable:\s*true/.test(r.stdout))
   const tmuxUp = choice !== 'orca' && !orcaUp && (await io.run(['tmux', '-V'], 10_000)).exitCode === 0
   const host = pickHost(choice, orcaUp, tmuxUp)
-  if (typeof host !== 'string') return `Refused: ${host.error}`
+  if (typeof host !== 'string') return { error: `Refused: ${host.error}` }
 
-  const branch = `flow/${name}`
-  await io.run(['git', 'fetch', 'origin', s.base], 120_000)
+  // A manager works in the main checkout; the reviewer in a detached worktree; a worker on a branch of its own.
+  const branch = role === 'manager' ? s.base : role === 'reviewer' ? `(detached origin/${s.base})` : `flow/${name}`
+  if (role !== 'manager') await io.run(['git', 'fetch', 'origin', s.base], 120_000)
   let worktree: string
-  if (host === 'tmux') {
+  if (role === 'manager') {
+    worktree = main
+  } else if (host === 'tmux') {
     worktree = `${main}/.claude/worktrees/${name}`
-    const r = await io.run(['git', 'worktree', 'add', '-b', branch, worktree, `origin/${s.base}`], 120_000)
-    if (r.exitCode !== 0) return `Could not create the worktree: ${why(r)}`
+    const add = role === 'reviewer' ? ['git', 'worktree', 'add', '--detach', worktree, `origin/${s.base}`] : ['git', 'worktree', 'add', '-b', branch, worktree, `origin/${s.base}`]
+    const r = await io.run(add, 120_000)
+    if (r.exitCode !== 0) return { error: `Could not create the worktree: ${why(r)}` }
   } else {
     const r = await io.run(['orca', 'worktree', 'create', '--repo', `path:${main}`, '--name', name, '--base-branch', `origin/${s.base}`, '--json'], 180_000)
     const path = r.exitCode === 0 ? findWorktreePath(r.stdout) : undefined
-    if (path === undefined) return `Could not create an Orca worktree: ${why(r)}`
+    if (path === undefined) return { error: `Could not create an Orca worktree: ${why(r)}` }
     worktree = path
-    const m = await io.run(['git', '-C', worktree, 'branch', '-m', branch])
-    if (m.exitCode !== 0) return `Created the Orca worktree ${worktree}, but could not name its branch ${branch}: ${why(m)}. Nothing was started in it.`
+    const m = role === 'reviewer'
+      ? await io.run(['git', '-C', worktree, 'checkout', '--detach'])
+      : await io.run(['git', '-C', worktree, 'branch', '-m', branch])
+    if (m.exitCode !== 0) {
+      return { error: role === 'reviewer'
+        ? `Created the Orca worktree ${worktree}, but could not detach it: ${why(m)}. Nothing was started in it.`
+        : `Created the Orca worktree ${worktree}, but could not name its branch ${branch}: ${why(m)}. Nothing was started in it.` }
+    }
   }
 
   const sdir = `${dir}/sessions/${name}`
   const promptFile = `${sdir}/prompt.md`
   const reportFile = `${sdir}/report.md`
+  const relayDir = role === undefined ? undefined : `${sdir}/relay`
   // A report left by an earlier session of this name would read as this one's.
   await io.run(['rm', '-f', reportFile])
-  const prompt = fill(SESSION_PROMPT, s)
-    .replaceAll('{{HARNESS}}', harness === 'command' ? 'a coding agent' : harness)
-    .replaceAll('{{OWNER}}', caller.name).replaceAll('{{NAME}}', name)
-    .replaceAll('{{BRANCH}}', branch).replaceAll('{{REPORT}}', reportFile)
-  await io.write(promptFile, `${prompt}${brief}\n`)
-  const line = commandFor(template, promptFile)
+  if (relayDir !== undefined) await io.run(['mkdir', '-p', relayDir])
+  await io.write(promptFile, l.promptOf({ reportFile, branch }))
+  const line = `${envPrefixOf({ name, ...(role !== undefined && { role }), ...(relayDir !== undefined && { relayDir }) })} ${commandFor(template, promptFile)}`
 
   let handle: string
+  let hostWorktree: string | undefined
   if (host === 'tmux') {
     handle = tmuxName(name)
     const r = await io.run(['tmux', 'new-session', '-d', '-s', handle, '-c', worktree])
-    if (r.exitCode !== 0) return `The worktree ${worktree} is ready, but tmux could not start: ${why(r)}`
+    if (r.exitCode !== 0) return { error: `The worktree ${worktree} is ready, but tmux could not start: ${why(r)}` }
     // A tmux server started from here inherits this session's environment; a nested claude refuses to run under it.
     await io.run(['tmux', 'send-keys', '-t', handle, '-l', `unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ${line}`])
     await io.run(['tmux', 'send-keys', '-t', handle, 'Enter'])
   } else {
-    const r = await io.run(['orca', 'terminal', 'create', '--worktree', `path:${worktree}`, '--title', name, '--command', line, '--json'])
-    const h = r.exitCode === 0 ? findHandle(r.stdout) : undefined
-    if (h === undefined) return `The worktree ${worktree} is ready, but the Orca terminal could not start: ${why(r)}`
-    handle = h
+    const r = await orcaTerminal(io, { name, ...(role !== undefined && { role }), worktree }, line, main, s.base)
+    if ('error' in r) return { error: `The worktree ${worktree} is ready, but the Orca terminal could not start: ${r.error}` }
+    handle = r.handle
+    hostWorktree = r.hostWorktree
   }
 
   const t = await io.now()
@@ -152,15 +208,79 @@ async function startSession(io: SessionIo, input: Record<string, unknown>, calle
     name, harness, host, handle, worktree, branch, promptFile, reportFile, start: template,
     ...(spec.resume !== undefined && { resume: spec.resume }),
     ...(spec.digest !== undefined && { digestKind: spec.digest }),
-    owner: caller.id, ownerName: caller.name, status: 'running', startedAt: t,
+    ...(role !== undefined && { role }), ...(relayDir !== undefined && { relayDir }),
+    ...(hostWorktree !== undefined && { hostWorktree }),
+    owner: l.owner.id, ownerName: l.owner.name, status: 'running', startedAt: t,
   }
   await io.updateSessions(all => ({ ...all, [name]: session }))
   await io.updateActivity(acts => ({ ...acts, [sessionKey(name)]: { startedAt: t, lastAt: t, log: [`started ${harness} in ${host}`] } }))
-  await io.log({ event: 'spawn', agent: name, owner: caller.name, branch })
+  await io.log({ event: 'spawn', agent: name, owner: l.owner.name, branch })
   await io.refresh()
   void io.openPane()
-  return `Started ${name}: ${harness} in ${host} (${host === 'tmux' ? `tmux attach -t ${handle}` : handle}), worktree ${worktree}, branch ${branch}. ` +
-    'Its report comes to you as a "flow session:" message: end your turn while you wait.'
+  return {
+    session,
+    text: `Started ${name}: ${harness} in ${host} (${host === 'tmux' ? `tmux attach -t ${handle}` : handle}), worktree ${worktree}, branch ${branch}. ${l.tail}`,
+  }
+}
+
+async function startSession(io: SessionIo, input: Record<string, unknown>, caller: Caller, s: SessionSettings): Promise<string> {
+  const gated = await io.gate(caller.id === 'main' ? undefined : caller.id)
+  if (gated !== undefined) return `Refused: ${gated}`
+  const name = String(input.name ?? '').trim()
+  if (!NAME_RULE.test(name)) return 'Refused: name must be letters, digits, "-" or "_" (it becomes the branch flow/<name>).'
+  const brief = String(input.brief ?? '').trim()
+  if (brief === '') return 'Refused: brief is empty.'
+  const sessions = await io.sessions()
+  const old = sessions[name]
+  if (old !== undefined && !['exited', 'stopped'].includes(old.status)) return `Refused: session ${name} is already running (${old.harness} in ${old.host}).`
+  if ((await io.agents()).some(a => a.name === name && !ENDED.has(a.status))) return `Refused: an agent named ${name} is running; pick another name.`
+  // A manager running in a terminal has no Agent tool for flow:worker: its workers are sessions, claude unless set otherwise.
+  const fromRole = caller.id.startsWith('session:') && sessions[caller.id.slice('session:'.length)]?.role !== undefined
+  const harness = String(input.harness ?? (s.workerHarness === 'agent' ? (fromRole ? 'claude' : '') : s.workerHarness)).trim()
+  const custom = String(input.command ?? '').trim()
+  const spec: HarnessSpec | undefined = harness === 'command' ? (custom ? { start: custom } : undefined) : s.harnesses[harness]
+  if (harness === 'command' && spec === undefined) return 'Refused: harness "command" needs command, the command line that starts it ({prompt} or {prompt_file} where the prompt goes).'
+  if (spec === undefined) return `Refused: unknown harness "${harness}". Known: ${Object.keys(s.harnesses).join(', ')}; or harness "command" with command.`
+  const refused = await checkHarness(io, harness, spec, s)
+  if (refused !== undefined) return refused
+
+  const r = await launch(io, {
+    name, harness, spec, owner: caller, hostChoice: String(input.host ?? s.sessionHost),
+    promptOf: ({ reportFile, branch }) => {
+      const prompt = fill(SESSION_PROMPT, s)
+        .replaceAll('{{HARNESS}}', harness === 'command' ? 'a coding agent' : harness)
+        .replaceAll('{{OWNER}}', caller.name).replaceAll('{{NAME}}', name)
+        .replaceAll('{{BRANCH}}', branch).replaceAll('{{REPORT}}', reportFile)
+      return `${prompt}${brief}\n`
+    },
+    tail: 'Its report comes to you as a "flow session:" message: end your turn while you wait.',
+  }, s)
+  return 'error' in r ? r.error : r.text
+}
+
+// A manager or the reviewer in a terminal (a manager in the main checkout, the reviewer in a
+// detached worktree of its own). The harness is the manager_harness / reviewer_harness setting, or
+// `harness`; it must be one that loads the plugin (roleHarnessOf). `prompt` is the whole prompt;
+// {{REPORT}} and {{NAME}} in it are filled here. Not gated: the caller decides when to start one.
+export type RoleStart = { role: 'manager' | 'reviewer'; name: string; prompt: string; model?: string; owner: Caller; harness?: string; host?: string }
+
+export async function startRoleSession(io: SessionIo, p: RoleStart, s: SessionSettings): Promise<{ ok: true; session: Session; text: string } | { ok: false; text: string }> {
+  if (!NAME_RULE.test(p.name)) return { ok: false, text: 'Refused: name must be letters, digits, "-" or "_".' }
+  const old = (await io.sessions())[p.name]
+  if (old !== undefined && !['exited', 'stopped'].includes(old.status)) return { ok: false, text: `Refused: session ${p.name} is already running (${old.harness} in ${old.host}).` }
+  const want = p.harness ?? (p.role === 'manager' ? s.managerHarness : s.reviewerHarness) ?? 'agent'
+  const picked = roleHarnessOf(want, s.harnesses)
+  if (picked.harness === 'agent') return { ok: false, text: `Refused: ${picked.reason ?? `the ${p.role} harness is agent`}.` }
+  const spec = s.harnesses[picked.harness]!
+  const refused = await checkHarness(io, picked.harness, spec, s)
+  if (refused !== undefined) return { ok: false, text: refused }
+  const r = await launch(io, {
+    name: p.name, harness: picked.harness, spec, owner: p.owner, hostChoice: p.host ?? s.sessionHost ?? 'auto', role: p.role,
+    ...(p.model !== undefined && { model: p.model }),
+    promptOf: ({ reportFile }) => `${p.prompt.replaceAll('{{REPORT}}', reportFile).replaceAll('{{NAME}}', p.name)}\n`,
+    tail: 'Its flow tools are relayed to this session; its report comes back as a message.',
+  }, s)
+  return 'error' in r ? { ok: false, text: r.error } : { ok: true, ...r }
 }
 
 // The newest lines with Codex rate limits, newest file first.
@@ -273,6 +393,25 @@ async function typeInto(io: SessionIo, s: Session, text: string): Promise<Ran> {
   return r
 }
 
+// A message into a session's terminal: one short line is typed as it is; anything longer or with
+// several lines goes to a file the session reads (a TUI takes a long paste badly), and a line points at it.
+// A session that was waiting is running again.
+const LINE_MAX = 800
+export async function sendToSession(io: SessionIo, s: Session, text: string, sender = 'main'): Promise<Ran> {
+  let typed = text
+  if (text.includes('\n') || text.length >= LINE_MAX) {
+    const t = await io.now()
+    const dir = s.promptFile.replace(/\/[^/]*$/, '')
+    const file = `${dir}/messages/${t}.md`
+    await io.run(['mkdir', '-p', `${dir}/messages`])
+    await io.write(file, `${text.trim()}\n`)
+    typed = `flow: new message (from ${sender}), read ${file} and act on it`
+  }
+  const r = await typeInto(io, s, typed)
+  if (r.exitCode === 0) await io.updateSessions(x => x[s.name] === undefined || !sessionLive(x[s.name]!) ? x : { ...x, [s.name]: { ...x[s.name]!, status: 'running' as const } })
+  return r
+}
+
 async function tellOwner(io: SessionIo, s: Session, text: string): Promise<void> {
   if (s.owner === 'main') io.after(0, () => void io.submit(text).catch(() => undefined))
   else await io.deliver(s.owner, text).catch(() => undefined)
@@ -308,7 +447,8 @@ export async function watchSessions(io: SessionIo): Promise<void> {
           await io.updateSessions(all => ({ ...all, [s.name]: { ...all[s.name]!, status: 'reported' as const, reportAt: st.mtimeMs } }))
           await noteSession(io, s.name, t, 'reported', report)
           await io.log({ event: 'report', agent: s.name, owner: s.ownerName, text: report.split('\n').pop() ?? '' })
-          await tellOwner(io, s, reportMessage(s, report))
+          if (s.role !== undefined && io.onRoleReport !== undefined) await io.onRoleReport(s, report).catch(() => undefined)
+          else await tellOwner(io, s, reportMessage(s, report))
           continue
         }
       }
@@ -337,7 +477,8 @@ export async function watchSessions(io: SessionIo): Promise<void> {
           }))
           if (idle) {
             await noteSession(io, s.name, t, 'idle')
-            await tellOwner(io, s, idleMessage(s, why!.text, text, digest?.lastWords))
+            // A manager or the reviewer waiting between turns is not stuck: its status moves, nobody is told.
+            if (s.role === undefined) await tellOwner(io, s, idleMessage(s, why!.text, text, digest?.lastWords))
           }
         }
       }
@@ -347,7 +488,9 @@ export async function watchSessions(io: SessionIo): Promise<void> {
       if (!alive) {
         const tail = await sessionTail(io, s, 30)
         await noteSession(io, s.name, t, 'ended')
-        await tellOwner(io, s, goneMessage(s, tail.exitCode === 0 ? tail.stdout.slice(-3000) : ''))
+        const last = tail.exitCode === 0 ? tail.stdout.slice(-3000) : ''
+        if (s.role !== undefined && io.onRoleGone !== undefined) await io.onRoleGone(s, last).catch(() => undefined)
+        else await tellOwner(io, s, goneMessage(s, last))
       }
     }
   } catch (err) {
@@ -379,7 +522,7 @@ export async function sessionTool(io: SessionIo, input: Record<string, unknown>,
     const text = String(input.text ?? '').trim()
     if (text === '') return 'Refused: text is empty.'
     if (ss.status === 'stopped' || ss.status === 'exited') return `Refused: ${name} has ${ss.status}. Start a new session to go on.`
-    const r = await typeInto(io, ss, text)
+    const r = ss.role === undefined ? await typeInto(io, ss, text) : await sendToSession(io, ss, text, caller.name)
     if (r.exitCode !== 0) return `Could not send to ${name}: ${why(r)}`
     await io.updateSessions(x => ({ ...x, [name]: { ...x[name]!, status: 'running' as const } }))
     await noteSession(io, name, t, `message: ${text.replace(/\s+/g, ' ').slice(0, 80)}`)
@@ -401,7 +544,7 @@ export async function sessionTool(io: SessionIo, input: Record<string, unknown>,
   if (action === 'restart') {
     // In the same terminal: the harness is stopped if it still runs, then its resume line (or its
     // start line with the same prompt) is typed into the shell left behind.
-    const line = ss.resume !== undefined ? ss.resume : commandFor(ss.start, ss.promptFile)
+    const line = `${envPrefixOf(ss)} ${ss.resume !== undefined ? ss.resume : commandFor(ss.start, ss.promptFile)}`
     if (ss.host === 'tmux') {
       const alive = await io.run(['tmux', 'has-session', '-t', ss.handle], 10_000)
       if (alive.exitCode !== 0) return `Refused: ${name}'s tmux session is gone. Start a new session (a new name) to go on.`
@@ -411,11 +554,10 @@ export async function sessionTool(io: SessionIo, input: Record<string, unknown>,
       await io.run(['tmux', 'send-keys', '-t', ss.handle, '-l', `unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ${line}`])
       await io.run(['tmux', 'send-keys', '-t', ss.handle, 'Enter'])
     } else {
-      const r = await io.run(['orca', 'terminal', 'create', '--worktree', `path:${ss.worktree}`, '--title', name, '--command', line, '--json'])
-      const h = r.exitCode === 0 ? findHandle(r.stdout) : undefined
-      if (h === undefined) return `Could not open a new Orca terminal for ${name}: ${why(r)}`
+      const r = await orcaTerminal(io, ss, line, ss.role === 'manager' ? ss.worktree : '', s.base)
+      if ('error' in r) return `Could not open a new Orca terminal for ${name}: ${r.error}`
       await io.run(['orca', 'terminal', 'close', '--terminal', ss.handle, '--json'])
-      await io.updateSessions(x => ({ ...x, [name]: { ...x[name]!, handle: h } }))
+      await io.updateSessions(x => ({ ...x, [name]: { ...x[name]!, handle: r.handle, ...(r.hostWorktree !== undefined && { hostWorktree: r.hostWorktree }) } }))
     }
     await io.updateSessions(x => ({ ...x, [name]: { ...x[name]!, status: 'running' as const, checkedAt: t, lookedAt: t } }))
     await noteSession(io, name, t, ss.resume !== undefined ? 'restarted (resumed)' : 'restarted (fresh)')
@@ -429,7 +571,7 @@ export async function sessionTool(io: SessionIo, input: Record<string, unknown>,
     const closed = r.exitCode === 0 ? 'Terminal closed.' : `The terminal did not close (${why(r)}); it may be gone already.`
     await io.updateSessions(x => ({ ...x, [name]: { ...x[name]!, status: 'stopped' as const } }))
     await noteSession(io, name, t, 'stopped')
-    if (input.remove_worktree !== true) return `Stopped ${name}. ${closed} The worktree ${ss.worktree} stays.`
+    if (input.remove_worktree !== true || ss.role === 'manager') return `Stopped ${name}. ${closed} The worktree ${ss.worktree} stays.`
     // Removed only when nothing in it would be lost: no changes, and HEAD on a remote branch.
     const dirty = (await io.run(['git', '-C', ss.worktree, 'status', '--porcelain'])).stdout.trim() !== ''
     const pushed = (await io.run(['git', '-C', ss.worktree, 'branch', '-r', '--contains', 'HEAD'])).stdout.trim() !== ''

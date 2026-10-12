@@ -405,6 +405,18 @@
       "description": "Advanced: What managers start workers with: agent (a flow:worker in this session), or a harness run in a terminal: claude, codex, gemini, opencode, or a name from the harnesses setting. Managers can still pick another one per worker.",
       "default": "agent"
     },
+    "manager_harness": {
+      "type": "string",
+      "title": "Manager harness",
+      "description": "Advanced: Where managers run: agent (a flow:manager in this session), or claude (a Claude Code in a terminal whose flow tools are relayed to this session). Other harnesses cannot load the plugin and fall back to agent.",
+      "default": "agent"
+    },
+    "reviewer_harness": {
+      "type": "string",
+      "title": "Reviewer harness",
+      "description": "Advanced: Where the reviewer runs: agent (a flow:reviewer in this session), or claude (one long-lived Claude Code in a terminal and worktree whose flow tools are relayed to this session). Other harnesses fall back to agent.",
+      "default": "agent"
+    },
     "session_host": {
       "type": "string",
       "title": "Session host",
