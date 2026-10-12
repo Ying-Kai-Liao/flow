@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.76] - 2026-10-12
+
+### Changed
+
+- Size pane views to the body rows (#170)
+
 ## [0.6.75] - 2026-10-12
 
 ### Fixed
