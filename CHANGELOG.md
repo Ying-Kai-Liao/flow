@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.87] - 2026-10-13
+
 ### Added
 
 - Claude terminal sessions get flow's routed reasoning effort as `--effort <level>` on their start line: terminal managers (`manager_effort`), the terminal reviewer (`reviewer_effort`) and session workers (`worker_effort_small` / `worker_effort_normal` / `worker_effort` by the brief's `Size:` line). `inherit`, empty, an unknown level or `CLAUDE_CODE_EFFORT_LEVEL` in the environment passes nothing.
