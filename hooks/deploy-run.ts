@@ -10,7 +10,8 @@ import {
 import type { Deploys, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
 import { AUTO, matchRule } from './standing'
 import type { Resolved } from './standing'
-import { cardsNotice, cardsOn } from './askcards'
+import { openOf, sendCards } from './askcards'
+import type { CardsIo } from './askcards'
 import { markAnswered, notesOwner } from './inbox'
 import type { Inbox, Question } from './inbox'
 
@@ -43,7 +44,11 @@ export type DeployIo = {
   toast: (text: string) => void
   // A prompt to the main session (the ask_cards notices).
   toMain: (text: string) => void
+  // Whether the Flow pane is open in this session (it then shows the items, so no cards notice).
+  paneOpen: () => Promise<boolean>
 }
+
+const cardsOf = (io: DeployIo): CardsIo => ({ paneOpen: io.paneOpen, openIds: async ids => openOf(await io.inbox(), ids), send: io.toMain })
 
 // Deploy gate changes run one after another, like the inbox's.
 let deploysChain: Promise<unknown> = Promise.resolve()
@@ -275,7 +280,7 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
       await io.best('saving a handover', () => io.saveHandover(next))
     }
     io.toast(`Env on ${target} awaits you: /flow inbox (${qids.join(', ')})`)
-    if (created.length > 0 && cardsOn(options)) io.toMain(cardsNotice(`Env on ${target} awaits the user`, created))
+    if (created.length > 0) await sendCards(cardsOf(io), options, () => `Env on ${target} awaits the user`, created)
     return `Awaits env: ${qids.join(', ')}. ${skipText(target)}`
   }
   const last = (await io.deploys()).targets[target]?.deployedSha
@@ -308,7 +313,7 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
     }
   }
   io.toast(`Deploy ${target} awaits your approval: /flow inbox (${q.id})`)
-  if (cardsOn(options)) io.toMain(cardsNotice(`Deploy ${target} awaits the user's approval`, [q.id]))
+  await sendCards(cardsOf(io), options, () => `Deploy ${target} awaits the user's approval`, [q.id])
   return `Awaits approval: ${q.id}. ${skipText(target)}`
 }
 
@@ -380,7 +385,7 @@ export async function openHandoverEnv(
     const ib = await io.inbox()
     const stillOpen = fresh.filter(q => ib.items.find(x => x.id === q.id)?.state === 'open')
     if (stillOpen.length > 0) io.toast(`PR #${h.pr} has ${stillOpen.length} env item${stillOpen.length === 1 ? '' : 's'} for you: /flow inbox`)
-    if (stillOpen.length > 0 && cardsOn(options)) io.toMain(cardsNotice(`PR #${h.pr} has ${stillOpen.length} env item${stillOpen.length === 1 ? '' : 's'} for the user`, stillOpen.map(q => q.id)))
+    if (stillOpen.length > 0) await sendCards(cardsOf(io), options, n => `PR #${h.pr} has ${n} env item${n === 1 ? '' : 's'} for the user`, stillOpen.map(q => q.id))
   }
   if (changes.length === 0) return ''
   const ib = await io.inbox()

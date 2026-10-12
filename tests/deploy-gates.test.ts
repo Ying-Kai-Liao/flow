@@ -178,6 +178,8 @@ function world(on: On) {
     agents.push({ id: 'q2', name: input.name, description: input.description, type, status: 'running' })
     return { model: 'sonnet', agentId: 'q2' }
   })
+  const pane = { open: false, throws: false }
+  on('ui.panes', () => { if (pane.throws) throw new Error('no panes'); return { value: pane.open ? [{ id: 'flow', title: 'Flow', isShown: true, isFocused: false, isPlaced: true }] : [] } })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -199,7 +201,7 @@ function world(on: On) {
     }
     return ok()
   })
-  return { agents, files, spawned, toasts, prompts, flush: async () => { await clock.advance(1); await clock.settle() }, setBehind: (n: string) => { behind = n } }
+  return { pane, agents, files, spawned, toasts, prompts, flush: async () => { await clock.advance(1); await clock.settle() }, setBehind: (n: string) => { behind = n } }
 }
 
 const deploy = ($: Dollar, args: Record<string, unknown>, agentId: string | null = null) =>
@@ -352,6 +354,23 @@ test('ask_cards on: a new deploy approval sends main one notice with the card in
   expect(w.prompts[0]).toContain('Deploy production awaits the user\'s approval (q1)')
   expect(w.prompts[0]).toContain('AskUserQuestion')
   expect(w.toasts.join('\n')).toContain('production awaits your approval')
+  await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')
+  await w.flush()
+  expect(w.prompts).toHaveLength(1)
+})
+
+test('ask_cards with the Flow pane open: a deploy approval sends main no notice, the toast stays; a failing panes probe still sends', { options: { deploy_targets: JSON.stringify(TARGETS) } }, async ($, on) => {
+  const w = world(on)
+  w.pane.open = true
+  await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')
+  await w.flush()
+  expect(w.prompts).toEqual([])
+  expect(w.toasts.join('\n')).toContain('production awaits your approval')
+})
+
+test('ask_cards: a throwing panes probe counts as closed, the deploy notice is still sent', { options: { deploy_targets: JSON.stringify(TARGETS) } }, async ($, on) => {
+  const w = world(on)
+  w.pane.throws = true
   await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')
   await w.flush()
   expect(w.prompts).toHaveLength(1)

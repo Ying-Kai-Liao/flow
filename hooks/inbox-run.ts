@@ -1,7 +1,7 @@
 // The inbox-side tools: ask, fyi, preflight and answer. The engine refuses `$` across an import, so
 // register.tsx builds an InboxIo of closures (inboxIoOf) and the atom-backed helpers reach this module that way.
 import type { AgentRow } from '../types'
-import { cardsNotice, cardsOn } from './askcards'
+import { cardsOn, openOf, sendCards } from './askcards'
 import type { DecideIo } from './decide'
 import { autoKeepFyis } from './decide-use'
 import type { DecideUseSettings } from './decide-use'
@@ -27,6 +27,8 @@ export type InboxIo = {
   preflightTick: (rows: AgentRow[]) => Promise<void>
   // Fire-and-forget: submit the text as a prompt on the next tick.
   submitLater: (text: string) => void
+  // Whether the Flow pane is open in this session (it then shows the questions, so no cards notice).
+  paneOpen: () => Promise<boolean>
   // The decision API's fetch and timer (decide.ts), for decide_inbox.
   net: DecideIo
 }
@@ -69,7 +71,8 @@ export async function askTool(io: InboxIo, options: Record<string, unknown>, inp
     await io.deliver(parent.id, `${lines.join('\n')}\nAnswer with mcp__flow__answer.`, { held: !fresh.some(q => q.blocking), urgent: fresh.some(q => q.blocking) }).catch(() => undefined)
   } else if (addressee === 'main' && fresh.some(q => q.blocking)) {
     io.toast(`${name} asks: ${fresh.length} question(s) in /flow inbox`)
-    if (cardsOn(options)) io.submitLater(cardsNotice(`${name} asks ${fresh.filter(q => q.blocking).length} blocking question(s) for the user`, fresh.filter(q => q.blocking).map(q => q.id)))
+    await sendCards({ paneOpen: io.paneOpen, openIds: async ids => openOf(await io.standing.inbox(), ids), send: io.submitLater }, options,
+      n => `${name} asks ${n} blocking question(s) for the user`, fresh.filter(q => q.blocking).map(q => q.id))
   }
   return {
     result: added.map(({ q, fresh: isNew }) => {

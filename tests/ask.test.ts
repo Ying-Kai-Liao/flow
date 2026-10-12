@@ -22,6 +22,8 @@ function world(on: On) {
   const submitted: string[] = []
   on('prompt.submit', (_, e) => { submitted.push(e.text); return { text: e.text } })
   on('agent.list', () => ({ value: agents }))
+  const pane = { open: false, throws: false }
+  on('ui.panes', () => { if (pane.throws) throw new Error('no panes'); return { value: pane.open ? [{ id: 'flow', title: 'Flow', isShown: true, isFocused: false, isPlaced: true }] : [] } })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -46,7 +48,7 @@ function world(on: On) {
     }
     return ok()
   })
-  return { agents, files, sent, toasts, submitted, clock }
+  return { pane, agents, files, sent, toasts, submitted, clock }
 }
 
 const ask = ($: Dollar, agentId: string | null, questions: unknown[]) =>
@@ -441,6 +443,20 @@ test('ask_cards on: a blocking ask to main sends main a notice with the card ins
   expect(w.submitted[0]).toContain('csv-export asks 1 blocking question(s) for the user (q2)')
   expect(w.submitted[0]).toContain(CARD)
   expect(w.toasts.join('\n')).toContain('/flow inbox')
+})
+
+test('ask_cards with the Flow pane open: a blocking ask to main sends no notice, the toast stays; pane closed sends it', async ($, on) => {
+  const w = world(on)
+  w.pane.open = true
+  await ask($, 'm1', [BLOCK])
+  await w.clock.advance(1); await w.clock.settle()
+  expect(w.submitted).toEqual([])
+  expect(w.toasts.join('\n')).toContain('/flow inbox')
+  w.pane.open = false
+  await ask($, 'm1', [{ ...BLOCK, question: 'Which encoding?' }])
+  await w.clock.advance(1); await w.clock.settle()
+  expect(w.submitted).toHaveLength(1)
+  expect(w.submitted[0]).toContain('(q2)')
 })
 
 test('ask_cards off: a blocking ask to main sends no notice, the toast stays', { options: { ask_cards: 'off' } }, async ($, on) => {
