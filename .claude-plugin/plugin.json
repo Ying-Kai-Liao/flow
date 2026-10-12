@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.6.85",
+  "version": "0.6.86",
   "description": "Claude Code agents that work like a company, with Jev picking the right model for each task to keep cost down.",
   "author": {
     "name": "Ying-Kai Liao"
