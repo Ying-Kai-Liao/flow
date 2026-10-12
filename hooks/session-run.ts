@@ -2,6 +2,8 @@ import type { Activity, LogEvent, Session } from '../types'
 import { ENDED } from './deliver'
 import { fill, SESSION_PROMPT } from './prompts'
 import type { Settings } from './prompts'
+import { effortFor, parseSize } from './routing'
+import { EFFORT_LEVELS } from './settings'
 import {
   ago, claudeProjectDir, codexLimits, codexRemaining, commandFor, findHandle, findWorktreePath, goneMessage,
   idleMessage, keysOf, NAME_RULE, parseClaudeTranscript, parseCodexRollout, percentOf, pickHost, programOf, reportMessage,
@@ -35,6 +37,8 @@ export type SessionIo = {
   deliver: (id: string, text: string) => Promise<unknown>
   // How many activity lines a card keeps.
   logMax: number
+  // CLAUDE_CODE_EFFORT_LEVEL of main's environment; when set, flow passes no effort.
+  effortEnv?: () => Promise<string | undefined>
   // A manager's or the reviewer's report file moved / its terminal went away. When set, the report
   // goes here instead of to the owner as a message (the caller routes it); when not set, as for a worker.
   onRoleReport?: (s: Session, report: string) => Promise<unknown>
@@ -76,6 +80,7 @@ type Launch = {
   owner: Caller
   hostChoice: string
   model?: string
+  effort?: string
   // Absent on a worker; a manager or the reviewer running in a terminal with its tools relayed.
   role?: 'manager' | 'reviewer'
   // The full prompt, once the session's own paths are known.
@@ -101,10 +106,16 @@ async function checkHarness(io: SessionIo, harness: string, spec: HarnessSpec, s
   return undefined
 }
 
-// The built-in claude takes the model on its command line; other harnesses choose their own.
-function withModel(harness: string, template: string, model: string | undefined): string {
-  if (model === undefined || model === '' || harness !== 'claude' || !template.startsWith('claude ')) return template
-  return `claude --model ${shellQuote(model)} ${template.slice('claude '.length)}`
+// The built-in claude takes the model and the reasoning effort on its command line; other harnesses
+// choose their own. An effort that is not a level (inherit, empty) passes nothing.
+export function withClaudeFlags(harness: string, template: string, flags: { model?: string; effort?: string }): string {
+  if (harness !== 'claude' || !template.startsWith('claude ')) return template
+  const { model, effort } = flags
+  const parts = [
+    ...(model !== undefined && model !== '' ? [`--model ${shellQuote(model)}`] : []),
+    ...(effort !== undefined && EFFORT_LEVELS.includes(effort) ? [`--effort ${shellQuote(effort)}`] : []),
+  ]
+  return parts.length === 0 ? template : `claude ${parts.join(' ')} ${template.slice('claude '.length)}`
 }
 
 // The environment prefix of a session's command line: its role for a role session, else the worker
@@ -140,7 +151,7 @@ async function orcaTerminal(io: SessionIo, s: { name: string; role?: Session['ro
 
 async function launch(io: SessionIo, l: Launch, s: SessionSettings): Promise<{ error: string } | { session: Session; text: string }> {
   const { name, harness, spec, role } = l
-  const template = withModel(harness, spec.start, l.model)
+  const template = withClaudeFlags(harness, spec.start, { model: l.model, effort: l.effort })
   const dir = await io.stateDir()
   const wl = await io.run(['git', 'worktree', 'list', '--porcelain'])
   const main = /^worktree (.+)$/m.exec(wl.stdout)?.[1]
@@ -244,8 +255,11 @@ async function startSession(io: SessionIo, input: Record<string, unknown>, calle
   const refused = await checkHarness(io, harness, spec, s)
   if (refused !== undefined) return refused
 
+  // The worker effort of the brief's Size line, as an agent gets it; CLAUDE_CODE_EFFORT_LEVEL set disables the override.
+  const effort = effortFor('worker', parseSize(brief)?.size, s, await io.effortEnv?.().catch(() => undefined))
   const r = await launch(io, {
     name, harness, spec, owner: caller, hostChoice: String(input.host ?? s.sessionHost),
+    ...(effort !== undefined && { effort }),
     promptOf: ({ reportFile, branch }) => {
       const prompt = fill(SESSION_PROMPT, s)
         .replaceAll('{{HARNESS}}', harness === 'command' ? 'a coding agent' : harness)
@@ -262,7 +276,7 @@ async function startSession(io: SessionIo, input: Record<string, unknown>, calle
 // detached worktree of its own). The harness is the manager_harness / reviewer_harness setting, or
 // `harness`; it must be one that loads the plugin (roleHarnessOf). `prompt` is the whole prompt;
 // {{REPORT}} and {{NAME}} in it are filled here. Not gated: the caller decides when to start one.
-export type RoleStart = { role: 'manager' | 'reviewer'; name: string; prompt: string; model?: string; owner: Caller; harness?: string; host?: string }
+export type RoleStart = { role: 'manager' | 'reviewer'; name: string; prompt: string; model?: string; effort?: string; owner: Caller; harness?: string; host?: string }
 
 export async function startRoleSession(io: SessionIo, p: RoleStart, s: SessionSettings): Promise<{ ok: true; session: Session; text: string } | { ok: false; text: string }> {
   if (!NAME_RULE.test(p.name)) return { ok: false, text: 'Refused: name must be letters, digits, "-" or "_".' }
@@ -277,6 +291,7 @@ export async function startRoleSession(io: SessionIo, p: RoleStart, s: SessionSe
   const r = await launch(io, {
     name: p.name, harness: picked.harness, spec, owner: p.owner, hostChoice: p.host ?? s.sessionHost ?? 'auto', role: p.role,
     ...(p.model !== undefined && { model: p.model }),
+    ...(p.effort !== undefined && { effort: p.effort }),
     promptOf: ({ reportFile }) => `${p.prompt.replaceAll('{{REPORT}}', reportFile).replaceAll('{{NAME}}', p.name)}\n`,
     tail: 'Its flow tools are relayed to this session; its report comes back as a message.',
   }, s)

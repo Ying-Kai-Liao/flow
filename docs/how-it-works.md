@@ -586,7 +586,10 @@ built-in.
 `manager_harness` and `reviewer_harness` (default `agent`, which changes nothing) run the manager or the
 reviewer as a claude of its own in a terminal (Orca or tmux, by `session_host`), the way a session worker
 runs. Only a harness that runs claude is accepted (`claude`, or one added in `harnesses` whose start line is
-claude); any other falls back to the agent with one toast.
+claude); any other falls back to the agent with one toast. Their start line carries the routed model
+and the reasoning effort as `--model` and `--effort` (`manager_effort`, `reviewer_effort`; a session worker gets
+the `worker_effort*` of its brief's `Size:` line); `inherit`, an unset effort or `CLAUDE_CODE_EFFORT_LEVEL` in the
+environment passes none.
 
 - **Managers.** When main starts a `flow:manager` and `manager_harness` is set, the plugin starts the terminal
   instead and answers the Agent tool with a refusal worded as a success ("started manager ... it runs as a
