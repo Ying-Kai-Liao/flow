@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.82] - 2026-10-12
+
+### Changed
+
+- Esc returns to the Flow pane home view; drop duplicated inbox hint (#175)
+
 ## [0.6.81] - 2026-10-12
 
 ### Changed
