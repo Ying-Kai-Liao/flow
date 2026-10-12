@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.90] - 2026-10-13
+
+### Changed
+
+- Live-test fixes: lite line, manager report write, relayed ask test (#195)
+
 ## [0.6.89] - 2026-10-13
 
 ### Changed
