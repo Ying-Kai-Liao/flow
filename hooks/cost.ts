@@ -131,6 +131,14 @@ export function setIdentity(ledger: Ledger, key: string, who: Identity & { role:
   return { ...ledger, [key]: { models: {}, ...cur, ...definedOnly(who), firstAt: cur?.firstAt ?? now, lastAt: now } as LedgerEntry }
 }
 
+// The file's generation stamp lives under this top-level key. It is a string, so normalizeLedger (and an
+// older plugin's) drops it as a non-entry. A rebuild or the first save of a legacy file sets a new one.
+export const EPOCH_KEY = '__epoch'
+export function epochOf(raw: unknown): string {
+  const e = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>)[EPOCH_KEY] : undefined
+  return typeof e === 'string' ? e : ''
+}
+
 // What came off disk: anything that is not a ledger entry is dropped.
 export function normalizeLedger(raw: unknown): Ledger {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
@@ -140,6 +148,32 @@ export function normalizeLedger(raw: unknown): Ledger {
     const e = v as Record<string, unknown>
     if (typeof e.name !== 'string' || typeof e.models !== 'object' || e.models === null) continue
     out[k] = { ...(e as unknown as LedgerEntry), role: (['manager', 'worker', 'reviewer', 'main'] as const).find(r => r === e.role) ?? 'other' }
+  }
+  return out
+}
+
+// What changed between two views of the ledger, as a ledger: each changed entry keeps `after`'s identity and
+// times but carries only the added tokens and turns, so merging it onto the disk adds counts and never
+// replaces a real identity with a default.
+export function diffLedger(before: Ledger, after: Ledger): Ledger {
+  const out: Ledger = {}
+  const sub = (a: Tokens, b: Tokens | undefined): Tokens => ({
+    input: a.input - (b?.input ?? 0), write5m: a.write5m - (b?.write5m ?? 0), write1h: a.write1h - (b?.write1h ?? 0),
+    read: a.read - (b?.read ?? 0), output: a.output - (b?.output ?? 0),
+  })
+  const any = (t: Tokens): boolean => t.input !== 0 || t.write5m !== 0 || t.write1h !== 0 || t.read !== 0 || t.output !== 0
+  for (const [k, e] of Object.entries(after)) {
+    const o = before[k]
+    if (o === e) continue
+    const models: Record<string, Bucket> = {}
+    for (const [m, b] of Object.entries(e.models)) {
+      const d = sub(b, o?.models[m])
+      const long = b.long === undefined ? undefined : sub(b.long, o?.models[m]?.long)
+      if (any(d) || (long !== undefined && any(long))) models[m] = { ...d, ...(long !== undefined && any(long) ? { long } : {}) }
+    }
+    const { turns: _turns, ...rest } = e
+    const turns = (e.turns ?? 0) - (o?.turns ?? 0)
+    out[k] = { ...rest, models, ...(turns > 0 ? { turns } : {}) }
   }
   return out
 }

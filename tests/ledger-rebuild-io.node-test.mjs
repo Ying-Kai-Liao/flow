@@ -40,7 +40,13 @@ test('--write backs up under a dated name, never overwrites a backup, and replac
   const b2 = writeLedger(file, { k2: {} }, '2026-10-12')
   assert.equal(path.basename(b2), 'ledger-pre-rebuild-2026-10-12-2.json')
   assert.equal(JSON.parse(fs.readFileSync(b2, 'utf8')).k.name, 'w')
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { k2: {} })
+  const written = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.deepEqual(written.k2, {})
+  assert.match(written.__epoch, /^rebuild-/)
+  // Every write is a new generation, so a running plugin drops its stale base.
+  const before = written.__epoch
+  writeLedger(file, { k2: {} }, '2026-10-13')
+  assert.notEqual(JSON.parse(fs.readFileSync(file, 'utf8')).__epoch, before)
   assert.deepEqual(fs.readdirSync(dir).filter(f => f.endsWith('.tmp')), [])
 })
 
