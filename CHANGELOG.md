@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Unit tests for the `/flow` command dispatch (`tests/command.test.ts`), the usage accounting behind `turn.step` and `turn.complete` (`tests/usage-run.test.ts`: tokens in the ledger, a turn counted once, the hand-off warning) and the pane's body-rows sizing (the key-hint row stays last when the tree overflows).
+### Added
+
+- Standing rules settle the inbox. After main answers, `mcp__flow__answer` offers (once, with the exact `mcp__flow__standing` add call) a rule for any topic or exact question answered the same way 3 or more times, and the Flow pane's inbox shows it as a `+ rule?` line (`s` hides it); `mcp__flow__standing` has a `dismiss` action. Kept decisions are covered: a rule with `kinds: ["fyi"]` and answer `Keep` keeps matching decisions the moment they are recorded, before `decide_inbox`, and stays undoable. Topics compare normalized (case, `_`/`-`/space, one trailing "s"), and a rule made from a topic-less question records its option set. Nothing is added without your add call; deploy, env, push, reviewer and person-check items are never auto-answered or suggested.
 
 ## [0.6.87] - 2026-10-13
 

@@ -50,7 +50,7 @@ import {
 } from './checks'
 import type { Check, Checks } from './checks'
 import type { Inbox, Marked, Question } from './inbox'
-import { addGuardTest, loadRules, offerSeedsOnce, standingTool, suggestGuardTests } from './standing-run'
+import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, paneSuggestions, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
 import { decideEvalTool } from './decide-eval-run'
 import { sizeAbTool, sizeArmOf, sizerFor } from './size-ab'
@@ -2466,7 +2466,7 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     }
 
     case 'mcp__flow__ask': return askTool(inboxIoOf($), options, e, e.agentId)
-    case 'mcp__flow__fyi': return fyiTool(inboxIoOf($), e, e.agentId, settings)
+    case 'mcp__flow__fyi': return fyiTool(inboxIoOf($), e, e.agentId, settings, options)
     case 'mcp__flow__preflight': return preflightTool(inboxIoOf($), options, e, e.agentId)
     case 'mcp__flow__answer': return answerTool(inboxIoOf($), options, e, e.agentId)
     case 'mcp__flow__standing': return standingTool(standingIoOf($), options, e, e.agentId)
@@ -3421,8 +3421,9 @@ export const register: Register = (on, options) => {
       const [ibox, icur, draft, note, from, iopen] = await Promise.all([read($, inbox), read($, inboxCursor), read($, inboxDraft), read($, inboxNote), read($, cardBack), read($, inboxOpen)])
       // The same rows a press reads, so what is drawn and what is pressed fold alike.
       const irows = (await paneInboxRows($)).rows
+      const sugg = mode === 'inbox' ? await paneSuggestions(standingIoOf($), options) : []
       const ictx: InboxCtx = {
-        els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, iopen, list, now: t, from,
+        els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, sugg, iopen, list, now: t, from,
         io: {
           acted,
           rows: async () => (await paneInboxRows($)).rows,
@@ -3433,6 +3434,7 @@ export const register: Register = (on, options) => {
           setDraft: v => update($, inboxDraft, () => v),
           setNote: v => update($, inboxNote, () => v),
           answer: (id, choice) => answerQuestion($, id, choice, 'main', {}, true),
+          dismissSugg: async ids => { await dismissSuggestionIds(standingIoOf($), options, ids) },
           serial: paneSerial,
           toast: text => { void $.ui.toast(text) },
           focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),

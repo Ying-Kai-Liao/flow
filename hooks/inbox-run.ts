@@ -3,16 +3,17 @@
 import type { AgentRow } from '../types'
 import { cardsOn, openOf, sendCards } from './askcards'
 import type { DecideIo } from './decide'
-import { autoKeepFyis } from './decide-use'
+import { autoKeepable, autoKeepFyis } from './decide-use'
 import type { DecideUseSettings } from './decide-use'
 import { MANAGER } from './core'
 import type { DeliverOptions } from './deliver'
-import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, linkEscalations, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
+import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, KEEP, linkEscalations, markAnswered, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
 import { followUp, FILE_HELP, parseFiling, recordFiling, renderFollowUp } from './preflight'
 import type { Preflight } from './preflight'
 import { alwaysRule, autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
 import type { AutoHits, StandingIo } from './standing-run'
-import { AUTO } from './standing'
+import { AUTO, fyiRules, matchRule } from './standing'
+import { offerNewSuggestions } from './standing-suggest'
 import { noteKey } from './state'
 
 export type InboxIo = {
@@ -87,7 +88,7 @@ export async function askTool(io: InboxIo, options: Record<string, unknown>, inp
   }
 }
 
-export async function fyiTool(io: InboxIo, input: Record<string, unknown>, agentId: string | undefined, decideSettings: DecideUseSettings = {}): Promise<{ result: string }> {
+export async function fyiTool(io: InboxIo, input: Record<string, unknown>, agentId: string | undefined, decideSettings: DecideUseSettings = {}, options: Record<string, unknown> = {}): Promise<{ result: string }> {
   if (agentId === undefined) return { result: 'Refused: main cannot record a decision; just decide.' }
   const parsed = parseFyi(input)
   if ('error' in parsed) return { result: `Refused, nothing recorded: ${parsed.error}` }
@@ -103,8 +104,26 @@ export async function fyiTool(io: InboxIo, input: Record<string, unknown>, agent
   })
   // Quiet by design: a log line, no message or toast.
   await io.standing.best('logging a decision', () => io.standing.appendLog({ event: 'fyi', owner: noteKey(name), agent: name, text: added.map(a => a.q.id).join(' ') }))
+  // A standing rule naming kind "fyi" keeps a fresh routine decision (before the decision API, which then skips it).
+  // Only Keep: a rule never undoes a decision. Hard kinds are not autoKeepable, so no rule reaches them.
+  const { rules } = await loadRules(io.standing, options)
+  const kept = rules.length === 0 ? new Map<string, string>() : await io.standing.withInbox(cur => {
+    let next = cur
+    const out = new Map<string, string>()
+    for (const a of added) {
+      const q = a.fresh ? findItem(next, a.q.id) : undefined
+      const m = q !== undefined && autoKeepable(q) ? matchRule(fyiRules(rules), q) : undefined
+      if (m === undefined || m.answer !== KEEP) continue
+      const marked = markAnswered(next, a.q.id, KEEP, AUTO, at, m.rule.rid)
+      if (marked.kind !== 'ok') continue
+      next = marked.inbox
+      out.set(a.q.id, m.rule.rid)
+    }
+    return { inbox: next, out }
+  })
+  for (const [id, rid] of kept) await io.standing.best('logging an auto-answer', () => io.standing.appendLog({ event: 'auto-answer', owner: noteKey(name), agent: name, text: `${id} rule ${rid}: ${KEEP}` }))
   // decide_inbox: after recording, so the result below is the same either way; at most the 5 s timeout of the call.
-  await autoKeepFyis(io.net, io.standing, decideSettings, added.filter(a => a.fresh).map(a => a.q.id)).catch(() => undefined)
+  await autoKeepFyis(io.net, io.standing, decideSettings, added.filter(a => a.fresh && !kept.has(a.q.id)).map(a => a.q.id)).catch(() => undefined)
   return { result: `Recorded ${added.map(a => a.q.id).join(', ')}. Carry on; you get a message only if it is undone.` }
 }
 
@@ -178,6 +197,11 @@ export async function answerTool(io: InboxIo, options: Record<string, unknown>, 
     const before = always.has(id) ? findItem(await io.standing.inbox(), id) : undefined
     lines.push(await io.answerQuestion(id, choice, by, options))
     if (always.has(id) && choice !== null && before !== undefined && !isFyi(before)) lines.push(await alwaysRule(io.standing, options, id, choice, agentId === undefined, before))
+  }
+  // Pushed suggestion: main's answers may have made a topic a candidate for a standing rule (offered once each).
+  if (agentId === undefined && todo.size > 0) {
+    const offer = await offerNewSuggestions(io.standing, (await loadRules(io.standing, options)).rules).catch(() => [])
+    lines.push(...offer)
   }
   return { result: lines.join('\n') }
 }

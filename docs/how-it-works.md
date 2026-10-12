@@ -207,7 +207,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   choice, free text included, undoes it: the owner is messaged what it decided and what to do instead,
   or, if it is no longer running, its manager (naming the owner); the undo is noted as a decision.
   The addressee may answer a decision, and so may main (the user overrides what a manager has not looked at).
-  Standing answers never answer a decision.
+  A decision is kept by a standing answer only through a rule that names `"kinds": ["fyi"]` (see Standing answers); it stays undoable.
 - A report whose last line ends in `?` still counts as a question, for agents that don't use the
   tool. `decision_phrases` is deprecated.
 
@@ -222,12 +222,29 @@ and the asker's `ask` result says so; nobody is messaged or toasted, and the dec
 and `log.jsonl` (`auto-answer`). `/flow inbox` lists the last 24 h under "Auto-answered" with the rule
 id to revoke.
 
-- A rule is `{id?, topic?, match?, answer, blocking?, from?, note?}` (or, see below, `{..., escalate: true}`) in the `standing_answers` list of a
+- A rule is `{id?, topic?, match?, answer, blocking?, from?, kinds?, options?, note?}` (or, see below, `{..., escalate: true}`) in the `standing_answers` list of a
   settings file. `topic` equals the question's topic (any case); `match` is a case-insensitive regular
   expression on the question text; with both, both must match. No fuzzy matching. `answer` must be one
   of the new question's options (text, letter or number), else the rule does not apply and the question
   goes to the inbox. `from` limits it to one asker (`foo-2` counts as `foo`). A blocking question is
   answered only by a rule with `blocking: true`. A bad rule is dropped with a settings warning.
+- Pushed suggestions. When main has answered a topic (or, with no topic, one exact question text) the
+  same way 3 or more times and no rule covers it, the `mcp__flow__answer` result gets one line offering
+  the rule with its exact `mcp__flow__standing` add call, and the Flow pane's inbox shows it as a `+ rule?`
+  line (`s` hides it). Each (topic, answer) is offered once (`suggest-offered.json` in the state dir);
+  `mcp__flow__standing {"action":"dismiss","id":...}` (or `"all"`) drops it for good. Nothing is added
+  until you call the add. Kept decisions count too: three kept `worker-size` decisions suggest
+  `{"topic":"worker-size","answer":"Keep","kinds":["fyi"]}`. A group holding a deploy, env, push, reviewer,
+  guard, escalated or linked item is never suggested.
+- Decision rules. A rule with `kinds: ["fyi"]` (answer `Keep` only) keeps a fresh routine decision the
+  moment an agent records it (`answeredBy: "standing answer"`, the rule id on it, an `auto-answer` log
+  line); the agent's result is unchanged. It runs before `decide_inbox`, which then skips the item. An
+  ordinary rule (no kinds) does not keep a decision an agent records, an fyi rule never answers a question, and escalate rules still
+  win. Undo it like any kept decision (`/flow no <id>`); the owner is messaged.
+- Matching. Topics compare ignoring case, `_`, `-` and spaces and one trailing "s". A rule made from a
+  topic-less question also records its `options`; such a question matches only with the same option set and
+  its text matching `match`. No fuzzy matching. Deploy and env items still need a rule naming the kind;
+  push and reviewer items are never answered by a rule.
 - Two more forms. `escalate: true` with no `answer` holds a matching question for you: no rule ever
   auto-answers it (whatever the order), it is recorded `blocking: true` and flagged
   `escalated: <rule id>`, and `mcp__flow__answer` refuses an answer from anyone but main; a worker's

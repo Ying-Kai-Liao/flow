@@ -182,7 +182,7 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   const id = q?.id ?? wanted
   if (q === undefined) return { kind: 'unknown' }
   // A decision the decision API kept stays undoable: any answer but Keep takes it back. Keep itself changes nothing.
-  const retake = q.state === 'answered' && q.auto !== undefined && isFyi(q) && choice !== null && parseChoice(q.options, choice).text !== KEEP
+  const retake = q.state === 'answered' && (q.auto !== undefined || q.rule !== undefined) && isFyi(q) && choice !== null && parseChoice(q.options, choice).text !== KEEP
   if (q.state === 'answered' && !retake) return { kind: 'answered', q }
   // Main may also answer any decision: the user overrides what a manager has not looked at.
   if (rule === undefined && !user && !isAddressee(q, by) && !(isFyi(q) && by === 'main') && !(q.viaQ !== undefined && by === 'main')) return { kind: 'refused', q }
@@ -190,7 +190,7 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   if (answer === '') return { kind: 'empty', q }
   // Answering with the default's text counts as the default, however it was typed.
   const isDefault = answer === q.default
-  const { auto: _kept, ...rest } = q
+  const { auto: _kept, rule: _rule, ...rest } = q
   const done: Question = {
     ...rest, state: 'answered', answer, answeredBy: by, answeredAt: now, delivered: rule !== undefined,
     ...(rule !== undefined ? { rule } : {}),
