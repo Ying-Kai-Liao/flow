@@ -31,6 +31,10 @@ export type SessionIo = {
   warn: (what: string, err: unknown) => Promise<unknown>
   refresh: () => Promise<unknown>
   openPane: () => Promise<unknown>
+  // The main session this io runs in, recorded on the role sessions it starts (relay.ts, ownerVerdict).
+  identity?: () => Promise<{ session: string; pid: number } | undefined>
+  // Whether this main owns a role session (relay.ts, ownerVerdict); unset: all of them.
+  owns?: (s: Session) => Promise<boolean>
   submit: (text: string) => Promise<unknown>
   deliver: (id: string, text: string) => Promise<unknown>
   // How many activity lines a card keeps.
@@ -204,11 +208,13 @@ async function launch(io: SessionIo, l: Launch, s: SessionSettings): Promise<{ e
   }
 
   const t = await io.now()
+  const mainOwner = role === undefined ? undefined : await io.identity?.().catch(() => undefined)
   const session: Session = {
     name, harness, host, handle, worktree, branch, promptFile, reportFile, start: template,
     ...(spec.resume !== undefined && { resume: spec.resume }),
     ...(spec.digest !== undefined && { digestKind: spec.digest }),
     ...(role !== undefined && { role }), ...(relayDir !== undefined && { relayDir }),
+    ...(mainOwner !== undefined && { mainOwner }),
     ...(hostWorktree !== undefined && { hostWorktree }),
     owner: l.owner.id, ownerName: l.owner.name, status: 'running', startedAt: t,
   }
@@ -440,6 +446,8 @@ export async function watchSessions(io: SessionIo): Promise<void> {
     }
     for (const s of Object.values(await io.sessions())) {
       if (s.status === 'stopped' || s.status === 'exited') continue
+      // Another main's terminal: its reports, idle notes and end are that main's to handle.
+      if (s.role !== undefined && io.owns !== undefined && !await io.owns(s)) continue
       const st = await io.stat(s.reportFile).catch(() => undefined)
       if (st !== undefined && st.mtimeMs > (s.reportAt ?? 0) && t - st.mtimeMs >= SETTLE_MS) {
         const report = String(await io.read(s.reportFile).catch(() => '')).trim()

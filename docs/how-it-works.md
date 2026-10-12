@@ -610,7 +610,12 @@ claude); any other falls back to the agent with one toast.
 - **The reviewer in confirm mode** reviews one batch and ends like the agent: after its report (merge_mode is
   read then, so a change while it worked counts) the plugin stops the terminal, removes its worktree if clean,
   and the next handover starts reviewer-N+1. The same happens in auto mode when a batch awaits `/flow push`.
-- **Known limits.** Two main sessions in one repo share the relay and the sessions file and can both pump
-  a call. The subagents of a terminal manager (Explore and the like) run their flow calls as the manager. A
-  restart of main keeps terminal sessions (they are saved in `sessions.json`), and an agent reviewer running
+- **Owners and subagents.** A role session records the main that started it (`mainOwner`: session id and
+  claude pid). A main pumps, watches and delivers only for its own; one whose owner pid is dead, or that has
+  no owner, is taken over by the next main that sees it (the relay claim is an atomic rename, so a race on
+  that never runs a call twice). A subagent of a terminal manager (Explore and the like) reaches main as the
+  manager, so it may only read: status, guard_tests, migrations, test_slot, `list` actions, note without
+  text; everything else is refused with a note to report to the manager. The reviewer's subagents are not
+  restricted.
+- **Known limits.** A restart of main keeps terminal sessions (they are saved in `sessions.json`), and an agent reviewer running
   when the setting changes finishes as it is.

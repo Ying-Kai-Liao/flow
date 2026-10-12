@@ -12,7 +12,7 @@ import { grantFile, grantSlots, reapSlots } from './slots'
 import type { Evidence } from './evidence'
 import type { RunWork } from './mainff'
 import { NO_FAILS, type TestFails } from './testfail'
-import { leftoverLine } from './clean'
+import { ancestorPids, leftoverLine } from './clean'
 import { sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
 import { gatherLeftovers as gatherLeftoversTo } from './resume'
@@ -117,8 +117,8 @@ import {
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
 import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSessions as watchSessionsTo } from './session-run'
-import { pumpRelay, relayCall, stripEngineFields } from './relay'
-import type { PumpIo, RelayAnswer, RelayCall, RelayIo } from './relay'
+import { ownerVerdict, pumpRelay, relayCall, stripEngineFields, subagentRefusal } from './relay'
+import type { MainIdentity, PumpIo, RelayAnswer, RelayCall, RelayIo } from './relay'
 import type { Caller, Ran, SessionIo } from './session-run'
 import { branchOwners, buildDigest, findWorktree, noteKey } from './state'
 import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
@@ -1968,6 +1968,8 @@ function sessionIoOf($: EngineInterface): SessionIo {
     warn: (what, err) => warn($, what, err),
     refresh: () => refresh($),
     openPane: () => openPane($),
+    identity: () => identityOf($),
+    owns: s => ownsSession($, s),
     submit: text => $.prompt.submit({ text }),
     deliver: (id, text) => deliver($, id, text),
     logMax: LOG_MAX,
@@ -2050,6 +2052,96 @@ function normalizeSessions(raw: unknown, now: number): Record<string, Session> {
 
 const watchSessions = ($: EngineInterface) => watchSessionsTo(sessionIoOf($))
 
+// --- Who owns a role session (relay.ts, ownerVerdict) ---
+// This main: its session id and the pid of its claude process (the nearest one up from the plugin runner's shell).
+// undefined when either cannot be read; a main without an identity behaves as before and owns every session.
+let identity: Promise<MainIdentity | undefined> | undefined
+function identityOf($: EngineInterface): Promise<MainIdentity | undefined> {
+  identity ??= (async () => {
+    const session = await $.session.id().catch(() => undefined)
+    const ppid = Number((await runCmd($, ['sh', '-c', 'echo $PPID'], 5_000)).stdout.trim())
+    if (session === undefined || session === '' || !Number.isInteger(ppid) || ppid <= 1) return undefined
+    const chain = await ancestorPids(ppid, async pid => {
+      const r = await runCmd($, ['ps', '-o', 'ppid=,comm=', '-p', String(pid)], 5_000)
+      const m = /^\s*(\d+)\s+(.*)$/.exec(r.stdout.trim())
+      return r.exitCode === 0 && m ? { ppid: Number(m[1]), comm: m[2]! } : undefined
+    })
+    // Insertion order runs from the shell up to the claude process, which is the last.
+    return { session, pid: [...chain].pop() ?? ppid }
+  })()
+  return identity
+}
+
+// Whether a pid is a live process, looked up at most every few seconds per pid (the pump ticks twice a second).
+const ALIVE_TTL_MS = 5_000
+const aliveAt = new Map<number, { at: number; ok: boolean }>()
+async function pidAlive($: EngineInterface, pid: number): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 1) return false
+  const t = await $.clock.now()
+  const hit = aliveAt.get(pid)
+  if (hit !== undefined && t - hit.at < ALIVE_TTL_MS) return hit.ok
+  const ok = (await runCmd($, ['kill', '-0', String(pid)], 5_000)).exitCode === 0
+  aliveAt.set(pid, { at: t, ok })
+  return ok
+}
+
+// A role session this main owns; a worker's record has no owner and is nobody's concern here.
+async function ownsSession($: EngineInterface, s: Session): Promise<boolean> {
+  if (s.role === undefined) return true
+  const me = await identityOf($)
+  return me === undefined || s.mainOwner?.session === me.session
+}
+
+// Settles every role session on record, in memory and on disk, against this main: one whose owner is gone
+// (or never recorded) is taken over and saved; one a live main owns stays untouched (ownsSession filters it
+// out of pumping and watching). Run at load and on the roster poll, so a restarted main takes its terminals back and a
+// running one picks up an orphan.
+let adopting = false
+async function adoptSessions($: EngineInterface): Promise<void> {
+  if (adopting) return
+  adopting = true
+  try {
+    const me = await identityOf($)
+    const dir = await stateDir($)
+    if (me === undefined || dir === undefined) return
+    const disk = normalizeSessions(await readJson($, `${dir}/sessions.json`), await $.clock.now())
+    const mem = await read($, sessions)
+    const judged = new Map<string, Session>()
+    for (const name of new Set([...Object.keys(mem), ...Object.keys(disk)])) {
+      const rec = mem[name] ?? disk[name]
+      if (rec?.role === undefined || !sessionLive(rec)) continue
+      // The file is the later word on the owner: another main may have taken it over since this one loaded it.
+      const owner = disk[name]?.mainOwner ?? mem[name]?.mainOwner
+      judged.set(name, { ...rec, ...(owner !== undefined && { mainOwner: owner }) })
+    }
+    const alive = new Map<number, boolean>()
+    for (const r of judged.values()) {
+      const pid = r.mainOwner?.pid
+      if (pid !== undefined && r.mainOwner?.session !== me.session) alive.set(pid, await pidAlive($, pid))
+    }
+    const verdicts = [...judged].map(([name, r]) => [name, r, ownerVerdict(r.mainOwner, me, pid => alive.get(pid) === true)] as const)
+    const take = verdicts.filter(([, , v]) => v === 'adopt')
+    if (take.length === 0) return
+    await update($, sessions, all => {
+      const out = { ...all }
+      for (const [name, r] of take) out[name] = { ...r, mainOwner: me }
+      return out
+    })
+    await persistSessions($)
+  } catch (err) {
+    await warn($, 'adopting sessions', err)
+  } finally {
+    adopting = false
+  }
+}
+
+// The role sessions this main owns: the live ones, or with `ended` the ended ones too (their relay still answers).
+async function myRoleSessions($: EngineInterface, ended = false): Promise<Session[]> {
+  const mine: Session[] = []
+  for (const s of Object.values(await read($, sessions))) if (s.role !== undefined && (ended || sessionLive(s)) && await ownsSession($, s)) mine.push(s)
+  return mine
+}
+
 // --- The disk relay (relay.ts) ---
 // A terminal-started claude loads its own copy of this plugin; FLOW_ROLE / FLOW_NAME / FLOW_RELAY tell
 // that copy what it is. Set at session.start; undefined in a normal session (main, or an Agent-tool subagent).
@@ -2084,8 +2176,8 @@ function relayIoOf($: EngineInterface): RelayIo {
 function pumpIoOf($: EngineInterface): PumpIo {
   return {
     ...relayIoOf($),
-    dirs: async () => Object.values(await read($, sessions))
-      .filter(s => s.role !== undefined && s.relayDir !== undefined)
+    dirs: async () => (await myRoleSessions($, true))
+      .filter(s => s.relayDir !== undefined)
       .map(s => ({ name: s.name, dir: s.relayDir!, live: sessionLive(s) })),
   }
 }
@@ -2187,6 +2279,12 @@ async function relayToolCall($: EngineInterface, settings: ReturnType<typeof set
     if (why !== undefined) return { deny: why }
   }
   if (isFlowTool(e.tool)) {
+    // A subagent's call reaches main as the manager's; it may look, not write (relay.ts, subagentRefusal).
+    // The reviewer's subagents keep the manager-less behaviour they had: its tools are not the ones that decide work.
+    if (id !== undefined && r.role === 'manager') {
+      const why = subagentRefusal(e.tool, stripEngineFields(e as unknown as Record<string, unknown>), r.name)
+      if (why !== undefined) return { deny: why }
+    }
     const a = await ask(e.tool, stripEngineFields(e as unknown as Record<string, unknown>))
     return a.deny !== undefined ? { deny: a.deny } : { result: a.result }
   }
@@ -2273,7 +2371,7 @@ async function pumpOnce($: EngineInterface, c: FlowCtx): Promise<void> {
   if (pumping) return
   pumping = true
   try {
-    if (!Object.values(await read($, sessions)).some(x => x.role !== undefined && sessionLive(x))) return
+    if ((await myRoleSessions($)).length === 0) return
     await pumpRelay(pumpIoOf($), (call, name) => relayExec($, c, call, name))
   } catch (err) {
     await warn($, 'relay pump', err)
@@ -2598,6 +2696,7 @@ export const register: Register = (on, options) => {
       const disk = normalizeSessions(await readJson($, `${dir}/sessions.json`), await $.clock.now())
       await update($, sessions, cur => ({ ...disk, ...cur }))
       sessionsSaved = JSON.stringify(durableSessions(await read($, sessions)))
+      await adoptSessions($)
     })
     await best($, 'loading pre-flight', async () => {
       const dir = await stateDir($)
@@ -2661,13 +2760,13 @@ export const register: Register = (on, options) => {
     // roster poll below for ones started since. It never goes away; pumpOnce does nothing without a live one.
     let pumpArmed = false
     const armPump = async () => {
-      if (pumpArmed || !Object.values(await read($, sessions)).some(x => x.role !== undefined && sessionLive(x))) return
+      if (pumpArmed || (await myRoleSessions($)).length === 0) return
       pumpArmed = true
       $.clock.every(500, () => void pumpOnce($, { settings, options, installed }))
     }
     await armPump()
     $.clock.every(POLL_MS, () => {
-      void armPump().catch(() => undefined)
+      void adoptSessions($).then(armPump).catch(() => undefined)
       void refresh($)
       void watchSessions($)
       if (checking) return

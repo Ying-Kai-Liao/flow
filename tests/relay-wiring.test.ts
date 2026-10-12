@@ -108,12 +108,19 @@ test('a manager session\'s copy shows the tools and /flow stub, relays flow tool
   expect(w.runs.some(a => a.join(' ').includes('rm -rf'))).toBe(false)
 
   w.wait.answer = () => ({ result: 'Noted in /r/notes.md.' })
-  const r = await $.tool.call({ tool: 'mcp__flow__note', manager: 'm1', text: 'hello', agentId: 'sub1' } as never)
+  const r = await $.tool.call({ tool: 'mcp__flow__note', manager: 'm1', text: 'hello' } as never)
   expect(r.result).toBe('Noted in /r/notes.md.')
   // The call carries the tool's own input only, and who it is from.
   const [sent] = calls(w)
-  expect(sent).toMatchObject({ tool: 'mcp__flow__note', input: { manager: 'm1', text: 'hello' }, from: 'session:m1', role: 'manager', by: 'sub1' })
+  expect(sent).toMatchObject({ tool: 'mcp__flow__note', input: { manager: 'm1', text: 'hello' }, from: 'session:m1', role: 'manager', by: 'm1' })
   expect(Object.keys(sent!.input as object)).toEqual(['manager', 'text'])
+
+  // A subagent of the manager may read but not write; nothing is left for main.
+  const before = calls(w).length
+  expect(JSON.stringify(await $.tool.call({ tool: 'mcp__flow__handover', pr: 1, agentId: 'sub1' } as never))).toContain('subagent of terminal manager m1')
+  expect(calls(w).length).toBe(before)
+  w.wait.answer = () => ({ result: 'status' })
+  expect((await $.tool.call({ tool: 'mcp__flow__status', agentId: 'sub1' } as never)).result).toBe('status')
 
   // Main's refusal reaches the model as a refusal.
   w.wait.answer = () => ({ deny: 'Refused: nope' })

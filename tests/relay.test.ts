@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { NO_ANSWER, NO_PICKUP, pumpRelay, relayCall, resetRelay, RELAY_STALE_MS, stripEngineFields } from '../hooks/relay'
+import { NO_ANSWER, NO_PICKUP, ownerVerdict, pumpRelay, subagentRefusal, relayCall, resetRelay, RELAY_STALE_MS, stripEngineFields } from '../hooks/relay'
 import type { PumpIo, RelayCall } from '../hooks/relay'
 
 const DIR = '/r/.git/flow/sessions/m1/relay'
@@ -145,4 +145,25 @@ test('exit 3 means main did not pick the call up, exit 4 that it did not answer;
 test('engine fields are stripped from a tool event input', () => {
   expect(stripEngineFields({ tool: 'mcp__flow__ask', tool_use_id: 'x', agentId: 'a', consent: 'c', requestMeta: {}, questions: [1], action: 'list' }))
     .toEqual({ questions: [1], action: 'list' })
+})
+
+const ME = { session: 's-me', pid: 100 }
+const alive = (...pids: number[]) => (pid: number) => pids.includes(pid)
+
+test('ownerVerdict: own, live other, dead and missing owners', () => {
+  expect(ownerVerdict({ session: 's-me', pid: 100 }, ME, alive())).toBe('mine')
+  expect(ownerVerdict({ session: 's-other', pid: 200 }, ME, alive(200))).toBe('other')
+  expect(ownerVerdict({ session: 's-other', pid: 200 }, ME, alive())).toBe('adopt')
+  expect(ownerVerdict(undefined, ME, alive())).toBe('adopt')
+  expect(ownerVerdict({ session: 's-me', pid: 99 }, ME, alive())).toBe('adopt')
+})
+
+test('subagentRefusal: reads pass, writes are refused with the manager named', () => {
+  for (const t of ['mcp__flow__status', 'mcp__flow__guard_tests', 'mcp__flow__migrations', 'mcp__flow__test_slot']) expect(subagentRefusal(t, {}, 'm1')).toBeUndefined()
+  expect(subagentRefusal('mcp__flow__plan', { action: 'list' }, 'm1')).toBeUndefined()
+  expect(subagentRefusal('mcp__flow__check', { action: 'list' }, 'm1')).toBeUndefined()
+  expect(subagentRefusal('mcp__flow__note', { manager: 'm1' }, 'm1')).toBeUndefined()
+  for (const [t, i] of [['handover', {}], ['ask', {}], ['fyi', {}], ['answer', {}], ['session', {}], ['preflight', {}], ['settings', {}], ['plan', { action: 'add' }], ['note', { text: 'x' }], ['deploy', { action: 'hold' }], ['release', {}]] as const) {
+    expect(subagentRefusal(`mcp__flow__${t}`, { ...i }, 'm1')).toBe(`flow: a subagent of terminal manager m1 cannot call ${t}; report back to your manager and let it make the call.`)
+  }
 })

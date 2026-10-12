@@ -197,3 +197,34 @@ export async function pumpRelay(io: PumpIo, exec: RelayExec): Promise<Promise<vo
 
 // For tests: a tick that raced a stale in-flight mark must not leak into the next test.
 export const resetRelay = (): void => inflight.clear()
+
+// --- Who owns a role session ---------------------------------------------------------------------
+// Two main sessions in one repo share <state dir>/sessions.json. Each role session records the main that
+// started it (its session id and the pid of its claude process); a main pumps, watches and delivers only
+// for the ones it owns. An owner whose pid is gone, or a record with no owner (older data), is taken over
+// by the first main that sees it. Taking over needs no lock: the relay claim above is an atomic rename, so
+// two mains that both adopt still run a call once; the loser's pump just finds the call already taken.
+export type MainIdentity = { session: string; pid: number }
+
+// mine: pump it. adopt: write yourself as the owner, then it is mine (a same-session main whose pid changed,
+// e.g. after a resume, takes its own record back this way too). other: a live main owns it, leave it alone.
+export function ownerVerdict(owner: Partial<MainIdentity> | undefined, me: MainIdentity, alive: (pid: number) => boolean): 'mine' | 'adopt' | 'other' {
+  if (owner === undefined || typeof owner.session !== 'string' || owner.session === '') return 'adopt'
+  if (owner.session === me.session) return owner.pid === me.pid ? 'mine' : 'adopt'
+  return typeof owner.pid === 'number' && alive(owner.pid) ? 'other' : 'adopt'
+}
+
+// --- What a subagent of a terminal manager may call ----------------------------------------------------
+// A subagent (Explore and the like) of a terminal manager reaches the relay with the manager's identity, so
+// main cannot tell its call from the manager's. It may look but not write.
+const SUBAGENT_READS = new Set(['status', 'guard_tests', 'migrations', 'test_slot'])
+const SUBAGENT_LIST_ONLY = new Set(['plan', 'check', 'deploy', 'reviewer', 'queue'])
+
+// undefined when the call is allowed; else the refusal text.
+export function subagentRefusal(tool: string, input: Record<string, unknown>, manager: string): string | undefined {
+  const t = tool.replace(/^mcp__flow__/, '')
+  const ok = SUBAGENT_READS.has(t)
+    || (SUBAGENT_LIST_ONLY.has(t) && input.action === 'list')
+    || (t === 'note' && (input.text === undefined || String(input.text).trim() === ''))
+  return ok ? undefined : `flow: a subagent of terminal manager ${manager} cannot call ${t}; report back to your manager and let it make the call.`
+}
