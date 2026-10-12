@@ -107,12 +107,26 @@ test('main answers a manager\'s questions with defaults; a non-blocking default 
   expect(w.sent).toEqual([])
   expect(w.toasts.join('\n')).toContain('/flow inbox')
 
-  const r = await answer($, null, { defaults: true })
+  const r = await answer($, null, { defaults: true, ids: ['q1', 'q2'] })
   expect(r).toContain('q1: csv (default)')
   expect(r).toContain('q2: yes (default)')
   expect(w.sent.length).toBe(1)
   expect(w.sent[0]!.to).toBe('m1')
   expect(w.sent[0]!.text).toContain('Which format?')
+})
+
+test('defaults without ids skip a blocking question and answer the rest', async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [BLOCK, SOFT])
+  await fyi($, 'm1', [{ decision: 'Use a 30 s timeout', why: 'conservative' }])
+  const r = await answer($, null, { defaults: true })
+  expect(r).toContain('Skipped q1 (blocking): answer it explicitly or name it in ids.')
+  expect(r).toContain('q2: yes (default)')
+  expect(r).toContain('d1: Keep (default)')
+  expect(r).not.toContain('q1: csv')
+  expect(w.sent).toEqual([])
+  expect(await inbox($)).toContain('q1')
+  expect(await inbox($)).not.toContain('q2')
 })
 
 test('an answer for an asker that was killed is undelivered and says who relays it', async ($, on) => {

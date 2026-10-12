@@ -188,9 +188,12 @@ export async function answerTool(io: InboxIo, options: Record<string, unknown>, 
   }
   if (input.defaults === true) {
     const ids = Array.isArray(input.ids) ? input.ids.map(String) : undefined
-    const open = openFor(await io.standing.inbox(), by).map(q => q.id)
-    for (const id of ids ?? open) if (!todo.has(id)) todo.set(id, null)
-    if (ids === undefined && open.length === 0 && todo.size === 0) lines.push('No open questions for you.')
+    const all = openFor(await io.standing.inbox(), by)
+    // Without ids a bulk default never answers a blocking question: naming its id is the explicit answer.
+    const blocking = ids === undefined ? all.filter(q => !isFyi(q) && q.blocking === true) : []
+    for (const q of blocking) lines.push(`Skipped ${q.id} (blocking): answer it explicitly or name it in ids.`)
+    for (const id of ids ?? all.filter(q => !blocking.includes(q)).map(q => q.id)) if (!todo.has(id)) todo.set(id, null)
+    if (ids === undefined && all.length === 0 && todo.size === 0) lines.push('No open questions for you.')
   }
   if (todo.size === 0 && lines.length === 0) lines.push('Nothing to answer: pass answers, or defaults: true.')
   for (const [id, choice] of todo) {
