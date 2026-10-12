@@ -167,7 +167,7 @@
       "title": "Decision API",
       "default": "auto",
       "options": ["auto", "off", "jev", "openai"],
-      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev decides the size at spawn (the brief text is sent to api.typesafe.ai or the jev_base_url host with jev_api_key, or, if only openrouter_api_key is set, to openrouter.ai). openai: an OpenAI chat model decides it (the brief text is sent to api.openai.com or the openai_base_url host; key from openai_api_key). The Size line is the fallback if the provider is unavailable. auto (the default, same as unset): not set, so the deprecated size_model applies if set, else off. off, jev and openai are explicit and always win."
+      "description": "Advanced: off: the brief's `Size:` line picks the model. jev: TypeSafe's Jev decides the size at spawn (the brief text is sent to api.typesafe.ai or the jev_base_url host with typesafe_api_key, or, if only openrouter_api_key is set, to openrouter.ai). openai: an OpenAI chat model decides it (the brief text is sent to api.openai.com or the openai_base_url host; key from openai_api_key). The Size line is the fallback if the provider is unavailable. auto (the default, same as unset): not set, so the deprecated size_model applies if set, else off. off, jev and openai are explicit and always win."
     },
     "size_model": {
       "type": "string",
@@ -182,10 +182,17 @@
       "description": "Advanced: Jev model name used when decision_api is jev.",
       "default": "jev-latest"
     },
+    "typesafe_api_key": {
+      "type": "string",
+      "title": "TypeSafe API key",
+      "description": "Advanced: The key flow sends to Jev when decision_api is jev. Kept in secure storage; a settings file can't set it.",
+      "sensitive": true,
+      "default": ""
+    },
     "jev_api_key": {
       "type": "string",
-      "title": "Jev API key",
-      "description": "Advanced: The key flow sends to Jev when decision_api is jev. Kept in secure storage; a settings file can't set it.",
+      "title": "Jev API key (deprecated)",
+      "description": "Deprecated alias of typesafe_api_key, read only while typesafe_api_key is empty.",
       "sensitive": true,
       "default": ""
     },
@@ -198,7 +205,7 @@
     "openrouter_api_key": {
       "type": "string",
       "title": "OpenRouter API key",
-      "description": "Advanced: A key for reaching Jev through OpenRouter when decision_api is jev and jev_api_key is empty. Kept in secure storage; a settings file can't set it.",
+      "description": "Advanced: A key for reaching Jev through OpenRouter when decision_api is jev and typesafe_api_key is empty. Kept in secure storage; a settings file can't set it.",
       "sensitive": true,
       "default": ""
     },

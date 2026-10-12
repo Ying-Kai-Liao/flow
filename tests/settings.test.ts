@@ -3,7 +3,7 @@ import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
 
-import { isFable, KEYS, mergeLayers, resetRenamedWarnings } from '../hooks/settings'
+import { isFable, KEYS, mergeLayers, resetRenamedWarnings, settingsOf } from '../hooks/settings'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -338,4 +338,18 @@ test('a queue_model in flow.json sets the reviewer model, and both agent names a
   await start($)
   expect(w.last('reviewer')!.model).toBe('sonnet')
   expect(w.last('queue')!.model).toBe('sonnet')
+})
+
+test('typesafe_api_key feeds jevApiKey; jev_api_key is a deprecated alias used only while it is empty', () => {
+  expect(settingsOf({ typesafe_api_key: 'ts' }, 'main').jevApiKey).toBe('ts')
+  expect(settingsOf({ jev_api_key: 'old' }, 'main').jevApiKey).toBe('old')
+  expect(settingsOf({ typesafe_api_key: 'ts', jev_api_key: 'old' }, 'main').jevApiKey).toBe('ts')
+  expect(settingsOf({ typesafe_api_key: '', jev_api_key: 'old' }, 'main').jevApiKey).toBe('old')
+  expect('jevApiKey' in settingsOf({}, 'main')).toBe(false)
+})
+
+test('typesafe_api_key in a settings file is refused like the other API keys', () => {
+  const r = mergeLayers({}, [{ path: REPO, text: JSON.stringify({ typesafe_api_key: 'k' }) }])
+  expect(r.raw.typesafe_api_key).toBeUndefined()
+  expect(r.warnings.some(x => x.includes('typesafe_api_key') && x.includes('/config only'))).toBe(true)
 })

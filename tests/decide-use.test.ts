@@ -16,7 +16,7 @@ type On = Parameters<TestBody>[1]
 const DIR = '/r/.git/flow'
 const KEY = 'sk-secret-key'
 const ok = (stdout = '') => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-const ON = { decision_api: 'jev', jev_api_key: KEY, decide_inbox: true, decide_handoff: true, preflight: 'off' }
+const ON = { decision_api: 'jev', typesafe_api_key: KEY, decide_inbox: true, decide_handoff: true, preflight: 'off' }
 
 // What the fake provider answers per question id: a jev reply, an HTTP failure, or nothing.
 type Reply = { choice: string; confidence: number } | 'http500'
@@ -190,7 +190,7 @@ function fakeIo(items: Question[], after?: () => void) {
   const netIo: DecideIo = { fetch, after: () => ({ cancel: () => undefined }) }
   return { io, calls, logs, netIo, box: () => box }
 }
-const S = settingsOf({ decision_api: 'jev', jev_api_key: KEY, decide_inbox: true }, 'main')
+const S = settingsOf({ decision_api: 'jev', typesafe_api_key: KEY, decide_inbox: true }, 'main')
 
 test('every item kind that is not a plain decision is never sent to the provider nor answered', async () => {
   const notDecisions: Question[] = [
