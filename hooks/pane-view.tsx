@@ -15,6 +15,8 @@ import { MANAGER } from './core'
 import type { PushState } from './pushgate'
 import type { PushAct } from './pushgate-run'
 import { prCardRows } from './prcard'
+import { clipLines, cutLines, inlineEl, linesEl, mdLines, mdPlain, rowLines, spansEl } from './markdown'
+import type { Line } from './markdown'
 import type { CardRow, DetailsEntry } from './prcard'
 import type { Unhanded } from './status-run'
 import { noteKey } from './state'
@@ -94,7 +96,7 @@ export function card(c: CardCtx, a: AgentRow, depth: number, full: boolean, bord
   const hand = handoffOf(a, act)
   const dim = ENDED.has(a.status) && hand?.kind !== 'done'
   const asks = (asksQuestion(act?.answer, c.decisionPhrases) || c.askers.includes(a.name ?? '')) && !['running', 'pending'].includes(a.status)
-  const doing = asks ? 'asks: ' + (act?.answer ?? '').trim().split('\n').pop() : act?.doing
+  const doing = asks ? 'asks: ' + mdPlain((act?.answer ?? '').trim().split('\n').pop() ?? '') : act?.doing
   const u = c.usageOf(a)
   const under = list.filter(x => x.parentId === a.id).length
   // What a collapsed card hides that needs a person.
@@ -409,7 +411,7 @@ export function agentView(c: PaneCtx, agent: AgentRow) {
             {armedFor !== undefined && <Text color="warning">Press {armedFor === 'restart' ? 'r' : 'x'} again within {c.armMs / 1000}s to {armedFor} {name}.</Text>}
             {dg !== undefined && dg.actions.length > 0 && <Text wrap="truncate-end"><Text dimColor>did    </Text>{dg.actions.join(' → ')}</Text>}
             {dg?.at !== undefined && <Text dimColor>active {ago(t - dg.at)} ago{dg.turnDone !== undefined ? ' · turn ended' : ''}</Text>}
-            {dg?.lastWords !== undefined && <Text wrap="truncate-end"><Text dimColor>said   </Text>{dg.lastWords.replace(/\s+/g, ' ').slice(-160)}</Text>}
+            {dg?.lastWords !== undefined && <Text wrap="truncate-end"><Text dimColor>said   </Text>{mdPlain(dg.lastWords).slice(-160)}</Text>}
             {ss.screenText !== undefined && ss.screenText.trim() !== '' && <Text bold>Screen</Text>}
             {ss.screenText !== undefined && ss.screenText.trim() !== '' && (
               ss.screenText.trimEnd().split('\n').slice(-Math.max(3, Math.min(12, rows - 22))).map((l, i) => (
@@ -431,7 +433,7 @@ export function agentView(c: PaneCtx, agent: AgentRow) {
       {answer !== '' && <Text bold color={asksQuestion(answer, c.decisionPhrases) || c.askers.includes(agent.name ?? '') ? 'warning' : undefined}>
         {asksQuestion(answer, c.decisionPhrases) || c.askers.includes(agent.name ?? '') ? 'Asks' : 'Last report'}
       </Text>}
-      {answer !== '' && <Text>{answer.length > 1200 ? '…' + answer.slice(-1200) : answer}</Text>}
+      {answer !== '' && linesEl(Text, mdLines(answer.length > 1200 ? '…' + answer.slice(-1200) : answer, c.columns), 'answer')}
     </Box>
   )
 }
@@ -592,9 +594,10 @@ export function inboxView(x: InboxCtx) {
   // The list as blocks. Owner headers are plain lines; each item is a collapsed line or, once opened, a card.
   const build = (tier: readonly [number, number, number]): InboxBlock[] => {
     const lineCap = Math.max(8, W - 14)
-    const wrapped = (text: string, lines: number, lead = 0) => {
-      const t = fit(text, lines * lineCap - lead)
-      return { text: t, n: Math.max(1, Math.ceil((t.length + lead) / lineCap)) }
+    // The text as markdown rows, at most `lines` of them; `lead` is the label that opens the first row.
+    const wrapped = (text: string, lines: number, lead?: string) => {
+      const l = clipLines(mdLines(text, lineCap, lead === undefined ? {} : { lead: { t: lead, dim: true }, hang: 0 }), lines, lineCap)
+      return { lines: l, n: Math.max(1, l.length) }
     }
     const blocks: InboxBlock[] = []
     const header = (g: PaneGroup, hot: boolean) => {
@@ -624,15 +627,15 @@ export function inboxView(x: InboxCtx) {
         const lead = `  ▸ ${q.id}${q.blocking && !fyi ? ' BLOCKING' : ''}${other === '' ? '' : ` ${other}`} `
         const line = (
           <Text inverse={hot}>
-            {'  ▸ '}<Text dimColor={!hot}>{q.id}</Text>{q.blocking && !fyi && <Text color="warning"> BLOCKING</Text>}{other === '' ? '' : ` ${other}`} {fit(q.question, W - 1 - lead.length)}
+            {'  ▸ '}<Text dimColor={!hot}>{q.id}</Text>{q.blocking && !fyi && <Text color="warning"> BLOCKING</Text>}{other === '' ? '' : ` ${other}`} {inlineEl(Text, q.question, `ql-${q.id}`, W - 1 - lead.length)}
           </Text>
         )
         blocks.push({ key: `item-${q.id}`, height: 1, hot, rows: 1, node: <Button key={`item-${q.id}`} plain onPress={toggleItem(q.id)}>{line}</Button> })
         return
       }
       const text = wrapped(q.question, tier[0])
-      const why = q.context ? wrapped(q.context, tier[1], 5) : undefined
-      const alt = fyi && q.alternative && tier[2] > 0 ? wrapped(q.alternative, tier[2], 14) : undefined
+      const why = q.context ? wrapped(q.context, tier[1], 'why: ') : undefined
+      const alt = fyi && q.alternative && tier[2] > 0 ? wrapped(q.alternative, tier[2], 'instead could: ') : undefined
       const shownOpts = fyi ? [] : q.options.slice(0, 9)
       const buttons = fyi ? 1 : shownOpts.length + 1
       const height = 2 + 1 + text.n + (why?.n ?? 0) + (alt?.n ?? 0) + buttons
@@ -651,9 +654,9 @@ export function inboxView(x: InboxCtx) {
                   {!fyi && tagsOf(q) !== '' && <Text color={q.blocking ? 'warning' : undefined}> {tagsOf(q)}</Text>}
                 </Text>
               </Button>
-              <Text>{text.text}</Text>
-              {why !== undefined && <Text><Text dimColor>why: </Text>{why.text}</Text>}
-              {alt !== undefined && <Text><Text dimColor>instead could: </Text>{alt.text}</Text>}
+              {linesEl(Text, text.lines, `q-${q.id}`)}
+              {why !== undefined && linesEl(Text, why.lines, `why-${q.id}`)}
+              {alt !== undefined && linesEl(Text, alt.lines, `alt-${q.id}`)}
               {fyi ? (
                 <Box flexDirection="row" gap={2}>
                   <Button key={`keep-${q.id}`} plain onPress={() => takeDefault(q.id)}>y Keep</Button>
@@ -827,7 +830,7 @@ export function treeView(c: TreeCtx) {
       <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       {gate !== undefined && gate.state === 'ready' && (
         <Button key="batch-open" plain onPress={c.openBatch}>
-          <Text color="warning" bold wrap="truncate-end">⇪ Batch {gate.id} ready to push: {gate.prs.map(n => `#${n}`).join(' ')}{gate.version === undefined ? '' : ` (${gate.version})`} · check: {gate.check}</Text>
+          <Text color="warning" bold wrap="truncate-end">⇪ Batch {gate.id} ready to push: {gate.prs.map(n => `#${n}`).join(' ')}{gate.version === undefined ? '' : ` (${gate.version})`} · check: {inlineEl(Text, gate.check, 'gate-check')}</Text>
         </Button>
       )}
       {gate !== undefined && gate.state === 'ready' && <Text color="warning" wrap="truncate-end">  /flow push · /flow push back {'<pr>'} · /flow push drop</Text>}
@@ -850,7 +853,7 @@ export function treeView(c: TreeCtx) {
       })()}
       {qOpen && c.openItems.slice(0, qBlock.shown).map(q => (
         <Button key={`open-${q.id}`} plain onPress={() => c.openCard(q.id)}>
-          <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">  {q.id} {q.owner}: {q.question}</Text>
+          <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">  {q.id} {q.owner}: {inlineEl(Text, q.question, `tq-${q.id}`)}</Text>
         </Button>
       ))}
       {qOpen && qBlock.more > 0 && <Text dimColor>  and {qBlock.more} more</Text>}
@@ -988,6 +991,22 @@ export function cardView(x: InboxCtx & { id: string | null }) {
   }
   const tags = tagsOf(q)
   const who = isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`
+  // The question, its context and the alternative as markdown. The rest of the card (header, options, footer)
+  // is fixed, so they share what is left of the pane, and a long text ends in "+N more lines" instead of
+  // pushing the options out of the box.
+  const parts = [
+    { key: 'q', lines: mdLines(q.question, x.columns) },
+    ...(q.context ? [{ key: 'why', lines: mdLines(q.context, x.columns, { lead: { t: 'why: ', dim: true }, hang: 0 }) }] : []),
+    ...(isFyi(q) && q.alternative ? [{ key: 'alt', lines: mdLines(q.alternative, x.columns, { lead: { t: 'instead could: ', dim: true }, hang: 0 }) }] : []),
+  ]
+  const budget = Math.max(4, rows - 17 - (isFyi(q) ? 0 : q.options.length))
+  let left = budget
+  const body = parts.map((p, i) => {
+    // Each later part keeps a row of its own.
+    const lines = cutLines(p.lines, Math.max(1, left - (parts.length - 1 - i)))
+    left -= lines.length
+    return { key: p.key, lines }
+  })
   return (
     <Box flexDirection="column" height={rows}>
       <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
@@ -1004,13 +1023,11 @@ export function cardView(x: InboxCtx & { id: string | null }) {
       {!isFyi(q) && <Text dimColor>from {who} · {age(now - q.askedAt)} ago{q.escalated !== undefined ? ' · escalated to you' : ''}</Text>}
       {agent !== undefined && <Text dimColor>{q.owner} is {agent.status}</Text>}
       {agent === undefined && <Text dimColor>{q.owner} is not in the roster</Text>}
-      {linked !== undefined && <Text>escalated from {linked.owner}'s {linked.id}: {linked.question}</Text>}
+      {linked !== undefined && <Text wrap="truncate-end">escalated from {linked.owner}'s {linked.id}: {inlineEl(Text, linked.question, `esc-${linked.id}`)}</Text>}
       {q.env !== undefined && <Text dimColor>PR #{q.env.pr}, target {q.env.target}</Text>}
       {open && overridesManager(q) && <Text color="warning">It is for {q.addressee}: answering it overrides {q.addressee}, who is told.</Text>}
       <Text> </Text>
-      <Text>{q.question}</Text>
-      {q.context && <Text><Text dimColor>why: </Text>{q.context}</Text>}
-      {isFyi(q) && q.alternative && <Text><Text dimColor>instead could: </Text>{q.alternative}</Text>}
+      {body.map(l => linesEl(Text, l.lines, l.key)).flat()}
       <Text dimColor>{'─'.repeat(Math.max(20, x.columns))}</Text>
       {!isFyi(q) && q.options.map((o, k) => {
         return open ? (
@@ -1108,6 +1125,7 @@ export type PrCardCtx = {
   els: Els
   Input: ((p: InputProps) => null) | undefined
   rows: number
+  columns: number
   pr: number | null
   ho: Handover | undefined
   entry: DetailsEntry | undefined
@@ -1152,7 +1170,9 @@ export function prCardView(x: PrCardCtx) {
     await io.setDraft('')
     return text
   })()
-  const body = prCardRows(ho, { entry: x.entry, mergeMode: x.mergeMode, now: x.now })
+  // The rows after markdown: one entry per drawn row, so the room below counts what is really on screen.
+  const body: { line: Line; row: CardRow }[] = prCardRows(ho, { entry: x.entry, mergeMode: x.mergeMode, now: x.now })
+    .flatMap(r => { const ls = rowLines(r, Math.max(20, x.columns)); return (ls.length === 0 ? [[]] : ls).map(line => ({ line, row: r })) })
   // The back row, the button row, the note and the input take what the body does not.
   const room = Math.max(3, rows - 3 - (note === '' ? 0 : 1) - (awaiting && Input !== undefined ? 1 : 0))
   const shown = body.length > room ? body.slice(0, room - 1) : body
@@ -1160,7 +1180,7 @@ export function prCardView(x: PrCardCtx) {
     <Box flexDirection="column" height={rows}>
 <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Box flexDirection="row" gap={1}>{backBtn}<Text dimColor>esc home</Text></Box>
-      {shown.map((r, i) => <Text key={`pr-row-${i}`} bold={r.bold} dimColor={r.dim} color={toneOf(r)} wrap="truncate-end">{r.text === '' ? ' ' : r.text}</Text>)}
+      {shown.map((r, i) => spansEl(Text, r.line, `pr-row-${i}`, { ...(r.row.bold ? { bold: true as const } : {}), ...(r.row.dim ? { dim: true as const } : {}), ...(toneOf(r.row) === undefined ? {} : { color: toneOf(r.row)! }) }, 'truncate-end'))}
       {body.length > shown.length && <Text dimColor>+{body.length - shown.length} more lines</Text>}
       </Box>
       <Box flexDirection="column" flexShrink={0}>
@@ -1230,13 +1250,13 @@ export function batchCardView(x: BatchCtx) {
 <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Box flexDirection="row" gap={1}>{backBtn}<Text dimColor>esc home</Text></Box>
       <Text bold color="warning">Batch {batch.id}{batch.version === undefined ? '' : ` (${batch.version})`} <Text dimColor>{ready ? 'ready to push' : batch.state}</Text></Text>
-      <Text dimColor wrap="truncate-end">checked {age(x.now - batch.createdAt)} ago · check: {batch.check === '' ? '(none recorded)' : batch.check}</Text>
+      <Text dimColor wrap="truncate-end">checked {age(x.now - batch.createdAt)} ago · check: {batch.check === '' ? '(none recorded)' : inlineEl(Text, batch.check, 'batch-check')}</Text>
       {!ready && <Text color="suggestion">Not waiting for you: {batch.state === 'pushing' ? 'a reviewer is pushing it' : `it is being rebuilt${batch.reason === undefined ? '' : ` (${batch.reason})`}`}.</Text>}
       <Text> </Text>
       {batch.prs.map(n => (
         <Box key={`batch-row-${n}`} flexDirection="row" gap={1}>
           <Button key={`batch-pr-${n}`} plain onPress={() => void io.serial(async () => { await io.acted(); await io.openPr(n) })}>
-            <Text wrap="truncate-end">#{n} {titleOf(n)}{hs[String(n)] === undefined ? '' : ` · ${hs[String(n)]!.status}`}</Text>
+            <Text wrap="truncate-end">#{n} {inlineEl(Text, titleOf(n), `batch-title-${n}`)}{hs[String(n)] === undefined ? '' : ` · ${hs[String(n)]!.status}`}</Text>
           </Button>
           {ready && <Button key={`batch-pick-${n}`} plain dimColor onPress={() => void io.serial(async () => { await io.acted(); await io.setPick(n) })}>send back</Button>}
         </Box>

@@ -124,7 +124,7 @@ const S1 = '1'.repeat(40)
 const BASE = '9'.repeat(40)
 const PANE = { component: 'Pane', props: { title: 'Flow' } as never, requestId: 'flow' } as const
 
-function world(on: On, gh: 'ok' | 'fail' | 'slow' = 'ok') {
+function world(on: On, gh: 'ok' | 'fail' | 'slow' = 'ok', view: { title?: string; body?: string } = {}) {
   mock.clock(on, { now: 1_000_000 })
   const agents: AgentInfo[] = [{ id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' }]
   const files = new Map<string, string>()
@@ -180,7 +180,7 @@ function world(on: On, gh: 'ok' | 'fail' | 'slow' = 'ok') {
       const n = Number(a[3])
       // The handover tool reads state,headRefOid...; the card asks for url,files.
       if (String(a[5]).includes('url')) return gh === 'fail' ? fail('gh: command not found') : ok(JSON.stringify({ url: `https://github.com/o/r/pull/${n}`, additions: 12, deletions: 3, labels: [], headRefOid: `h${n}`, files: [{ path: 'src/a.ts', additions: 12, deletions: 3 }] }))
-      return ok(JSON.stringify({ state: 'OPEN', isDraft: false, headRefOid: `h${n}`, headRefName: `flow/b${n}`, title: `Title ${n}`, body: BODY, labels: [] }))
+      return ok(JSON.stringify({ state: 'OPEN', isDraft: false, headRefOid: `h${n}`, headRefName: `flow/b${n}`, title: view.title ?? `Title ${n}`, body: view.body ?? BODY, labels: [] }))
     }
     if (a[0] === 'open' || a[0] === 'xdg-open') return ok()
     return ok()
@@ -464,5 +464,53 @@ test('the pane: Esc-home stops the demo and returns to the real tree; the demo d
   expect(await escHints(ui)).toBe(1)
   await cmd($, 'home')
   expect(await ui.find({ key: 'demo-stop' })).toBeUndefined()
+  await ui.unmount()
+})
+
+// ---- markdown on the card ----
+
+// PR #171's description as it was written: bullets, inline code, a heading, quoted commands.
+const PR171 = 'Status: ready. Open questions/approvals now fold into one row in the main pane, collapsed by default.\n\nRules changed\n- Collapsed: one row `▸ ▤ ? 3 questions (1 blocking) · 2 decisions · i` (warning colour when blocking), merging the old Inbox count line. Press it or `a` to expand.\n- Expanded: same per-item buttons, capped at about a third of the pane rows (header and "and N more · i inbox" included).\n- Fold state reuses the `folded` atom under key `#questions` (default collapsed, like the Reviewer row).\n- Decisions-only keeps the plain Inbox line (nothing to unfold), no `a` key.\n\nDecisions (mine)\n- The tree counts the block\'s rows itself (`questionsBlock` in pane-view.tsx) because it needs the pane height; `inboxRows` in register.tsx now covers only checks and the push gate. Keeps the diff away from the `rows` lines (PR #170).\n- Hotkey `a`, shown in the key row only when there are items to unfold.\n\nWatch after deploy: the pane with several questions open; expanded cap on short panes.\n\n## Verification\nRan:\n- `npm run typecheck`: pass\n- `npm run validate`: pass\n- `claude plugin test .`: pass (982 tests, incl. new fold/expand/cap/toggle test)\nExercised: render tests in tests/pane-inbox.test.ts mount the pane at 12 rows with 5 questions: collapsed row, expand, cap, fold again.\nNot verified: live terminal look; `node --test tests/ledger-rebuild-io.node-test.mjs`.\n\nGenerated with Claude Code'
+
+const MD_ROWS: Handover = { ...H, title: 'Fold **open** questions into `one` row', verified: 'ran the *suite*:\n- `bun test`: pass\n- the pane', pending: 'rename `a_b`?', afterDeploy: 'check the **pane**', verifyCommand: 'curl -f x/*_y*', evidence: { ran: ['`bun test`: **pass**'], exercised: 'ran it, see [the log](https://example.com/log)', notVerified: ['the `full` check'] }, env: [{ target: 'demo', name: 'MAIL_TO', value: 'ops_team', why: 'the **sender**', qid: 'q1' }] }
+
+test('card rows: free text is marked as markdown, labels, ids, branches, values and the verify command stay literal', () => {
+  const rows = prCardRows(MD_ROWS, { entry: undefined, mergeMode: 'auto', now: 1_000_000 })
+  const part = (r: CardRow) => (r.md === undefined ? '' : r.text.slice(r.md[0], r.md[1]))
+  expect(rows.map(part).filter(Boolean)).toEqual([
+    'Fold **open** questions into `one` row', 'ran the *suite*:\n- `bun test`: pass\n- the pane', 'rename `a_b`?', 'check the **pane**',
+    '`bun test`: **pass**', 'ran it, see [the log](https://example.com/log)', 'the `full` check', 'the **sender**',
+  ])
+  // The text of every row is what it always was.
+  expect(rows.find(r => r.text.startsWith('after deploy'))!.text).toBe('after deploy: check the **pane** (verify: curl -f x/*_y*)')
+  expect(rows.find(r => r.text.startsWith('  - MAIL_TO'))!.text).toBe('  - MAIL_TO on demo = ops_team: the **sender**')
+  expect(rows.find(r => r.text.startsWith('awaiting'))!.md).toBeUndefined()
+  expect(rows.find(r => r.text.startsWith('after deploy'))!.md).toEqual([14, 14 + 'check the **pane**'.length])
+})
+
+for (const columns of [60, 100]) {
+  test(`the pane: PR #171's real description reads as markdown on the card at ${columns} columns`, { options: OPTS }, async ($, on) => {
+    world(on, 'ok', { title: 'Pane: fold `open` questions into **one** row', body: PR171 })
+    await handover($, 7)
+    const ui = await ($.ui.mount({ plugin: 'flow', surface: 'terminal', ...PANE, viewport: { columns, rows: 30 } } as never) as unknown as Promise<Ui>)
+    await ui.press({ key: 'await-open' })
+    expect(await ui.find({ text: /#7 Pane: fold open questions into one row/ })).toBeDefined()
+    expect(await ui.find({ text: /Ran:/ })).toBeDefined()
+    expect(await ui.find({ text: /npm run typecheck: pass/ })).toBeDefined()
+    expect(await ui.find({ text: /Exercised: render tests in tests\/pane-inbox\.test\.ts/ })).toBeDefined()
+    expect(await ui.find({ text: /\*\*|`/ })).toBeUndefined()
+    await ui.unmount()
+  })
+}
+
+test('the pane: a card taller than the pane keeps its buttons and ends in "+N more lines"', { options: OPTS }, async ($, on) => {
+  const body = '## Verification\nRan:\n' + Array.from({ length: 12 }, (_, i) => `- \`step ${i}\`: **pass**`).join('\n') + '\nExercised: ran it\nNot verified:\n- the full check'
+  world(on, 'ok', { body })
+  await handover($, 7)
+  const ui = await mount($, 14)
+  await ui.press({ key: 'await-open' })
+  expect(await ui.find({ text: /\+\d+ more lines/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'pr-approve' })).toBeDefined()
+  expect(await ui.find({ text: /\*\*/ })).toBeUndefined()
   await ui.unmount()
 })

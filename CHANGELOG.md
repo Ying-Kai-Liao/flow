@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Flow pane renders markdown in free text (hooks/markdown.tsx, no dependency): question, context and decision text, PR card rows, batch titles and checks, agent reports. Headings, bold, italic, code, lists, quotes, tables, links and rules are drawn with the pane's theme colours; one-row places show the text with markers stripped. Unknown syntax stays as literal text.
+
 ## [0.6.82] - 2026-10-12
 
 ### Changed

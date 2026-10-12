@@ -1,4 +1,5 @@
 import { noteKey } from './state'
+import { mdPlain } from './markdown'
 import { DEFAULT_WIDTH, renderTable } from './table'
 import type { Inbox, Question } from '../types'
 
@@ -457,9 +458,9 @@ export const groupTitle = (g: PaneGroup): string => g.routine
 export function paneRowText(r: PaneRow): string {
   if (r.q === undefined) return `${r.group!.expanded ? '▾' : '▸'} ${groupTitle(r.group!)}`
   const q = r.q!
-  if (isFyi(q)) return `${q.id} ${q.owner}${q.topic ? ` [${q.topic}]` : ''}: ${clip(q.question, 80)}`
+  if (isFyi(q)) return `${q.id} ${q.owner}${q.topic ? ` [${q.topic}]` : ''}: ${clip(mdPlain(q.question), 80)}`
   const tags = tagsOf(q)
-  return `${q.id}${tags === '' ? '' : ` ${tags}`} ${isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`}: ${q.guard !== undefined ? q.question : clip(q.question, 80)}`
+  return `${q.id}${tags === '' ? '' : ` ${tags}`} ${isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`}: ${q.guard !== undefined ? q.question : clip(mdPlain(q.question), 80)}`
 }
 
 // What y and c do on a collapsed card's row; the pane's key line shows it while that row is hot.
@@ -549,9 +550,9 @@ export const decisionOutcomeText = (q: Question, now: number): string =>
   `${decisionOutcome(q)} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`
 
 export const archiveRowText = (q: Question, now: number): string =>
-  isFyi(q) && q.auto !== undefined ? `${q.id} ${clip(decisionOutcome(q), 40)} (${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(q.question, 80)}` :
-  isFyi(q) ? `${q.id} ${clip(decisionOutcome(q), 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(q.question, 80)}` :
-  `${q.id} ${clip(q.answer ?? '', 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(q.question, 80)}`
+  isFyi(q) && q.auto !== undefined ? `${q.id} ${clip(decisionOutcome(q), 40)} (${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(mdPlain(q.question), 80)}` :
+  isFyi(q) ? `${q.id} ${clip(decisionOutcome(q), 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(mdPlain(q.question), 80)}` :
+  `${q.id} ${clip(q.answer ?? '', 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(mdPlain(q.question), 80)}`
 
 // /flow inbox archive: the newest answered items; all: every one.
 export function renderArchive(inbox: Inbox | undefined, now: number, all = false): string {
