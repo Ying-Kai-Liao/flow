@@ -365,6 +365,7 @@ function inboxIoOf($: EngineInterface): InboxIo {
     withPreflight: fn => withPreflight($, fn),
     preflightTick: rows => preflightTick($, rows),
     submitLater: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
+    paneOpen: () => flowPaneOpen($),
     net: decideIoOf($),
   }
 }
@@ -983,6 +984,7 @@ function deployIoOf($: EngineInterface): DeployIo {
     best: (what, fn) => best($, what, fn),
     toast: text => { void $.ui.toast(text) },
     toMain: text => toMain($, text),
+    paneOpen: () => flowPaneOpen($),
   }
 }
 
@@ -1221,6 +1223,8 @@ const refusals = new Map<string, string>()
 const deliver = ($: EngineInterface, id: string, text: string, opts?: DeliverOptions) => deliverTo(ioOf($), id, text, opts)
 const flushAgent = ($: EngineInterface, id: string) => flushTo(ioOf($), id)
 const holdForReviewer = ($: EngineInterface, id: string) => holdTo(ioOf($), id)
+// isShown is the engine's own flag; an entry without it counts as shown.
+const flowPaneOpen = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id === PANE && p.isShown !== false)
 const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
 
 function routeIoOf($: EngineInterface): RouteIo {

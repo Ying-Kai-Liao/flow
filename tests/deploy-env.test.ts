@@ -116,6 +116,8 @@ function world(on: On) {
   const toasts: string[] = []
   on('agent.list', () => ({ value: agents }))
   on('agent.spawn', () => ({ model: 'sonnet', agentId: 'q2' }))
+  const pane = { open: false, throws: false }
+  on('ui.panes', () => { if (pane.throws) throw new Error('no panes'); return { value: pane.open ? [{ id: 'flow', title: 'Flow', isShown: true, isFocused: false, isPlaced: true }] : [] } })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -143,7 +145,7 @@ function world(on: On) {
     }
     return ok()
   })
-  return { agents, files, log, toasts, prompts, flush: async () => { await clock.advance(1); await clock.settle() } }
+  return { pane, agents, files, log, toasts, prompts, flush: async () => { await clock.advance(1); await clock.settle() } }
 }
 
 type Env = Record<string, unknown>
@@ -378,6 +380,15 @@ test('ask_cards on: a handover with env items and the env gate each notify main 
   await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })
   await w.flush()
   expect(w.prompts).toHaveLength(1)
+})
+
+test('ask_cards with the Flow pane open: env items send no notice, the toast stays', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  w.pane.open = true
+  await handover($, 3, [MAIL])
+  await w.flush()
+  expect(w.prompts).toEqual([])
+  expect(w.toasts.join('\n')).toContain('PR #3 has 1 env item')
 })
 
 test('ask_cards off: env items send no notice, the toast stays', { options: { ...OPTS, ask_cards: 'off' } }, async ($, on) => {

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Size A/B: opt-in daily Jev vs Size-line arms with per-arm cost report (#174)
+### Fixed
+
+- A blocking question, env item or deploy approval no longer also reaches main as an AskUserQuestion card while the Flow pane is open (the pane already shows it, and a card left open there went stale); with the pane closed the notice is sent as before, and it re-checks that the items are still open right before sending
 
 ## [0.6.79] - 2026-10-12
 
