@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/ledger-rebuild.mjs` recomputes the cost ledger's token and turn totals from the agents' transcripts, repairing totals inflated before 0.6.70. Dry run by default; `--write` backs the old ledger up first.
+
 ## [0.6.71] - 2026-10-12
 
 ### Changed
