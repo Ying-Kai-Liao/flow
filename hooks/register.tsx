@@ -47,7 +47,7 @@ import {
   closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, markDelivered, normalizePreflight, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
-import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess, reviewerToolAccess } from './lite'
+import { EMPTY_LITE, isLiteName, normalizeLite } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
   addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, parseNeeds,
@@ -73,7 +73,7 @@ import type { PaneEvent, PaneIo } from './pane-run'
 import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
-import { describeCall, ROLE, summarizeCall } from './pane'
+import { describeCall, ROLE } from './pane'
 import {
   fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO,
   REVIEWER_SESSION_RULES_CONFIRM, WORKER_PROMPT,
@@ -109,13 +109,14 @@ import { statusTool } from './status-run'
 import type { StatusIo, Unhanded } from './status-run'
 import { flowCommand } from './command'
 import type { CommandIo } from './command'
-import { elapsed, tokensDown, labelOf, limitLabel, thresholdOf, windowOf, wrapUpText } from './meter'
+import { elapsed, tokensDown, labelOf, thresholdOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
 import {
-  allowed, allowList, flowActive, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
+  allowList, killRefusal, remoteDeleteRefusal,
 } from './guards'
-import type { WriteTarget } from './guards'
-import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun, workerSuiteRefusal } from './testguard'
+import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun } from './testguard'
+import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, releaseCase, reviewerCase, sessionCase, WRITE_TOOLS } from './toolcall-run'
+import type { FlowToolsIo, GuardIo, ToolCallIo } from './toolcall-run'
 import { flowCatch, isFlowTool, toolCatch } from './toolguard'
 import {
   ago, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, sessionKey, sessionLive, sessionRow,
@@ -125,14 +126,14 @@ import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSes
 import { ownerVerdict, pumpRelay, relayCall, stripEngineFields, subagentRefusal } from './relay'
 import type { MainIdentity, PumpIo, RelayAnswer, RelayCall, RelayIo } from './relay'
 import type { Caller, Ran, SessionIo } from './session-run'
-import { branchOwners, findWorktree, noteKey } from './state'
-import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
+import { branchOwners, noteKey } from './state'
+import { ADD_OPTION } from './guardtests'
 import {
   EMPTY_PUSH, normalizePush,
   
 } from './pushgate'
 import type { PushState } from './pushgate'
-import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, pushLines, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
+import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
 import type { PushAct, PushIo } from './pushgate-run'
 import {
   EMPTY_DEPLOYS, ENV_KIND,
@@ -1605,45 +1606,11 @@ function breakerIoOf($: EngineInterface): BreakerIo {
 
 function onReviewerAnswer($: EngineInterface, answer: string, by: string): Promise<string> { return onReviewerAnswerTo(breakerIoOf($), () => ensureQueue($), answer, by) }
 
-const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
-
-// Why a call is refused as a write to the repo's main checkout, or undefined. `cwd` is where
-// the caller's shell runs when that is known: the main session and managers run in the
-// session's directory; a worker's or the reviewer's worktree isn't known here, so their relative
-// paths are let through and only absolute ones judged.
-// The main session (and a non-flow subagent of it) is guarded only while flow has work in this
-// repo: a flow worktree, or a live flow agent. `flowCaller` says the caller is itself a flow
-// agent, which is guarded regardless.
-async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>, cwd: () => Promise<string | undefined>, allow: string[], flowCaller: () => Promise<boolean>): Promise<string | undefined> {
-  let targets: WriteTarget[]
-  if (WRITE_TOOLS.includes(String(e.tool))) {
-    const file = e.file_path ?? e.notebook_path
-    const path = typeof file === 'string' ? resolvePath(file, await cwd()) : undefined
-    targets = path === undefined ? [] : [{ path }]
-  } else if (e.tool === 'Bash' && typeof e.command === 'string') {
-    targets = writeTargets(e.command, await cwd())
-  } else {
-    return undefined
-  }
-  if (targets.length === 0) return undefined
-  // Asked on every judged write, so a worktree made a minute ago counts as one.
-  // Not a git repo, or git failing: nothing to guard.
-  const wt = await $.process.run(['git', 'worktree', 'list', '--porcelain'], { timeoutMs: 10_000 }).catch(() => undefined)
-  const co = wt?.exitCode === 0 ? parseWorktrees(wt.stdout) : undefined
-  if (co === undefined) return undefined
-  // Judged lazily: only a write into the main checkout needs the activity signal.
-  let active: boolean | undefined
-  const guarded = async () => active ??= (await flowCaller()) || flowActive(co) ||
-    (await agentsOf($)).some(a => (a.type === MANAGER || WORKERS.has(a.type) || isReviewer(a.type)) && (LIVE_STATUS.has(a.status) || a.status === 'idle'))
-  for (const t of targets) {
-    const rel = mainRelative(t.path, co)
-    if (rel === undefined) continue
-    if (!(await guarded())) return undefined
-    // A git command changes the whole checkout, whichever directory of it runs it.
-    if (t.git) return mainCheckoutRefusal(co.main, `\`git\` in ${t.path}`, allow)
-    if (!allowed(rel, allow)) return mainCheckoutRefusal(co.main, t.path, allow)
-  }
-  return undefined
+function guardIoOf($: EngineInterface): GuardIo {
+  return { exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }), allAgents: () => agentsOf($) }
+}
+function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>, cwd: () => Promise<string | undefined>, allow: string[], flowCaller: () => Promise<boolean>): Promise<string | undefined> {
+  return mainCheckoutGuardTo(guardIoOf($), e, cwd, allow, flowCaller)
 }
 
 // The reviewer's report with the PR's workers' cost appended, once.
@@ -1704,32 +1671,6 @@ async function sendWrapUp($: EngineInterface, me: { id: string; type: string; na
   const sent = await deliver($, me.id, text, { urgent: true, onGone: () => undefined }).catch(() => false)
   // A refused send is re-queued by deliver() and reads as sent there; the refusal is recorded by the io.
   if (!sent || refusals.has(me.id)) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered: ${refusals.get(me.id) ?? 'unknown'}`)
-}
-
-// An agent past the threshold reads the wrap-up after a tool result: on its first tool call
-// past it, every 10th after, and when usage rises another 10 points. The result passes untouched.
-async function wrapUpReminder($: EngineInterface, e: { agentId?: string }, r: any, settings: ReturnType<typeof settingsOf>, mainModel: string | undefined, mainWindow: number | undefined): Promise<any> {
-  try {
-    const id = e.agentId
-    if (id === undefined || !settings.handoff || r.deny !== undefined) return r
-    const a = (await read($, activity))[id]
-    if (a?.handoffNotifiedAt === undefined || a.usage === undefined) return r
-    const window = a.usage.window ?? windowOf(a.usage.model, mainModel, mainWindow, a.usage.tokens, a.spawnWindow)
-    const percent = Math.min(100, Math.round(a.usage.tokens / window * 100))
-    const calls = (a.callsPastLimit ?? 0) + 1
-    const due = calls === 1 || calls % 10 === 0 || percent >= (a.remindedPercent ?? a.handoffPercent ?? percent) + 10
-    await update($, activity, acts => {
-      const cur = acts[id]
-      if (cur === undefined) return acts
-      const n = (cur.callsPastLimit ?? 0) + 1
-      return { ...acts, [id]: { ...cur, callsPastLimit: n, ...(due ? { remindersSent: (cur.remindersSent ?? 0) + 1, remindedPercent: percent } : {}) } }
-    })
-    if (!due) return r
-    const me = (await $.agent.list()).find(x => x.id === id)
-    return { ...r, context: [...(r.context ?? []), wrapUpText(ROLE[me?.type ?? WORKER] ?? 'worker', percent, limitLabel(settings, window))] } 
-  } catch {
-    return r
-  }
 }
 
 // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
@@ -2433,6 +2374,57 @@ const FLOW_TOOLS = [
   'mcp__flow__status',
 ] as const
 
+// The io of the multi-line flow tool cases (bodies in toolcall-run.ts), over one call's context.
+function flowToolsIoOf($: EngineInterface, c: FlowCtx, e: FlowCall): FlowToolsIo {
+  const { settings, options } = c
+  return {
+    agents: () => $.agent.list(),
+    exec: argv => $.process.run(argv),
+    cwd: () => $.session.cwd(),
+    now: () => $.clock.now(),
+    sessionWorktree: async id => (await sessionOfId($, id))?.worktree,
+    toolCaller: agentId => toolCallerOf($, agentId),
+    handovers: () => read($, handovers),
+    ownerName: id => ownerNameOf($, id),
+    release: async () => releaseTool(releaseIoOf($), settings, e),
+    reviewer: async () => reviewerToolRun(reviewerIoOf($, settings.base), settings, e, e.agentId),
+    readNotes: manager => readNotes($, manager),
+    appendNote: (manager, line) => appendNote($, manager, line),
+    notesPath: manager => notesPath($, manager),
+    logNote: (owner, text) => best($, 'logging a note', () => appendLog($, { event: 'note', owner, text })),
+    sweep: (base, apply) => sweep($, base, apply),
+    pushState: () => read($, pushState),
+    pushAct: act => pushAct($, act, 'main'),
+    sessionTool: caller => sessionTool($, e, caller, settings),
+    deployTool: (isMain, caller) => deployTool($, options, e, isMain, caller),
+  }
+}
+
+// The generic tool.call hook's io (bodies in toolcall-run.ts). The settings and main's model are read live
+// through `held`: register() reassigns them.
+function toolCallIoOf($: EngineInterface, held: Pick<ToolCallIo, 'settings' | 'explicitEffort' | 'mainModel' | 'mainWindow'>): ToolCallIo {
+  return {
+    ...held,
+    ...guardIoOf($),
+    now: () => $.clock.now(),
+    sessionCwd: () => $.session.cwd(),
+    agents: () => $.agent.list(),
+    refresh: () => refresh($),
+    testSlots: () => read($, testSlots),
+    typecheckSlots: () => read($, typecheckSlots),
+    sessions: () => read($, sessions),
+    seenAgents: () => read($, seenAgents),
+    activity: () => read($, activity),
+    updateActivity: async fn => { await update($, activity, fn) },
+    wokenByOthers,
+    best: (what, fn) => best($, what, fn),
+    reviewerSendGuard: (id, to, text) => reviewerSendGuard(routeIoOf($), id, to, text),
+    alreadyForwarded: (id, text) => alreadyForwarded($, id, text),
+    deliverToSession: (fromId, target, text) => deliverToSession($, fromId, target, text),
+    holdForReviewer: id => holdForReviewer($, id),
+  }
+}
+
 // Runs a flow tool for `e.agentId` (a hook's caller, or `session:<name>` for a relayed call). A function with
 // a switch, not a table of closures: the plugin directory only lets `$` into functions declared at the top of the file.
 async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: FlowCtx): Promise<FlowOut | undefined> {
@@ -2441,47 +2433,16 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__handover': return handoverTool(handoverIoOf($, options), settings, e, e.agentId)
 
     // The reviewer's tools: main, the reviewer, and a lite manager for its own PRs. A manager or worker otherwise is refused.
-    case 'mcp__flow__release': {
-      const input = e
-      const refused = releaseToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
-      return refused !== undefined ? { result: refused } : releaseTool(releaseIoOf($), settings, input)
-    }
+    case 'mcp__flow__release': return releaseCase(flowToolsIoOf($, c, e), e)
 
     case 'mcp__flow__reviewer':
-    case 'mcp__flow__queue': {
-      const refused = reviewerToolAccess(await toolCallerOf($, e.agentId), e, await read($, handovers))
-      return refused !== undefined ? { result: refused } : reviewerToolRun(reviewerIoOf($, settings.base), settings, e, e.agentId)
-    }
+    case 'mcp__flow__queue': return reviewerCase(flowToolsIoOf($, c, e), e)
 
     case 'mcp__flow__plan': return planTool(planIoOf($), settings, e, e.agentId)
 
     case 'mcp__flow__test_slot': return testSlotTool(slotsIoOf($), settings, e)
 
-    case 'mcp__flow__guard_tests': {
-      const input = e
-      const map = settings.guardTests
-      if (Object.keys(map).length === 0) return { result: guardReport([], false) }
-      let files: string[]
-      if (Array.isArray(input.files)) files = input.files.filter((f): f is string => typeof f === 'string')
-      else {
-        // The caller's own worktree, else the session's directory.
-        let dir: string | undefined
-        const mine = e.agentId === undefined ? undefined : await sessionOfId($, e.agentId)
-        if (mine !== undefined) dir = mine.worktree
-        else if (e.agentId !== undefined) {
-          const me = (await $.agent.list()).find(a => a.id === e.agentId)
-          const wt = await $.process.run(['git', 'worktree', 'list', '--porcelain']).catch(() => undefined)
-          if (me !== undefined && wt?.exitCode === 0) dir = findWorktree(wt.stdout, me.id, `flow/${me.name ?? me.id}`)?.path
-        }
-        dir ??= await $.session.cwd().catch(() => undefined)
-        const git = (...args: string[]) => $.process.run(['git', ...(dir === undefined ? [] : ['-C', dir]), ...args])
-        const diff = await git('diff', '--name-only', '--no-renames', `origin/${settings.base}...HEAD`)
-        if (diff.exitCode !== 0) return { result: `Could not work out your diff (git diff origin/${settings.base}...HEAD failed: ${diff.stderr.trim().slice(0, 300)}). Call again with files: [...].` }
-        const dirty = await git('status', '--porcelain', '--untracked-files=all')
-        files = [...diff.stdout.split('\n').map(l => l.trim()).filter(Boolean), ...(dirty.exitCode === 0 ? pathsFromStatus(dirty.stdout) : [])]
-      }
-      return { result: guardReport(guardTestsFor(files, map), true) }
-    }
+    case 'mcp__flow__guard_tests': return guardTestsCase(flowToolsIoOf($, c, e), settings.base, settings.guardTests, e)
 
     case 'mcp__flow__ask': return askTool(inboxIoOf($), options, e, e.agentId)
     case 'mcp__flow__fyi': return fyiTool(inboxIoOf($), e, e.agentId, settings, options)
@@ -2490,29 +2451,9 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__standing': return standingTool(standingIoOf($), options, e, e.agentId)
     case 'mcp__flow__check': return checkTool(checksIoOf($), installed, e, e.agentId)
 
-    case 'mcp__flow__note': {
-      const input = e
-      const manager = String(input.manager ?? '').trim()
-      if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
-      const text = typeof input.text === 'string' ? input.text.trim() : ''
-      if (text === '') {
-        const notes = await readNotes($, manager)
-        return { result: notes === '' ? 'No notes yet.' : notes }
-      }
-      const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
-      const line = input.kind === 'decision' ? `- ${date} decision: "${text}"` : `- ${date} progress: ${text}`
-      if (!await appendNote($, manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
-      await best($, 'logging a note', () => appendLog($, { event: 'note', owner: noteKey(manager), text }))
-      return { result: `Noted in ${await notesPath($, manager)}.` }
-    }
+    case 'mcp__flow__note': return noteCase(flowToolsIoOf($, c, e), e)
 
-    case 'mcp__flow__clean': {
-      const apply = e.apply === true
-      if (apply && settings.cleanup === 'off') {
-        return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await sweep($, settings.base, false)}` }
-      }
-      return { result: await sweep($, settings.base, apply) }
-    }
+    case 'mcp__flow__clean': return cleanCase(flowToolsIoOf($, c, e), settings, e)
 
     case 'mcp__flow__settings': return settingsTool(initIoOf($), options, e, e.agentId)
 
@@ -2526,37 +2467,11 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
 
     case 'mcp__flow__migrations': return migrationsTool(migrationsIoOf($), settings, e)
 
-    case 'mcp__flow__session': {
-      const id = e.agentId
-      const caller: Caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await ownerNameOf($, id) }
-      return { result: await sessionTool($, e, caller, settings) }
-    }
+    case 'mcp__flow__session': return sessionCase(flowToolsIoOf($, c, e), e)
 
-    case 'mcp__flow__deploy': {
-      const isMain = e.agentId === undefined
-      const caller = isMain ? 'main' : await ownerNameOf($, e.agentId!)
-      const refused = deployToolAccess(await toolCallerOf($, e.agentId), e, await read($, handovers))
-      if (refused !== undefined) return { result: refused }
-      return { result: await deployTool($, options, e, isMain, caller) }
-    }
+    case 'mcp__flow__deploy': return deployCase(flowToolsIoOf($, c, e), e)
 
-    case 'mcp__flow__push': {
-      const input = e
-      if (e.agentId !== undefined) return { result: 'Refused: only main releases a ready batch, on the user\'s word (or the user, with /flow push). Managers, workers and the reviewer cannot push it.' }
-      const action = String(input.action ?? 'list')
-      if (action === 'list') {
-        const lines = pushLines(await read($, pushState))
-        return { result: lines.length === 0 ? 'Nothing ready to push.' : lines.join('\n') }
-      }
-      if (action === 'push') return { result: await pushAct($, { kind: 'push' }, 'main') }
-      if (action === 'drop') return { result: await pushAct($, { kind: 'drop' }, 'main') }
-      if (action === 'send-back') {
-        const pr = Number(input.pr)
-        if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: send-back needs pr, a PR number of the batch.' }
-        return { result: await pushAct($, { kind: 'back', pr }, 'main') }
-      }
-      return { result: 'Unknown action: use list, push, send-back or drop.' }
-    }
+    case 'mcp__flow__push': return pushCase(flowToolsIoOf($, c, e), e)
 
     case 'mcp__flow__status': return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
     default: return undefined
@@ -2946,88 +2861,13 @@ export const register: Register = (on, options) => {
   // before `next`, so the catch passes the call on only when the hook failed before it ran: a
   // broken guard must not block every call. A failure beneath `next` (a flow tool's own hook throwing)
   // reaches this catch, not the tool hook's own, so a flow tool that did not finish is answered here too.
+  const toolCallHeld = { settings: () => settings, explicitEffort, mainModel: () => mainModel, mainWindow: () => mainWindow }
   on('tool.call', async ($, e, next) => {
     if (relay !== undefined) return (await relayToolCall($, settings, e)) ?? next(e)
-    const id = e.agentId
-    if (e.tool === 'Agent' && e.effort !== undefined && e.effort !== null) explicitEffort.add(e.tool_use_id)
-    if (e.tool === 'Bash') {
-      const why = killRefusal(e.command)
-      if (why !== undefined) return { deny: why }
-      // A whole-suite run needs a held test slot. Slot state is read only when the command matches.
-      const suite = suiteRun(e.command, settings.testSlotCommands ?? [])
-      if (suite !== undefined) {
-        const rows = await refresh($)
-        const worker = id !== undefined && WORKERS.has(rows.find(a => a.id === id)?.type ?? '')
-        const refused = workerSuiteRefusal(worker, suite) ?? slotRefusal(await read($, testSlots), rows, id ?? 'main', settings.testSlots, await $.clock.now(), suite)
-        if (refused !== undefined) return { deny: refused }
-      }
-      const typecheck = typecheckRun(e.command, settings.typecheckCommands ?? [])
-      if (typecheck !== undefined) {
-        const refused = typecheckRefusal(await read($, typecheckSlots), await read($, testSlots), await refresh($), id ?? 'main', (settings.typecheckSlots ?? 1), await $.clock.now(), typecheck)
-        if (refused !== undefined) return { deny: refused }
-      }
-      // Merged branches are deleted by the plugin on the reviewer's "done"; a subagent never deletes a remote ref.
-      const del = id === undefined ? undefined : remoteDeleteRefusal(e.command)
-      if (del !== undefined) return { deny: del }
-    }
-    let me: AgentInfo | undefined
-    const whoAmI = async () => (me ??= (await $.agent.list()).find(a => a.id === id))
-    if (id !== undefined && WRITE_TOOLS.includes(e.tool) && (await whoAmI())?.type === MANAGER) {
-      return { deny: 'flow: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
-    }
-    if (settings.mainGuard) {
-      const cwd = async () => (id === undefined || (await whoAmI())?.type === MANAGER ? $.session.cwd() : undefined)
-      const flowCaller = async () => {
-        const type = id === undefined ? undefined : (await whoAmI())?.type
-        return type !== undefined && (type === MANAGER || WORKERS.has(type) || isReviewer(type))
-      }
-      const why = await mainCheckoutGuard($, e as unknown as Record<string, unknown>, cwd, settings.mainAllow, flowCaller)
-      if (why !== undefined) return { deny: why }
-    }
-    if (e.tool === 'SendMessage') {
-      const input = e as unknown as Record<string, unknown>
-      const to = String(input.to ?? '')
-      const text = String(input.message ?? input.text ?? '')
-      // A worker session is not on the roster (a role session is, through agentsOf, so the guard below sees it).
-      const named = (await read($, sessions))[to.replace(/^session:/, '')]
-      const inRoster = async () => (await $.agent.list()).some(a => a.name === to)
-      if (named !== undefined && sessionLive(named) && named.role === undefined && !(await inRoster())) {
-        return { deny: await deliverToSession($, id, named, text) }
-      }
-      if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) {
-        let handled: string | undefined
-        await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard(routeIoOf($), id, to, text) })
-        // A built-in tool's output must be an object; a string result is refused by the host as
-        // "SendMessage output is not an object". deny carries the same "Not sent" text to the reviewer.
-        if (handled !== undefined) return { deny: handled }
-        // Lines the guard already sent main need no second copy; anything new goes through.
-        if (to === 'main' && await alreadyForwarded($, id, text)) {
-          return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
-        }
-      }
-      if (named !== undefined && sessionLive(named) && !(await inRoster())) return { deny: await deliverToSession($, id, named, text) }
-      await best($, 'marking a wake-up', async () => {
-        const listed = (await $.agent.list()).find(a => a.id === to || a.name === to)
-        // A manager the host dropped from the roster is held by the id last seen for it.
-        const seenId = listed === undefined ? (await read($, seenAgents))[to]?.id : undefined
-        const target = listed ?? (seenId === undefined ? undefined : { id: seenId, type: MANAGER, status: 'completed' })
-        if (target === undefined || target.type !== MANAGER) return
-        // The reviewer's message starts the manager's turn: what waited for it rides that turn (turn.step
-        // flushes it) instead of waking the manager a second time just before. A timer covers a message that never lands.
-        if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) holdForReviewer($, target.id)
-        if (id === undefined) wokenByOthers.delete(target.id)
-        else if (target.status !== 'running') wokenByOthers.add(target.id)
-      })
-    }
-    if (id !== undefined) {
-      const t = await $.clock.now()
-      const line = describeCall(e as unknown as Record<string, unknown>)
-      await update($, activity, acts => {
-        const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
-        return { ...acts, [id]: { ...a, lastAt: t, doing: summarizeCall(e as unknown as Record<string, unknown>), log: [...a.log, line].slice(-LOG_MAX) } }
-      })
-    }
-    return wrapUpReminder($, e, await next(e), settings, mainModel, mainWindow)
+    const io = toolCallIoOf($, toolCallHeld)
+    const refused = await beforeToolCall(io, e)
+    if (refused !== undefined) return refused
+    return afterToolCall(io, e, await next(e))
   }).catch((_$, e, next) => flowCatch(e, next))
 
   // In a relay copy nothing here may run: the generic hook above answers every flow tool through main,
