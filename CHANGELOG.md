@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Reviewer carries many PRs per full check (batch_max, late join, bisect, timeout rerun) (#192)
 - Typecheck slot pool; workers run only their test files (#194)
+### Added
+
+- Best-of-N, opt-in (`best_of_n` off | brief | auto, `best_of_n_arms` 2..3): a manager may start 2-3 competing agent workers on one brief, named `<pkg>-a`/`-b`/`-c` with an `Arm: <letter> of <N>` line. The spawn hook refuses an arm spawn that breaks the protocol (setting off, too many arms, wrong letter or name, not a manager, over `max_workers`); arm ledger rows carry `arm` so cost per arm is recorded. The new `mcp__flow__arms` tool picks the winner (`pick` closes the other arms' PRs, logs `arm-pick` / `arm-lost`, names losers that still run) and reports cost per arm and the group's overhead over the winner (`report`). Handover refuses an arm's PR unless it is the picked winner; the "PR nobody handed over" list skips open arm groups and losers; the cleanup removes a loser's worktree and local branch once it is pushed with its PR closed. Arms count as one package in the size digest, the size A/B report and the decide-eval size data. Docs: Best of N.
 
 ## [0.6.91] - 2026-10-13
 

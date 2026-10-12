@@ -19,7 +19,7 @@ export function sizeArmOf(sizeAb: 'off' | 'daily' | undefined, decisionApi: stri
 // The sizing function a spawn uses: the off arm gets none, so the decision API is not called (the Size line alone).
 export const sizerFor = <T,>(arm: SizeArm | undefined, make: () => T | undefined): T | undefined => (arm === 'off' ? undefined : make())
 
-type Row = Pick<LedgerEntry, 'role' | 'name' | 'manager' | 'branch' | 'spawnModel' | 'models'> & { sizeArm?: string }
+type Row = Pick<LedgerEntry, 'role' | 'name' | 'manager' | 'branch' | 'spawnModel' | 'models'> & { sizeArm?: string; arm?: LedgerEntry['arm'] }
 export type ArmStats = { packages: number; merged: number; usd: number; usdPerMerged?: number; rerun: number; models: Record<string, number> }
 export type RoleReport = Record<SizeArm, ArmStats>
 export type AbReport = { worker: RoleReport; manager: RoleReport }
@@ -31,6 +31,10 @@ const usdOf = (r: Row): number => Object.entries(r.models ?? {}).reduce((n, [m, 
 export const mergedBranches = (log: Pick<LogEvent, 'event' | 'branch'>[]): Set<string> =>
   new Set(log.filter(l => l.event === 'done' && l.branch !== undefined).map(l => l.branch!))
 
+// The package a row belongs to: its base name with the -N successors; the arms of a best-of-N group (hooks/bestof.ts)
+// are one package (the group), so a group has one first attempt and its arms are not counted as reruns.
+const packageOf = (r: Row): string => r.arm !== undefined ? r.arm.group : baseName(r.name)
+
 // A package is a base name with its -N successors, per role, attributed to the arm of its FIRST spawn (lowest
 // generation); a package whose first spawn has no arm predates the A/B and is left out. Merged: a worker package has a
 // merged branch among its own rows; a manager package has a merged branch among its workers' (rows whose manager is it).
@@ -41,7 +45,7 @@ export function sizeAbReport(ledger: Ledger | Record<string, Row>, merged: Set<s
   const out: AbReport = { worker: { jev: empty(), off: empty() }, manager: { jev: empty(), off: empty() } }
   for (const role of ['worker', 'manager'] as const) {
     const byBase = new Map<string, Row[]>()
-    for (const r of rows.filter(x => x.role === role)) byBase.set(baseName(r.name), [...(byBase.get(baseName(r.name)) ?? []), r])
+    for (const r of rows.filter(x => x.role === role)) byBase.set(packageOf(r), [...(byBase.get(packageOf(r)) ?? []), r])
     for (const [base, pkg] of byBase) {
       const first = pkg.reduce((a, b) => (generation(b.name) < generation(a.name) ? b : a))
       if (!isArm(first.sizeArm)) continue

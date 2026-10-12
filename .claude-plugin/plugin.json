@@ -142,6 +142,19 @@
       "default": "off",
       "options": ["off", "daily"]
     },
+    "best_of_n": {
+      "type": "string",
+      "title": "Best of N",
+      "description": "Advanced: brief: a manager may start 2-3 competing workers (arms) on one package when its task or the user asks for it; auto: also on its own for large packages and bug hunts whose root cause is unknown. Each arm has its own worktree and branch, the manager picks the winner with the arms tool and only that PR is handed over. Arms cost tokens, each counts against max_workers and the ledger records $ per arm. off: one worker per package.",
+      "default": "off",
+      "options": ["off", "brief", "auto"]
+    },
+    "best_of_n_arms": {
+      "type": "number",
+      "title": "Best of N arms",
+      "description": "Advanced: how many competing workers at most for one package when best_of_n is on (2 or 3; other values are clamped).",
+      "default": 2
+    },
     "main_checkout_guard": {
       "type": "boolean",
       "title": "Main-checkout guard",

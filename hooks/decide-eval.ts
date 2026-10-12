@@ -184,7 +184,7 @@ export async function handoffData(log: LogLine[], maxContinues: number, readNote
 
 // ---- savings: the ledger's average cost of one turn by role, at hooks/cost.ts list prices ----
 export type Unit = { usd: number; tokens: number; basis: string }
-type LedgerRow = { role?: string; name?: string; manager?: string; branch?: string; spawnModel?: string; size?: string; turns?: number; sizeFeedback?: boolean; models?: Record<string, { input: number; write5m: number; write1h: number; read: number; output: number }> }
+type LedgerRow = { role?: string; name?: string; manager?: string; branch?: string; spawnModel?: string; size?: string; turns?: number; sizeFeedback?: boolean; arm?: { group: string; id: string; of: number }; models?: Record<string, { input: number; write5m: number; write1h: number; read: number; output: number }> }
 export function unitCosts(ledger: Record<string, LedgerRow>): Record<FeatureKey, Unit> {
   const acc: Record<string, { usd: number; tokens: number; turns: number; entries: number }> = {}
   for (const e of Object.values(ledger)) {
@@ -299,7 +299,7 @@ export function sizeData(src: SizeSource): Dataset {
   }
   const prOf = (branch: string | undefined): PrStat | undefined => (branch === undefined ? undefined : src.prs?.[branch])
   const records: EvalRecord[] = []
-  const skip: Record<string, number> = { 'no prompt': 0, 'model unknown': 0, 'no merged PR': 0 }
+  const skip: Record<string, number> = { 'no prompt': 0, 'model unknown': 0, 'no merged PR': 0, 'unpicked arm': 0 }
   let total = 0
   const roleCount = { worker: 0, manager: 0 }
   const why = { successor: 0, 'continue/handoff': 0, undone: 0 }
@@ -323,6 +323,8 @@ export function sizeData(src: SizeSource): Dataset {
       const workers = role === 'worker' ? [first] : rows.filter(r => r.role === 'worker' && r.manager !== undefined && baseName(r.manager) === name)
       const prs = [...new Set([...workers.map(w => w.branch), ...successors.map(s => s.branch)])].map(prOf).filter((p): p is PrStat => p !== undefined)
       const merged = prs.filter(p => p.state === 'MERGED')
+      // A best-of-N arm is a package only when it won: a lost arm is not a rerun and has no outcome of its own.
+      if (first.arm !== undefined && merged.length === 0) { skip['unpicked arm']!++; continue }
       const rerun = successors.length > 0 || onBranch || undone
       // A handoff or successor of a worker that ran large says nothing about the model choice.
       const under = used !== 'large' && rerun
