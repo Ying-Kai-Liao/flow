@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Cost ledger: a running plugin no longer overwrites a newer `ledger.json` (a `ledger-rebuild --write`, or another session's saves) with its stale in-memory copy. The file carries an `__epoch` stamp, and every save writes the disk ledger plus only this session's unsaved counts.
+
 ## [0.6.74] - 2026-10-12
 
 ### Changed

@@ -59,13 +59,17 @@ export function discover(project) {
   return { sessions, agents, agentTexts: key => agents.get(key)?.map(f => fs.readFileSync(f, 'utf8')) }
 }
 
+const EPOCH_KEY = '__epoch'
+
 // Backs the old file up under a dated name (never over an existing backup), then replaces it atomically.
 export function writeLedger(ledgerPath, ledger, date) {
   const dir = path.dirname(ledgerPath)
   const backup = path.join(dir, backupName(date, n => fs.existsSync(path.join(dir, n))))
   fs.copyFileSync(ledgerPath, backup, fs.constants.COPYFILE_EXCL)
   const tmp = `${ledgerPath}.${process.pid}.tmp`
-  fs.writeFileSync(tmp, `${JSON.stringify(ledger, null, 2)}\n`)
+  // A new epoch tells a running plugin its in-memory base is stale: its next save rebuilds from this file.
+  const epoch = `rebuild-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  fs.writeFileSync(tmp, `${JSON.stringify({ [EPOCH_KEY]: epoch, ...ledger }, null, 2)}\n`)
   fs.renameSync(tmp, ledgerPath)
   return backup
 }
@@ -77,14 +81,15 @@ function main(argv) {
   const cwd = process.cwd()
   const ledgerPath = opt('--ledger') ?? path.join(commonDir(cwd), 'flow', 'ledger.json')
   const project = opt('--project') ?? path.join(os.homedir(), '.claude/projects', slugOf(path.dirname(commonDir(cwd))))
-  const raw = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'))
+  // The epoch stamp is not an entry.
+  const raw = Object.fromEntries(Object.entries(JSON.parse(fs.readFileSync(ledgerPath, 'utf8'))).filter(([k]) => k !== EPOCH_KEY))
   const found = discover(project)
   const { ledger, rows } = rebuild(raw, found)
   console.log(`ledger ${ledgerPath}\ntranscripts ${project} (${found.sessions.length} main sessions, ${found.agents.size} agents)\n`)
   console.log(report(rows))
   if (argv.includes('--write')) {
     const backup = writeLedger(ledgerPath, ledger, localDate(new Date()))
-    console.log(`\nWrote ${ledgerPath}\nBackup ${backup}\nRestart the plugin (/reload or a new session) so its in-memory ledger does not overwrite this.`)
+    console.log(`\nWrote ${ledgerPath}\nBackup ${backup}\nA running plugin sees the new epoch at its next save and keeps this file as its base.`)
   } else {
     console.log('\nDry run: nothing written. Add --write (with flow idle) to apply.')
   }

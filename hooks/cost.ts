@@ -131,6 +131,14 @@ export function setIdentity(ledger: Ledger, key: string, who: Identity & { role:
   return { ...ledger, [key]: { models: {}, ...cur, ...definedOnly(who), firstAt: cur?.firstAt ?? now, lastAt: now } as LedgerEntry }
 }
 
+// The file's generation stamp lives under this top-level key. It is a string, so normalizeLedger (and an
+// older plugin's) drops it as a non-entry. A rebuild or the first save of a legacy file sets a new one.
+export const EPOCH_KEY = '__epoch'
+export function epochOf(raw: unknown): string {
+  const e = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>)[EPOCH_KEY] : undefined
+  return typeof e === 'string' ? e : ''
+}
+
 // What came off disk: anything that is not a ledger entry is dropped.
 export function normalizeLedger(raw: unknown): Ledger {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}

@@ -441,6 +441,9 @@ declare module 'claude-code' {
       ledger: Ledger
       // True once the disk history is merged into `ledger`, so a plugin reload does not merge it again.
       ledgerLoaded: boolean
+      // Counted since the last save, and the epoch of the file the base came from ('' for none); see hooks/cost-run.ts.
+      ledgerDelta: Ledger
+      ledgerEpoch: string
       queueRuns: number
       // Per reviewer run (agent id), what it did with the queue; persisted so a reload keeps the final report whole.
       reviewerWork: Record<string, { touched: boolean; ready: boolean; line?: string }>

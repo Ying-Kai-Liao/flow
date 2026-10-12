@@ -173,6 +173,9 @@ const checks = atom({ plugin: 'flow', key: 'checks' } as const, EMPTY_CHECKS as 
 const ledger = atom({ plugin: 'flow', key: 'ledger' } as const, {} as Ledger)
 // Set once the disk history is merged into the ledger atom; the atom outlives a plugin reload, so this must too.
 const ledgerLoaded = atom({ plugin: 'flow', key: 'ledgerLoaded' } as const, false)
+// What this process counted since its last save, and the epoch of the file its base came from (see cost-run.ts).
+const ledgerDelta = atom({ plugin: 'flow', key: 'ledgerDelta' } as const, {} as Ledger)
+const ledgerEpoch = atom({ plugin: 'flow', key: 'ledgerEpoch' } as const, '')
 const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
 // The reviewer respawn circuit breaker, mirrored from <state dir>/reviewer-breaker.json.
@@ -690,6 +693,10 @@ function costIoOf($: EngineInterface): CostIo {
     updateLedger: async fn => { await update($, ledger, fn) },
     loaded: () => read($, ledgerLoaded),
     markLoaded: async () => { await update($, ledgerLoaded, () => true) },
+    delta: () => read($, ledgerDelta),
+    updateDelta: async fn => { await update($, ledgerDelta, fn) },
+    epoch: () => read($, ledgerEpoch),
+    setEpoch: async e => { await update($, ledgerEpoch, () => e) },
     startedAt: async () => (await $.session.usage().then(x => x, () => undefined))?.startedAt,
     liveIds: async () => (await read($, roster)).map(a => a.id),
     hasSessions: async () => Object.keys(await read($, sessions)).length > 0,

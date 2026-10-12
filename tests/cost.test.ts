@@ -2,9 +2,9 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { addStep, addTurn, costBlock, costOf, hitRate, humanTokens, mergeLedgers, money, normalizeLedger, pruneLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'
+import { addStep, addTurn, epochOf, costBlock, costOf, hitRate, humanTokens, mergeLedgers, money, normalizeLedger, pruneLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'
 import type { Ledger } from '../types'
-import { forgetLedgerLoad, loadLedger } from '../hooks/cost-run'
+import { changeLedger, forgetLedgerLoad, loadLedger, saveLedger } from '../hooks/cost-run'
 import type { CostIo } from '../hooks/cost-run'
 
 type Dollar = Parameters<TestBody>[0]
@@ -234,7 +234,7 @@ test('after a restart the ledger on disk is history: only this session is listed
   await w.clock.advance(3500)
   await w.clock.settle()
   const saved = JSON.parse([...w.files].find(([k]) => k.startsWith('/r/.git/flow/ledger.json.'))![1]) as Record<string, unknown>
-  expect(Object.keys(saved).sort()).toEqual(['main@100', 'main@900000', 'old', 'w1'])
+  expect(Object.keys(saved).sort()).toEqual(['__epoch', 'main@100', 'main@900000', 'old', 'w1'])
 })
 
 test('addTurn counts per agent; old rows read as 0; merging adds turns; an agent with no row gets an empty one', () => {
@@ -283,6 +283,7 @@ test('loading the ledger again after a plugin reload does not multiply the total
     stateDir: async () => '/s', readJson: async () => disk, now: async () => 2000,
     ledger: async () => atom, updateLedger: async (fn: (l: Ledger) => Ledger) => { atom = fn(atom) },
     loaded: async () => loaded, markLoaded: async () => { loaded = true },
+    setEpoch: async () => {},
   } as unknown as CostIo
   forgetLedgerLoad()
   // What this run counted before the first load is added to the history.
@@ -293,4 +294,114 @@ test('loading the ledger again after a plugin reload does not multiply the total
   // Reloads: the module variable is gone, the atoms and the disk file stay.
   for (let i = 0; i < 3; i++) { forgetLedgerLoad(); await loadLedger(io) }
   expect(JSON.stringify(atom)).toBe(once)
+})
+
+// A fake plugin process: its own atoms (they survive a "reload"), a shared file and clock.
+type Disk = { text?: string }
+function process_(disk: Disk, timers: (() => void)[] = []) {
+  let view: Ledger = {}
+  let delta: Ledger = {}
+  let epoch = ''
+  let loaded = false
+  const io: CostIo = {
+    stateDir: async () => '/s', readJson: async () => (disk.text === undefined ? undefined : JSON.parse(disk.text)),
+    writeJsonAtomic: async (_p, obj) => { disk.text = JSON.stringify(obj); return true },
+    mkdirp: async () => {}, now: async () => 5000, after: (_ms, fn) => { timers.push(fn) },
+    ledger: async () => view, updateLedger: async fn => { view = fn(view) },
+    delta: async () => delta, updateDelta: async fn => { delta = fn(delta) },
+    epoch: async () => epoch, setEpoch: async e => { epoch = e },
+    loaded: async () => loaded, markLoaded: async () => { loaded = true },
+    startedAt: async () => 0, liveIds: async () => [], hasSessions: async () => false,
+  }
+  const count = (key: string, input: number) => changeLedger(io, l => add(l, key, 'm', { input_tokens: input }, { role: 'worker', name: key }, 4000))
+  const save = () => saveLedger(io)
+  return { io, count, save, view: () => view, delta: () => delta, epoch: () => epoch }
+}
+const onDisk = (d: Disk) => JSON.parse(d.text ?? '{}') as Record<string, unknown> & { __epoch?: string }
+const inputOf = (l: Ledger, k: string) => l[k]?.models.m?.input
+
+test('a reload after a rebuild (new epoch on disk) does not restore the old totals and keeps entries since', async () => {
+  const disk: Disk = { text: JSON.stringify({ __epoch: 'e1', old: { role: 'worker', name: 'old', models: { m: bucket({ input: 6000 }) }, lastAt: 4000 } }) }
+  const p = process_(disk)
+  forgetLedgerLoad()
+  await p.count('new', 7)
+  await p.save()
+  expect(onDisk(disk).__epoch).toBe('e1')
+  // A rebuild rewrites the file with a new epoch and the true total.
+  disk.text = JSON.stringify({ __epoch: 'rebuilt', old: { role: 'worker', name: 'old', models: { m: bucket({ input: 600 }) }, lastAt: 4000 }, new: { role: 'worker', name: 'new', models: { m: bucket({ input: 7 }) }, lastAt: 4000 } })
+  forgetLedgerLoad()
+  await p.count('newer', 3)
+  await p.save()
+  const out = normalizeLedger(onDisk(disk))
+  expect(onDisk(disk).__epoch).toBe('rebuilt')
+  expect(inputOf(out, 'old')).toBe(600)
+  expect(inputOf(out, 'new')).toBe(7)
+  expect(inputOf(out, 'newer')).toBe(3)
+  expect(JSON.stringify(p.view())).toBe(JSON.stringify(out))
+  expect(p.epoch()).toBe('rebuilt')
+  expect(p.delta()).toEqual({})
+})
+
+test('two sessions sharing one file keep both sets of deltas', async () => {
+  const disk: Disk = {}
+  const a = process_(disk)
+  const b = process_(disk)
+  forgetLedgerLoad()
+  await a.count('x', 10)
+  await a.save()
+  forgetLedgerLoad()
+  await b.count('x', 5)
+  await b.count('y', 1)
+  await b.save()
+  await a.count('x', 100)
+  await a.save()
+  const out = normalizeLedger(onDisk(disk))
+  expect(inputOf(out, 'x')).toBe(115)
+  expect(inputOf(out, 'y')).toBe(1)
+})
+
+test('a ledger without an epoch still loads; the first save stamps one and the stamp is not an entry', async () => {
+  const disk: Disk = { text: JSON.stringify({ w: { role: 'worker', name: 'w', models: { m: bucket({ input: 4 }) }, lastAt: 4000 } }) }
+  const p = process_(disk)
+  forgetLedgerLoad()
+  await loadLedger(p.io)
+  expect(inputOf(p.view(), 'w')).toBe(4)
+  expect(p.epoch()).toBe('')
+  await p.count('w', 1)
+  await p.save()
+  const raw = onDisk(disk)
+  expect(raw.__epoch).toBeTruthy()
+  expect(epochOf(raw)).toBe(raw.__epoch)
+  expect(Object.keys(normalizeLedger(raw))).toEqual(['w'])
+  expect(Object.keys(pruneLedger(normalizeLedger(raw), 5000))).toEqual(['w'])
+  expect(inputOf(normalizeLedger(raw), 'w')).toBe(5)
+})
+
+test('a first save creates the file with an epoch; a reload without a disk change does not double the base', async () => {
+  const disk: Disk = {}
+  const p = process_(disk)
+  forgetLedgerLoad()
+  await p.count('w', 8)
+  await p.save()
+  const epoch = onDisk(disk).__epoch
+  expect(epoch).toBeTruthy()
+  for (let i = 0; i < 3; i++) { forgetLedgerLoad(); await p.count('w', 0); await p.save() }
+  expect(inputOf(normalizeLedger(onDisk(disk)), 'w')).toBe(8)
+  expect(inputOf(p.view(), 'w')).toBe(8)
+  expect(onDisk(disk).__epoch).toBe(epoch)
+})
+
+test('a failed write keeps the deltas for the next save', async () => {
+  const disk: Disk = {}
+  const p = process_(disk)
+  const real = p.io.writeJsonAtomic
+  p.io.writeJsonAtomic = async () => false
+  forgetLedgerLoad()
+  await p.count('w', 2)
+  await p.save()
+  expect(disk.text).toBeUndefined()
+  p.io.writeJsonAtomic = real
+  await p.count('w', 3)
+  await p.save()
+  expect(inputOf(normalizeLedger(onDisk(disk)), 'w')).toBe(5)
 })
