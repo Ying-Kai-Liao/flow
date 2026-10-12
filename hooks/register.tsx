@@ -2267,7 +2267,8 @@ async function relayExec($: EngineInterface, c: FlowCtx, call: RelayCall, name: 
   }
   if (call.tool === 'send') return sendFrom($, key, name, String(input.to ?? ''), String(input.text ?? ''))
   if (!(FLOW_TOOLS as readonly string[]).includes(call.tool)) return { deny: `flow relay: ${call.tool} is not a flow tool` }
-  return (await runFlowTool($, call.tool, { ...input, agentId: key }, c))!
+  const out = await runFlowTool($, call.tool, { ...input, agentId: key }, c)
+  return out!
 }
 
 
@@ -2975,9 +2976,11 @@ export const register: Register = (on, options) => {
   // In a relay copy nothing here may run: the generic hook above answers every flow tool through main,
   // and a call that got this far must not touch the copy's (empty) state.
   for (const tool of FLOW_TOOLS) {
-    on('tool.call', { tool: tool as never }, async ($, e) => relay !== undefined
-      ? { result: `flow relay: ${tool.replace('mcp__flow__', '')} did not reach the main session; try again.` }
-      : (await runFlowTool($, tool, e as unknown as FlowCall, { settings, options, installed }))!).catch(toolCatch)
+    on('tool.call', { tool: tool as never }, async ($, e) => {
+      if (relay !== undefined) return { result: `flow relay: ${tool.replace('mcp__flow__', '')} did not reach the main session; try again.` }
+      const out = await runFlowTool($, tool, e as unknown as FlowCall, { settings, options, installed })
+      return out!
+    }).catch(toolCatch)
   }
 
   // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.

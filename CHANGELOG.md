@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The plugin loader rejected `hooks/register.tsx` (`MOD_CAPABILITY_USE_NOT_PLAIN`) because two `runFlowTool($, ...)` calls were wrapped in parentheses and `!`; they are plain statements now, and a node test (part of `npm run check`) scans `hooks/` for the pattern (`claude plugin validate` does not load hooks).
+
 ## [0.6.87] - 2026-10-13
 
 ### Added
