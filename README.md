@@ -175,8 +175,9 @@ The plugin runs these programs through `$.process.run`, each with a fixed argume
 - `mkdir`, `rm`, `test`, `tail`, `find`, `ps`: its own state files, and to tell a live worktree
   from a leftover in `/flow clean`.
 - `tmux` or `orca`: only when a worker runs in another harness (`worker_harness`, or a manager's
-  `mcp__flow__session` call). They create the terminal, type the brief and messages into it, read
-  its screen, and close it.
+  `mcp__flow__session` call), or a manager or the reviewer runs in a terminal (`manager_harness`,
+  `reviewer_harness`). They create the terminal, type the brief and messages into it, read its
+  screen, and close it.
 - The harness itself, in that terminal: `claude --permission-mode bypassPermissions`,
   `codex --dangerously-bypass-approvals-and-sandbox`, `gemini --yolo` or `opencode`, or the
   command you put in `harnesses`. **The built-ins start with permission checks turned off.** Such
