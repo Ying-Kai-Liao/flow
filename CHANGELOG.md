@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tests for the reviewer terminal re-tell (a due deploy or push run is typed again only when its signature changes) and for the gone-reviewer relay to main.
+
 ## [0.6.86] - 2026-10-13
 
 ### Added
