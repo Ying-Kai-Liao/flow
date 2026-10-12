@@ -84,6 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Manager model tier for `Size: normal`: the new `manager_model_normal` setting (Advanced). Unset it follows `manager_model`, so nothing changes until you set it; small stays on `manager_model_small`, large and no size on `manager_model`.
 - `decide_eval` size report: a per-role split (workers and managers by the model they ran on: n, agreement, under-sized rate, $ as run) and a "normal managers on sonnet" counterfactual for managers, also printed by `scripts/decide-eval.mjs`.
+### Fixed
+
+- The cost ledger no longer multiplies its totals when the plugin reloads: the disk history was merged into the in-memory ledger again on every reload. Ledger totals recorded before this fix may be inflated; existing `ledger.json` files are not repaired.
 
 ## [0.6.60] - 2026-10-12
 

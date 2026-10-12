@@ -435,6 +435,8 @@ declare module 'claude-code' {
       checks: Checks
       // Tokens spent per agent and model, mirrored from <state dir>/ledger.json (hooks/cost.ts).
       ledger: Ledger
+      // True once the disk history is merged into `ledger`, so a plugin reload does not merge it again.
+      ledgerLoaded: boolean
       queueRuns: number
       // Per reviewer run (agent id), what it did with the queue; persisted so a reload keeps the final report whole.
       reviewerWork: Record<string, { touched: boolean; ready: boolean; line?: string }>

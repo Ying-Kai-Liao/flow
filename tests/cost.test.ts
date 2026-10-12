@@ -4,6 +4,8 @@ import type { TestBody } from 'claude-code/testing'
 
 import { addStep, addTurn, costBlock, costOf, hitRate, humanTokens, mergeLedgers, money, normalizeLedger, pruneLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'
 import type { Ledger } from '../types'
+import { forgetLedgerLoad, loadLedger } from '../hooks/cost-run'
+import type { CostIo } from '../hooks/cost-run'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -271,4 +273,24 @@ test('turn.complete counts one turn per turn id, for main and agents, and ledger
   const saved = JSON.parse([...w.files].find(([k]) => k.startsWith('/r/.git/flow/ledger.json'))![1]) as Record<string, { turns?: number }>
   expect(saved.w1?.turns).toBe(2)
   expect(saved['main@900000']?.turns).toBe(1)
+})
+
+test('loading the ledger again after a plugin reload does not multiply the totals', async () => {
+  const disk: Ledger = { w1: { role: 'worker', name: 'w1', models: { m: bucket({ input: 100 }) }, turns: 2, lastAt: 1000 } }
+  let atom: Ledger = {}
+  let loaded = false
+  const io = {
+    stateDir: async () => '/s', readJson: async () => disk, now: async () => 2000,
+    ledger: async () => atom, updateLedger: async (fn: (l: Ledger) => Ledger) => { atom = fn(atom) },
+    loaded: async () => loaded, markLoaded: async () => { loaded = true },
+  } as unknown as CostIo
+  forgetLedgerLoad()
+  // What this run counted before the first load is added to the history.
+  atom = { w1: { role: 'worker', name: 'w1', models: { m: bucket({ input: 10 }) }, turns: 1, lastAt: 1500 } }
+  await loadLedger(io)
+  expect(atom.w1?.turns).toBe(3)
+  const once = JSON.stringify(atom)
+  // Reloads: the module variable is gone, the atoms and the disk file stay.
+  for (let i = 0; i < 3; i++) { forgetLedgerLoad(); await loadLedger(io) }
+  expect(JSON.stringify(atom)).toBe(once)
 })
