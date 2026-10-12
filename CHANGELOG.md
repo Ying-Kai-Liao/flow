@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.81] - 2026-10-12
+
+### Changed
+
+- Ask cards: skip AskUserQuestion notice while the Flow pane is open (#176)
+
 ## [0.6.80] - 2026-10-12
 
 ### Changed
