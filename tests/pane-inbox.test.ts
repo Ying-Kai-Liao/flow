@@ -869,6 +869,8 @@ test('every sub-view draws "esc home", and its hint row exactly once', async ($,
   lines = await rendered(ui)
   expect(count(lines, /j next/)).toBe(1)
   expect(count(lines, /esc home/)).toBe(1)
+  await ui.unmount()
+})
 
 // ---- markdown in the free text ----
 

@@ -464,6 +464,8 @@ test('the pane: Esc-home stops the demo and returns to the real tree; the demo d
   expect(await escHints(ui)).toBe(1)
   await cmd($, 'home')
   expect(await ui.find({ key: 'demo-stop' })).toBeUndefined()
+  await ui.unmount()
+})
 
 // ---- markdown on the card ----
 
