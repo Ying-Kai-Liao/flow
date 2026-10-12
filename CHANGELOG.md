@@ -55,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Live-test fixes: lite line, manager report write, relayed ask test (#195)
+### Fixed
+
+- `mcp__flow__answer` with `defaults: true` and no `ids` no longer answers blocking questions: it skips them and says so; naming one in `ids` still takes its default.
 
 ## [0.6.89] - 2026-10-13
 

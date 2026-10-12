@@ -215,7 +215,7 @@ export function renderRound(
     lines.push('', renderInbox({ ...inbox, items: inbox.items.filter(q => ids.has(q.id)) }, now))
   }
   lines.push('', open.length > 0
-    ? 'Show this to the user, then answer with mcp__flow__answer (answers [{id, choice}], or defaults: true for the recommended ones). Managers with no blocking question can start workers already.'
+    ? 'Show this to the user, then answer with mcp__flow__answer (answers [{id, choice}], or defaults: true for the non-blocking ones; a blocking question needs its answer or its id in ids). Managers with no blocking question can start workers already.'
     : 'Show this to the user. There are no questions: the managers start their workers by themselves.')
   if (cards && blocking > 0) lines.push(CARDS_TEXT)
   return lines.join('\n')
@@ -231,7 +231,7 @@ export function renderFollowUp(state: Preflight, inbox: Inbox, name: string, now
   return [
     `Pre-flight (late): ${name} filed after the round went out${qs.length > 0 ? `, ${plural(qs.length, 'question')}${blocking > 0 ? ` (${blocking} blocking)` : ''}` : ''}`,
     ...entryLines(key, e, inbox, new Set()),
-    ...(qs.length > 0 ? ['', renderInbox({ ...inbox, items: qs }, now), '', 'Show this to the user and answer with mcp__flow__answer (or defaults: true).', ...(cards && blocking > 0 ? [CARDS_TEXT] : [])] : ['', 'Show this to the user.']),
+    ...(qs.length > 0 ? ['', renderInbox({ ...inbox, items: qs }, now), '', 'Show this to the user and answer with mcp__flow__answer (or defaults: true with ids for blocking ones).', ...(cards && blocking > 0 ? [CARDS_TEXT] : [])] : ['', 'Show this to the user.']),
   ].join('\n')
 }
 
