@@ -415,3 +415,54 @@ test('the pane: Push releases the ready batch exactly as /flow push does', { opt
   expect(await cmd($, 'push')).not.toContain('Released')
   await ui.unmount()
 })
+
+// ---- Esc goes home from the PR and batch cards (/flow home is the same reset as the Esc key) ----
+
+type Finder = { findAll(a: object): Promise<unknown[]> }
+const escHints = async (ui: Ui) => (await (ui as unknown as Finder).findAll({ type: 'Text', text: /^esc home$/ })).length
+
+test('the pane: Esc-home leaves a PR card for the tree, and the card draws one "esc home"', { options: OPTS }, async ($, on) => {
+  world(on)
+  await handover($, 7)
+  const ui = await mount($)
+  await ui.press({ key: 'await-open' })
+  expect(await ui.find({ key: 'pr-back' })).toBeDefined()
+  expect(await escHints(ui)).toBe(1)
+  await cmd($, 'home')
+  expect(await ui.find({ key: 'pr-back' })).toBeUndefined()
+  expect(await ui.find({ text: /Reviewer/ })).toBeDefined()
+  expect(await escHints(ui)).toBe(0)
+  await ui.unmount()
+})
+
+test('the pane: Esc-home leaves the batch card, and a PR card opened from it, for the tree', { options: { ...OPTS, merge_mode: 'auto' } }, async ($, on) => {
+  const w = world(on)
+  await readyBatch($, w)
+  const ui = await mount($)
+  await ui.press({ key: 'batch-open' })
+  expect(await escHints(ui)).toBe(1)
+  await cmd($, 'home')
+  expect(await ui.find({ key: 'batch-back' })).toBeUndefined()
+  expect(await ui.find({ text: /ready to push/ })).toBeDefined()
+  await ui.press({ key: 'batch-open' })
+  await ui.press({ key: 'batch-pr-8' })
+  expect(await escHints(ui)).toBe(1)
+  await cmd($, 'home')
+  expect(await ui.find({ key: 'pr-back' })).toBeUndefined()
+  expect(await ui.find({ text: /ready to push/ })).toBeDefined()
+  // A second Esc on home does no harm.
+  await cmd($, 'home')
+  expect(await ui.find({ text: /ready to push/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the pane: Esc-home stops the demo and returns to the real tree; the demo draws one "esc home"', { options: OPTS }, async ($, on) => {
+  world(on)
+  expect(String((await $.tool.call({ tool: 'mcp__flow__demo', action: 'start' } as never)).result)).toContain('Demo started')
+  const ui = await mount($)
+  expect(await ui.find({ key: 'demo-stop' })).toBeDefined()
+  expect(await escHints(ui)).toBe(1)
+  await cmd($, 'home')
+  expect(await ui.find({ key: 'demo-stop' })).toBeUndefined()
+  await ui.unmount()
+})

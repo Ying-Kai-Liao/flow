@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Ask cards: skip AskUserQuestion notice while the Flow pane is open (#176)
+### Added
+
+- Esc in the Flow pane returns to the home view from any sub-view (inbox, cards, archive, PR and batch cards, agent views, the demo) and never closes the pane; an unsent draft is kept, and a focused field only blurs on its first Esc. Sub-views show a dim "esc home" hint, and `/flow home` does the same reset
+
+### Fixed
+
+- The Flow pane no longer shows the inbox key hint twice: the questions row and the "and N more" row drop their "i" hint, which the key row already shows as "i inbox"
 
 ## [0.6.80] - 2026-10-12
 
