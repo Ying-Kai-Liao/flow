@@ -12,7 +12,8 @@ const GLOB = /[*?[]/
 // A path whose last part has no file extension (`.`, `tests`, `/tmp/x`, `./...`) is a directory.
 const dirLike = (a: string) => a.endsWith('/') || !/\.\w+$/.test(a.split('/').pop() ?? a)
 
-export const DEFAULT_SUITE_COMMANDS = ['claude plugin test', 'npm run check', 'npm test', 'npm run test']
+// scripts/test-files.sh runs the whole suite with --all (or no files), so it counts like the runner it wraps.
+export const DEFAULT_SUITE_COMMANDS = ['claude plugin test', 'npm run check', 'npm test', 'npm run test', 'sh scripts/test-files.sh', 'bash scripts/test-files.sh', 'test-files.sh']
 
 const basename = (w: string) => w.split('/').pop() ?? w
 
@@ -29,7 +30,9 @@ const infoOnly = (args: string[]) => args.some(a => INFO_FLAGS.has(a))
 
 function suiteArgs(args: string[]): boolean {
   if (infoOnly(args)) return false
-  const rest = args.filter(a => !a.startsWith('-'))
+  if (args.includes('--all')) return true
+  // `--jobs 4` takes a value that is not a file.
+  const rest = args.filter((a, i) => !a.startsWith('-') && args[i - 1] !== '--jobs')
   if (rest.length === 0) return true
   if (rest.some(a => GLOB.test(a) || dirLike(a))) return true
   return rest.length > MAX_FILES

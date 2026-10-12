@@ -103,7 +103,7 @@
       "multiple": true,
       "title": "Test slot commands",
       "description": "Advanced: Bash commands that run a whole test suite. Flow refuses them unless the caller holds a test slot (mcp__flow__test_slot acquire). Empty: not enforced.",
-      "default": ["claude plugin test", "npm run check", "npm test", "npm run test"]
+      "default": ["claude plugin test", "npm run check", "npm test", "npm run test", "sh scripts/test-files.sh", "bash scripts/test-files.sh", "test-files.sh"]
     },
     "context_warn_percent": {
       "type": "number",

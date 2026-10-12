@@ -33,14 +33,11 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 # The plugin is copied, not linked: the runner refuses a hooks module that resolves outside the folder.
 mkdir "$tmp/mod"
-for e in "$root"/* "$root"/.[!.]*; do
-  [ -e "$e" ] || continue
-  case $(basename "$e") in
-    tests|.git) ;;
-    node_modules) ln -s "$e" "$tmp/mod/node_modules" ;;
-    *) cp -R "$e" "$tmp/mod/" ;;
-  esac
+# Only what the plugin loads and the tests read: .claude (worktrees, gigabytes) and docs stay out.
+for e in .claude-plugin hooks types agents skills commands scripts package.json tsconfig.json; do
+  [ -e "$root/$e" ] && cp -R "$root/$e" "$tmp/mod/"
 done
+[ -e "$root/node_modules" ] && ln -s "$root/node_modules" "$tmp/mod/node_modules"
 mkdir "$tmp/mod/tests"
 for f in "$root"/tests/*; do
   case $f in *.test.ts|*.test.tsx) ;; *) cp -R "$f" "$tmp/mod/tests/" ;; esac
@@ -64,6 +61,7 @@ status=0
 for c in "$tmp"/chunks/c.*; do
   rm -f "$tmp"/mod/tests/*.test.ts "$tmp"/mod/tests/*.test.tsx
   while IFS= read -r src; do cp "$src" "$tmp/mod/tests/"; done < "$c"
+  [ -n "${FLOW_TEST_FILES_SIZE:-}" ] && du -sh "$tmp/mod" >&2
   claude plugin test "$tmp/mod" || status=1
 done
 exit $status

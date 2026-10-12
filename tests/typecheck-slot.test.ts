@@ -32,6 +32,16 @@ test('help and version of the test runner are not suite runs; other flags still 
   expect(suiteRun('claude plugin test .', S)).toBeDefined()
 })
 
+test('scripts/test-files.sh is a suite run with --all or no files; one to five files run freely', () => {
+  const S = DEFAULT_SUITE_COMMANDS
+  for (const c of ['sh scripts/test-files.sh --all', 'bash scripts/test-files.sh --jobs 4 --all', './scripts/test-files.sh --all', 'cd x && sh scripts/test-files.sh', 'sh scripts/test-files.sh tests']) {
+    expect(suiteRun(c, S), c).toBeDefined()
+  }
+  for (const c of ['sh scripts/test-files.sh tests/a.test.ts', './scripts/test-files.sh tests/a.test.ts tests/b.test.ts', 'sh scripts/test-files.sh --jobs 3 tests/a.test.ts']) {
+    expect(suiteRun(c, S), c).toBeUndefined()
+  }
+})
+
 test('workerSuiteRefusal: only a worker is refused, with the files-you-touched advice', () => {
   expect(workerSuiteRefusal(false, 'claude plugin test .')).toBeUndefined()
   const no = workerSuiteRefusal(true, 'claude plugin test .')!
@@ -151,7 +161,7 @@ test('an agent may hold one test slot and one typecheck slot; the lease frees a 
 test('a worker is refused a whole-suite run even with a slot; one to five files run; reviewer and main are unaffected', async ($, on) => {
   world(on)
   await slot($, 'acquire', 'w1')
-  for (const c of ['claude plugin test .', 'claude plugin test', 'claude plugin test tests/*.test.ts', 'claude plugin test tests', 'claude plugin test a.ts b.ts c.ts d.ts e.ts f.ts', 'npm run check']) {
+  for (const c of ['claude plugin test .', 'claude plugin test', 'claude plugin test tests/*.test.ts', 'claude plugin test tests', 'claude plugin test a.ts b.ts c.ts d.ts e.ts f.ts', 'npm run check', 'sh scripts/test-files.sh --all']) {
     const r = JSON.stringify(await bash($, c, 'w1'))
     expect(r, c).toContain('deny')
     expect(r, c).toContain('scripts/test-files.sh')

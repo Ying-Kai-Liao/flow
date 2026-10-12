@@ -68,7 +68,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
 | `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `test_slots` | 1 | `/config`, file | how many heavy test runs may run at once across all agents (minimum 1) |
-| `test_slot_commands` | `claude plugin test`, `npm run check`, `npm test`, `npm run test` | `/config`, file | Bash commands that run a whole suite; refused unless the caller holds a test slot. Empty list: not enforced |
+| `test_slot_commands` | `claude plugin test`, `npm run check`, `npm test`, `npm run test`, `sh scripts/test-files.sh`, `bash scripts/test-files.sh`, `test-files.sh` | `/config`, file | Bash commands that run a whole suite; refused unless the caller holds a test slot. Empty list: not enforced |
 | `typecheck_slots` | 1 | `/config`, file | how many typechecks may run at once across all agents (minimum 1); a separate, lighter pool than `test_slots` |
 | `typecheck_commands` | `npm run typecheck`, `tsc`, `npx tsc` | `/config`, file | Bash commands that run a typecheck; refused unless the caller holds a typecheck slot (or a test slot). `--help` and `--version` run freely. Empty list: not enforced |
 | `language` | `English` | `/config`, file | the language agents write reports and PR text in |
