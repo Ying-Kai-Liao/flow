@@ -109,12 +109,14 @@ import {
 } from './guards'
 import type { WriteTarget } from './guards'
 import { slotRefusal, suiteRun } from './testguard'
-import { flowCatch, toolCatch } from './toolguard'
+import { flowCatch, isFlowTool, toolCatch } from './toolguard'
 import {
-  ago, claudeLimits, harnessesOf, runsOutIn, SESSION, sessionKey, sessionRow,
+  ago, claudeLimits, harnessesOf, roleAgents, runsOutIn, SESSION, sessionKey, sessionLive, sessionRow,
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
-import { sessionTool as sessionToolTo, watchSessions as watchSessionsTo } from './session-run'
+import { sendToSession, sessionTool as sessionToolTo, watchSessions as watchSessionsTo } from './session-run'
+import { pumpRelay, relayCall, stripEngineFields } from './relay'
+import type { PumpIo, RelayAnswer, RelayCall, RelayIo } from './relay'
 import type { Caller, Ran, SessionIo } from './session-run'
 import { branchOwners, buildDigest, findWorktree, noteKey } from './state'
 import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
@@ -372,7 +374,7 @@ function inboxIoOf($: EngineInterface): InboxIo {
 
 function checksIoOf($: EngineInterface): ChecksIo {
   return {
-    agents: () => $.agent.list(),
+    agents: () => agentsOf($),
     checks: () => read($, checks),
     now: () => $.clock.now(),
     withChecks: fn => withChecks($, fn),
@@ -877,7 +879,7 @@ async function preflightTick($: EngineInterface, rows: AgentRow[]): Promise<void
 // Why this manager may not start workers yet, or undefined. Only a recorded manager is ever gated.
 async function preflightGate($: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
   if (!mirror.preflightOn || agentId === undefined) return undefined
-  const me = (await $.agent.list()).find(a => a.id === agentId)
+  const me = (await agentsOf($)).find(a => a.id === agentId)
   if (me?.type !== MANAGER || me.name === undefined) return undefined
   const g = gateOf(await read($, preflight), await read($, inbox), me.name)
   return g === undefined ? undefined : denyText(g)
@@ -908,14 +910,14 @@ function withLite<T>($: EngineInterface, fn: (cur: LiteState) => { state: LiteSt
 // The lite manager an agent is (by its roster name), else undefined.
 async function liteManagerOf($: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
   if (agentId === undefined) return undefined
-  const me = (await $.agent.list()).find(a => a.id === agentId)
+  const me = (await agentsOf($)).find(a => a.id === agentId)
   return me?.type === MANAGER && me.name !== undefined && isLiteName(await read($, lite), me.name) ? me.name : undefined
 }
 
 // Who is calling a reviewer-side tool: main, the reviewer, a lite manager or anyone else.
 async function toolCallerOf($: EngineInterface, agentId: string | undefined): Promise<ToolCaller> {
   if (agentId === undefined) return { kind: 'main' }
-  const me = (await $.agent.list()).find(a => a.id === agentId)
+  const me = (await agentsOf($)).find(a => a.id === agentId)
   // Only a manager or a worker is refused. An id the roster no longer lists (the host drops agents) is a reviewer's, as before.
   if (me === undefined || isReviewer(me.type)) return { kind: 'reviewer' }
   const name = await liteManagerOf($, agentId)
@@ -941,7 +943,7 @@ function messagingIoOf($: EngineInterface): MessagingIo {
     withInbox: fn => withInbox($, fn),
     now: () => $.clock.now(),
     today: () => today($),
-    agents: () => $.agent.list(),
+    agents: () => agentsOf($),
     seen: () => read($, seenAgents),
     deliver: (id, text, opts) => deliver($, id, text, opts),
     appendNote: (name, line) => appendNote($, name, line),
@@ -1200,7 +1202,7 @@ async function best($: EngineInterface, what: string, fn: () => Promise<void>): 
 // The name of the agent that owns work started by agent `id`: "main" for the main session.
 async function ownerNameOf($: EngineInterface, id: string | undefined): Promise<string> {
   if (id === undefined) return 'main'
-  return (await $.agent.list()).find(a => a.id === id)?.name ?? 'main'
+  return (await agentsOf($)).find(a => a.id === id)?.name ?? 'main'
 }
 
 // Managers a non-main agent woke (reviewer, worker): the host sends such a turn's final answer back to
@@ -1219,13 +1221,36 @@ const noteRunWork = ($: EngineInterface, id: string, f: (w: RunWork | undefined)
 // Managers that ended their turn to wait for a merge and have work left: a send resumes them, so they
 // count as idle (messages batch in the window) instead of gone.
 const resumable = new Set<string>()
-function ioOf($: EngineInterface): DeliverIo {
+// The roster the host knows plus the role sessions (a manager or the reviewer running in a terminal):
+// anything that resolves who a caller is, or whether an owner is alive, asks this. Session rows of
+// every kind are added to the board separately (roster-run), which is why that one keeps the raw list.
+async function agentsOf($: EngineInterface): Promise<AgentInfo[]> {
+  return [...await $.agent.list(), ...roleAgents(await read($, sessions)) as AgentInfo[]]
+}
+
+// The session an id names (`session:<name>`), if there is one on record.
+async function sessionOfId($: EngineInterface, id: string): Promise<Session | undefined> {
+  return id.startsWith('session:') ? (await read($, sessions))[id.slice('session:'.length)] : undefined
+}
+
+// `from` is who the messages are from, named in a long message's file pointer (a session's terminal).
+function ioOf($: EngineInterface, from = 'main'): DeliverIo {
   return {
     status: async id => {
+      const ss = await sessionOfId($, id)
+      if (ss !== undefined) return sessionRow(ss).status
+      if (id.startsWith('session:')) return undefined
       const s = (await $.agent.list()).find(a => a.id === id)?.status
       return resumable.has(id) && (s === undefined || s === 'completed') ? 'idle' : s
     },
     send: async (id, text) => {
+      const ss = await sessionOfId($, id)
+      if (ss !== undefined) {
+        // A terminal takes text by typing it in; a refused one is not a delivery.
+        const r = await sendToSession(sessionIoOf($), ss, text, from)
+        if (r.exitCode !== 0) throw new Error(r.stderr.trim() || `could not type into ${ss.name}`)
+        return
+      }
       resumable.delete(id)
       const r = await $.session.send({ to: { agentId: id }, text })
       // A refused send is not a delivery: deliver() runs the fallback. The reason is kept for the caller that logs it.
@@ -1236,7 +1261,7 @@ function ioOf($: EngineInterface): DeliverIo {
       refusals.delete(id)
     },
     after: (ms, fn) => void $.clock.after(ms, fn),
-    name: async id => (await $.agent.list()).find(a => a.id === id)?.name,
+    name: async id => (await sessionOfId($, id))?.name ?? (await $.agent.list()).find(a => a.id === id)?.name,
   }
 }
 const refusals = new Map<string, string>()
@@ -1249,7 +1274,7 @@ const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void
 
 function routeIoOf($: EngineInterface): RouteIo {
   return {
-    agents: () => $.agent.list(),
+    agents: () => agentsOf($),
     activity: () => read($, activity),
     handovers: () => read($, handovers),
     plans: () => read($, plan),
@@ -1319,7 +1344,7 @@ function spawnIoOf($: EngineInterface): SpawnIo {
   return {
     run: argv => $.process.run(argv),
     cwd: () => $.session.cwd(),
-    agents: () => $.agent.list(),
+    agents: () => agentsOf($),
     readFile: path => $.fs.read(path),
     handoffs: () => read($, handoffs),
     updateHandoffs: fn => update($, handoffs, fn),
@@ -1372,7 +1397,7 @@ function staleIoOf($: EngineInterface, base: string): StaleIo {
   return {
     now: () => $.clock.now(),
     handovers: () => read($, handovers),
-    agents: () => $.agent.list(),
+    agents: () => agentsOf($),
     isAncestor: async head => {
       // The head must resolve to itself first, so a runner that answers every git call with exit 0 proves nothing.
       const v = await runCmd($, ['git', 'rev-parse', '--verify', `${head}^{commit}`])
@@ -1509,7 +1534,7 @@ async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>,
   // Judged lazily: only a write into the main checkout needs the activity signal.
   let active: boolean | undefined
   const guarded = async () => active ??= (await flowCaller()) || flowActive(co) ||
-    (await $.agent.list()).some(a => (a.type === MANAGER || WORKERS.has(a.type) || isReviewer(a.type)) && (LIVE_STATUS.has(a.status) || a.status === 'idle'))
+    (await agentsOf($)).some(a => (a.type === MANAGER || WORKERS.has(a.type) || isReviewer(a.type)) && (LIVE_STATUS.has(a.status) || a.status === 'idle'))
   for (const t of targets) {
     const rel = mainRelative(t.path, co)
     if (rel === undefined) continue
@@ -1817,7 +1842,10 @@ function sessionIoOf($: EngineInterface): SessionIo {
     read: path => $.fs.read(path),
     write: (path, text) => $.fs.write(path, text),
     sessions: () => read($, sessions),
-    updateSessions: fn => update($, sessions, fn),
+    updateSessions: async fn => {
+      await update($, sessions, fn)
+      await persistSessions($)
+    },
     updateActivity: fn => update($, activity, fn),
     setLimits: limits => update($, harnessLimits, () => limits),
     gate: agentId => preflightGate($, agentId),
@@ -1832,10 +1860,437 @@ function sessionIoOf($: EngineInterface): SessionIo {
     logMax: LOG_MAX,
   }
 }
+// The sessions record on disk (<state dir>/sessions.json): a main that restarts keeps its terminal
+// sessions, so their relay directories are pumped again and their reports still reach their owner.
+// Written only when it changed; the file is the last one saved, so a reload re-reads it.
+let sessionsSaved = ''
+async function persistSessions($: EngineInterface): Promise<void> {
+  await best($, 'saving sessions', async () => {
+    const dir = await stateDir($)
+    if (dir === undefined) return
+    const durable = durableSessions(await read($, sessions))
+    const text = JSON.stringify(durable)
+    if (text === sessionsSaved) return
+    sessionsSaved = text
+    await $.process.run(['mkdir', '-p', dir])
+    await writeJsonAtomic($, `${dir}/sessions.json`, durable)
+  })
+}
+
+// What the file keeps of a session: the live ones, without what changes on every watch tick (screen,
+// look times, the digest). The watcher rebuilds those; the file only changes on a real change (start,
+// status, report, nudge, stop). An ended session leaves the file, so its name is free again.
+const VOLATILE = ['screenText', 'screen', 'screenAt', 'lookedAt', 'checkedAt', 'digest', 'digestSeen'] as const
+function durableSessions(all: Record<string, Session>): Record<string, Session> {
+  return Object.fromEntries(Object.entries(all).filter(([, v]) => sessionLive(v)).map(([k, v]) =>
+    [k, Object.fromEntries(Object.entries(v).filter(([f]) => !(VOLATILE as readonly string[]).includes(f))) as Session]))
+}
+
+const SESSION_KEEP_MS = 24 * 60 * 60_000
+
+// Records of an older or hand-edited file that cannot be a session are dropped, not trusted, and so are
+// ended ones and reported workers nobody has touched for a day (their terminal is long gone).
+function normalizeSessions(raw: unknown, now: number): Record<string, Session> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
+  return Object.fromEntries(Object.entries(raw).filter(([k, v]) => {
+    if (typeof v !== 'object' || v === null || (v as { name?: unknown }).name !== k) return false
+    const x = v as Session
+    if (typeof x.status !== 'string' || !sessionLive(x)) return false
+    return !(x.role === undefined && x.status === 'reported' && now - (x.reportAt ?? x.startedAt ?? 0) > SESSION_KEEP_MS)
+  })) as Record<string, Session>
+}
+
 const watchSessions = ($: EngineInterface) => watchSessionsTo(sessionIoOf($))
+
+// --- The disk relay (relay.ts) ---
+// A terminal-started claude loads its own copy of this plugin; FLOW_ROLE / FLOW_NAME / FLOW_RELAY tell
+// that copy what it is. Set at session.start; undefined in a normal session (main, or an Agent-tool subagent).
+type RelayMode = { role: 'worker' | 'manager' | 'reviewer'; name: string; dir: string | undefined }
+let relay: RelayMode | undefined
+
+// The files and processes the relay needs, both for the client in the terminal's copy and for main's pump.
+function relayIoOf($: EngineInterface): RelayIo {
+  return {
+    list: async dir => (await $.fs.list(dir)).map(f => f.name),
+    read: async path => String(await $.fs.read(path)),
+    write: (path, text) => $.fs.write(path, text),
+    // mv is rename(2) inside one directory: only one of two racing claimers wins.
+    rename: async (from, to) => (await runCmd($, ['mv', from, to], 10_000)).exitCode === 0,
+    remove: path => runCmd($, ['rm', '-f', path], 10_000),
+    mtime: async path => (await $.fs.stat(path)).mtimeMs,
+    now: () => $.clock.now(),
+    // The host kills a process after ten minutes at most, which is the wait loop's own limit: a kill there is the
+    // same "no answer", so it reads as the loop's exit 4.
+    run: async (argv, timeoutMs) => {
+      const t0 = await $.clock.now()
+      const r = await runCmd($, argv, Math.min(timeoutMs ?? 60_000, 600_000))
+      // Only a run that really ran out its time; an sh that failed to start stays the failure it is.
+      const ranOut = (await $.clock.now()) - t0 >= 599_000
+      return (timeoutMs ?? 0) > 600_000 && r.exitCode === 127 && ranOut ? { ...r, exitCode: 4 } : r
+    },
+  }
+}
+
+// Main's pump io: the relay directories of the role sessions it knows; an ended one is listed dead,
+// so a call it left behind is refused instead of waiting for a pickup.
+function pumpIoOf($: EngineInterface): PumpIo {
+  return {
+    ...relayIoOf($),
+    dirs: async () => Object.values(await read($, sessions))
+      .filter(s => s.role !== undefined && s.relayDir !== undefined)
+      .map(s => ({ name: s.name, dir: s.relayDir!, live: sessionLive(s) })),
+  }
+}
+
+async function relayModeOf($: EngineInterface): Promise<RelayMode | undefined> {
+  const role = await $.env.get('FLOW_ROLE').catch(() => undefined)
+  if (role !== 'worker' && role !== 'manager' && role !== 'reviewer') return undefined
+  const name = await $.env.get('FLOW_NAME').catch(() => undefined)
+  const dir = await $.env.get('FLOW_RELAY').catch(() => undefined)
+  return { role, name: name ?? '', dir: dir === undefined || dir === '' ? undefined : dir }
+}
+
+// A flow tool as main runs it: the tool's own fields and the caller's agent id (a session's is `session:<name>`).
+type FlowCall = { agentId?: string } & Record<string, unknown>
+type FlowOut = { result: unknown } | { deny: string }
+
+// What a terminal sees of a message: SendMessage's own envelope names the sender, a typed line cannot.
+const messageFrom = (from: string, text: string): string => `Message from ${from}: ${text}`
+
+// SendMessage to a terminal session, answered as the tool's refusal text: the message went by typing it
+// in, which the model must not retry through the host.
+async function deliverToSession($: EngineInterface, fromId: string | undefined, target: Session, text: string): Promise<string> {
+  const from = fromId === undefined ? 'main' : await ownerNameOf($, fromId)
+  if (!sessionLive(target)) return `Not delivered: session ${target.name} has ${target.status}.`
+  const ok = await deliverTo(ioOf($, from), sessionKey(target.name), messageFrom(from, text))
+  return ok ? `Delivered to ${target.name} by flow (terminal session).` : `Not delivered: session ${target.name} could not be reached.`
+}
 const sessionTool = ($: EngineInterface, input: Record<string, unknown>, caller: Caller, s: ReturnType<typeof settingsOf>) =>
   sessionToolTo(sessionIoOf($), input, caller, s)
 
+
+// The tools the model sees. A relay copy registers the same specs: the calls go to main (tool.call below).
+async function registerTools($: EngineInterface): Promise<void> {
+  await $.tool.register(HANDOVER_TOOL)
+  await $.tool.register(RELEASE_TOOL)
+  await $.tool.register(ASK_TOOL)
+  await $.tool.register(FYI_TOOL)
+  await $.tool.register(PREFLIGHT_TOOL)
+  await $.tool.register(ANSWER_TOOL)
+  await $.tool.register(STANDING_TOOL)
+  await $.tool.register(CHECK_TOOL)
+  await $.tool.register(NOTE_TOOL)
+  // 'queue' is the tool's old name: prompts of a reviewer started by an older version still call it.
+  for (const name of ['reviewer', 'queue']) await $.tool.register(reviewerTool(name, name === 'queue'))
+  await $.tool.register(PUSH_TOOL)
+  await $.tool.register(STATUS_TOOL)
+
+  await $.tool.register(DEPLOY_TOOL)
+
+  await $.tool.register(CLEAN_TOOL)
+  await $.tool.register(MIGRATIONS_TOOL)
+
+  await $.tool.register(PLAN_TOOL)
+
+  await $.tool.register(TEST_SLOT_TOOL)
+
+  await $.tool.register(GUARD_TESTS_TOOL)
+
+  await $.tool.register(SESSION_TOOL)
+  await $.tool.register(SETTINGS_TOOL)
+  await $.tool.register(DEMO_TOOL)
+  await $.tool.register(DECIDE_EVAL_TOOL)
+  await $.tool.register(SIZE_AB_TOOL)
+}
+
+
+// The generic hook in a relay copy. A worker's passes straight through. A manager's or the reviewer's keeps
+// the guards that need no state (kills, remote deletes, code edits by a manager, the main checkout), asks
+// main for the ones that do (test slots), and answers every flow tool, and a SendMessage to anyone this
+// session cannot see, through the relay. Activity and the ledger are main's business.
+async function relayToolCall($: EngineInterface, settings: ReturnType<typeof settingsOf>, e: { tool: string; agentId?: string; command?: string }): Promise<FlowOut | undefined> {
+  const r = relay!
+  if (r.role === 'worker') return undefined
+  const id = e.agentId
+  const from = sessionKey(r.name)
+  const ask = (tool: string, input: Record<string, unknown>) => r.dir === undefined
+    ? Promise.resolve<RelayAnswer>({ result: 'flow relay: FLOW_RELAY is not set, so this session cannot reach the main session.' })
+    : relayCall(relayIoOf($), r.dir, { tool, input, from, role: r.role, by: id ?? r.name })
+  if (e.tool === 'Bash') {
+    const command = String(e.command ?? '')
+    const why = killRefusal(command)
+    if (why !== undefined) return { deny: why }
+    const suite = suiteRun(command, settings.testSlotCommands ?? [])
+    if (suite !== undefined) {
+      const a = await ask('slot-check', { suite })
+      if (a.deny !== undefined) return { deny: a.deny }
+      // Anything but "ok" is the relay failing to reach main: the run waits, as a refusal would.
+      if (a.result !== 'ok') return { deny: String(a.result) }
+    }
+    const del = remoteDeleteRefusal(command)
+    if (del !== undefined) return { deny: del }
+  }
+  if (WRITE_TOOLS.includes(e.tool) && r.role === 'manager') {
+    return { deny: 'flow: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
+  }
+  if (settings.mainGuard) {
+    const cwd = async () => (id === undefined || r.role === 'manager' ? $.session.cwd() : undefined)
+    const why = await mainCheckoutGuard($, e as unknown as Record<string, unknown>, cwd, settings.mainAllow, async () => true)
+    if (why !== undefined) return { deny: why }
+  }
+  if (isFlowTool(e.tool)) {
+    const a = await ask(e.tool, stripEngineFields(e as unknown as Record<string, unknown>))
+    return a.deny !== undefined ? { deny: a.deny } : { result: a.result }
+  }
+  if (e.tool === 'SendMessage') {
+    const input = e as unknown as Record<string, unknown>
+    const to = String(input.to ?? '')
+    if (!(await $.agent.list()).some(a => a.id === to || a.name === to)) {
+      const a = await ask('send', { to, text: String(input.message ?? input.text ?? '') })
+      // Whatever main answered is the reason nothing went through the host: "Sent to X by flow." or why not.
+      return { deny: a.deny ?? String(a.result) }
+    }
+  }
+  return undefined
+}
+
+
+// A SendMessage from a terminal session to someone: as the sender, to a session, an agent or main.
+// Whether every line of a reviewer's text to main was already forwarded to main for that reviewer.
+async function alreadyForwarded($: EngineInterface, rid: string, text: string): Promise<boolean> {
+  const lines = text.split('\n').map(normText).filter(l => l !== '')
+  const sent = (await read($, forwarded)).lines[rid] ?? []
+  return lines.length > 0 && lines.every(l => sent.includes(l) || (needLines(l).length > 0 && needLines(l).every(n => sent.includes(n))))
+}
+
+async function sendFrom($: EngineInterface, key: string, name: string, to: string, text: string): Promise<RelayAnswer> {
+  if (to === '' || to === '*') return { deny: 'Not sent: name one agent or session to send to.' }
+  const all = await read($, sessions)
+  if (all[name]?.role === 'reviewer') {
+    let handled: string | undefined
+    await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard(routeIoOf($), key, to, text) })
+    if (handled !== undefined) return { deny: handled }
+  }
+  const body = messageFrom(name, text)
+  if (to === 'main') {
+    if (all[name]?.role === 'reviewer' && await alreadyForwarded($, key, text)) {
+      return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
+    }
+    toMain($, body)
+    return { result: 'Sent to main by flow.' }
+  }
+  const target = all[to] ?? all[to.replace(/^session:/, '')]
+  const onRoster = (await $.agent.list()).some(a => a.id === to || a.name === to)
+  if (target !== undefined && (sessionLive(target) || !onRoster)) {
+    if (!sessionLive(target)) return { deny: `Not sent: session ${target.name} has ${target.status}.` }
+    return (await deliverTo(ioOf($, name), sessionKey(target.name), body))
+      ? { result: `Sent to ${target.name} by flow.` } : { deny: `Not sent: ${target.name} could not be reached.` }
+  }
+  const listed = (await $.agent.list()).find(a => a.id === to || a.name === to)
+  // A manager the host dropped from the roster is held by the id last seen for it.
+  const seenId = listed === undefined ? (await read($, seenAgents))[to]?.id : undefined
+  const targetId = listed?.id ?? seenId
+  if (targetId === undefined) return { deny: `Not sent: no agent or session named "${to}".` }
+  return (await deliver($, targetId, body)) ? { result: `Sent to ${to} by flow.` } : { deny: `Not sent: ${to} has ended.` }
+}
+
+
+// One relayed call, run in main as the session that left it (`session:<name>`): the flow tools above, and
+// two pseudo-tools for the guards the copy cannot judge itself (it has no slots, and no roster).
+async function relayExec($: EngineInterface, c: FlowCtx, call: RelayCall, name: string): Promise<RelayAnswer> {
+  const key = sessionKey(name)
+  const input = call.input
+  await best($, 'logging a relayed call', async () => {
+    const t = await $.clock.now()
+    const line = describeCall({ ...input, tool: call.tool })
+    await update($, activity, acts => {
+      const a = acts[key] ?? { startedAt: t, lastAt: t, log: [] }
+      return { ...acts, [key]: { ...a, lastAt: t, log: [...a.log, line].slice(-LOG_MAX) } }
+    })
+  })
+  if (call.tool === 'slot-check') {
+    const refused = slotRefusal(await read($, testSlots), await refresh($), key, c.settings.testSlots, await $.clock.now(), String(input.suite ?? ''))
+    return refused === undefined ? { result: 'ok' } : { deny: refused }
+  }
+  if (call.tool === 'send') return sendFrom($, key, name, String(input.to ?? ''), String(input.text ?? ''))
+  if (!(FLOW_TOOLS as readonly string[]).includes(call.tool)) return { deny: `flow relay: ${call.tool} is not a flow tool` }
+  return (await runFlowTool($, call.tool, { ...input, agentId: key }, c))!
+}
+
+
+let pumping = false
+// One tick of main's pump: runs the calls the role sessions left. Does nothing until one is live, and
+// a tick that overlaps the one before it (a slow listing) returns at once.
+async function pumpOnce($: EngineInterface, c: FlowCtx): Promise<void> {
+  if (pumping) return
+  pumping = true
+  try {
+    if (!Object.values(await read($, sessions)).some(x => x.role !== undefined && sessionLive(x))) return
+    await pumpRelay(pumpIoOf($), (call, name) => relayExec($, c, call, name))
+  } catch (err) {
+    await warn($, 'relay pump', err)
+  } finally {
+    pumping = false
+  }
+}
+
+
+
+type FlowCtx = { settings: ReturnType<typeof settingsOf>; options: Record<string, unknown>; installed: string | undefined }
+const FLOW_TOOLS = [
+  'mcp__flow__handover',
+  'mcp__flow__release',
+  'mcp__flow__reviewer',
+  'mcp__flow__queue',
+  'mcp__flow__plan',
+  'mcp__flow__test_slot',
+  'mcp__flow__guard_tests',
+  'mcp__flow__ask',
+  'mcp__flow__fyi',
+  'mcp__flow__preflight',
+  'mcp__flow__answer',
+  'mcp__flow__standing',
+  'mcp__flow__check',
+  'mcp__flow__note',
+  'mcp__flow__clean',
+  'mcp__flow__settings',
+  'mcp__flow__decide_eval',
+  'mcp__flow__size_ab_report',
+  'mcp__flow__demo',
+  'mcp__flow__migrations',
+  'mcp__flow__session',
+  'mcp__flow__deploy',
+  'mcp__flow__push',
+  'mcp__flow__status',
+] as const
+
+// Runs a flow tool for `e.agentId` (a hook's caller, or `session:<name>` for a relayed call). A function with
+// a switch, not a table of closures: the plugin directory only lets `$` into functions declared at the top of the file.
+async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: FlowCtx): Promise<FlowOut | undefined> {
+  const { settings, options, installed } = c
+  switch (tool) {
+    case 'mcp__flow__handover': return handoverTool(handoverIoOf($, options), settings, e, e.agentId)
+
+    // The reviewer's tools: main, the reviewer, and a lite manager for its own PRs. A manager or worker otherwise is refused.
+    case 'mcp__flow__release': {
+      const input = e
+      const refused = releaseToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
+      return refused !== undefined ? { result: refused } : releaseTool(releaseIoOf($), settings, input)
+    }
+
+    case 'mcp__flow__reviewer':
+    case 'mcp__flow__queue': {
+      const refused = reviewerToolAccess(await toolCallerOf($, e.agentId), e, await read($, handovers))
+      return refused !== undefined ? { result: refused } : reviewerToolRun(reviewerIoOf($, settings.base), settings, e, e.agentId)
+    }
+
+    case 'mcp__flow__plan': return planTool(planIoOf($), settings, e, e.agentId)
+
+    case 'mcp__flow__test_slot': return testSlotTool(slotsIoOf($), settings, e)
+
+    case 'mcp__flow__guard_tests': {
+      const input = e
+      const map = settings.guardTests
+      if (Object.keys(map).length === 0) return { result: guardReport([], false) }
+      let files: string[]
+      if (Array.isArray(input.files)) files = input.files.filter((f): f is string => typeof f === 'string')
+      else {
+        // The caller's own worktree, else the session's directory.
+        let dir: string | undefined
+        const mine = e.agentId === undefined ? undefined : await sessionOfId($, e.agentId)
+        if (mine !== undefined) dir = mine.worktree
+        else if (e.agentId !== undefined) {
+          const me = (await $.agent.list()).find(a => a.id === e.agentId)
+          const wt = await $.process.run(['git', 'worktree', 'list', '--porcelain']).catch(() => undefined)
+          if (me !== undefined && wt?.exitCode === 0) dir = findWorktree(wt.stdout, me.id, `flow/${me.name ?? me.id}`)?.path
+        }
+        dir ??= await $.session.cwd().catch(() => undefined)
+        const git = (...args: string[]) => $.process.run(['git', ...(dir === undefined ? [] : ['-C', dir]), ...args])
+        const diff = await git('diff', '--name-only', '--no-renames', `origin/${settings.base}...HEAD`)
+        if (diff.exitCode !== 0) return { result: `Could not work out your diff (git diff origin/${settings.base}...HEAD failed: ${diff.stderr.trim().slice(0, 300)}). Call again with files: [...].` }
+        const dirty = await git('status', '--porcelain', '--untracked-files=all')
+        files = [...diff.stdout.split('\n').map(l => l.trim()).filter(Boolean), ...(dirty.exitCode === 0 ? pathsFromStatus(dirty.stdout) : [])]
+      }
+      return { result: guardReport(guardTestsFor(files, map), true) }
+    }
+
+    case 'mcp__flow__ask': return askTool(inboxIoOf($), options, e, e.agentId)
+    case 'mcp__flow__fyi': return fyiTool(inboxIoOf($), e, e.agentId, settings)
+    case 'mcp__flow__preflight': return preflightTool(inboxIoOf($), options, e, e.agentId)
+    case 'mcp__flow__answer': return answerTool(inboxIoOf($), options, e, e.agentId)
+    case 'mcp__flow__standing': return standingTool(standingIoOf($), options, e, e.agentId)
+    case 'mcp__flow__check': return checkTool(checksIoOf($), installed, e, e.agentId)
+
+    case 'mcp__flow__note': {
+      const input = e
+      const manager = String(input.manager ?? '').trim()
+      if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
+      const text = typeof input.text === 'string' ? input.text.trim() : ''
+      if (text === '') {
+        const notes = await readNotes($, manager)
+        return { result: notes === '' ? 'No notes yet.' : notes }
+      }
+      const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
+      const line = input.kind === 'decision' ? `- ${date} decision: "${text}"` : `- ${date} progress: ${text}`
+      if (!await appendNote($, manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
+      await best($, 'logging a note', () => appendLog($, { event: 'note', owner: noteKey(manager), text }))
+      return { result: `Noted in ${await notesPath($, manager)}.` }
+    }
+
+    case 'mcp__flow__clean': {
+      const apply = e.apply === true
+      if (apply && settings.cleanup === 'off') {
+        return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await sweep($, settings.base, false)}` }
+      }
+      return { result: await sweep($, settings.base, apply) }
+    }
+
+    case 'mcp__flow__settings': return settingsTool(initIoOf($), options, e, e.agentId)
+
+    case 'mcp__flow__decide_eval': return ({ result: await decideEvalTool(decideEvalIoOf($), settings, e, e.agentId) })
+
+    case 'mcp__flow__size_ab_report': return ({ result: await sizeAbTool({ stateDir: () => stateDir($), readFile: path => $.fs.read(path).then(String, () => undefined) }, e.agentId) })
+
+    case 'mcp__flow__demo': return demoTool($, e, e.agentId)
+
+    case 'mcp__flow__migrations': return migrationsTool(migrationsIoOf($), settings, e)
+
+    case 'mcp__flow__session': {
+      const id = e.agentId
+      const caller: Caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await ownerNameOf($, id) }
+      return { result: await sessionTool($, e, caller, settings) }
+    }
+
+    case 'mcp__flow__deploy': {
+      const isMain = e.agentId === undefined
+      const caller = isMain ? 'main' : await ownerNameOf($, e.agentId!)
+      const refused = deployToolAccess(await toolCallerOf($, e.agentId), e, await read($, handovers))
+      if (refused !== undefined) return { result: refused }
+      return { result: await deployTool($, options, e, isMain, caller) }
+    }
+
+    case 'mcp__flow__push': {
+      const input = e
+      if (e.agentId !== undefined) return { result: 'Refused: only main releases a ready batch, on the user\'s word (or the user, with /flow push). Managers, workers and the reviewer cannot push it.' }
+      const action = String(input.action ?? 'list')
+      if (action === 'list') {
+        const lines = pushLines(await read($, pushState))
+        return { result: lines.length === 0 ? 'Nothing ready to push.' : lines.join('\n') }
+      }
+      if (action === 'push') return { result: await pushAct($, { kind: 'push' }, 'main') }
+      if (action === 'drop') return { result: await pushAct($, { kind: 'drop' }, 'main') }
+      if (action === 'send-back') {
+        const pr = Number(input.pr)
+        if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: send-back needs pr, a PR number of the batch.' }
+        return { result: await pushAct($, { kind: 'back', pr }, 'main') }
+      }
+      return { result: 'Unknown action: use list, push, send-back or drop.' }
+    }
+
+    case 'mcp__flow__status': return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
+    default: return undefined
+  }
+}
 
 export const register: Register = (on, options) => {
   let settings = settingsOf(renameOptions(options), 'main')
@@ -1889,6 +2344,37 @@ export const register: Register = (on, options) => {
   let installed: string | undefined
 
   on('session.start', async ($, e, next) => {
+    // First of all, what this process is: a terminal-started worker is passive (no tools, no state, no
+    // timers: its copy must not wipe main's test-slot grants), a manager or the reviewer relays to main.
+    relay = await relayModeOf($)
+    if (relay?.role === 'worker') return next(e)
+    if (relay !== undefined) {
+      // A manager's or the reviewer's own claude in a terminal: this copy holds no state and runs no timers.
+      // It reads the settings for its local guards, shows the tools and the /flow stub, and forwards every
+      // flow tool call to main (tool.call). A worker's copy never gets here: it stays passive.
+      try {
+        const local = await $.process.run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+        if (local.exitCode === 0 && local.stdout.trim() !== '') detected = local.stdout.trim().replace(/^origin\//, '')
+      } catch {
+        // Not a git repo, or no remote: keep "main".
+      }
+      paths = await locate($)
+      try {
+        apply((await loadSettings($, options, paths, detected)).settings)
+      } catch {
+        // Keep the settings from /config alone.
+      }
+      await $.command.register({
+        name: 'flow',
+        description: 'The flow pane and commands live in the main Claude Code session: run /flow there. This session\'s mcp__flow__* tools are forwarded to it.',
+      })
+      await $.command.register({
+        name: 'flow-tasks',
+        description: 'Runs in the main Claude Code session: run /flow-tasks there.',
+      })
+      await registerTools($)
+      return next(e)
+    }
     resetDelivery(text => toMain($, text))
     // Handovers a restart would lose: merge what is on disk under this session's own records.
     let queueDue = false
@@ -1955,13 +2441,21 @@ export const register: Register = (on, options) => {
       const disk = normalizeLite(await readJson($, `${dir}/lite.json`))
       await update($, lite, () => disk)
     })
+    // Terminal sessions from before a restart: their relay directories are pumped again.
+    await best($, 'loading sessions', async () => {
+      const dir = await stateDir($)
+      if (dir === undefined) return
+      const disk = normalizeSessions(await readJson($, `${dir}/sessions.json`), await $.clock.now())
+      await update($, sessions, cur => ({ ...disk, ...cur }))
+      sessionsSaved = JSON.stringify(durableSessions(await read($, sessions)))
+    })
     await best($, 'loading pre-flight', async () => {
       const dir = await stateDir($)
       if (dir === undefined) return
       const disk = normalizePreflight(await readJson($, `${dir}/preflight.json`))
       await update($, preflight, () => disk)
       // A round left undelivered by a session that ended is not sent now.
-      const live = (await $.agent.list()).filter(a => a.type === MANAGER && !ENDED.has(a.status) && a.name !== undefined).map(a => a.name!)
+      const live = (await agentsOf($)).filter(a => a.type === MANAGER && !ENDED.has(a.status) && a.name !== undefined).map(a => a.name!)
       const t = await $.clock.now()
       await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } })
     })
@@ -2010,38 +2504,20 @@ export const register: Register = (on, options) => {
     })
     await registerAgents($, settings)
 
-    await $.tool.register(HANDOVER_TOOL)
-    await $.tool.register(RELEASE_TOOL)
-    await $.tool.register(ASK_TOOL)
-    await $.tool.register(FYI_TOOL)
-    await $.tool.register(PREFLIGHT_TOOL)
-    await $.tool.register(ANSWER_TOOL)
-    await $.tool.register(STANDING_TOOL)
-    await $.tool.register(CHECK_TOOL)
-    await $.tool.register(NOTE_TOOL)
-    // 'queue' is the tool's old name: prompts of a reviewer started by an older version still call it.
-    for (const name of ['reviewer', 'queue']) await $.tool.register(reviewerTool(name, name === 'queue'))
-    await $.tool.register(PUSH_TOOL)
-    await $.tool.register(STATUS_TOOL)
+    await registerTools($)
 
-    await $.tool.register(DEPLOY_TOOL)
-
-    await $.tool.register(CLEAN_TOOL)
-    await $.tool.register(MIGRATIONS_TOOL)
-
-    await $.tool.register(PLAN_TOOL)
-
-    await $.tool.register(TEST_SLOT_TOOL)
-
-    await $.tool.register(GUARD_TESTS_TOOL)
-
-    await $.tool.register(SESSION_TOOL)
-    await $.tool.register(SETTINGS_TOOL)
-    await $.tool.register(DEMO_TOOL)
-    await $.tool.register(DECIDE_EVAL_TOOL)
-    await $.tool.register(SIZE_AB_TOOL)
-
+    // Calls the terminal managers and the reviewer left in their relay directories (see pumpOnce). The fast
+    // timer exists only while a role session does: armed here for sessions a restart brought back, and by the
+    // roster poll below for ones started since. It never goes away; pumpOnce does nothing without a live one.
+    let pumpArmed = false
+    const armPump = async () => {
+      if (pumpArmed || !Object.values(await read($, sessions)).some(x => x.role !== undefined && sessionLive(x))) return
+      pumpArmed = true
+      $.clock.every(500, () => void pumpOnce($, { settings, options, installed }))
+    }
+    await armPump()
     $.clock.every(POLL_MS, () => {
+      void armPump().catch(() => undefined)
       void refresh($)
       void watchSessions($)
       if (checking) return
@@ -2067,12 +2543,13 @@ export const register: Register = (on, options) => {
 
   // A closed pane stays closed: only this command and a newly started agent (openPane) open it,
   // never the roster poll, so `/flow close` holds while agents keep running.
-  on('command.run', { command: 'flow' }, ($, e) => flowCommand(commandIoOf($), settings, installed, resumed, options, e.args, e.presentation?.columns))
+  on('command.run', { command: 'flow' }, ($, e) => relay !== undefined ? { text: 'Run /flow in the main Claude Code session; this one only forwards its flow tools.' } : flowCommand(commandIoOf($), settings, installed, resumed, options, e.args, e.presentation?.columns))
 
   // Hands the request to the main session's model, which runs it with the dispatch skill. A
   // command can't submit a prompt itself (it would wait on its own turn), so a timer queues it
   // once the command has returned.
   on('command.run', { command: 'flow-tasks' }, async ($, e) => {
+    if (relay !== undefined) return { text: 'Run /flow-tasks in the main Claude Code session.' }
     const args = e.args.trim()
     const text = `Use the flow:dispatch skill, "Tasks from a source": pick tasks from ${args ? `the task source and selection "${args}"` : 'this project\'s task source'} and start a manager for each.`
     $.clock.after(1, () => void $.prompt.submit({ text }))
@@ -2085,6 +2562,13 @@ export const register: Register = (on, options) => {
   on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: true }))
 
   on('agent.spawn', async ($, input, next) => {
+    // A terminal session's own subagents (Explore and the like) are plain. Its workers are sessions.
+    if (relay !== undefined) {
+      if (relay.role !== 'worker' && String(input.subagentType ?? '').startsWith('flow:')) {
+        return { deny: 'flow: start workers with mcp__flow__session action start (this session runs in a terminal and has no flow:* agent types).' }
+      }
+      return next(input)
+    }
     let e = input
     // Only the plugin's own rewrite below starts flow:continue: it needs the old worktree as cwd.
     if (e.subagentType === CONTINUE) return { deny: 'flow: flow:continue is started by the plugin only; spawn a flow:worker with "Continue on branch: <branch>" in the brief.' }
@@ -2251,6 +2735,7 @@ export const register: Register = (on, options) => {
   // broken guard must not block every call. A failure beneath `next` (a flow tool's own hook throwing)
   // reaches this catch, not the tool hook's own, so a flow tool that did not finish is answered here too.
   on('tool.call', async ($, e, next) => {
+    if (relay !== undefined) return (await relayToolCall($, settings, e)) ?? next(e)
     const id = e.agentId
     if (e.tool === 'Agent' && e.effort !== undefined && e.effort !== null) explicitEffort.add(e.tool_use_id)
     if (e.tool === 'Bash') {
@@ -2284,21 +2769,24 @@ export const register: Register = (on, options) => {
       const input = e as unknown as Record<string, unknown>
       const to = String(input.to ?? '')
       const text = String(input.message ?? input.text ?? '')
+      // A worker session is not on the roster (a role session is, through agentsOf, so the guard below sees it).
+      const named = (await read($, sessions))[to.replace(/^session:/, '')]
+      const inRoster = async () => (await $.agent.list()).some(a => a.name === to)
+      if (named !== undefined && sessionLive(named) && named.role === undefined && !(await inRoster())) {
+        return { deny: await deliverToSession($, id, named, text) }
+      }
       if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) {
         let handled: string | undefined
         await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard(routeIoOf($), id, to, text) })
         // A built-in tool's output must be an object; a string result is refused by the host as
         // "SendMessage output is not an object". deny carries the same "Not sent" text to the reviewer.
         if (handled !== undefined) return { deny: handled }
-        if (to === 'main') {
-          // Lines the guard already sent main need no second copy; anything new goes through.
-          const lines = text.split('\n').map(normText).filter(l => l !== '')
-          const sent = (await read($, forwarded)).lines[id] ?? []
-          if (lines.length > 0 && lines.every(l => sent.includes(l) || (needLines(l).length > 0 && needLines(l).every(n => sent.includes(n))))) {
-            return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
-          }
+        // Lines the guard already sent main need no second copy; anything new goes through.
+        if (to === 'main' && await alreadyForwarded($, id, text)) {
+          return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
         }
       }
+      if (named !== undefined && sessionLive(named) && !(await inRoster())) return { deny: await deliverToSession($, id, named, text) }
       await best($, 'marking a wake-up', async () => {
         const listed = (await $.agent.list()).find(a => a.id === to || a.name === to)
         // A manager the host dropped from the roster is held by the id last seen for it.
@@ -2323,123 +2811,14 @@ export const register: Register = (on, options) => {
     return wrapUpReminder($, e, await next(e), settings, mainModel, mainWindow)
   }).catch((_$, e, next) => flowCatch(e, next))
 
-  on('tool.call', { tool: 'mcp__flow__handover' }, ($, e) => handoverTool(handoverIoOf($, options), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
+  // In a relay copy nothing here may run: the generic hook above answers every flow tool through main,
+  // and a call that got this far must not touch the copy's (empty) state.
+  for (const tool of FLOW_TOOLS) {
+    on('tool.call', { tool: tool as never }, async ($, e) => relay !== undefined
+      ? { result: `flow relay: ${tool.replace('mcp__flow__', '')} did not reach the main session; try again.` }
+      : (await runFlowTool($, tool, e as unknown as FlowCall, { settings, options, installed }))!).catch(toolCatch)
+  }
 
-  // The reviewer's tools: main, the reviewer, and a lite manager for its own PRs. A manager or worker otherwise is refused.
-  on('tool.call', { tool: 'mcp__flow__release' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const refused = releaseToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
-    return refused !== undefined ? { result: refused } : releaseTool(releaseIoOf($), settings, input)
-  }).catch(toolCatch)
-
-  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) on('tool.call', { tool }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const refused = reviewerToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
-    return refused !== undefined ? { result: refused } : reviewerToolRun(reviewerIoOf($, settings.base), settings, input, e.agentId)
-  }).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__plan' }, ($, e) => planTool(planIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__test_slot' }, ($, e) => testSlotTool(slotsIoOf($), settings, e as unknown as Record<string, unknown>)).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__guard_tests' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const map = settings.guardTests
-    if (Object.keys(map).length === 0) return { result: guardReport([], false) }
-    let files: string[]
-    if (Array.isArray(input.files)) files = input.files.filter((f): f is string => typeof f === 'string')
-    else {
-      // The caller's own worktree, else the session's directory.
-      let dir: string | undefined
-      if (e.agentId !== undefined) {
-        const me = (await $.agent.list()).find(a => a.id === e.agentId)
-        const wt = await $.process.run(['git', 'worktree', 'list', '--porcelain']).catch(() => undefined)
-        if (me !== undefined && wt?.exitCode === 0) dir = findWorktree(wt.stdout, me.id, `flow/${me.name ?? me.id}`)?.path
-      }
-      dir ??= await $.session.cwd().catch(() => undefined)
-      const git = (...args: string[]) => $.process.run(['git', ...(dir === undefined ? [] : ['-C', dir]), ...args])
-      const diff = await git('diff', '--name-only', '--no-renames', `origin/${settings.base}...HEAD`)
-      if (diff.exitCode !== 0) return { result: `Could not work out your diff (git diff origin/${settings.base}...HEAD failed: ${diff.stderr.trim().slice(0, 300)}). Call again with files: [...].` }
-      const dirty = await git('status', '--porcelain', '--untracked-files=all')
-      files = [...diff.stdout.split('\n').map(l => l.trim()).filter(Boolean), ...(dirty.exitCode === 0 ? pathsFromStatus(dirty.stdout) : [])]
-    }
-    return { result: guardReport(guardTestsFor(files, map), true) }
-  }).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__ask' }, ($, e) => askTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
-  on('tool.call', { tool: 'mcp__flow__fyi' }, ($, e) => fyiTool(inboxIoOf($), e as unknown as Record<string, unknown>, e.agentId, settings)).catch(toolCatch)
-  on('tool.call', { tool: 'mcp__flow__preflight' }, ($, e) => preflightTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
-  on('tool.call', { tool: 'mcp__flow__answer' }, ($, e) => answerTool(inboxIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
-  on('tool.call', { tool: 'mcp__flow__standing' }, ($, e) => standingTool(standingIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
-  on('tool.call', { tool: 'mcp__flow__check' }, ($, e) => checkTool(checksIoOf($), installed, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    const manager = String(input.manager ?? '').trim()
-    if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
-    const text = typeof input.text === 'string' ? input.text.trim() : ''
-    if (text === '') {
-      const notes = await readNotes($, manager)
-      return { result: notes === '' ? 'No notes yet.' : notes }
-    }
-    const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
-    const line = input.kind === 'decision' ? `- ${date} decision: "${text}"` : `- ${date} progress: ${text}`
-    if (!await appendNote($, manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
-    await best($, 'logging a note', () => appendLog($, { event: 'note', owner: noteKey(manager), text }))
-    return { result: `Noted in ${await notesPath($, manager)}.` }
-  }).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__clean' }, async ($, e) => {
-    const apply = (e as unknown as Record<string, unknown>).apply === true
-    if (apply && settings.cleanup === 'off') {
-      return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await sweep($, settings.base, false)}` }
-    }
-    return { result: await sweep($, settings.base, apply) }
-  }).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__settings' }, ($, e) => settingsTool(initIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__decide_eval' }, async ($, e) => ({ result: await decideEvalTool(decideEvalIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId) })).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__size_ab_report' }, async ($, e) => ({ result: await sizeAbTool({ stateDir: () => stateDir($), readFile: path => $.fs.read(path).then(String, () => undefined) }, e.agentId) })).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__demo' }, ($, e) => demoTool($, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__migrations' },($, e) => migrationsTool(migrationsIoOf($), settings, e as unknown as Record<string, unknown>)).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__session' }, async ($, e) => {
-    const id = e.agentId
-    const caller: Caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await ownerNameOf($, id) }
-    return { result: await sessionTool($, e as unknown as Record<string, unknown>, caller, settings) }
-  }).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__deploy' }, async ($, e) => {
-    const isMain = e.agentId === undefined
-    const caller = isMain ? 'main' : await ownerNameOf($, e.agentId!)
-    const refused = deployToolAccess(await toolCallerOf($, e.agentId), e as unknown as Record<string, unknown>, await read($, handovers))
-    if (refused !== undefined) return { result: refused }
-    return { result: await deployTool($, options, e as unknown as Record<string, unknown>, isMain, caller) }
-  }).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__push' }, async ($, e) => {
-    const input = e as unknown as Record<string, unknown>
-    if (e.agentId !== undefined) return { result: 'Refused: only main releases a ready batch, on the user\'s word (or the user, with /flow push). Managers, workers and the reviewer cannot push it.' }
-    const action = String(input.action ?? 'list')
-    if (action === 'list') {
-      const lines = pushLines(await read($, pushState))
-      return { result: lines.length === 0 ? 'Nothing ready to push.' : lines.join('\n') }
-    }
-    if (action === 'push') return { result: await pushAct($, { kind: 'push' }, 'main') }
-    if (action === 'drop') return { result: await pushAct($, { kind: 'drop' }, 'main') }
-    if (action === 'send-back') {
-      const pr = Number(input.pr)
-      if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: send-back needs pr, a PR number of the batch.' }
-      return { result: await pushAct($, { kind: 'back', pr }, 'main') }
-    }
-    return { result: 'Unknown action: use list, push, send-back or drop.' }
-  }).catch(toolCatch)
-
-  on('tool.call', { tool: 'mcp__flow__status' }, ($, e) => statusTool(statusIoOf($, options, settings.base), settings, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
   // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
   // Re-armed when usage drops back below the threshold (after a /compact).
   const mainWarn = { warned: false }
@@ -2453,6 +2832,7 @@ export const register: Register = (on, options) => {
     setMainWindow: (w: number) => { mainWindow = w },
   }
   on('turn.step', async function* ($, e, next) {
+    if (relay !== undefined) return yield* next(e)
     // The agent is running now: texts held for it ride along.
     if (e.agentId !== undefined) await flushAgent($, e.agentId).catch(() => undefined)
     // flow's effort for this agent, only on a model that takes one (e.effort set) and never on main (no agentId).
@@ -2477,6 +2857,7 @@ export const register: Register = (on, options) => {
   // Every completed turn (interrupted or errored too: it still wrote the cache) counts once per agent.
   const countedTurns = new Set<string>()
   on('turn.complete', async ($, e, next) => {
+    if (relay !== undefined) return next(e)
     const id = e.agentId
     await countTurn(costIoOf($), countedTurns, id, (e as { turnId?: string }).turnId)
     if (id !== undefined) {

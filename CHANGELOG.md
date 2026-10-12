@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The disk relay is wired in. A plugin copy started in a terminal with `FLOW_ROLE`/`FLOW_NAME`/`FLOW_RELAY` is passive for a worker (no tools, no state, no timers) and forwards every flow tool call of a manager or the reviewer to the main session, which runs it as that session (`session:<name>`); main pumps the relay directories every 500 ms while a role session is live. A role session counts as a manager or the reviewer wherever a caller is identified (pre-flight gate, plan, notes, handover, deploy, `report_to`), and a message to a session goes by typing it into its terminal, also from `SendMessage`. The sessions record is saved to `sessions.json` in the state dir and read back at start. Nothing starts a role session yet, so with the default `agent` settings nothing changes.
+
+### Fixed
+
+- A worker started as a Claude session no longer wipes main's test-slot grants when its own plugin copy starts.
+
 ## [0.6.84] - 2026-10-12
 
 ### Added
