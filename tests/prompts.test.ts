@@ -177,9 +177,9 @@ test('batch_max renders into the reviewer prompt, default 10, minimum 1', () => 
 
 test('late join, bisect, timeout rerun and the guarantees are in the reviewer prompt', () => {
   const q = all(base)[2]
-  expect(q).toContain('Late join (a normal batch only, never a PUSH RUN or REBUILD RUN): right before step 3')
+  expect(q).toContain('Late join (a normal batch only, never a PUSH RUN or REBUILD RUN). Right before step 3')
   expect(q).toContain('never merge it twice')
-  expect(q).toContain('Do the same after the rework of a failed check')
+  expect(q).toContain('After the rework of a failed check, do 2b again')
   expect(q).toContain('bisect instead of guessing')
   expect(q).toContain('A passing bisect step is never pushed by itself')
   expect(q).toContain('Every failing test failed on a timeout')
