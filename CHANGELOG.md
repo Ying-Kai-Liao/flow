@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Size A/B: opt-in `size_ab` setting (default off). With `daily` and `decision_api` jev, spawns alternate by local day between Jev sizing and the Size line alone, each tagged `sizeArm` in the cost ledger; the main-only `size_ab_report` tool and `scripts/size-ab.mjs` print $ per merged PR, the -N successor rate and the model mix per arm
+
 ## [0.6.78] - 2026-10-12
 
 ### Added

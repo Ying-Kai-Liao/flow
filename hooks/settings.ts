@@ -88,6 +88,7 @@ export const KEYS: Record<string, Kind> = {
   main_checkout_allow: 'string',
   cleanup: 'string',
   size_feedback: 'boolean',
+  size_ab: 'string',
   worker_harness: 'string',
   session_host: 'string',
   harnesses: 'object',
@@ -104,7 +105,7 @@ export const KEYS: Record<string, Kind> = {
 // String settings with a closed set of values: another value is dropped with a warning.
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const EFFORT_KEYS = ['explore_effort', 'worker_effort', 'worker_effort_small', 'worker_effort_normal', 'manager_effort', 'reviewer_effort']
-export const CHOICES: Record<string, string[]> = { ...Object.fromEntries(EFFORT_KEYS.map(k => [k, [...EFFORT_LEVELS, 'inherit']])), push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'] }
+export const CHOICES: Record<string, string[]> = { ...Object.fromEntries(EFFORT_KEYS.map(k => [k, [...EFFORT_LEVELS, 'inherit']])), push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'], size_ab: ['off', 'daily'] }
 
 // API keys are sensitive /config options (kept in secure storage); a settings file, which may be committed, can't set them.
 export const SECRET_KEYS = ['typesafe_api_key', 'jev_api_key', 'openrouter_api_key', 'openai_api_key']
@@ -270,7 +271,7 @@ export type WarnSettings = { contextWarn: number; contextWarn1m: number; context
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-export function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; sizeFeedback: boolean; preflight: boolean; preflightWait: number; askCards: boolean; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
+export function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; sizeFeedback: boolean; sizeAb: 'off' | 'daily'; preflight: boolean; preflightWait: number; askCards: boolean; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
@@ -292,6 +293,7 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
     maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
     sizeFeedback: options.size_feedback !== false,
+    sizeAb: str('size_ab', 'off') === 'daily' ? 'daily' : 'off',
     preflight: str('preflight', 'on') !== 'off',
     preflightWait: Math.max(1, num('preflight_wait', 10)),
     askCards: str('ask_cards', 'on') !== 'off',

@@ -122,6 +122,13 @@
       "description": "Advanced: On: each manager's prompt gets, once at spawn, a short digest of how this repo's earlier workers' Size lines turned out (how many needed a rerun one size up). Local records only, no network. Off: no digest.",
       "default": true
     },
+    "size_ab": {
+      "type": "string",
+      "title": "Size A/B",
+      "description": "Advanced: daily: with decision_api jev, alternate by local day between sizing through Jev and the brief's Size line alone, and tag each spawn with its arm in the cost ledger; read the result with the size_ab_report tool or scripts/size-ab.mjs. off: no A/B, sizing as decision_api says.",
+      "default": "off",
+      "options": ["off", "daily"]
+    },
     "main_checkout_guard": {
       "type": "boolean",
       "title": "Main-checkout guard",
