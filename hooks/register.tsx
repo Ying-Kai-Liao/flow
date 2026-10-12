@@ -1868,20 +1868,36 @@ async function persistSessions($: EngineInterface): Promise<void> {
   await best($, 'saving sessions', async () => {
     const dir = await stateDir($)
     if (dir === undefined) return
-    const now = await read($, sessions)
-    const text = JSON.stringify(now)
+    const durable = durableSessions(await read($, sessions))
+    const text = JSON.stringify(durable)
     if (text === sessionsSaved) return
     sessionsSaved = text
     await $.process.run(['mkdir', '-p', dir])
-    await writeJsonAtomic($, `${dir}/sessions.json`, now)
+    await writeJsonAtomic($, `${dir}/sessions.json`, durable)
   })
 }
 
-// Records of an older or hand-edited file that cannot be a session are dropped, not trusted.
-function normalizeSessions(raw: unknown): Record<string, Session> {
+// What the file keeps of a session: the live ones, without what changes on every watch tick (screen,
+// look times, the digest). The watcher rebuilds those; the file only changes on a real change (start,
+// status, report, nudge, stop). An ended session leaves the file, so its name is free again.
+const VOLATILE = ['screenText', 'screen', 'screenAt', 'lookedAt', 'checkedAt', 'digest', 'digestSeen'] as const
+function durableSessions(all: Record<string, Session>): Record<string, Session> {
+  return Object.fromEntries(Object.entries(all).filter(([, v]) => sessionLive(v)).map(([k, v]) =>
+    [k, Object.fromEntries(Object.entries(v).filter(([f]) => !(VOLATILE as readonly string[]).includes(f))) as Session]))
+}
+
+const SESSION_KEEP_MS = 24 * 60 * 60_000
+
+// Records of an older or hand-edited file that cannot be a session are dropped, not trusted, and so are
+// ended ones and reported workers nobody has touched for a day (their terminal is long gone).
+function normalizeSessions(raw: unknown, now: number): Record<string, Session> {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
-  return Object.fromEntries(Object.entries(raw).filter(([k, v]) =>
-    typeof v === 'object' && v !== null && (v as { name?: unknown }).name === k && typeof (v as { status?: unknown }).status === 'string')) as Record<string, Session>
+  return Object.fromEntries(Object.entries(raw).filter(([k, v]) => {
+    if (typeof v !== 'object' || v === null || (v as { name?: unknown }).name !== k) return false
+    const x = v as Session
+    if (typeof x.status !== 'string' || !sessionLive(x)) return false
+    return !(x.role === undefined && x.status === 'reported' && now - (x.reportAt ?? x.startedAt ?? 0) > SESSION_KEEP_MS)
+  })) as Record<string, Session>
 }
 
 const watchSessions = ($: EngineInterface) => watchSessionsTo(sessionIoOf($))
@@ -1906,8 +1922,11 @@ function relayIoOf($: EngineInterface): RelayIo {
     // The host kills a process after ten minutes at most, which is the wait loop's own limit: a kill there is the
     // same "no answer", so it reads as the loop's exit 4.
     run: async (argv, timeoutMs) => {
+      const t0 = await $.clock.now()
       const r = await runCmd($, argv, Math.min(timeoutMs ?? 60_000, 600_000))
-      return (timeoutMs ?? 0) > 600_000 && r.exitCode === 127 ? { ...r, exitCode: 4 } : r
+      // Only a run that really ran out its time; an sh that failed to start stays the failure it is.
+      const ranOut = (await $.clock.now()) - t0 >= 599_000
+      return (timeoutMs ?? 0) > 600_000 && r.exitCode === 127 && ranOut ? { ...r, exitCode: 4 } : r
     },
   }
 }
@@ -2037,6 +2056,13 @@ async function relayToolCall($: EngineInterface, settings: ReturnType<typeof set
 
 
 // A SendMessage from a terminal session to someone: as the sender, to a session, an agent or main.
+// Whether every line of a reviewer's text to main was already forwarded to main for that reviewer.
+async function alreadyForwarded($: EngineInterface, rid: string, text: string): Promise<boolean> {
+  const lines = text.split('\n').map(normText).filter(l => l !== '')
+  const sent = (await read($, forwarded)).lines[rid] ?? []
+  return lines.length > 0 && lines.every(l => sent.includes(l) || (needLines(l).length > 0 && needLines(l).every(n => sent.includes(n))))
+}
+
 async function sendFrom($: EngineInterface, key: string, name: string, to: string, text: string): Promise<RelayAnswer> {
   if (to === '' || to === '*') return { deny: 'Not sent: name one agent or session to send to.' }
   const all = await read($, sessions)
@@ -2047,18 +2073,25 @@ async function sendFrom($: EngineInterface, key: string, name: string, to: strin
   }
   const body = messageFrom(name, text)
   if (to === 'main') {
+    if (all[name]?.role === 'reviewer' && await alreadyForwarded($, key, text)) {
+      return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
+    }
     toMain($, body)
     return { result: 'Sent to main by flow.' }
   }
   const target = all[to] ?? all[to.replace(/^session:/, '')]
-  if (target !== undefined) {
+  const onRoster = (await $.agent.list()).some(a => a.id === to || a.name === to)
+  if (target !== undefined && (sessionLive(target) || !onRoster)) {
     if (!sessionLive(target)) return { deny: `Not sent: session ${target.name} has ${target.status}.` }
     return (await deliverTo(ioOf($, name), sessionKey(target.name), body))
       ? { result: `Sent to ${target.name} by flow.` } : { deny: `Not sent: ${target.name} could not be reached.` }
   }
   const listed = (await $.agent.list()).find(a => a.id === to || a.name === to)
-  if (listed === undefined) return { deny: `Not sent: no agent or session named "${to}".` }
-  return (await deliver($, listed.id, body)) ? { result: `Sent to ${to} by flow.` } : { deny: `Not sent: ${to} has ended.` }
+  // A manager the host dropped from the roster is held by the id last seen for it.
+  const seenId = listed === undefined ? (await read($, seenAgents))[to]?.id : undefined
+  const targetId = listed?.id ?? seenId
+  if (targetId === undefined) return { deny: `Not sent: no agent or session named "${to}".` }
+  return (await deliver($, targetId, body)) ? { result: `Sent to ${to} by flow.` } : { deny: `Not sent: ${to} has ended.` }
 }
 
 
@@ -2335,6 +2368,10 @@ export const register: Register = (on, options) => {
         name: 'flow',
         description: 'The flow pane and commands live in the main Claude Code session: run /flow there. This session\'s mcp__flow__* tools are forwarded to it.',
       })
+      await $.command.register({
+        name: 'flow-tasks',
+        description: 'Runs in the main Claude Code session: run /flow-tasks there.',
+      })
       await registerTools($)
       return next(e)
     }
@@ -2408,9 +2445,9 @@ export const register: Register = (on, options) => {
     await best($, 'loading sessions', async () => {
       const dir = await stateDir($)
       if (dir === undefined) return
-      const disk = normalizeSessions(await readJson($, `${dir}/sessions.json`))
+      const disk = normalizeSessions(await readJson($, `${dir}/sessions.json`), await $.clock.now())
       await update($, sessions, cur => ({ ...disk, ...cur }))
-      sessionsSaved = JSON.stringify(await read($, sessions))
+      sessionsSaved = JSON.stringify(durableSessions(await read($, sessions)))
     })
     await best($, 'loading pre-flight', async () => {
       const dir = await stateDir($)
@@ -2512,6 +2549,7 @@ export const register: Register = (on, options) => {
   // command can't submit a prompt itself (it would wait on its own turn), so a timer queues it
   // once the command has returned.
   on('command.run', { command: 'flow-tasks' }, async ($, e) => {
+    if (relay !== undefined) return { text: 'Run /flow-tasks in the main Claude Code session.' }
     const args = e.args.trim()
     const text = `Use the flow:dispatch skill, "Tasks from a source": pick tasks from ${args ? `the task source and selection "${args}"` : 'this project\'s task source'} and start a manager for each.`
     $.clock.after(1, () => void $.prompt.submit({ text }))
@@ -2734,7 +2772,7 @@ export const register: Register = (on, options) => {
       // A worker session is not on the roster (a role session is, through agentsOf, so the guard below sees it).
       const named = (await read($, sessions))[to.replace(/^session:/, '')]
       const inRoster = async () => (await $.agent.list()).some(a => a.name === to)
-      if (named !== undefined && named.role === undefined && !(await inRoster())) {
+      if (named !== undefined && sessionLive(named) && named.role === undefined && !(await inRoster())) {
         return { deny: await deliverToSession($, id, named, text) }
       }
       if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) {
@@ -2743,16 +2781,12 @@ export const register: Register = (on, options) => {
         // A built-in tool's output must be an object; a string result is refused by the host as
         // "SendMessage output is not an object". deny carries the same "Not sent" text to the reviewer.
         if (handled !== undefined) return { deny: handled }
-        if (to === 'main') {
-          // Lines the guard already sent main need no second copy; anything new goes through.
-          const lines = text.split('\n').map(normText).filter(l => l !== '')
-          const sent = (await read($, forwarded)).lines[id] ?? []
-          if (lines.length > 0 && lines.every(l => sent.includes(l) || (needLines(l).length > 0 && needLines(l).every(n => sent.includes(n))))) {
-            return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
-          }
+        // Lines the guard already sent main need no second copy; anything new goes through.
+        if (to === 'main' && await alreadyForwarded($, id, text)) {
+          return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
         }
       }
-      if (named !== undefined && !(await inRoster())) return { deny: await deliverToSession($, id, named, text) }
+      if (named !== undefined && sessionLive(named) && !(await inRoster())) return { deny: await deliverToSession($, id, named, text) }
       await best($, 'marking a wake-up', async () => {
         const listed = (await $.agent.list()).find(a => a.id === to || a.name === to)
         // A manager the host dropped from the roster is held by the id last seen for it.

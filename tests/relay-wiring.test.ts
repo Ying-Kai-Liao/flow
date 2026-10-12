@@ -161,8 +161,10 @@ const answerOf = (w: { files: Map<string, string> }, id: string, name = 'm1') =>
 
 test('main pumps a role session\'s calls and runs them as that session: a note, an ask, an unknown tool, an ended session', async ($, on) => {
   const w = world(on)
-  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER, gone: { ...MANAGER, name: 'gone', status: 'exited', relayDir: `${DIR}/sessions/gone/relay` } }))
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER, gone: { ...MANAGER, name: 'gone', relayDir: `${DIR}/sessions/gone/relay` } }))
   await start($)
+  // A session that ends while its call is pending: the call is refused, not run.
+  await $.tool.call({ tool: 'mcp__flow__session', action: 'stop', name: 'gone' } as never)
 
   leave(w, 'a1', 'mcp__flow__note', { manager: 'm1', text: 'pump works', kind: 'progress' })
   leave(w, 'a2', 'mcp__flow__ask', { from: 'x', questions: [{ question: 'Which format?', options: ['csv', 'tsv'], default: 'csv', blocking: false }] })
@@ -219,7 +221,7 @@ test('slot-check and send run in main for the session; the reviewer\'s guard see
 test('a SendMessage in main to a worker session or a role session is delivered by typing, and answered as a refusal', async ($, on) => {
   const w = world(on)
   const worker = { ...SESSION, name: 'w1', handle: 'flow-w1', owner: 'session:m1', ownerName: 'm1' }
-  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER, w1: worker, old: { ...worker, name: 'old', status: 'exited' } }))
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER, w1: worker }))
   await start($)
   const typed = () => w.runs.filter(r => r[0] === 'tmux' && r[1] === 'set-buffer').map(r => r.at(-1))
 
@@ -227,9 +229,24 @@ test('a SendMessage in main to a worker session or a role session is delivered b
   expect(r1).toContain('Delivered to w1 by flow (terminal session).')
   const r2 = JSON.stringify(await $.tool.call({ tool: 'SendMessage', to: 'session:m1', message: 'status?' } as never))
   expect(r2).toContain('Delivered to m1 by flow (terminal session).')
-  // A session that is running takes the text at once; an ended one is refused, not queued.
   expect(typed()).toEqual(['Message from main: rebase please', 'Message from main: status?'])
-  expect(JSON.stringify(await $.tool.call({ tool: 'SendMessage', to: 'old', message: 'hi' } as never))).toContain('Not delivered')
+})
+
+test('a restart drops ended sessions and old reported workers, so their names are free', async ($, on) => {
+  const w = world(on)
+  const day = 24 * 60 * 60_000
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({
+    m1: MANAGER,
+    dead: { ...SESSION, name: 'dead', status: 'exited' },
+    stale: { ...SESSION, name: 'stale', status: 'reported', startedAt: 1, reportAt: 1_000_000 - day - 1 },
+    fresh: { ...SESSION, name: 'fresh', status: 'reported', startedAt: 1, reportAt: 1_000_000 - 1000 },
+  }))
+  await start($)
+  const list = String((await $.tool.call({ tool: 'mcp__flow__session', action: 'list' } as never)).result)
+  expect(list).toContain('m1:')
+  expect(list).toContain('fresh:')
+  expect(list).not.toContain('dead:')
+  expect(list).not.toContain('stale:')
 })
 
 test('sessions persist to sessions.json and come back after a restart', async ($, on) => {
@@ -245,4 +262,7 @@ test('sessions persist to sessions.json and come back after a restart', async ($
   const saved = JSON.parse(w.files.get(`${DIR}/sessions.json`) ?? '{}') as Record<string, { status: string }>
   expect(Object.keys(saved)).toEqual(['m1'])
   expect(saved.m1?.status).toBe('running')
+  // Volatile fields stay off the disk, and writes happen only on a real change.
+  await $.tool.call({ tool: 'mcp__flow__session', action: 'send', name: 'm1', text: 'again' } as never)
+  expect(JSON.parse(w.files.get(`${DIR}/sessions.json`) ?? '{}').m1.screenText).toBeUndefined()
 })
