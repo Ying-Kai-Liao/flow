@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A task line that merely starts with "Mode: lite" (such as "Mode: lite is NOT wanted") no longer starts the manager in lite mode; only a line that is exactly `Mode: lite` does.
 - A terminal manager can write its own session report file (`sessions/<name>/report.md`); every other edit stays refused.
 - Test that a blocking ask relayed from a terminal manager stays open in main's inbox and cannot be answered by the manager.
+### Added
+
+- Bigger reviewer batches: PRs that arrive before the full check join the batch (also after a failed check's rework) up to the new `batch_max` setting (default 10; 1 = one PR per batch). On a failure that does not belong to one PR the reviewer bisects the batch to the PR that breaks the check, and a failure where every test timed out is rerun once before it counts. The pushed sha is still always one whose exact tree passed the full check.
 
 ## [0.6.88] - 2026-10-13
 
