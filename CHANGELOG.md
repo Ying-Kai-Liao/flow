@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - usage-command tests (WIP) (#187)
+### Changed
+
+- The reviewer (agent or terminal) queues ahead of worker and main waiters for a test slot, so its full check no longer waits behind every worker's run; it never preempts a holder or an offered grant.
 
 ## [0.6.88] - 2026-10-13
 
