@@ -1,5 +1,6 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
+import { paneDraw } from '../hooks/pane-run'
 import { BG_MS, TOKENS_MS, createGate, sameBeyondTokens, ttlCache } from '../hooks/pane-throttle'
 import type { DrawKeys } from '../hooks/pane-throttle'
 
@@ -85,4 +86,17 @@ test('ttlCache fetches once per ttl and again after it', async () => {
   expect(await c(async () => ++n)).toBe(1)
   t = 1000
   expect(await c(async () => ++n)).toBe(2)
+})
+
+test('paneDraw reads each atom once per call and hands the gate the keys', async () => {
+  const counts: Record<string, number> = {}
+  const names = ['roster', 'activity', 'selected', 'now', 'handovers', 'ledger', 'inboxCursor', 'viewMode', 'plan', 'checks', 'sessions']
+  const read = Object.fromEntries(names.map(n => [n, async () => { counts[n] = (counts[n] ?? 0) + 1; return n }]))
+  const io = { read, now: async () => 1, usage: async () => undefined, after: () => {}, invalidate: () => {} } as never
+  let seen: DrawKeys | undefined
+  const gate = { last: () => undefined, frame: async (k: DrawKeys) => { seen = k; return 'tree' } }
+  expect(await paneDraw(io, { props: {} } as never, gate as never)).toBe('tree')
+  expect(Object.values(counts).every(c => c === 1)).toBe(true)
+  expect(Object.keys(counts).length).toBe(names.length)
+  expect(seen!.user.length).toBeGreaterThan(0)
 })

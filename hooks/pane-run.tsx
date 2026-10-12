@@ -482,7 +482,9 @@ const USER_STATE = [
 ] as const satisfies ReadonlyArray<keyof PaneState>
 const BG_STATE = ['roster', 'now', 'checks', 'ledger', 'leftovers', 'sessions', 'harnessLimits', 'deploys', 'behind', 'reviewerBreaker', 'plan'] as const satisfies ReadonlyArray<keyof PaneState>
 
-const paneGate: Gate<Awaited<ReturnType<typeof renderPane>>> = createGate()
+// The gate paces by the engine clock (read each draw), not Date.now, so a mocked or replayed clock paces too.
+let paneNow = 0
+const paneGate: Gate<Awaited<ReturnType<typeof renderPane>>> = createGate(() => paneNow)
 const usageCache = ttlCache<Awaited<ReturnType<PaneIo['usage']>>>(USAGE_TTL_MS)
 
 const propsKey = (e: PaneEvent): string => {
@@ -493,6 +495,7 @@ const propsKey = (e: PaneEvent): string => {
 // lets the gate decide between drawing and returning the last tree, and draws from that snapshot. After the
 // draw the snapshot is dropped: a key handler built in it reads live state when it runs.
 export async function paneDraw(io: PaneIo, e: PaneEvent, gate: Gate<Awaited<ReturnType<typeof renderPane>>> = paneGate) {
+  paneNow = await io.now()
   const names = Object.keys(io.read) as Array<keyof PaneState>
   const values = await Promise.all(names.map(n => io.read[n]()))
   const snap = Object.fromEntries(names.map((n, i) => [n, values[i]])) as PaneState

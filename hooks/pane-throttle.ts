@@ -54,7 +54,7 @@ export function createGate<T>(clock: () => number = Date.now): Gate<T> {
     async frame(keys, draw, later) {
       if (last === undefined || last.keys.props !== keys.props || !sameList(last.keys.user, keys.user)) return drawNow(keys, draw)
       const shapeMoved = !sameList(last.keys.bg, keys.bg) || !sameBeyondTokens(last.keys.activity, keys.activity)
-      if (!shapeMoved && last.keys.activity === keys.activity) return last.tree
+      if (!shapeMoved && (last.keys.activity === keys.activity || JSON.stringify(last.keys.activity) === JSON.stringify(keys.activity))) return last.tree
       const wait = (shapeMoved ? BG_MS : TOKENS_MS) - (clock() - last.at)
       if (wait <= 0) return drawNow(keys, draw)
       // One pending timer covers every change inside the window; its redraw finds the newest state.
