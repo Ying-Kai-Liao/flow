@@ -3,7 +3,7 @@ import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
 
-import { backNote, effectiveSize, escalate, floorFrom, generation, isSuccessorName, managerModelFor, modelFor, parseSize } from '../hooks/routing'
+import { backNote, effortFor, effectiveSize, escalate, floorFrom, generation, isSuccessorName, managerModelFor, modelFor, parseSize } from '../hooks/routing'
 import { costBlock } from '../hooks/cost'
 import { isFable, mergeLayers } from '../hooks/settings'
 import type { Ledger, Question } from '../types'
@@ -315,4 +315,68 @@ test('a small manager files one manager-size decision owned by itself; large fil
   expect(fyis[0]!.question).toBe('docs-a runs small -> sonnet: docs only')
   await spawn($, 'csv-fix', 'Size: small')
   expect(w.spawned.at(-1)!.model).toBe('haiku')
+})
+
+test('effortFor maps role and size to the configured effort, and an env level disables it', () => {
+  const s = { exploreEffort: 'low', workerEffortSmall: 'low', workerEffortNormal: 'medium', reviewerEffort: 'medium' }
+  expect(effortFor('explore', undefined, s, undefined)).toBe('low')
+  expect(effortFor('worker', 'small', s, undefined)).toBe('low')
+  expect(effortFor('worker', 'normal', s, undefined)).toBe('medium')
+  expect(effortFor('worker', 'large', s, undefined)).toBeUndefined()
+  expect(effortFor('worker', undefined, s, undefined)).toBeUndefined()
+  expect(effortFor('worker', 'large', { ...s, workerEffort: 'high' }, undefined)).toBe('high')
+  expect(effortFor('manager', 'small', s, undefined)).toBeUndefined()
+  expect(effortFor('reviewer', undefined, s, undefined)).toBe('medium')
+  expect(effortFor('reviewer', undefined, s, 'high')).toBeUndefined()
+  expect(effortFor('reviewer', undefined, s, '')).toBe('medium')
+})
+
+// What the bottom of turn.step receives for an agent's step that asked for `effort`.
+const stepEffort = async ($: Dollar, seen: Array<string | number | undefined>, agentId: string | undefined, effort?: string) => {
+  const stream = $.turn.step({ turnId: 't', index: 0, model: 'sonnet', messageCount: 1, agentId, ...(effort !== undefined && { effort }) } as never)
+  for await (const chunk of stream) void chunk
+  await stream.result
+  return seen.at(-1)
+}
+const bottom = (on: On) => {
+  const seen: Array<string | number | undefined> = []
+  on('turn.step', async function* (_, e) {
+    seen.push((e as { effort?: string }).effort)
+    return { turnId: 't', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: { model: 'm', input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never
+  })
+  return seen
+}
+
+test('turn.step carries the effort chosen at spawn: by size and role, only where a model has one, never main', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  const seen = bottom(on)
+  mock.env(on, {})
+  await spawn($, 'csv-a', 'Size: small — docs')
+  await spawn($, 'csv-b', 'Size: normal — a few files')
+  await spawn($, 'csv-c', 'Size: large — cross-cutting')
+  await $.agent.spawn({ prompt: 'p', description: 'e', subagentType: 'Explore', parentAgentId: 'm1' } as never)
+  await $.agent.spawn({ prompt: 'p', description: 'r', name: 'rv', subagentType: 'flow:reviewer' } as never)
+  expect(w.spawned.length).toBe(5)
+  expect(await stepEffort($, seen, 'a1', 'high')).toBe('low')
+  expect(await stepEffort($, seen, 'a2', 'high')).toBe('medium')
+  expect(await stepEffort($, seen, 'a3', 'high')).toBe('high')
+  expect(await stepEffort($, seen, 'a4', 'max')).toBe('low')
+  expect(await stepEffort($, seen, 'a5', 'max')).toBe('medium')
+  // a model without effort support has none, and none is added; main and unknown agents are untouched
+  expect(await stepEffort($, seen, 'a1')).toBeUndefined()
+  expect(await stepEffort($, seen, undefined, 'high')).toBe('high')
+  expect(await stepEffort($, seen, 'zz', 'high')).toBe('high')
+  const l = await ledger(w)
+  expect(l.a1?.effort).toBe('low')
+  expect(l.a3?.effort).toBeUndefined()
+})
+
+test('CLAUDE_CODE_EFFORT_LEVEL set: flow applies no effort at all', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  const seen = bottom(on)
+  mock.env(on, { CLAUDE_CODE_EFFORT_LEVEL: 'max' })
+  await spawn($, 'csv-a', 'Size: small — docs')
+  expect(w.spawned.length).toBe(1)
+  expect(await stepEffort($, seen, 'a1', 'max')).toBe('max')
+  expect((await ledger(w)).a1?.effort).toBeUndefined()
 })

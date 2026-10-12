@@ -37,6 +37,12 @@ export const KEYS: Record<string, Kind> = {
   worker_model_small: 'string',
   worker_model_normal: 'string',
   explore_model: 'string',
+  explore_effort: 'string',
+  worker_effort: 'string',
+  worker_effort_small: 'string',
+  worker_effort_normal: 'string',
+  manager_effort: 'string',
+  reviewer_effort: 'string',
   decision_api: 'string',
   size_model: 'string',
   jev_model: 'string',
@@ -95,7 +101,9 @@ export const KEYS: Record<string, Kind> = {
 }
 
 // String settings with a closed set of values: another value is dropped with a warning.
-export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'] }
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+export const EFFORT_KEYS = ['explore_effort', 'worker_effort', 'worker_effort_small', 'worker_effort_normal', 'manager_effort', 'reviewer_effort']
+export const CHOICES: Record<string, string[]> = { ...Object.fromEntries(EFFORT_KEYS.map(k => [k, [...EFFORT_LEVELS, 'inherit']])), push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'] }
 
 // API keys are sensitive /config options (kept in secure storage); a settings file, which may be committed, can't set them.
 export const SECRET_KEYS = ['typesafe_api_key', 'jev_api_key', 'openrouter_api_key', 'openai_api_key']
@@ -177,6 +185,9 @@ function checked(source: string, layer: Record<string, unknown>, warnings: strin
     } else if (k === 'decision_api' && (v === '' || v === 'auto')) {
       // /config carries an unset string option as "", and "auto" is its dropdown name for unset: neither is a bad value.
       continue
+    } else if (EFFORT_KEYS.includes(k) && v === '') {
+      // /config carries an unset string option as "": no override, like "inherit".
+      out[k] = 'inherit'
     } else if (CHOICES[k] !== undefined && !CHOICES[k]!.includes(String(v))) {
       warnings.push(`${source}: "${k}" is ${JSON.stringify(v)}; use ${CHOICES[k]!.map(c => `"${c}"`).join(' or ')}; ignored`)
       // A bad decision_api is still a set one: it means off, and must not fall back to size_model.
@@ -264,6 +275,12 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
   // Sub-agents don't run on Fable, whatever the source says.
   const model = (k: string, d: string) => { const m = str(k, d); return isFable(m) ? d : m }
+  // A reasoning effort: absent -> the default; "inherit", empty or anything not a level -> undefined (no override).
+  const effort = (k: string, d: string | undefined): string | undefined => {
+    const v = options[k]
+    if (v === undefined || v === null) return d
+    return typeof v === 'string' && EFFORT_LEVELS.includes(v.trim().toLowerCase()) ? v.trim().toLowerCase() : undefined
+  }
   const harnesses = harnessesOf(options.harnesses)
   return {
     contextWarn: Math.min(100, Math.max(1, Math.round(num('context_warn_percent', 40)))),
@@ -296,6 +313,13 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     workerModelSmall: model('worker_model_small', 'haiku'),
     workerModelNormal: model('worker_model_normal', 'sonnet'),
     exploreModel: model('explore_model', 'haiku'),
+    // Effort overrides applied to the agents flow starts (hooks/routing.ts effortFor); undefined = the session's effort.
+    exploreEffort: effort('explore_effort', 'low'),
+    workerEffort: effort('worker_effort', undefined),
+    workerEffortSmall: effort('worker_effort_small', 'low'),
+    workerEffortNormal: effort('worker_effort_normal', 'medium'),
+    managerEffort: effort('manager_effort', undefined),
+    reviewerEffort: effort('reviewer_effort', 'medium'),
     // size_model is the 0.6.35 name. It applies only while decision_api is unset or "auto", so a 0.6.35 config keeps working;
     // an explicit decision_api (even "off", or an unknown value, which is off) always wins.
     decisionApi: ((v: string) => v === 'jev' || v === 'openai' ? v : 'off' as const)(options.decision_api === 'auto' ? str('size_model', 'off') : str('decision_api', str('size_model', 'off'))),

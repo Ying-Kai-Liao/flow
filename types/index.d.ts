@@ -13,6 +13,8 @@ export type LedgerEntry = {
   spawnModel?: string
   // The worker's brief size (small/normal/large) once model routing applied one; unset otherwise.
   size?: string
+  // The reasoning effort flow set for the agent at spawn (turn.step rewrite); unset when it inherited the session's.
+  effort?: string
   // When the agent was first and last counted (ms); the status block and the 90-day prune use them.
   firstAt?: number
   lastAt?: number
@@ -63,6 +65,8 @@ export type Activity = {
   // The latest turn.step's context fill; absent until the agent has taken one.
   // The window the agent was started with, from its model; absent when unknown or before this was recorded.
   spawnWindow?: number
+  // The effort flow sets on this agent's model requests; kept so a plugin reload doesn't drop it.
+  effort?: string
   usage?: { tokens: number; model: string; window?: number }
   // When the roster first saw the agent ended; its running time stops there.
   endedAt?: number

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Manager and dispatch prompts: a fix whose root cause is not known yet is never sized small.
+### Added
+- **Effort routing:** flow sets reasoning effort per role and size on the agents it starts: `explore_effort` (`low`), `worker_effort_small` (`low`), `worker_effort_normal` (`medium`), `reviewer_effort` (`medium`); `worker_effort` and `manager_effort` are unset (inherit). An explicit Agent `effort` and `CLAUDE_CODE_EFFORT_LEVEL` win; the ledger records the effort applied.
 
 ## [0.6.72] - 2026-10-12
 

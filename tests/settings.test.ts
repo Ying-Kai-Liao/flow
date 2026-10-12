@@ -282,7 +282,7 @@ test('a refused [1m] model falls back once to the plain model, tells once, and l
 const USER_CONFIG_KEYS = [
   'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_mode', 'push_mode', 'reviewer', 'max_managers', 'max_workers',
   'test_slots', 'test_slot_commands', 'context_warn_percent', 'context_warn_percent_1m', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow', 'max_continues',
-  'worker_model', 'worker_model_small', 'worker_model_normal', 'explore_model', 'decision_api', 'size_model', 'jev_model', 'openai_model', 'conflict_model', 'manager_model', 'manager_model_normal', 'reviewer_model', 'language', 'base_branch', 'cleanup',
+  'worker_model', 'worker_model_small', 'worker_model_normal', 'explore_model', 'explore_effort', 'worker_effort', 'worker_effort_small', 'worker_effort_normal', 'manager_effort', 'reviewer_effort', 'decision_api', 'size_model', 'jev_model', 'openai_model', 'conflict_model', 'manager_model', 'manager_model_normal', 'reviewer_model', 'language', 'base_branch', 'cleanup',
 ]
 
 test('every userConfig key in plugin.json is a settings key', () => {
@@ -352,4 +352,16 @@ test('typesafe_api_key in a settings file is refused like the other API keys', (
   const r = mergeLayers({}, [{ path: REPO, text: JSON.stringify({ typesafe_api_key: 'k' }) }])
   expect(r.raw.typesafe_api_key).toBeUndefined()
   expect(r.warnings.some(x => x.includes('typesafe_api_key') && x.includes('/config only'))).toBe(true)
+})
+
+test('effort settings: defaults, levels, inherit, empty and invalid values', () => {
+  const d = settingsOf({}, 'main')
+  expect([d.exploreEffort, d.workerEffortSmall, d.workerEffortNormal, d.reviewerEffort]).toEqual(['low', 'low', 'medium', 'medium'])
+  expect([d.workerEffort, d.managerEffort]).toEqual([undefined, undefined])
+  const s = settingsOf({ explore_effort: 'HIGH', worker_effort: 'max', worker_effort_small: 'inherit', worker_effort_normal: '', manager_effort: 'bogus' }, 'main')
+  expect([s.exploreEffort, s.workerEffort, s.workerEffortSmall, s.workerEffortNormal, s.managerEffort]).toEqual(['high', 'max', undefined, undefined, undefined])
+  const r = mergeLayers({}, [{ path: REPO, text: JSON.stringify({ reviewer_effort: 'turbo', explore_effort: '' }) }])
+  expect(r.warnings.filter(w => w.includes('reviewer_effort'))).toHaveLength(1)
+  expect(r.raw.reviewer_effort).toBeUndefined()
+  expect(r.raw.explore_effort).toBe('inherit')
 })

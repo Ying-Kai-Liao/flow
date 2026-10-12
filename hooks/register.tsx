@@ -21,7 +21,7 @@ import { addStep, addTurn, baseName, entriesOfBranch, setIdentity } from './cost
 import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
 import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
-import { backNote } from './routing'
+import { backNote, effortFor, type EffortRole } from './routing'
 import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
 import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
@@ -1838,6 +1838,12 @@ export const register: Register = (on, options) => {
   let noLong = false
   // Set once the host refused a flow:continue rewrite: later continuations start in a new worktree.
   let noContinue = false
+  // Reasoning effort per flow-started agent (agent.spawn decides, turn.step applies: the spawn input has no effort
+  // field). The activity row keeps it across a plugin reload; effortSeen marks agents already looked up there.
+  const agentEffort = new Map<string, string>()
+  const effortSeen = new Set<string>()
+  // Agent tool calls that named an `effort` themselves (by tool_use_id): an explicit effort wins over flow's.
+  const explicitEffort = new Set<string>()
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
@@ -2082,19 +2088,31 @@ export const register: Register = (on, options) => {
     if (await fableDenied(spawnIoOf($), e)) return { deny: FABLE_DENY }
     // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
     let routed: Routed | undefined
+    let effortRole: EffortRole | undefined
     if (e.subagentType === WORKER) {
       const r = await routeWorker(spawnIoOf($), e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel }, jevOf($, settings))
       e = r.e
       routed = r.routed
+      effortRole = 'worker'
     } else if (e.subagentType === MANAGER) {
       const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModelNormal ?? settings.managerModel, settings.managerModel, jevOf($, settings))
       e = r.e
       routed = r.routed
+      effortRole = 'manager'
     } else if (e.subagentType === 'Explore' && e.model === undefined && e.parentAgentId !== undefined) {
       // Read-only exploring by a flow agent runs on the cheap model; main's own and an explicit model stay as they are.
       const parent = (await $.agent.list()).find(a => a.id === e.parentAgentId)
-      if (parent !== undefined && FLOW_TYPES.has(parent.type)) e = { ...e, model: settings.exploreModel ?? 'haiku' }
+      if (parent !== undefined && FLOW_TYPES.has(parent.type)) {
+        e = { ...e, model: settings.exploreModel ?? 'haiku' }
+        effortRole = 'explore'
+      }
+    } else if (isReviewer(e.subagentType)) {
+      effortRole = 'reviewer'
     }
+    const explicit = explicitEffort.delete(e.tool_use_id)
+    // The env is read only when there is an effort to apply; a failed read counts as unset.
+    const wantEffort = effortRole === undefined || explicit ? undefined : effortFor(effortRole, routed?.size, settings, undefined)
+    const targetEffort = wantEffort === undefined ? undefined : effortFor(effortRole!, routed?.size, settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
     // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
     // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
     const spawn = e.subagentType === WORKER ? await prepareContinue(spawnIoOf($), e, !noContinue) : e
@@ -2145,8 +2163,9 @@ export const register: Register = (on, options) => {
       const used = ev.model ?? wanted
       const spawnWindow = typeof used === 'string' && used.includes('[1m]') ? LARGE_WINDOW : undefined
       await update($, activity, acts => ({
-        ...acts, [id]: { startedAt: t, lastAt: t, log: [`started: ${e.description}`], ...(spawnWindow !== undefined && { spawnWindow }) },
+        ...acts, [id]: { startedAt: t, lastAt: t, log: [`started: ${e.description}`], ...(spawnWindow !== undefined && { spawnWindow }), ...(targetEffort !== undefined && { effort: targetEffort }) },
       }))
+      if (targetEffort !== undefined) agentEffort.set(id, targetEffort)
       await refresh($)
       void openPane($)
       await best($, 'recording an agent in the cost ledger', async () => {
@@ -2159,6 +2178,7 @@ export const register: Register = (on, options) => {
           ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
           ...(typeof used === 'string' && { spawnModel: used }),
           ...(routed !== undefined && { size: routed.size }),
+          ...(targetEffort !== undefined && { effort: targetEffort }),
         }, now))
       })
       if (liteMode) await best($, 'recording a lite manager', async () => { const at = await $.clock.now(); await withLite($, cur => ({ state: recordLite(cur, (e as { name?: string }).name ?? e.description, at), out: undefined })) })
@@ -2192,6 +2212,7 @@ export const register: Register = (on, options) => {
   // reaches this catch, not the tool hook's own, so a flow tool that did not finish is answered here too.
   on('tool.call', async ($, e, next) => {
     const id = e.agentId
+    if (e.tool === 'Agent' && e.effort !== undefined && e.effort !== null) explicitEffort.add(e.tool_use_id)
     if (e.tool === 'Bash') {
       const why = killRefusal(e.command)
       if (why !== undefined) return { deny: why }
@@ -2392,7 +2413,20 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     // The agent is running now: texts held for it ride along.
     if (e.agentId !== undefined) await flushAgent($, e.agentId).catch(() => undefined)
-    const r = yield* next(e)
+    // flow's effort for this agent, only on a model that takes one (e.effort set) and never on main (no agentId).
+    let step = e
+    if (e.agentId !== undefined && e.effort !== undefined) {
+      if (!effortSeen.has(e.agentId)) {
+        effortSeen.add(e.agentId)
+        if (!agentEffort.has(e.agentId)) {
+          const saved = (await read($, activity).catch(() => ({} as Record<string, { effort?: string }>)))[e.agentId]?.effort
+          if (saved !== undefined) agentEffort.set(e.agentId, saved)
+        }
+      }
+      const target = agentEffort.get(e.agentId)
+      if (target !== undefined) step = { ...e, effort: target as typeof e.effort }
+    }
+    const r = yield* next(step)
     await meterStep(usageIoOf($, settings, mainWarn, mainHeld), settings, e, r)
     await countStep(usageIoOf($, settings, mainWarn, mainHeld), e, r)
     return r

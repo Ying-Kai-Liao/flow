@@ -64,3 +64,17 @@ export const managerDecision = (name: string, size: Size, model: string, reason:
   `${name} runs ${size} -> ${model}${escalated ? ' (one size up after an earlier manager on this task)' : ''}${jev === undefined ? '' : ` (${jev})`}: ${reason === '' ? 'no reason given' : reason}`
 
 export const MANAGER_FYI_WHY = 'The plugin routes the manager model by the Size line main put on its prompt; below large a harder task may need a bigger model. An overturn makes this manager hand off (no new workers, wait for running workers, end with a handoff note); main restarts it as <name>-2, which runs one size up.'
+
+// Reasoning effort, routed like the model: by role and, for a worker, the routed size. Undefined means no
+// override (the session's effort stands). CLAUDE_CODE_EFFORT_LEVEL set to anything disables flow's override.
+export type EffortSettings = {
+  exploreEffort?: string; workerEffort?: string; workerEffortSmall?: string; workerEffortNormal?: string; managerEffort?: string; reviewerEffort?: string
+}
+export type EffortRole = 'explore' | 'worker' | 'manager' | 'reviewer'
+export function effortFor(role: EffortRole, size: Size | undefined, s: EffortSettings, env: string | undefined): string | undefined {
+  if (env !== undefined && env !== '') return undefined
+  if (role === 'explore') return s.exploreEffort
+  if (role === 'manager') return s.managerEffort
+  if (role === 'reviewer') return s.reviewerEffort
+  return size === 'small' ? s.workerEffortSmall : size === 'normal' ? s.workerEffortNormal : s.workerEffort
+}
