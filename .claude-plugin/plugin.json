@@ -116,6 +116,12 @@
       "description": "Advanced: On: a worker or manager that reaches the context warning percent is told to commit, push and write a handoff note, and its parent continues on a fresh agent. Off: the meter only shows.",
       "default": true
     },
+    "size_feedback": {
+      "type": "boolean",
+      "title": "Size feedback",
+      "description": "Advanced: On: each manager's prompt gets, once at spawn, a short digest of how this repo's earlier workers' Size lines turned out (how many needed a rerun one size up). Local records only, no network. Off: no digest.",
+      "default": true
+    },
     "main_checkout_guard": {
       "type": "boolean",
       "title": "Main-checkout guard",

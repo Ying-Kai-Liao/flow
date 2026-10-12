@@ -22,7 +22,7 @@ import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as
 import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
 import { backNote, effortFor, type EffortRole } from './routing'
-import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withoutLong } from './spawn'
+import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withSizeFeedback, withoutLong } from './spawn'
 import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
 import { decide, DECIDE_TIMEOUT_MS, sourceOf } from './decide'
@@ -2097,6 +2097,7 @@ export const register: Register = (on, options) => {
     // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
     let routed: Routed | undefined
     let effortRole: EffortRole | undefined
+    let sizeFed = false
     if (e.subagentType === WORKER) {
       const r = await routeWorker(spawnIoOf($), e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel }, jevOf($, settings))
       e = r.e
@@ -2107,6 +2108,7 @@ export const register: Register = (on, options) => {
       e = r.e
       routed = r.routed
       effortRole = 'manager'
+      if (settings.sizeFeedback) { const f = await withSizeFeedback(spawnIoOf($), e); e = f.e; sizeFed = f.fed }
     } else if (e.subagentType === 'Explore' && e.model === undefined && e.parentAgentId !== undefined) {
       // Read-only exploring by a flow agent runs on the cheap model; main's own and an explicit model stay as they are.
       const parent = (await $.agent.list()).find(a => a.id === e.parentAgentId)
@@ -2186,6 +2188,7 @@ export const register: Register = (on, options) => {
           ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
           ...(typeof used === 'string' && { spawnModel: used }),
           ...(routed !== undefined && { size: routed.size }),
+          ...(sizeFed && { sizeFeedback: true }),
           ...(targetEffort !== undefined && { effort: targetEffort }),
         }, now))
       })
