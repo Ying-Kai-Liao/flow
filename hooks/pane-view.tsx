@@ -235,6 +235,8 @@ export type InboxCtx = {
   draft: string
   note: string
   irows: PaneRow[]
+  // Standing-rule suggestions (standing-suggest.ts), pending and not dismissed; none when absent.
+  sugg?: Array<{ id: string; text: string }>
   // Which items are expanded into cards, by id.
   iopen: Record<string, boolean>
   // The roster and the clock, for the card's agent line and ages.
@@ -252,6 +254,8 @@ export type InboxCtx = {
     setDraft: (v: string) => Promise<unknown>
     setNote: (v: string) => Promise<unknown>
     answer: (id: string, choice: string | null) => Promise<string>
+    // Dismisses suggestions by id, so they are not offered again.
+    dismissSugg?: (ids: string[]) => Promise<unknown>
     serial: <T>(fn: () => Promise<T>) => Promise<T>
     toast: (text: string) => void
     focus: (key: string) => Promise<unknown>
@@ -686,7 +690,13 @@ export function inboxView(x: InboxCtx) {
   }
   // Fit: the roomiest text tier whose whole list fits; else a window of blocks around the hot one, with a
   // line each for "↑ N above" and "↓ N more". The footer is outside this budget, so it is always drawn.
-  const footerLines = (note !== '' ? 1 : 0) + (Input !== undefined ? 1 : 0) + (nOpts > 0 ? 1 : 0) + 2
+  const sugg = (x.sugg ?? []).slice(0, 2)
+  const hideSugg = () => io.serial(async () => {
+    await io.acted()
+    await io.dismissSugg?.(sugg.map(s => s.id))
+    await say('Standing-rule hint hidden; it is not offered again.')
+  })
+  const footerLines = sugg.length + (note !== '' ? 1 : 0) + (Input !== undefined ? 1 : 0) + (nOpts > 0 ? 1 : 0) + 2
   const budget = Math.max(2, rows - 1 - footerLines)
   const hotAt = (bs: InboxBlock[]) => Math.max(0, bs.findIndex(b => b.hot))
   const sum = (bs: InboxBlock[]) => bs.reduce((n, b) => n + b.height, 0)
@@ -715,6 +725,7 @@ export function inboxView(x: InboxCtx) {
     <Box flexDirection="column" height={rows}>
       <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Text bold><Text color={irows.length === 0 ? undefined : 'warning'} dimColor={irows.length === 0}>{ICON.inbox}</Text> Inbox{nQ > 0 && <Text> {askMark(Text, x.now)}</Text>} <Text dimColor>{irows.length === 0 ? 'Nothing open.' : `${nQ} question${nQ === 1 ? '' : 's'}, ${nF} decision${nF === 1 ? '' : 's'}`}</Text></Text>
+      {sugg.map(s => <Text key={`sugg-${s.id}`} color="suggestion" wrap="truncate-end">{`+ ${s.text}`}</Text>)}
       {iAbove > 0 && <Text dimColor>  ↑ {iAbove} above</Text>}
       {blocks.slice(lo, hi + 1).map(b => b.node)}
       {iBelow > 0 && <Text dimColor>  ↓ {iBelow} more</Text>}
@@ -756,6 +767,7 @@ export function inboxView(x: InboxCtx) {
         <Button key="inbox-all" plain dimColor hotkey="w" onPress={keepAll}>w keep all</Button>
         <Button key="inbox-reply" plain dimColor hotkey="r" onPress={() => reply()}>r reply</Button>
         <Button key="inbox-archive" plain dimColor hotkey="v" onPress={() => io.serial(async () => { await io.acted(); await io.leave('archive') })}>v archive{archived > 0 ? ` (${archived})` : ''}</Button>
+        {sugg.length > 0 && <Button key="inbox-sugg" plain dimColor hotkey="s" onPress={hideSugg}>s hide rule hint</Button>}
         <Button key="inbox-back" plain dimColor hotkey="i" onPress={back}>i back</Button>
       </Box>
       </Box>

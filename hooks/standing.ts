@@ -19,14 +19,18 @@ import type { Inbox, Question } from './inbox'
 //            of the rules, and is recorded blocking and flagged `escalated: <rule id>`, so only main answers it.
 //            A rule with both `escalate` and an `answer` is invalid (dropped with a warning).
 //   from     the asker's name (a manager's continuation `foo-2` counts as `foo`)
-//   kinds    the kinds of inbox item it may answer ("ask" for an ordinary question, "deploy" for a deploy
-//            approval, "env" for an env/secret change or a step the user does themselves). Absent: ordinary
-//            questions only. A deploy approval or env item is answered only by a rule that names its kind.
+//   kinds    the kinds of inbox item it may answer ("ask" for an ordinary question, "fyi" for a recorded
+//            decision (answered "Keep"), "deploy" for a deploy approval, "env" for an env/secret change or a
+//            step the user does themselves). Absent: ordinary questions only. A decision, a deploy approval or
+//            an env item is answered only by a rule that names its kind.
 //            A push item (the ready batch awaiting /flow push) is never answered by a rule.
+//   options  the option set of the question the rule was made from (a topic-less rule): a question matches
+//            only if its options are the same set, besides its text matching `match`.
+// Topics compare normalized (any case, `_`/space/`-` alike, one trailing "s" ignored).
 // A rule without an id gets a derived one from its file and 1-based position in that file's list:
 // `personal:1`, `repo:2`, `config:1`. Positions count every entry, valid or not, so they stay stable.
 
-export type Rule = { id?: string; topic?: string; match?: string; answer?: string; escalate?: boolean; blocking?: boolean; from?: string; note?: string; kinds?: string[] }
+export type Rule = { id?: string; topic?: string; match?: string; answer?: string; escalate?: boolean; blocking?: boolean; from?: string; note?: string; kinds?: string[]; options?: string[] }
 export type Source = 'personal' | 'repo' | 'config'
 export type Resolved = { rid: string; source: Source; pos: number; rule: Rule; re?: RegExp }
 
@@ -37,6 +41,9 @@ export const DEFAULT_WORD = 'default'
 const norm = (s: string) => s.trim().replace(/\s+/g, ' ')
 const lower = (s: string) => norm(s).toLowerCase()
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+// A topic as compared: "Worker_Sizes", "worker size" and "worker-size" are one topic.
+export const normTopic = (s: string): string => lower(s).replace(/[\s_-]+/g, '-').replace(/s$/, '')
+const optionSet = (o: string[]): string => JSON.stringify([...new Set(o.map(lower))].sort())
 
 export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { error: string } {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { error: 'not an object' }
@@ -52,6 +59,10 @@ export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { erro
   if (r.blocking !== undefined && typeof r.blocking !== 'boolean') return { error: 'blocking must be true or false' }
   const kinds = Array.isArray(r.kinds) ? r.kinds.map(text).filter(k => k !== '') : typeof r.kinds === 'string' && text(r.kinds) !== '' ? [text(r.kinds)] : undefined
   if (r.kinds !== undefined && (kinds === undefined || kinds.length === 0)) return { error: 'kinds must be a list of kind names' }
+  const options = Array.isArray(r.options) ? r.options.map(text).filter(o => o !== '') : undefined
+  if (r.options !== undefined && (options === undefined || options.length === 0)) return { error: 'options must be a list of option texts' }
+  // A rule never undoes a decision: for kind "fyi" the only answer is Keep.
+  if (kinds?.includes('fyi') === true && !['keep', DEFAULT_WORD].includes(answer.toLowerCase()) && !escalate) return { error: 'a rule for kind fyi can only answer "Keep"' }
   let re: RegExp | undefined
   if (match !== '') {
     try {
@@ -68,6 +79,7 @@ export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { erro
     ...(r.blocking === true ? { blocking: true } : {}),
     ...(text(r.from) !== '' ? { from: text(r.from) } : {}),
     ...(kinds !== undefined ? { kinds } : {}),
+    ...(options !== undefined ? { options } : {}),
     ...(text(r.note) !== '' ? { note: text(r.note) } : {}),
   }
   return { rule, ...(re !== undefined ? { re } : {}) }
@@ -107,8 +119,9 @@ export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owne
 // Topic, match and asker filters of a rule against a question.
 function applies(r: Resolved, q: Askable): boolean {
   const { rule } = r
-  if (rule.topic !== undefined && (q.topic === undefined || lower(q.topic) !== lower(rule.topic))) return false
+  if (rule.topic !== undefined && (q.topic === undefined || normTopic(q.topic) !== normTopic(rule.topic))) return false
   if (r.re !== undefined && !r.re.test(norm(q.question))) return false
+  if (rule.options !== undefined && optionSet(rule.options) !== optionSet(q.options)) return false
   return rule.from === undefined || noteKey(rule.from) === noteKey(q.owner)
 }
 
@@ -142,12 +155,17 @@ export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answ
   return undefined
 }
 
+// The rules that may act on a decision an agent recorded (mcp__flow__fyi): those naming kind "fyi", and the
+// escalate rules, which still hold everything. An ordinary rule (no kinds) does not reach them there.
+export const fyiRules = (rules: Resolved[]): Resolved[] => rules.filter(r => r.rule.escalate === true || r.rule.kinds?.includes('fyi') === true)
+
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-// The rule an `always` answer makes: by the question's topic, else by its exact text.
+// The rule an `always` answer makes: by the question's topic, else by its exact text and option set.
 export function ruleFromQuestion(q: Question, answer: string, date: string): Rule {
   return {
-    ...(q.topic !== undefined && q.topic !== '' ? { topic: q.topic } : { match: `^${escapeRe(norm(q.question))}$` }),
+    ...(q.topic !== undefined && q.topic !== '' ? { topic: q.topic } : { match: `^${escapeRe(norm(q.question))}$`, options: q.options }),
+    ...(q.kind === 'fyi' ? { kinds: ['fyi'] } : {}),
     answer,
     ...(q.blocking ? { blocking: true } : {}),
     note: `added ${date} from ${q.id}`,
@@ -157,7 +175,10 @@ export function ruleFromQuestion(q: Question, answer: string, date: string): Rul
 // The same rule already exists: same topic or match, same asker filter, same answer.
 export function sameRule(a: Rule, b: Rule): boolean {
   const eq = (x?: string, y?: string) => (x === undefined ? '' : lower(x)) === (y === undefined ? '' : lower(y))
-  return eq(a.topic, b.topic) && norm(a.match ?? '') === norm(b.match ?? '') && eq(a.from, b.from) && eq(a.answer, b.answer) &&
+  const topic = (x?: string) => (x === undefined ? '' : normTopic(x))
+  const opts = (x?: string[]) => (x === undefined ? '' : optionSet(x))
+  const kinds = (x?: string[]) => (x === undefined ? '' : [...x].sort().join(','))
+  return topic(a.topic) === topic(b.topic) && opts(a.options) === opts(b.options) && kinds(a.kinds) === kinds(b.kinds) && norm(a.match ?? '') === norm(b.match ?? '') && eq(a.from, b.from) && eq(a.answer, b.answer) &&
     (a.escalate === true) === (b.escalate === true) && (a.blocking === true) === (b.blocking === true)
 }
 
@@ -176,33 +197,46 @@ export function removeRule(list: unknown[], source: Source, rid: string): { list
   return at < 0 ? { list, removed: false } : { list: list.filter((_, i) => i !== at), removed: true }
 }
 
-export type Suggestion = { key: string; label: string; answer: string; times: number; add: string }
+export type Suggestion = { key: string; id: string; fyi: boolean; label: string; answer: string; times: number; add: string }
 
 const SUGGEST_AT = 3
 
+// Anything a rule must never settle: a deploy, env, push, reviewer or person-check item, a guard suggestion,
+// an escalation, or a question linked to another. A group holding one is never suggested.
+const hardItem = (q: Question): boolean =>
+  (q.kind !== undefined && q.kind !== 'question' && q.kind !== 'fyi') || q.guard !== undefined || q.env !== undefined ||
+  q.escalated !== undefined || q.forQ !== undefined || q.viaQ !== undefined
+
 // Topics (or, without one, identical question texts) main answered SUGGEST_AT times or more with the same
-// answer, that no rule covers yet.
+// answer, that no rule covers yet. Decisions (FYIs) main kept make a rule with kinds ["fyi"].
 export function suggest(inbox: Inbox, rules: Resolved[]): Suggestion[] {
   const groups = new Map<string, Question[]>()
+  const tainted = new Set<string>()
+  const keyOf = (q: Question) => `${q.kind === 'fyi' ? 'fyi' : 'ask'}:${q.topic !== undefined && q.topic !== '' ? `topic:${normTopic(q.topic)}` : `text:${lower(q.question)}`}`
   for (const q of inbox.items) {
-    if (q.state !== 'answered' || q.answeredBy !== 'main' || q.answer === undefined || q.kind === 'push' || q.kind === 'reviewer') continue
-    const key = q.topic !== undefined && q.topic !== '' ? `topic:${lower(q.topic)}` : `text:${lower(q.question)}`
-    groups.set(key, [...(groups.get(key) ?? []), q])
+    if (hardItem(q)) tainted.add(keyOf(q))
+    if (q.state !== 'answered' || q.answeredBy !== 'main' || q.answer === undefined) continue
+    groups.set(keyOf(q), [...(groups.get(keyOf(q)) ?? []), q])
   }
   const out: Suggestion[] = []
   for (const [key, items] of groups) {
+    if (tainted.has(key)) continue
     const byAnswer = new Map<string, Question[]>()
     for (const q of items) byAnswer.set(lower(q.answer!), [...(byAnswer.get(lower(q.answer!)) ?? []), q])
     for (const same of byAnswer.values()) {
       if (same.length < SUGGEST_AT) continue
       const last = same[same.length - 1]!
-      if (same.some(q => matchRule(rules, q) !== undefined)) continue
+      if (same.some(q => matchRule(q.kind === 'fyi' ? fyiRules(rules) : rules, q) !== undefined)) continue
+      const fyi = last.kind === 'fyi'
       const rule = ruleFromQuestion(last, last.answer!, '')
-      const body: Record<string, unknown> = { action: 'add', ...(rule.topic !== undefined ? { topic: rule.topic } : { match: rule.match }), answer: rule.answer }
+      const body: Record<string, unknown> = {
+        action: 'add', ...(rule.topic !== undefined ? { topic: rule.topic } : { match: rule.match, options: rule.options }),
+        answer: rule.answer, ...(fyi ? { kinds: ['fyi'] } : {}),
+      }
       if (same.every(q => q.blocking)) body.blocking = true
       out.push({
-        key, answer: last.answer!, times: same.length,
-        label: rule.topic !== undefined ? `topic ${rule.topic}` : `"${cap(norm(last.question), 80)}"`,
+        key, id: `${key}|${lower(last.answer!)}`, fyi, answer: last.answer!, times: same.length,
+        label: `${fyi ? 'decisions ' : ''}${rule.topic !== undefined ? `topic ${rule.topic}` : `"${cap(norm(last.question), 80)}"`}`,
         add: `mcp__flow__standing ${JSON.stringify(body)}`,
       })
     }

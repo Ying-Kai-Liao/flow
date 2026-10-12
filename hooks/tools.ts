@@ -177,18 +177,20 @@ export const ANSWER_TOOL: ToolSpec = {
 
 export const STANDING_TOOL: ToolSpec = {
   name: 'standing',
-  description: 'Main only. Standing answers: rules that answer a recurring decision-inbox question at once. "list": rules and suggestions (questions answered the same way 3+ times); with no rules it offers starting rules, accepted with "add" and seed/seeds. "add": topic or match (case-insensitive regex on the question), answer, optional blocking (default false: blocking questions are left to you) and from. "remove": id (rules without one: file and position, e.g. personal:1). escalate: true makes matching questions blocking and yours alone; answer "default" takes the question\'s own default (non-blocking only).',
+  description: 'Main only. Standing answers: rules that answer a recurring decision-inbox question at once. "list": rules and suggestions (questions answered the same way 3+ times); with no rules it offers starting rules, accepted with "add" and seed/seeds. "add": topic or match (case-insensitive regex on the question), answer, optional blocking (default false: blocking questions are left to you) and from. "remove": id (rules without one: file and position, e.g. personal:1). "dismiss": id of a suggestion (or "all"): it is not offered again. kinds ["fyi"] makes a rule that keeps matching recorded decisions (answer "Keep"); without kinds a rule answers ordinary questions only. Topics compare ignoring case, _ - and spaces, and one trailing s. escalate: true makes matching questions blocking and yours alone; answer "default" takes the question\'s own default (non-blocking only).',
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list', 'add', 'remove'] },
+      action: { type: 'string', enum: ['list', 'add', 'remove', 'dismiss'] },
       topic: { type: 'string' },
       match: { type: 'string' },
       answer: { type: 'string', description: 'An option of the question: its text, letter or number' },
       blocking: { type: 'boolean' },
       escalate: { type: 'boolean', description: 'Instead of an answer: matching questions are blocking and never auto-answered' },
       from: { type: 'string' },
-      id: { type: 'string' },
+      kinds: { type: 'array', items: { type: 'string' }, description: 'Kinds of item the rule may answer: "ask" (default), "fyi" (a recorded decision, kept), "deploy", "env"' },
+      options: { type: 'array', items: { type: 'string' }, description: 'For a topic-less rule: the option set the question must have' },
+      id: { type: 'string', description: 'remove: the rule id. dismiss: the suggestion id, or "all"' },
       seed: { type: 'string', description: `With add: a starting rule by id (${seedIds().join(', ')})` },
       seeds: { type: 'array', items: { type: 'string' }, description: 'With add: several starting rules by id' },
     },

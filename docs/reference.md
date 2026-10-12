@@ -95,7 +95,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 | `guard_tests` | none | file only | path globs mapped to repo-wide tests a worker must run when its diff touches a matching path, e.g. `{"src/routes/**": ["test/admin.test.ts"]}` (see Guard tests) |
 | `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |
-| `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
+| `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, kinds?, options?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
 
 
 `decision_phrases` (deprecated in favour of `mcp__flow__ask`, still honoured; the settings loader warns): a report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it.
