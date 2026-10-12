@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 
-import { deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_REVIEWER_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT } from '../hooks/prompts'
+import { deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_REVIEWER_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
 
 const base: Settings = {
@@ -166,4 +166,31 @@ test('the manager prompt routes by the Size line and never tells an agent to pas
   expect(m).toContain('"Size: small|normal|large')
   expect(m).not.toMatch(/model "sonnet\[1m\]"/)
   expect(fill(REVIEWER_PROMPT, s)).toContain('subagent_type "general-purpose", model "opus"')
+})
+
+test('batch_max renders into the reviewer prompt, default 10, minimum 1', () => {
+  expect(all(base)[2]).toContain('A batch holds at most 10 PRs.')
+  expect(all({ ...base, batchMax: 3 })[2]).toContain('until the batch holds 3 PRs')
+  expect(all({ ...base, batchMax: 0 })[2]).toContain('A batch holds at most 1 PRs.')
+  expect(all(base)[2]).not.toContain('{{')
+})
+
+test('late join, bisect, timeout rerun and the guarantees are in the reviewer prompt', () => {
+  const q = all(base)[2]
+  expect(q).toContain('Late join (a normal batch only, never a PUSH RUN or REBUILD RUN): right before step 3')
+  expect(q).toContain('never merge it twice')
+  expect(q).toContain('Do the same after the rework of a failed check')
+  expect(q).toContain('bisect instead of guessing')
+  expect(q).toContain('A passing bisect step is never pushed by itself')
+  expect(q).toContain('Every failing test failed on a timeout')
+  expect(q).toContain('A second failure is real.')
+  expect(q).toContain('the sha you push is always one whose exact tree passed the full check')
+  expect(q).toContain('one release cut per batch, after the final check passes')
+  expect(q).not.toContain('Known flaky')
+})
+
+test('push and rebuild runs take no late joins; the terminal reviewer never runs two batches', () => {
+  expect(all(base)[2]).not.toContain('## Push run')
+  expect(all({ ...base, pushMode: 'confirm' })[2]).toContain('takes no late joins')
+  expect(REVIEWER_SESSION_RULES_AUTO).toContain('you never run two batches at once')
 })

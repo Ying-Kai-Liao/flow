@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Bigger reviewer batches: PRs that arrive before the full check join the batch (also after a failed check's rework) up to the new `batch_max` setting (default 10; 1 = one PR per batch). On a failure that does not belong to one PR the reviewer bisects the batch to the PR that breaks the check, and a failure where every test timed out is rerun once before it counts. The pushed sha is still always one whose exact tree passed the full check.
+
 ## [0.6.88] - 2026-10-13
 
 ### Changed

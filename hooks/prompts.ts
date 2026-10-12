@@ -66,6 +66,8 @@ export type Settings = {
   alwaysTests: string[]
   // Test files the reviewer reruns once when they are the only failures of the full check.
   flakyTests?: string[]
+  // Most PRs one reviewer batch carries (default 10); late joiners count too.
+  batchMax?: number
   // Release at merge: off (or absent) leaves every release slot empty.
   release?: boolean
   // Tag and GitHub Release after the release push; only acts with release on.
@@ -195,7 +197,7 @@ function flakyLine(s: Settings): string {
   const files = s.flakyTests ?? []
   if (!files.length) return ''
   const rerun = s.testCommand.includes('{files}') ? 'through the test command with the files in place of {files}' : 'by running the full check once more'
-  return `\n   - Known flaky tests: ${files.map(f => `\`${f}\``).join(', ')}. When the full check fails and every failing test is in a file of this list, rerun only those files once (${rerun}). If they pass, the batch passes; put "flaky: <test>" (the test's exact name, from the failed output) in the done line and the final report; release the slot of the first run with result "fail" and failed_tests, and of the rerun with result "pass", and the plugin adds "| flaky: <test>" for you. A failure outside the list, or a second failure, is real: handle it as below.`
+  return `\n   - Known flaky tests: ${files.map(f => `\`${f}\``).join(', ')}. When the full check fails and every failing test is in a file of this list, rerun only those files once (${rerun}). If they pass, the batch passes; put "flaky: <test>" (the test's exact name, from the failed output) in the done line and the final report; record it as the timeout rule says. A failure outside the list, or a second failure, is real: handle it as below.`
 }
 
 function stateStep(f: StateFile | undefined): string {
@@ -254,7 +256,7 @@ function pushRun(s: Settings): string {
 The user holds the push (push_mode confirm). When \`mcp__flow__reviewer\` action "list" shows a PUSH RUN or a REBUILD RUN, do it first, before any pending PR (the list shows none until the batch is done); after a deploy-only run. A batch that awaits the user ("No pending handovers to take: batch … awaits") is not yours: leave it and start no other batch.
 - PUSH RUN: \`git fetch origin\`. If \`git rev-parse origin/{{BASE}}\` equals the batch's base sha, nothing moved: \`git checkout --detach <ref>\`, check \`git rev-parse HEAD\` equals the batch's sha, and do not merge or run the full check again. Go on at step 4 with this head: push (the same retries and branch-protection rule), publish, step 5 deploy, step 6 after_deploy checks, and step 7: "done" for each PR of the batch (they are "ready"; "done" works from there), then the "After a batch" section below (clean, the main-checkout line, report): the push is what changed origin, so this is where the plugin fast-forwards the main checkout when you call "done"; copy the line it returns into your final report. Do not call "ready" again.
 - If origin/{{BASE}} moved: the batch is stale, never push it. Rebuild it: step 1 (clean, fresh from origin/{{BASE}}), then step 2 for the batch's PRs in the same order ("take" works on a "ready" PR; a PR whose head moved or that no longer merges is sent back with "back"), then step 3, the full check.${cut} Record it again with the push gate step ("ready" with the new sha and base_sha) and end your run: the user is asked again. Nothing was pushed, so the main checkout stays as it is (the plugin does not touch it); say "main checkout not updated: batch awaits /flow push" in the report.
-- REBUILD RUN (the user sent a PR back): the same rebuild, for the PRs the list names only.
+- REBUILD RUN (the user sent a PR back): the same rebuild, for the PRs the list names only. A push run or rebuild run takes no late joins (no second \`list\` before the check): it rebuilds a fixed approved batch; PRs that arrived wait for the next batch.
 - Then go on with the pending PRs as usual.`
 }
 
@@ -274,6 +276,7 @@ export function fill(text: string, s: Settings): string {
     .replaceAll('{{MIGRATIONS_REVIEWER}}', mig ? ` Migrations live in \`${mig}\`: step 2 renumbers a clashing one instead of sending the PR back.` : '')
     .replaceAll('{{MIGRATIONS_STEP}}', mig ? migrationsStep(s) : '')
     .replaceAll('{{FLAKY_TESTS}}', flakyLine(s))
+    .replaceAll('{{BATCH_MAX}}', String(Math.max(1, Math.floor(s.batchMax ?? 10))))
     .replaceAll('{{TEST}}', s.testCommand || 'none configured: run the tests that cover the files you changed')
     .replaceAll('{{FULL_CHECK}}', s.fullCheck || 'none configured')
     .replaceAll('{{STATE_FILE_RULE}}', s.stateFile ? `\n- Never edit the status file \`${s.stateFile.path}\`: only the reviewer writes it.` : '')
@@ -466,7 +469,7 @@ export const NO_REVIEWER_RULE = `There is no reviewer in this repo: you merge. F
 
 export const REVIEWER_PROMPT = `You are the flow reviewer. You alone merge PRs into {{BASE}}, run the full check and deploy, so two sessions never overwrite each other's deploy or run the full suite at once. You run in a clean git worktree of your own.{{LANGUAGE}}
 
-The PRs handed to you are in mcp__flow__reviewer: action "list" shows the pending ones in arrival order. Work in batches: merge the batch's PRs one at a time, then run the full check and deploy once for the whole batch.{{MIGRATIONS_REVIEWER}}
+The PRs handed to you are in mcp__flow__reviewer: action "list" shows the pending ones in arrival order. Work in batches: merge the batch's PRs one at a time, then run the full check and deploy once for the whole batch. A batch holds at most {{BATCH_MAX}} PRs. Guarantees that never bend: the sha you push is always one whose exact tree passed the full check; one release cut per batch, after the final check passes; the push gate and the deploy gates are as written below; a push rejected as a non-fast-forward is checked again before the next push.{{MIGRATIONS_REVIEWER}}
 
 ## Deploy-only run
 
@@ -475,15 +478,18 @@ At the start of every run, besides the pending PRs, call \`mcp__flow__deploy\` a
 ## A batch
 
 1. Start clean: \`git status --porcelain\` must be empty. Then \`git fetch origin && git checkout --detach origin/{{BASE}}\`.
-2. For each pending PR, in order:
+2. For each pending PR, in order, until the batch holds {{BATCH_MAX}} PRs (the rest stay pending for the next batch; a PR that is held or sent back does not count):
    - \`mcp__flow__reviewer\` action "take" with its pr.
    - If "take" answers "Held:", the PR awaits the user's approval: skip it (do not merge it, do not send it back) and go on. List held PRs in your final report and SendMessage main "PR #<n> waits for the user's approval: /flow approve <n>".
    - \`gh pr view <n> --json state,headRefOid,title\`: state must be OPEN and headRefOid must equal the handover's head. If the head moved, \`mcp__flow__reviewer\` action "back" with reason "head moved", and go on.
 {{MIGRATIONS_STEP}}   - \`git fetch origin <head sha>\` if needed, then \`git merge --no-ff <head sha> -m "Merge PR #<n>: <title>"\`.
    - Mechanical conflicts, both sides added lines at the same place (imports, list or array entries, registry entries, README table rows, CHANGELOG entries): keep both, drop exact duplicates, keep sorted lists sorted. The batch's full check covers it (if none is configured, run the test command on those files). Say "kept both sides in <files>" in the done line and to report_to. The same line changed differently on both sides, or one side deleting what the other edited, needs a decision: \`git merge --abort\`, "back" with the file names, go on.{{RELEASE_CONFLICT}}
    - A mechanical conflict in code files is resolved by a sub-agent, not by you: Agent tool, subagent_type "general-purpose", model "{{CONFLICT_MODEL}}", with your worktree's absolute path, the conflicting files and the rule above in its prompt. Check its result with \`git diff\`; the batch's full check covers it. Conflicts in the changelog or version files stay yours, by the rule above.
+   - Late join (a normal batch only, never a PUSH RUN or REBUILD RUN): right before step 3, call \`mcp__flow__reviewer\` action "list" once more. Take only the PRs it shows as \`pending\`, with the same per-PR steps, until the batch holds {{BATCH_MAX}} PRs; a PR shown as \`taken\` is already in this batch (or sent back), never merge it twice; PRs beyond the cap wait for the next batch. If the list shows a batch that awaits the user's push, take nothing. Do the same after the rework of a failed check, before the re-check. The release cut and the done lines cover the late joiners too.
 3. Full check: {{FULL_CHECK}}. Run it once for the batch (run_in_background if it's long). Call \`mcp__flow__test_slot\` action "acquire" (label "full check") before each run (if queued, wait as it tells you, then confirm with one acquire) and "release" after it, also when it fails: pass result "pass" or "fail", and on a failure failed_tests with the exact names of the failing tests from the output (test names, not just files).
    - A failure from combining PRs (each fine alone): have a sub-agent fix it (as for a code conflict in step 2) in one small commit on top ("Fix combination of #a and #b: <what>") and run the check again. Anything bigger is a logic conflict: send the later PR back.
+   - Every failing test failed on a timeout (the output says timed out or timeout exceeded; common when the machine is loaded): not a verdict yet. Release the slot with result "fail" and failed_tests, acquire again, rerun the full check (just the failing files if the test command takes {files}) once, and release with result "pass" if it passes: the plugin records the flakiness; put "flaky: <test>" (exact name) in the done line and the report. A second failure is real.
+   - Failures that do not clearly belong to one PR (its files or tests), with more than 2 PRs in the batch: bisect instead of guessing. List the merges with \`git log --first-parent --oneline origin/{{BASE}}..HEAD\`, note HEAD's sha, check out (detached) the merge commit of the first half and run the full check there under the slot; if it fails, narrow to the first half, else to the second, until you know the first PR whose merge makes the check fail. Send that PR back with the failing output, \`git checkout --detach\` your saved HEAD, reset to before its merge (\`git reset --hard <its merge commit>^1\`), redo the later merges and run the full check again on the final HEAD. A passing bisect step is never pushed by itself; only the final HEAD, once its own full check passes.
    - A real bug in one PR: reset to before its merge (\`git log --first-parent --oneline origin/{{BASE}}..HEAD\`, \`git reset --hard <its merge commit>^1\`), redo the merges after it, send it back with the failing output, check again.
    - "none configured" means no full check: say so in the report; never improvise one.{{FLAKY_TESTS}}{{RELEASE_STEP}}{{PUSH_GATE}}
 4. Push: \`git push origin HEAD:{{BASE}}\`. GitHub marks each PR merged. If rejected as a non-fast-forward, fetch, merge origin/{{BASE}}, check again, push again. A push rejected by branch protection (stderr mentions "protected branch", "GH006" or "Changes must be made through a pull request") is neither a non-fast-forward nor an infrastructure error: do not retry, do not publish, send every PR of the batch back with the reason "push to {{BASE}} refused by branch protection; the reviewer needs push rights (bypass) or the merge must go through a PR", and SendMessage main the same. If the push fails with a server or network error (5xx, timeout, connection reset; not a rejection), retry the same push with backoff (${PUSH_RETRY_BACKOFF}) for at most ${PUSH_RETRY_MINUTES} minutes and put the retry count in the done line ("push retries: <n>"). The same goes for any gh or GitHub API call in the batch. After that bound, stop: send every PR of the batch back with the reason "push to {{BASE}} failed for ${PUSH_RETRY_MINUTES} minutes (infrastructure); PR unchanged, hand it over again", and SendMessage main the same. The plugin deletes each merged branch when you call "done" (step 7); never delete a remote branch yourself, and never chain a push with anything that deletes.{{RELEASE_PUBLISH}}
@@ -556,7 +562,7 @@ You run in a terminal, as a claude of your own in a detached git worktree (named
 - Your final report is a file, not your last message: write it to \`{{REPORT}}\` (replace the whole file).`
 
 // The reviewer in a terminal while merge_mode is auto: one long-lived session that keeps taking handovers.
-export const REVIEWER_SESSION_RULES_AUTO = `${REVIEWER_SESSION_BASE} When the list is empty, or you hit a block (Held / awaiting approval, a batch ready for /flow push, deploy awaiting approval, a PR you sent back), write your report to {{REPORT}} (replace the file) and wait in this terminal. A "new handover: …" line typed into the terminal means start again from a clean worktree at mcp__flow__deploy list and mcp__flow__reviewer list.
+export const REVIEWER_SESSION_RULES_AUTO = `${REVIEWER_SESSION_BASE} When the list is empty, or you hit a block (Held / awaiting approval, a batch ready for /flow push, deploy awaiting approval, a PR you sent back), write your report to {{REPORT}} (replace the file) and wait in this terminal. A "new handover: …" line typed into the terminal means start again from a clean worktree at mcp__flow__deploy list and mcp__flow__reviewer list, but only between batches. Typed in the middle of a batch it starts nothing: the new PR joins by the late-join rule if you have not yet started the full check, else it waits for the next batch; you never run two batches at once.
 
 `
 

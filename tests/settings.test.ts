@@ -365,3 +365,9 @@ test('effort settings: defaults, levels, inherit, empty and invalid values', () 
   expect(r.raw.reviewer_effort).toBeUndefined()
   expect(r.raw.explore_effort).toBe('inherit')
 })
+
+test("batch_max defaults to 10, has a floor of 1", () => {
+  expect(settingsOf({}, "main").batchMax).toBe(10)
+  expect(settingsOf({ batch_max: 4 }, "main").batchMax).toBe(4)
+  expect(settingsOf({ batch_max: 0 }, "main").batchMax).toBe(1)
+})

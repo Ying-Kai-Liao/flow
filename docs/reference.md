@@ -85,6 +85,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
 | `flaky_tests` | none | file only | test files known to fail now and then: when they are the only failures of the full check, the reviewer reruns them once (a list) |
+| `batch_max` | 10 | file only | most PRs one reviewer batch carries (minimum 1); PRs that arrive before the full check join the batch up to this number, the rest wait for the next. 1 restores one-PR batches |
 | `verify_paths` | none | file only | path globs (a list): a handover's `verify_command` runs only when the PR changes a matching file, e.g. only PRs touching migrations or code with outbound effects; otherwise the check stays open for a person. Unset: the command always runs (see Person checks) |
 | `big_files` | none | file only | files workers grep and never read whole (a list) |
 | `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
