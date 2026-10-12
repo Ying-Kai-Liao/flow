@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.78] - 2026-10-12
+
 ### Added
 
 - Size feedback: each manager's spawn prompt gets a short digest of how this repo's earlier workers' Size lines turned out (reruns per size), behind the `size_feedback` setting (default on); `decide_eval` size prints worker Size-line agreement with and without it
