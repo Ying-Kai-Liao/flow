@@ -36,6 +36,16 @@ export function reapSlots(state: TestSlots, rows: AgentRow[], t: number): { stat
   return { state: changed ? { holders, waiters } : state, notes }
 }
 
+// Adds a waiter to the line. A priority waiter (the reviewer: merging is the shared bottleneck) goes
+// ahead of every non-priority waiter and behind earlier priority ones; it never touches holders, so a
+// running holder or an offered grant stays. Others join at the end. A key already waiting keeps its place.
+export function enqueueWaiter(waiters: SlotEntry[], w: SlotEntry): SlotEntry[] {
+  if (waiters.some(x => x.key === w.key)) return waiters
+  if (w.priority !== true) return [...waiters, w]
+  const at = waiters.findIndex(x => x.priority !== true)
+  return at < 0 ? [...waiters, w] : [...waiters.slice(0, at), w, ...waiters.slice(at)]
+}
+
 // Gives free slots to the head waiters, after dropping grants nobody confirmed within CLAIM_MS.
 // Pure: the caller does the signalling for `granted`.
 export function grantSlots(state: TestSlots, limit: number, t: number): { state: TestSlots; granted: SlotEntry[]; notes: string[] } {

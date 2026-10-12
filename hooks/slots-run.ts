@@ -1,6 +1,7 @@
 import type { AgentRow, LogEvent, SlotEntry, TestSlots } from '../types'
 import type { Settings } from './prompts'
-import { grantFile, heldBy, slotLine, span, CLAIM_MS, LEASE_MS, WAIT_DEFAULT_S, WAIT_MAX_S } from './slots'
+import { isReviewer } from './core'
+import { enqueueWaiter, grantFile, heldBy, slotLine, span, CLAIM_MS, LEASE_MS, WAIT_DEFAULT_S, WAIT_MAX_S } from './slots'
 import { noteRelease } from './testfail'
 import type { TestFails } from './testfail'
 import { labelOf } from './meter'
@@ -26,6 +27,8 @@ export async function testSlotTool(io: SlotsIo, settings: Settings, input: Recor
     const rows = await io.refresh()
     const name = key === 'main' ? 'main' : labelOf(rows.find(a => a.id === key) ?? { id: key, description: '', type: '', status: '' })
     const label = typeof input.label === 'string' && input.label.trim() !== '' ? input.label.trim().slice(0, 60) : 'tests'
+    // A terminal reviewer is a roster row of the same type, so rows tell both kinds apart.
+    const priority = key !== 'main' && isReviewer(rows.find(a => a.id === key)?.type ?? '')
     const limit = settings.testSlots
     const t = await io.now()
 
@@ -58,7 +61,7 @@ export async function testSlotTool(io: SlotsIo, settings: Settings, input: Recor
       await io.settleSlots(rows, at, st => {
         already = st.holders.find(h => h.key === key)
         if (already || st.waiters.some(w => w.key === key)) return st
-        return { ...st, waiters: [...st.waiters, { key, name, label, since: at }] }
+        return { ...st, waiters: enqueueWaiter(st.waiters, { key, name, label, since: at, ...(priority && { priority }) }) }
       }, key)
       if (already?.claimed === true) {
         return `You already hold a test slot (${already.label}, ${span(at - already.since)}). Release it when your run is over.`
