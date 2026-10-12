@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.88] - 2026-10-13
+
+### Changed
+
+- Relay ownership per main; subagents of a terminal manager read-only (#185)
+
 ## [0.6.87] - 2026-10-13
 
 ### Added
