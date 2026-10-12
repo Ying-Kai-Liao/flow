@@ -68,7 +68,7 @@ import { detect as initDetect, firstRun, HINT as INIT_HINT, settingsTool, writeM
 import type { InitIo } from './init'
 import { advance as demoAdvance, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
 import type { DemoState } from './demo-replay'
-import { DEMO_DONE, paneFocus, renderPane } from './pane-run'
+import { DEMO_DONE, paneDraw, paneFocus } from './pane-run'
 import type { PaneEvent, PaneIo } from './pane-run'
 import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
@@ -2545,6 +2545,8 @@ function paneIoOf($: EngineInterface, e: PaneEvent, lets: PaneLets, options: Rec
     now: () => $.clock.now(),
     usage: () => $.session.usage().then(u => u, () => undefined),
     toast: text => { void $.ui.toast(text) },
+    invalidate: () => { try { $.ui.invalidate('ui.render') } catch { /* pane closed */ } },
+    after: (ms, fn) => { $.clock.after(ms, fn) },
     focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
     fill: text => $.prompt.fill({ text, mode: 'replace' }),
     runProcess: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
@@ -2941,5 +2943,5 @@ export const register: Register = (on, options) => {
   })
 
   // The pane draws in pane-run.tsx.
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => renderPane(paneIoOf($, e, paneLets, options), e))
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => paneDraw(paneIoOf($, e, paneLets, options), e))
 }

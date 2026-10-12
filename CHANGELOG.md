@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Internal: the generic tool.call hook body, the main-checkout guard, the wrap-up reminder and the flow tools' multi-line cases (guard_tests, note, clean, push, session, deploy, release, reviewer) moved from hooks/register.tsx to hooks/toolcall-run.ts; no behaviour change.
+### Changed
+
+- The Flow pane redraws background updates (activity, ledger, roster, clock) at most about 4 times a second with a trailing redraw, skips draws that change nothing, reads each atom once per draw and caches session usage for 1 s; key presses and selection still redraw at once
 
 ## [0.6.97] - 2026-10-13
 

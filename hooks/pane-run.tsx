@@ -30,6 +30,8 @@ import { elapsed, labelOf, warnPercent, windowOf } from './meter'
 import { foldDefault, shortModel } from './pane'
 import { MANAGER, mirror } from './core'
 import { planOwner } from './roster-run'
+import { createGate, ttlCache, USAGE_TTL_MS } from './pane-throttle'
+import type { DrawKeys, Gate } from './pane-throttle'
 
 export const DEMO_DONE = 'Demo finished. /flow init settings sets your commands; /flow init demo live runs it for real (uses tokens).'
 const MERGE_QUEUE_KEY = '#merge-queue'
@@ -87,6 +89,9 @@ export type PaneIo = {
   now: () => Promise<number>
   usage: () => Promise<Awaited<ReturnType<EngineInterface['session']['usage']>> | undefined>
   toast: (text: string) => void
+  // Ask the engine for another ui.render, and run something later (clock.after): the throttle's trailing redraw.
+  invalidate: () => void
+  after: (ms: number, fn: () => void) => void
   focus: (key: string) => Promise<unknown>
   fill: (text: string) => Promise<unknown>
   runProcess: (argv: string[], timeoutMs: number) => Promise<{ exitCode: number; stdout: string; stderr: string }>
@@ -465,5 +470,42 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
   } catch (err) {
     const { Text } = io.resolve()
     return <Text>flow: pane failed to draw: {err instanceof Error ? err.message : String(err)}</Text>
+  }
+}
+
+// What a person does changes these (or the props: scroll, view, width), and the draw follows at once; the inbox,
+// handovers and push gate are rare and a person acts on them. The rest are background streams: the throttle
+// paces them (pane-throttle.ts).
+const USER_STATE = [
+  'selected', 'cursor', 'folded', 'overrideView', 'hinted', 'armed', 'viewMode', 'prShown', 'prBack', 'batchPick', 'prDetails', 'inboxCursor', 'cardBack',
+  'inboxFolds', 'inboxOpen', 'inboxDraft', 'inboxNote', 'graphFocus', 'demo', 'inbox', 'handovers', 'pushState',
+] as const satisfies ReadonlyArray<keyof PaneState>
+const BG_STATE = ['roster', 'now', 'checks', 'ledger', 'leftovers', 'sessions', 'harnessLimits', 'deploys', 'behind', 'reviewerBreaker', 'plan'] as const satisfies ReadonlyArray<keyof PaneState>
+
+// The gate paces by the engine clock (read each draw), not Date.now, so a mocked or replayed clock paces too.
+let paneNow = 0
+const paneGate: Gate<Awaited<ReturnType<typeof renderPane>>> = createGate(() => paneNow)
+const usageCache = ttlCache<Awaited<ReturnType<PaneIo['usage']>>>(USAGE_TTL_MS)
+
+const propsKey = (e: PaneEvent): string => {
+  try { return JSON.stringify([e.props, e.viewport]) } catch { return String(Math.random()) }
+}
+
+// The pane's hook entry: reads every atom once into a snapshot (so the engine subscribes the instance to each),
+// lets the gate decide between drawing and returning the last tree, and draws from that snapshot. After the
+// draw the snapshot is dropped: a key handler built in it reads live state when it runs.
+export async function paneDraw(io: PaneIo, e: PaneEvent, gate: Gate<Awaited<ReturnType<typeof renderPane>>> = paneGate) {
+  paneNow = await io.now()
+  const names = Object.keys(io.read) as Array<keyof PaneState>
+  const values = await Promise.all(names.map(n => io.read[n]()))
+  const snap = Object.fromEntries(names.map((n, i) => [n, values[i]])) as PaneState
+  let live = true
+  const read = Object.fromEntries(names.map(n => [n, () => (live ? Promise.resolve(snap[n]) : io.read[n]())])) as PaneIo['read']
+  const usage: PaneIo['usage'] = () => usageCache(() => io.usage())
+  const keys: DrawKeys = { props: propsKey(e), user: USER_STATE.map(n => snap[n]), bg: BG_STATE.map(n => snap[n]), activity: snap.activity }
+  try {
+    return await gate.frame(keys, () => renderPane({ ...io, read, usage }, e), (ms, fired) => io.after(ms, () => { fired(); io.invalidate() }))
+  } finally {
+    live = false
   }
 }
