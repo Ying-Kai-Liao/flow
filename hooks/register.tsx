@@ -6,6 +6,8 @@
 // everything its hooks call with `$` is in that same file; atoms are declared with literal refs in each
 // file that uses them (the same key is the same state).
 import { atom, read, update } from 'claude-code'
+import { startSession } from './startup-run'
+import type { StartupIo } from './startup-run'
 import { lastLineAsks, REPORT_HINT } from './askcards'
 import { parseMode } from './mergemode'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
@@ -50,7 +52,7 @@ import type { Preflight } from './preflight'
 import { EMPTY_LITE, isLiteName, normalizeLite } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
-  addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, parseNeeds,
+  addChecks, anyMatch, EMPTY_CHECKS, normalizeChecks, parseNeeds,
   SKIP_NOTE, versionInSteps,
 } from './checks'
 import type { Check, Checks } from './checks'
@@ -76,11 +78,11 @@ import type { DetailsCache } from './prcard'
 import { describeCall, ROLE } from './pane'
 import {
   fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO,
-  REVIEWER_SESSION_RULES_CONFIRM, WORKER_PROMPT,
+  REVIEWER_SESSION_RULES_CONFIRM,
 } from './prompts'
 import type { Settings } from './prompts'
-import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
-import { mergeLayers, renameOptions, settingsOf } from './settings'
+import { deployTargetsOf, stateFileOf, targetsOf } from './prompts'
+import { renameOptions, settingsOf } from './settings'
 import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
 import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, needLines, normText, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
@@ -89,7 +91,7 @@ import { noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as
 import { reconcileStale } from './stale-handovers'
 import type { StaleIo } from './stale-handovers'
 import type { BreakerIo, QueueIo, ReviewerIo } from './reviewer-run'
-import { EMPTY_BREAKER, normalizeBreaker, REVIEWER_KIND } from './reviewer-breaker'
+import { EMPTY_BREAKER, REVIEWER_KIND } from './reviewer-breaker'
 import { handoverTool } from './handover-run'
 import type { HandoverIo } from './handover-run'
 import { answerQuestionTo, noteText, paneInboxRowsTo, sizeBackNoteTo, tellMainTo, tellManagerTo, type MessagingIo } from './messaging-run'
@@ -129,15 +131,13 @@ import type { Caller, Ran, SessionIo } from './session-run'
 import { branchOwners, noteKey } from './state'
 import { ADD_OPTION } from './guardtests'
 import {
-  EMPTY_PUSH, normalizePush,
-  
+  EMPTY_PUSH,
 } from './pushgate'
 import type { PushState } from './pushgate'
 import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
 import type { PushAct, PushIo } from './pushgate-run'
 import {
   EMPTY_DEPLOYS, ENV_KIND,
-  normalizeDeploys,
   release,
 } from './deploy'
 import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, TEXT_MAX, WORKER, WORKERS } from './core'
@@ -1787,90 +1787,78 @@ async function readText($: EngineInterface, path: string): Promise<string | unde
   }
 }
 
-// Cheap change check for the roster poll: both files' mtimes, "-" for a missing one.
-async function signature($: EngineInterface, paths: string[]): Promise<string> {
-  const parts = await Promise.all(paths.map(async p => {
-    try {
-      if (p === '') return '-'
-      return String((await $.fs.stat(p)).mtimeMs)
-    } catch {
-      return '-'
-    }
-  }))
-  return parts.join('|')
-}
-
-type Merged = { settings: ReturnType<typeof settingsOf>; seen: string }
-
-// Layer /config under the settings files. The caller assigns the result (register's `apply`),
-// since the hooks compiler only follows `$` into top-level functions.
-async function loadSettings($: EngineInterface, options: Record<string, unknown>, paths: string[], base: string): Promise<Merged> {
-  const seen = await signature($, paths)
-  const layers = await Promise.all(paths.map(async path => ({ path, text: await readText($, path) })))
-  const loaded = mergeLayers(options, layers)
-  const warnings = [...loaded.warnings, ...deployModeWarnings(loaded.raw.deploy_targets)]
-  if (warnings.length > 0) void $.ui.toast(`flow settings:\n${warnings.join('\n')}`)
-  return { settings: settingsOf(loaded.raw, base), seen }
-}
-
-// The agent definitions carry the settings' prompts and models; a re-registered name is
-// replaced from the next turn, so agents already running keep what they started with.
-async function registerAgents($: EngineInterface, settings: ReturnType<typeof settingsOf>) {
-  await $.agent.register({
-    name: 'manager',
-    description: 'A flow manager: owns one task, writes briefs, starts flow:worker agents, reviews their PRs and hands them to the reviewer. ' +
-      'Pass the task in the user\'s words as the prompt and a short task slug as the name; run it in the background.',
-    prompt: fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), settings),
-    model: settings.managerModel,
-    background: true,
-  })
-  await $.agent.register({
-    name: 'worker',
-    description: 'A flow worker: implements one brief in a git worktree of its own and opens a PR. ' +
-      'Pass the whole brief as the prompt, its first line "Your name: <slug>", and the slug as the name.',
-    prompt: fill(WORKER_PROMPT, settings),
-    model: settings.workerModel,
-    isolation: 'worktree',
-    background: true,
-  })
-  await $.agent.register({
-    name: 'continue',
-    description: 'A flow worker that continues a handed-off branch in the same worktree. The plugin picks it when a flow:worker spawn says "Continue on branch:"; never start it yourself.',
-    prompt: fill(WORKER_PROMPT, settings),
-    model: settings.workerModel,
-    background: true,
-  })
-  await $.agent.register({
-    name: 'reviewer',
-    description: 'The flow reviewer. Started by the plugin when a PR is handed over; never start it yourself.',
-    prompt: fill(REVIEWER_PROMPT, settings),
-    model: settings.reviewerModel,
-    isolation: 'worktree',
-    background: true,
-  })
-  // The old agent type name, kept so a spawn or a resume under flow:queue still works.
-  await $.agent.register({
-    name: 'queue',
-    description: 'The old name of flow:reviewer. Never start it; the plugin starts flow:reviewer.',
-    prompt: fill(REVIEWER_PROMPT, settings),
-    model: settings.reviewerModel,
-    isolation: 'worktree',
-    background: true,
-  })
-}
-
-// Re-read the settings when a file's mtime changed (the roster poll calls this): undefined when
-// nothing changed or the reload failed, which never stops the roster refresh.
-async function recheck($: EngineInterface, options: Record<string, unknown>, paths: string[], base: string, seen: string): Promise<Merged | undefined> {
-  try {
-    if ((await signature($, paths)) === seen) return undefined
-    const merged = await loadSettings($, options, paths, base)
-    await registerAgents($, merged.settings)
-    return merged
-  } catch {
-    return undefined
+// The session.start hook (startup-run.ts): what it reads and writes of register()'s state comes in `held`,
+// everything else is closures over `$`, the atoms and the module state here.
+type StartupHeld = Pick<StartupIo, 'settings' | 'applySettings' | 'paths' | 'setPaths' | 'detected' | 'setDetected' | 'seen' | 'setSeen' | 'checking' | 'setChecking' | 'installed' | 'setInstalled'>
+function startupIoOf($: EngineInterface, options: Record<string, unknown>, held: StartupHeld): StartupIo {
+  return {
+    ...held,
+    options,
+    pollMs: POLL_MS,
+    prPollMs: PR_POLL_MS,
+    initHint: INIT_HINT,
+    best: (what, fn) => best($, what, fn),
+    run: (argv, opts) => $.process.run(argv, opts),
+    toast: text => { void $.ui.toast(text) },
+    every: (ms, fn) => { $.clock.every(ms, fn) },
+    after: (ms, fn) => { $.clock.after(ms, fn) },
+    now: () => $.clock.now(),
+    relayMode: () => relayModeOf($),
+    setRelay: r => { relay = r },
+    locate: () => locate($),
+    readText: path => readText($, path),
+    mtime: async path => (await $.fs.stat(path)).mtimeMs,
+    registerAgent: spec => $.agent.register(spec),
+    registerCommand: spec => $.command.register(spec),
+    registerTools: () => registerTools($),
+    resetDelivery: () => resetDelivery(text => toMain($, text)),
+    resetStateDir,
+    readState: async file => {
+      const dir = await stateDir($)
+      if (dir === undefined) return undefined
+      return { disk: await readJson($, `${dir}/${file}`) }
+    },
+    loadHandovers: () => loadHandovers($),
+    mergeHandovers: async disk => { await update($, handovers, hs => ({ ...disk, ...hs })) },
+    autoSweep: () => autoSweep($),
+    setInbox: async disk => { await update($, inbox, () => disk) },
+    setBreaker: async disk => { await update($, reviewerBreaker, () => disk) },
+    releaseHalt: async () => { await releaseHaltTo(breakerIoOf($), 'flow') },
+    installedVersion: () => installedVersion($),
+    handovers: () => read($, handovers),
+    checks: () => read($, checks),
+    setChecks: async disk => { await update($, checks, () => disk) },
+    captureChecks: (ho, verifyPaths) => captureChecks($, ho, verifyPaths, false),
+    markPrompted: async version => { await withChecks($, cur => ({ checks: { ...cur, promptedVersion: version }, out: undefined })) },
+    setDeploys: async disk => { await update($, deploys, () => disk) },
+    deployKnown: name => mirror.deployInfos.some(i => i.name === name),
+    refreshBehind: () => void refreshBehind($),
+    setPush: async disk => { await update($, pushState, () => disk) },
+    setLite: async disk => { await update($, lite, () => disk) },
+    mergeSessions: async raw => {
+      const disk = normalizeSessions(raw, await $.clock.now())
+      await update($, sessions, cur => ({ ...disk, ...cur }))
+    },
+    snapshotSessions: async () => { sessionsSaved = JSON.stringify(durableSessions(await read($, sessions))) },
+    adoptSessions: () => adoptSessions($),
+    setPreflight: async disk => { await update($, preflight, () => disk) },
+    agents: () => agentsOf($),
+    closePreflight: async (live, t) => { await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } }) },
+    setSlotDir: dir => { slotDir = dir },
+    sh: (script, arg) => sh($, script, arg),
+    roleSessionCount: async () => (await myRoleSessions($)).length,
+    pump: () => void pumpOnce($, { settings: held.settings(), options, installed: held.installed() }),
+    refresh: () => void refresh($),
+    watchSessions: () => void watchSessions($),
+    fetchPrs: () => void fetchPrs($),
+    refreshLeftovers: () => refreshLeftovers($),
+    tickNow: async () => { await $.clock.now().then(t => update($, now, () => t)) },
+    startReviewer: async () => void (await ensureQueue($)),
+    clearDemo: async () => { await update($, demo, () => null) },
+    firstRun: () => firstRun(initIoOf($)),
   }
 }
+
 // Workers in other harnesses (sessions.ts, session-run.ts): started in an Orca terminal or a tmux
 // session, watched through the report file they write. A command that can't start is an exit code
 // here, never a throw.
@@ -2625,201 +2613,15 @@ export const register: Register = (on, options) => {
   let installed: string | undefined
 
   on('session.start', async ($, e, next) => {
-    // First of all, what this process is: a terminal-started worker is passive (no tools, no state, no
-    // timers: its copy must not wipe main's test-slot grants), a manager or the reviewer relays to main.
-    relay = await relayModeOf($)
-    if (relay?.role === 'worker') return next(e)
-    if (relay !== undefined) {
-      // A manager's or the reviewer's own claude in a terminal: this copy holds no state and runs no timers.
-      // It reads the settings for its local guards, shows the tools and the /flow stub, and forwards every
-      // flow tool call to main (tool.call). A worker's copy never gets here: it stays passive.
-      try {
-        const local = await $.process.run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-        if (local.exitCode === 0 && local.stdout.trim() !== '') detected = local.stdout.trim().replace(/^origin\//, '')
-      } catch {
-        // Not a git repo, or no remote: keep "main".
-      }
-      paths = await locate($)
-      try {
-        apply((await loadSettings($, options, paths, detected)).settings)
-      } catch {
-        // Keep the settings from /config alone.
-      }
-      await $.command.register({
-        name: 'flow',
-        description: 'The flow pane and commands live in the main Claude Code session: run /flow there. This session\'s mcp__flow__* tools are forwarded to it.',
-      })
-      await $.command.register({
-        name: 'flow-tasks',
-        description: 'Runs in the main Claude Code session: run /flow-tasks there.',
-      })
-      await registerTools($)
-      return next(e)
-    }
-    resetDelivery(text => toMain($, text))
-    // Handovers a restart would lose: merge what is on disk under this session's own records.
-    let queueDue = false
-    await best($, 'loading handovers', async () => {
-      resetStateDir()
-      const disk = await loadHandovers($)
-      if (Object.keys(disk).length === 0) return
-      await update($, handovers, hs => ({ ...disk, ...hs }))
-      queueDue = Object.values(disk).some(ho => ho.status === 'pending')
-    })
-    // Reviewer worktrees left over from before a restart or reload.
-    autoSweep($)
-    await best($, 'loading the inbox', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeInbox(await readJson($, `${dir}/inbox.json`))
-      await update($, inbox, () => disk)
-    })
-    // A fresh session is a fresh attempt: the halt and the wait end, the failure history stays.
-    await best($, 'loading the reviewer breaker', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeBreaker(await readJson($, `${dir}/reviewer-breaker.json`))
-      await update($, reviewerBreaker, () => disk)
-      await releaseHaltTo(breakerIoOf($), 'flow')
-    })
-    await best($, 'loading checks', async () => {
-      installed = await installedVersion($)
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeChecks(await readJson($, `${dir}/checks.json`))
-      await update($, checks, () => disk)
-      // Done handovers from before checks existed (or a session that died first) get theirs once.
-      for (const ho of Object.values(await read($, handovers))) {
-        // A PR that already has a check (any state) runs no git calls on a normal restart.
-        if (ho.status === 'done' && !(await read($, checks)).items.some(c => c.pr === ho.pr)) await captureChecks($, ho, settings.verifyPaths, false)
-      }
-      // Once per installed version: a toast names the checks it now covers. Not a prompt: an update
-      // must not start a turn in main; the checks stay in /flow checks, the inbox and the pane.
-      const due = dueForPrompt(await read($, checks), installed)
-      if (due.length === 0) return
-      await withChecks($, cur => ({ checks: { ...cur, promptedVersion: installed }, out: undefined }))
-      void $.ui.toast(`flow ${installed}: ${due.length} after-deploy check${due.length === 1 ? '' : 's'} can be done now. /flow checks lists them.`)
-    })
-    await best($, 'loading deploy gates', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeDeploys(await readJson($, `${dir}/deploys.json`))
-      await update($, deploys, () => disk)
-      queueDue = queueDue || Object.entries(disk.targets).some(([name, t]) => t.due === true && mirror.deployInfos.some(i => i.name === name))
-      void refreshBehind($)
-    })
-    await best($, 'loading the push gate', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizePush(await readJson($, `${dir}/push.json`))
-      await update($, pushState, () => disk)
-      // A released or rebuilding batch left by a session that ended gets its reviewer.
-      queueDue = queueDue || (disk.batch !== undefined && disk.batch.state !== 'ready')
-    })
-    await best($, 'loading lite managers', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeLite(await readJson($, `${dir}/lite.json`))
-      await update($, lite, () => disk)
-    })
-    // Terminal sessions from before a restart: their relay directories are pumped again.
-    await best($, 'loading sessions', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeSessions(await readJson($, `${dir}/sessions.json`), await $.clock.now())
-      await update($, sessions, cur => ({ ...disk, ...cur }))
-      sessionsSaved = JSON.stringify(durableSessions(await read($, sessions)))
-      await adoptSessions($)
-    })
-    await best($, 'loading pre-flight', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizePreflight(await readJson($, `${dir}/preflight.json`))
-      await update($, preflight, () => disk)
-      // A round left undelivered by a session that ended is not sent now.
-      const live = (await agentsOf($)).filter(a => a.type === MANAGER && !ENDED.has(a.status) && a.name !== undefined).map(a => a.name!)
-      const t = await $.clock.now()
-      await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } })
-    })
-    // The base branch: the option, else the remote's default branch, else main.
-    // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
-    try {
-      const local = await $.process.run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-      let base = local.exitCode === 0 ? local.stdout.trim().replace(/^origin\//, '') : ''
-      if (base === '') {
-        const remote = await $.process.run(['git', 'ls-remote', '--symref', 'origin', 'HEAD'], { timeoutMs: 10_000 })
-        base = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(remote.stdout)?.[1] ?? ''
-      }
-      if (base !== '') detected = base
-    } catch {
-      // Not a git repo, or no remote: keep "main".
-    }
-    paths = await locate($)
-    try {
-      const merged = await loadSettings($, options, paths, detected)
-      seen = merged.seen
-      apply(merged.settings)
-    } catch {
-      // Keep the settings from /config alone.
-    }
-
-    // Grant files of a previous session would read as grants; start from an empty directory.
-    try {
-      const r = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
-      if (r.exitCode === 0 && r.stdout.trim() !== '') {
-        slotDir = `${r.stdout.trim()}/flow/test-slots`
-        await sh($, 'rm -rf "$1" && mkdir -p "$1"', slotDir)
-      }
-    } catch {
-      slotDir = undefined
-    }
-
-    await $.command.register({
-      name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and the decisions agents made (/flow inbox decisions lists them all, /flow inbox <id> shows one in full), /flow ok keeps every open decision (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] undoes a decision, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow lite <task> runs one task as just a manager and its workers (no pre-flight, no reviewer agent) to save tokens, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (alias /flow drop) turns down a handover that awaits approval or is pending, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox [all|archive [all]|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|lite <task>|resume|approve <pr>|reject <pr> [reason]|push [back <pr>|drop]|clean]',
-    })
-    await $.command.register({
-      name: 'flow-tasks',
-      description: 'Pick tasks from a task source (.claude/flow/sources/<name>.md) and start a manager for each',
-      argumentHint: '[source] [ids or filter]',
-    })
-    await registerAgents($, settings)
-
-    await registerTools($)
-
-    // Calls the terminal managers and the reviewer left in their relay directories (see pumpOnce). The fast
-    // timer exists only while a role session does: armed here for sessions a restart brought back, and by the
-    // roster poll below for ones started since. It never goes away; pumpOnce does nothing without a live one.
-    let pumpArmed = false
-    const armPump = async () => {
-      if (pumpArmed || (await myRoleSessions($)).length === 0) return
-      pumpArmed = true
-      $.clock.every(500, () => void pumpOnce($, { settings, options, installed }))
-    }
-    await armPump()
-    $.clock.every(POLL_MS, () => {
-      void adoptSessions($).then(armPump).catch(() => undefined)
-      void refresh($)
-      void watchSessions($)
-      if (checking) return
-      checking = true
-      void recheck($, options, paths, detected, seen).then(m => {
-        if (m !== undefined) { seen = m.seen; apply(m.settings) }
-      }).finally(() => { checking = false })
-    })
-    // gh is not free: a slow timer, one look shortly after the start, and status when the list is stale.
-    $.clock.every(PR_POLL_MS, () => { void fetchPrs($); void refreshBehind($); refreshLeftovers($) })
-    void fetchPrs($)
-    refreshLeftovers($)
-    // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
-    $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
-    // The reviewer agent type exists only now, and a spawn needs the session bound: start it after the hook.
-    if (queueDue) $.clock.after(0, () => void best($, 'starting the reviewer', async () => void (await ensureQueue($))))
-    // A replay left over from before a reload is gone with the atom's memory; this clears it explicitly.
-    await update($, demo, () => null)
-    // A new repo: one line pointing at /flow init, after the session has drawn.
-    $.clock.after(3000, () => void best($, 'first-run hint', async () => { if (await firstRun(initIoOf($))) void $.ui.toast(INIT_HINT) }))
+    await startSession(startupIoOf($, options, {
+      settings: () => settings,
+      applySettings: apply,
+      paths: () => paths, setPaths: p => { paths = p },
+      detected: () => detected, setDetected: d => { detected = d },
+      seen: () => seen, setSeen: x => { seen = x },
+      checking: () => checking, setChecking: busy => { checking = busy },
+      installed: () => installed, setInstalled: v => { installed = v },
+    }))
     return next(e)
   })
 
