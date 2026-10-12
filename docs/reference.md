@@ -389,7 +389,7 @@ npm run validate                 # claude plugin validate . (must pass)
 npm run check                    # typecheck + validate + claude plugin test .
 ```
 
-Where code goes: `hooks/register.tsx` is the wiring only (atoms, `on(...)` hooks, `$.tool.register` calls, and small io builders that spell out each `$.noun.event(...)` call). Put new logic in a module under `hooks/`. The engine refuses `$` across an import and wants atoms declared in `register.tsx`, so a module is either pure (`pushgate.ts`, `clean.ts`, `table.ts`) or takes an io object of plain closures that `register.tsx` builds (`deliver.ts` is the example).
+Where code goes: `hooks/register.tsx` is the wiring only (atoms, `on(...)` hooks, `$.tool.register` calls, and small io builders that spell out each `$.noun.event(...)` call). Put new logic in a module under `hooks/`. The engine's rules: `$` never crosses an import (no imported function taking `$`, no `$`-taking closure passed through an argument), so a module is either pure (`pushgate.ts`, `clean.ts`, `table.ts`) or takes an io object of plain closures that `register.tsx` builds (`deliver.ts` is the example; `pane-run.tsx` holds the pane's hook bodies the same way, behind a `PaneIo`). A module may register its own hooks through an exported `registerX(on, ctx)` when everything those hooks call with `$` is in that same file. Atoms are declared with a literal ref (`atom({ plugin: 'flow', key: '...' } as const, init)`) in each file that reads or writes them; the same key is the same state, but importing an atom is refused.
 
 `npm run typecheck` works in a fresh worktree: it runs `npm ci` when `node_modules` is missing and,
 when `.claude-plugin/types` is missing, symlinks it to the main checkout's copy. Claude Code writes

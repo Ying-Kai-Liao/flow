@@ -1,6 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 import { register } from '../hooks/register'
+import { renderPane } from '../hooks/pane-run'
 import * as demoView from '../hooks/demo-view'
 import * as paneView from '../hooks/pane-view'
 
@@ -194,9 +195,10 @@ test('the scan leaves h bindings alone where the factory is not called in their 
 test('no scope in the compiled pane that calls the JSX factory binds h', () => {
   // The test sandbox has no fs module; the compiled function keeps its parameter names
   // and its JSX shows as `h(Text, ...)`, which is what the engine runs.
-  const src = String(register)
+  // The pane's JSX lives in renderPane (hooks/pane-run.tsx); register still holds the hook wiring.
+  const src = String(renderPane)
   expect(src).toContain('h(Text')
-  expect(shadowsOfFactory(src).map(x => `${x.line}: ${x.text}`)).toEqual([])
+  for (const f of [register, renderPane]) expect(shadowsOfFactory(String(f)).map(x => `${x.line}: ${x.text}`)).toEqual([])
 })
 
 // The plugin directory flags a .tsx file that names anything h or Fragment, a property included: h is
@@ -224,7 +226,7 @@ test('the factory scan flags h or Fragment used as a name, and passes the compil
 })
 
 test('the .tsx modules use h only to call it and Fragment only as its fragment', () => {
-  const fns = [register, ...Object.values(paneView), ...Object.values(demoView)].filter(f => typeof f === 'function')
+  const fns = [register, renderPane, ...Object.values(paneView), ...Object.values(demoView)].filter(f => typeof f === 'function')
   expect(fns.length).toBeGreaterThan(3)
   for (const f of fns) expect(otherUsesOfFactory(String(f))).toEqual([])
 })
