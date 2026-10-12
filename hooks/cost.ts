@@ -152,6 +152,32 @@ export function normalizeLedger(raw: unknown): Ledger {
   return out
 }
 
+// What changed between two views of the ledger, as a ledger: each changed entry keeps `after`'s identity and
+// times but carries only the added tokens and turns, so merging it onto the disk adds counts and never
+// replaces a real identity with a default.
+export function diffLedger(before: Ledger, after: Ledger): Ledger {
+  const out: Ledger = {}
+  const sub = (a: Tokens, b: Tokens | undefined): Tokens => ({
+    input: a.input - (b?.input ?? 0), write5m: a.write5m - (b?.write5m ?? 0), write1h: a.write1h - (b?.write1h ?? 0),
+    read: a.read - (b?.read ?? 0), output: a.output - (b?.output ?? 0),
+  })
+  const any = (t: Tokens): boolean => t.input !== 0 || t.write5m !== 0 || t.write1h !== 0 || t.read !== 0 || t.output !== 0
+  for (const [k, e] of Object.entries(after)) {
+    const o = before[k]
+    if (o === e) continue
+    const models: Record<string, Bucket> = {}
+    for (const [m, b] of Object.entries(e.models)) {
+      const d = sub(b, o?.models[m])
+      const long = b.long === undefined ? undefined : sub(b.long, o?.models[m]?.long)
+      if (any(d) || (long !== undefined && any(long))) models[m] = { ...d, ...(long !== undefined && any(long) ? { long } : {}) }
+    }
+    const { turns: _turns, ...rest } = e
+    const turns = (e.turns ?? 0) - (o?.turns ?? 0)
+    out[k] = { ...rest, models, ...(turns > 0 ? { turns } : {}) }
+  }
+  return out
+}
+
 // Both ledgers' tokens added (the file's history plus what this run counted before it was loaded).
 export function mergeLedgers(a: Ledger, b: Ledger): Ledger {
   const out: Ledger = { ...a }

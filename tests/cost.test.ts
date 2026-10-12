@@ -405,3 +405,27 @@ test('a failed write keeps the deltas for the next save', async () => {
   await p.save()
   expect(inputOf(normalizeLedger(onDisk(disk)), 'w')).toBe(5)
 })
+
+test('a step counted without identity after a save keeps the entry\'s real role, manager and branch', async () => {
+  const disk: Disk = { text: JSON.stringify({ __epoch: 'e', w: { role: 'worker', name: 'csv', manager: 'mgr', branch: 'flow/csv', models: { m: bucket({ input: 4 }) }, lastAt: 4000 } }) }
+  const p = process_(disk)
+  forgetLedgerLoad()
+  await changeLedger(p.io, l => add(l, 'w', 'm', { input_tokens: 1 }, undefined, 4500))
+  await p.save()
+  await changeLedger(p.io, l => add(l, 'w', 'm', { input_tokens: 2 }, undefined, 4600))
+  await p.save()
+  const w = normalizeLedger(onDisk(disk)).w
+  expect(w).toMatchObject({ role: 'worker', name: 'csv', manager: 'mgr', branch: 'flow/csv' })
+  expect(w?.models.m?.input).toBe(7)
+})
+
+test('a turn counted after a save adds one turn, not the whole count again', async () => {
+  const disk: Disk = { text: JSON.stringify({ __epoch: 'e', w: { role: 'worker', name: 'csv', models: { m: bucket({ input: 4 }) }, turns: 5, lastAt: 4000 } }) }
+  const p = process_(disk)
+  forgetLedgerLoad()
+  await changeLedger(p.io, l => addTurn(l, 'w', 4500))
+  await p.save()
+  await changeLedger(p.io, l => addTurn(l, 'w', 4600))
+  await p.save()
+  expect(normalizeLedger(onDisk(disk)).w?.turns).toBe(7)
+})

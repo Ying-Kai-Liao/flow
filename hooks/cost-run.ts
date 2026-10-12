@@ -1,5 +1,5 @@
 import type { Ledger } from '../types'
-import { costBlock, EPOCH_KEY, epochOf, mergeLedgers, normalizeLedger, prCost, pruneLedger, reportSuffix } from './cost'
+import { costBlock, EPOCH_KEY, epochOf, diffLedger, mergeLedgers, normalizeLedger, prCost, pruneLedger, reportSuffix } from './cost'
 
 // The cost ledger's disk and atom I/O. The `ledger` atom stays in register.tsx; this takes closures
 // over it (the engine refuses `$` across an import).
@@ -94,8 +94,12 @@ export async function changeLedger(io: CostIo, fn: (l: Ledger, now: number) => L
   await loadLedger(io)
   await inChain(async () => {
     const now = await io.now()
-    await io.updateLedger(l => fn(l, now))
-    await io.updateDelta(l => fn(l, now))
+    const before = await io.ledger()
+    const after = fn(before, now)
+    await io.updateLedger(() => after)
+    // Not fn(delta): a key missing from the delta would get a default identity that overrides the real one on merge.
+    const d = diffLedger(before, after)
+    if (Object.keys(d).length > 0) await io.updateDelta(cur => mergeLedgers(d, cur))
   })
   if (ledgerSaveDue) return
   ledgerSaveDue = true
