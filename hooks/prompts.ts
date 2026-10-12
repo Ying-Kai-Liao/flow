@@ -74,6 +74,9 @@ export type Settings = {
   changelogFile?: string
   // "agent" (the Agent tool) or a harness name: what managers start workers with by default.
   workerHarness?: string
+  // "agent" or a claude harness: where the manager and the reviewer run.
+  managerHarness?: string
+  reviewerHarness?: string
   // Where session workers run: "auto", "orca" or "tmux".
   sessionHost?: string
   // The harness names the session tool accepts.
@@ -534,3 +537,30 @@ This task runs lite: you and your workers are the whole team, to save tokens. Th
 - To merge it yourself, in this order:
 {{LITE_STEPS}}
 - The final report is a few lines at most: the PR number, merged / ready for /flow push / handed over, the full check result, the released version if any. No recap of the work.`
+
+// A manager that runs in a terminal as its own claude (manager_harness). Prepended to the manager prompt.
+// {{NAME}} and {{REPORT}} are filled when the session starts.
+export const MANAGER_SESSION_RULES = `# Your session
+
+You run in a terminal, as a claude of your own in the repo's main checkout, not as a sub-agent of the flow session. Where the manager rules below differ from this part, this part wins:
+- Your name is {{NAME}}. Your flow tools (mcp__flow__*) are relayed to the main session: they work as the rules say, a call may take a moment longer.
+- Start workers with \`mcp__flow__session\` action "start", never with the Agent tool as flow:worker. Their reports come to you typed into this terminal as "flow session: …" messages; end your turn while you wait.
+- Reports and messages (the reviewer's lines, answers to your questions, the main session's notes) arrive typed into your terminal, as a line or as "flow: new message …, read <file> and act on it": read the file, then act.
+- Your final report is a file, not your last message: write it to \`{{REPORT}}\` (replace the whole file) with what the rules below say a final report carries. The plugin sends it on. Then wait in this terminal.
+
+`
+
+const REVIEWER_SESSION_BASE = `# Your session
+
+You run in a terminal, as a claude of your own in a detached git worktree (named {{NAME}}), not as a sub-agent of the flow session. Your flow tools (mcp__flow__*) are relayed to the main session: they work as the rules say, a call may take a moment longer. Where the reviewer rules below differ from this part, this part wins:
+- Your final report is a file, not your last message: write it to \`{{REPORT}}\` (replace the whole file).`
+
+// The reviewer in a terminal while merge_mode is auto: one long-lived session that keeps taking handovers.
+export const REVIEWER_SESSION_RULES_AUTO = `${REVIEWER_SESSION_BASE} When the list is empty, or you hit a block (Held / awaiting approval, a batch ready for /flow push, deploy awaiting approval, a PR you sent back), write your report to {{REPORT}} (replace the file) and wait in this terminal. A "new handover: …" line typed into the terminal means start again from a clean worktree at mcp__flow__deploy list and mcp__flow__reviewer list.
+
+`
+
+// merge_mode confirm: one batch, then the session ends.
+export const REVIEWER_SESSION_RULES_CONFIRM = `${REVIEWER_SESSION_BASE} When you have reviewed the batch, write your report to {{REPORT}} (replace the file) and stop.
+
+`

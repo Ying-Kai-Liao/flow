@@ -1,5 +1,5 @@
 import type { HandoffRecord, Leftovers, LogEvent, Session } from '../types'
-import { sessionKey } from './sessions'
+import { sessionKey, sessionLive } from './sessions'
 
 // Which leftover worktrees and local branches of finished agents can go. Pure: register.tsx runs
 // git and gh, hands the parsed answers here, and removes what comes back in `remove`.
@@ -440,9 +440,13 @@ async function gatherClean(io: CleanIo, base: string): Promise<CleanGathered> {
   // The main session may itself run in a linked worktree: never pull the floor from under it.
   const here = await io.cwd().catch(() => undefined)
   if (here) roster.push({ id: 'main', live: true, name: 'the main session', cwd: here })
-  // A worker in another harness lives in its worktree until it is stopped or its terminal is gone.
+  // A worker in another harness lives in its worktree until it is stopped or its terminal is gone. A
+  // session waiting for its next message (idle: a worker that went quiet, or the reviewer between
+  // batches) still holds it.
   for (const s of await io.sessions()) {
-    roster.push({ id: sessionKey(s.name), live: s.status === 'running' || s.status === 'reported', name: s.name, cwd: s.worktree })
+    const live = sessionLive(s)
+    roster.push({ id: sessionKey(s.name), live, name: s.name, cwd: s.worktree })
+    if (s.hostWorktree !== undefined) roster.push({ id: sessionKey(s.name), live, name: s.name, cwd: s.hostWorktree })
   }
   const partial: Omit<CleanInputs, 'ancestry'> = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting }
   // Content equivalence for tips a merged PR of the branch family may have replaced (a rebase

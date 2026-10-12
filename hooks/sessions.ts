@@ -151,12 +151,47 @@ const STATUS: Record<Session['status'], string> = {
   running: 'running', reported: 'idle', idle: 'waiting', exited: 'completed', stopped: 'killed',
 }
 
-// A session as a roster row, so the tree, the status tool and the plans treat it like a worker.
+// The agent types a role session stands in the tree as (core.ts holds the same strings; it imports
+// this file, so they are repeated here).
+const ROLE_TYPE = { manager: 'flow:manager', reviewer: 'flow:reviewer' } as const
+
+// A session as a roster row, so the tree, the status tool and the plans treat it like a worker
+// (or, for a manager or the reviewer running in a terminal, like the agent it replaces).
 export function sessionRow(s: Session): AgentRow {
   return {
-    id: sessionKey(s.name), name: s.name, description: `${s.harness} in ${s.host}`, type: SESSION,
+    id: sessionKey(s.name), name: s.name, description: `${s.harness} in ${s.host}`,
+    type: s.role === undefined ? SESSION : ROLE_TYPE[s.role],
     status: STATUS[s.status], ...(s.owner !== 'main' && { parentId: s.owner }),
   }
+}
+
+// Whether a session still holds its terminal and worktree.
+export const sessionLive = (s: Session): boolean => s.status !== 'exited' && s.status !== 'stopped'
+
+// The live role sessions as AgentInfo-shaped rows, to merge into the agent lookups (who is a
+// manager, who is the reviewer) beside $.agent.list().
+export function roleAgents(sessions: Record<string, Session> | Session[]): { id: string; name: string; description: string; type: string; status: string }[] {
+  return (Array.isArray(sessions) ? sessions : Object.values(sessions))
+    .filter(s => s.role !== undefined && sessionLive(s))
+    .map(s => ({ id: sessionKey(s.name), name: s.name, description: `${s.harness} in ${s.host}`, type: ROLE_TYPE[s.role!], status: STATUS[s.status] }))
+}
+
+// The environment a terminal-started claude gets: its role and name, and where it leaves relayed
+// calls. Written as an inline assignment prefix, which works in front of any harness's command line.
+export function relayEnv(role: 'manager' | 'reviewer' | 'worker', name: string, dir?: string): string {
+  return `FLOW_ROLE=${role} FLOW_NAME=${shellQuote(name)}${dir === undefined ? '' : ` FLOW_RELAY=${shellQuote(dir)}`}`
+}
+
+// Only claude loads this plugin and so can relay its flow tools; a manager or reviewer harness
+// that is not claude falls back to the agent. `value` is the setting: "agent" or a harness name.
+export function roleHarnessOf(value: string, harnesses: Record<string, HarnessSpec>): { harness: string; reason?: string } {
+  const v = value.trim()
+  if (v === '' || v === 'agent') return { harness: 'agent' }
+  const spec = harnesses[v]
+  if (spec === undefined) return { harness: 'agent', reason: `unknown harness "${v}"; using agent` }
+  const first = (spec.program ?? spec.start.trim().split(/\s+/)[0] ?? '').split('/').pop()
+  if (v === 'claude' || spec.digest === 'claude-transcript' || first === 'claude') return { harness: v }
+  return { harness: 'agent', reason: `harness "${v}" does not run claude, the only one that loads the flow plugin and relays its tools; using agent` }
 }
 
 export function sessionLine(s: Session): string {
@@ -290,7 +325,11 @@ export function parseClaudeTranscript(text: string): Digest {
     try { row = JSON.parse(line) } catch { continue }
     const at = Date.parse(String(row.timestamp ?? ''))
     if (Number.isFinite(at)) d.at = at
+    // A user row (also a tool result) means the turn goes on; an assistant row ends it only with end_turn.
+    if (row.type === 'user') delete d.turnDone
     if (row.type !== 'assistant' || !Array.isArray(row.message?.content)) continue
+    if (row.message.stop_reason === 'end_turn' && Number.isFinite(at)) d.turnDone = at
+    else delete d.turnDone
     for (const c of row.message.content as Record<string, any>[]) {
       if (c.type === 'tool_use') {
         const i = c.input ?? {}
