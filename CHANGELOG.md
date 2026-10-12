@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.79] - 2026-10-12
+
 ### Changed
 
 - The plugin and marketplace description now reads "with Jev picking the right model for each task to keep cost down", claiming only the model choice that the decide_eval route test measured
