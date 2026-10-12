@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.96] - 2026-10-13
+
 ### Changed
 
 - Move the agent.spawn hook body into hooks/spawn-run.ts (no behaviour change)
