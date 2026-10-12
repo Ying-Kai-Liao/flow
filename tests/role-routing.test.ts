@@ -34,7 +34,8 @@ function world(on: On) {
     return { model: 'sonnet', agentId: id }
   })
   on('session.send', () => ({ isDelivered: true as const }))
-  on('prompt.submit', (_, e) => ({ text: e.text }))
+  const prompts: string[] = []
+  on('prompt.submit', (_, e) => { prompts.push(e.text); return { text: e.text } })
   on('turn.complete', (_, e) => ({ text: e.answer }) as never)
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
@@ -72,7 +73,7 @@ function world(on: On) {
     }
     return ok()
   })
-  return { agents, files, mtimes, spawns, toasts, runs, clock, state }
+  return { agents, files, mtimes, spawns, toasts, runs, clock, state, prompts }
 }
 
 type W = ReturnType<typeof world>
@@ -213,4 +214,40 @@ test('a manager whose terminal already runs is answered as started, not spawned 
   expect(again).toContain('already runs in tmux')
   expect(w.spawns).toEqual([])
   expect(newSessions(w)).toEqual(['flow-csv-mgr'])
+})
+
+const reports = (got: string[]) => got.filter(t => t.startsWith('Report from reviewer'))
+async function goneAfter(w: W) {
+  await w.clock.advance(40_000)
+  w.state.alive = false
+  await w.clock.advance(35_000)
+  await w.clock.settle()
+  await w.clock.advance(5000)
+  await w.clock.settle()
+}
+
+test('a reviewer terminal that goes away after batch work relays a summary to main, and the work record is cleared', { options: { reviewer_harness: 'claude', ...TMUX } }, async ($, on) => {
+  const w = world(on)
+  const got = w.prompts
+  await start($)
+  await handover($, 7)
+  await $.tool.call({ tool: 'mcp__flow__reviewer', agentId: 'session:reviewer-1', action: 'take', pr: 7 } as never)
+  await goneAfter(w)
+  const sent = reports(got)
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toContain('Report from reviewer reviewer-1:\nThe reviewer terminal ended without a final report.')
+  expect(sent[0]).toContain('main checkout not updated')
+  // The work record went with the report: a later reviewer end with no new work relays nothing more.
+  await goneAfter(w)
+  expect(reports(got)).toHaveLength(1)
+})
+
+test('a reviewer terminal that goes away with no batch work sends main no report', { options: { reviewer_harness: 'claude', ...TMUX } }, async ($, on) => {
+  const w = world(on)
+  const got = w.prompts
+  await start($)
+  await handover($, 7)
+  await goneAfter(w)
+  expect(newSessions(w)).toEqual(['flow-reviewer-1', 'flow-reviewer-2'])
+  expect(reports(got)).toEqual([])
 })
