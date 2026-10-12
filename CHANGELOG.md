@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.80] - 2026-10-12
+
+### Changed
+
+- Size A/B: opt-in daily Jev vs Size-line arms with per-arm cost report (#174)
+
 ## [0.6.79] - 2026-10-12
 
 ### Changed
