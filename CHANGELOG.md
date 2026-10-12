@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- README "Learn more" links to Managers and the reviewer in a terminal (`manager_harness`, `reviewer_harness`).
+
 ## [0.6.86] - 2026-10-13
 
 ### Added
