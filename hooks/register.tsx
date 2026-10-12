@@ -1,7 +1,10 @@
 // This file is the wiring only: atoms, `on(...)` hooks, `$.tool.register` calls, and io builders whose
 // closures spell out each `$.noun.event(...)` call. New logic goes into a module under hooks/, either
-// pure or taking an io object of closures (see deliver.ts), because the engine refuses `$` across an
-// import and wants atoms declared in this file.
+// pure or taking an io object of closures (deliver.ts; pane-run.tsx holds the pane's hook bodies this way).
+// The engine's rules: `$` never crosses an import (no imported function taking `$`, no `$`-taking closure
+// passed as an argument); a module may register its own hooks with an exported registerX(on, ctx) when
+// everything its hooks call with `$` is in that same file; atoms are declared with literal refs in each
+// file that uses them (the same key is the same state).
 import { atom, read, update } from 'claude-code'
 import { lastLineAsks, REPORT_HINT } from './askcards'
 import { parseMode } from './mergemode'
@@ -13,7 +16,7 @@ import { grantTypecheck, reapTypecheck, typecheckDir } from './typecheck-slots'
 import type { Evidence } from './evidence'
 import type { RunWork } from './mainff'
 import { NO_FAILS, type TestFails } from './testfail'
-import { ancestorPids, leftoverLine } from './clean'
+import { ancestorPids } from './clean'
 import { sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
 import { gatherLeftovers as gatherLeftoversTo } from './resume'
@@ -37,7 +40,7 @@ import type { SpawnHookIo } from './spawn-run'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
 import {
-  answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner, endedOwners, foldedOf, FOLD_KEY, groupExpanded, hiddenByLink,
+  answerMessage, EMPTY_INBOX, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner, endedOwners, FOLD_KEY, 
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
@@ -47,7 +50,7 @@ import type { Preflight } from './preflight'
 import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess, reviewerToolAccess } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
-  addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, paneChecksLine, parseNeeds,
+  addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, parseNeeds,
   SKIP_NOTE, versionInSteps,
 } from './checks'
 import type { Check, Checks } from './checks'
@@ -63,16 +66,14 @@ import { DEMO_TOOL, SETTINGS_TOOL } from './init-tools'
 import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, ARMS_TOOL, reviewerTool, SESSION_TOOL, SIZE_AB_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
 import { detect as initDetect, firstRun, HINT as INIT_HINT, settingsTool, writeMarker } from './init'
 import type { InitIo } from './init'
-import { advance as demoAdvance, answer as demoAnswer, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
+import { advance as demoAdvance, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
 import type { DemoState } from './demo-replay'
-import { demoView } from './demo-view'
+import { DEMO_DONE, paneFocus, renderPane } from './pane-run'
+import type { PaneEvent, PaneIo } from './pane-run'
 import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
-import { dupHidden } from './inbox-dups'
-import { agentView, archiveView, batchCardView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, prCardView, treeView } from './pane-view'
-import type { InboxCtx, PaneCtx, Usage } from './pane-view'
-import { approvePr, detailsKey, detailsStale, fetchDetails, openerFor, platformOfUname, rejectPr, urlNote } from './prcard'
+import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
-import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
+import { describeCall, ROLE, summarizeCall } from './pane'
 import {
   fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO,
   REVIEWER_SESSION_RULES_CONFIRM, WORKER_PROMPT,
@@ -88,7 +89,7 @@ import { noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as
 import { reconcileStale } from './stale-handovers'
 import type { StaleIo } from './stale-handovers'
 import type { BreakerIo, QueueIo, ReviewerIo } from './reviewer-run'
-import { breakerLine, EMPTY_BREAKER, normalizeBreaker, REVIEWER_KIND } from './reviewer-breaker'
+import { EMPTY_BREAKER, normalizeBreaker, REVIEWER_KIND } from './reviewer-breaker'
 import { handoverTool } from './handover-run'
 import type { HandoverIo } from './handover-run'
 import { answerQuestionTo, noteText, paneInboxRowsTo, sizeBackNoteTo, tellMainTo, tellManagerTo, type MessagingIo } from './messaging-run'
@@ -108,7 +109,7 @@ import { statusTool } from './status-run'
 import type { StatusIo, Unhanded } from './status-run'
 import { flowCommand } from './command'
 import type { CommandIo } from './command'
-import { elapsed, tokensDown, labelOf, limitLabel, thresholdOf, warnPercent, windowOf, wrapUpText } from './meter'
+import { elapsed, tokensDown, labelOf, limitLabel, thresholdOf, windowOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
 import {
   allowed, allowList, flowActive, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
@@ -117,7 +118,7 @@ import type { WriteTarget } from './guards'
 import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun, workerSuiteRefusal } from './testguard'
 import { flowCatch, isFlowTool, toolCatch } from './toolguard'
 import {
-  ago, claudeLimits, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, SESSION, sessionKey, sessionLive, sessionRow,
+  ago, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, sessionKey, sessionLive, sessionRow,
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
 import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSessions as watchSessionsTo } from './session-run'
@@ -128,13 +129,13 @@ import { branchOwners, findWorktree, noteKey } from './state'
 import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
 import {
   EMPTY_PUSH, normalizePush,
-  PUSH_KIND,
+  
 } from './pushgate'
 import type { PushState } from './pushgate'
 import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, pushLines, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
 import type { PushAct, PushIo } from './pushgate-run'
 import {
-  behindLines, EMPTY_DEPLOYS, ENV_KIND,
+  EMPTY_DEPLOYS, ENV_KIND,
   normalizeDeploys,
   release,
 } from './deploy'
@@ -160,8 +161,6 @@ const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as stri
 // the role's default (managers and the reviewer collapsed), else automatic. MERGE_QUEUE_KEY is the
 // Reviewer section's entry.
 const cursor = atom({ plugin: 'flow', key: 'cursor' } as const, null as string | null)
-const MERGE_QUEUE_KEY = '#merge-queue'
-const QUESTIONS_KEY = '#questions'
 const folded = atom({ plugin: 'flow', key: 'folded' } as const, {} as Record<string, boolean>)
 // Following the chat view: the view (an agent id, null for main) in which the person last acted in
 // the pane. While the view differs from it, the pane shows the viewed agent; written by handlers only.
@@ -557,7 +556,6 @@ function initIoOf($: EngineInterface): InitIo {
 const demo = atom({ plugin: 'flow', key: 'demo' } as const, null as DemoState | null)
 let demoGen = 0
 
-const DEMO_DONE = 'Demo finished. /flow init settings sets your commands; /flow init demo live runs it for real (uses tokens).'
 
 // One change to the running replay, in the pane's own order. Timers pass the generation they were set for.
 function demoMove($: EngineInterface, fn: (s: DemoState, t: number) => DemoState, gen?: number): Promise<void> {
@@ -1801,22 +1799,6 @@ function turnIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, h
   }
 }
 
-// The PR card's gh details, fetched when the card is opened (a render is pure, it cannot write): the entry
-// is marked first so a second open does not start another call, and the result lands in the cache, which
-// redraws the pane. Keyed by PR and head; a fresh entry is not fetched again.
-function fetchPrDetails($: EngineInterface, pr: number): void {
-  void (async () => {
-    const ho = (await read($, handovers))[String(pr)]
-    if (ho === undefined) return
-    const key = detailsKey(ho)
-    const t = await $.clock.now()
-    if (!detailsStale((await read($, prDetails))[key], t)) return
-    await update($, prDetails, c => ({ ...c, [key]: { ...c[key], fetchedAt: t, fetching: true as const } }))
-    const fresh = await fetchDetails((argv, timeoutMs) => $.process.run(argv, { timeoutMs }), pr, await $.clock.now())
-    await update($, prDetails, c => ({ ...c, [key]: fresh }))
-  })().catch(() => undefined)
-}
-
 // One gh call at a time: the timer and a status call may meet.
 let fetching: Promise<void> | undefined
 function fetchPrs($: EngineInterface): Promise<void> {
@@ -1965,9 +1947,6 @@ function platformOf($: EngineInterface): Promise<string> {
   platform ??= runCmd($, ['uname', '-s'], 5_000).then(r => platformOfUname(r.exitCode === 0 ? r.stdout : undefined))
   return platform
 }
-
-// A second press within this long confirms restart or stop from the pane.
-const ARM_MS = 5000
 
 function sessionIoOf($: EngineInterface): SessionIo {
   return {
@@ -2584,6 +2563,97 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
   }
 }
 
+type PaneLets = Pick<PaneIo, 'settings' | 'installed' | 'mainModel' | 'mainWindow' | 'setMainWindow' | 'paneFollow' | 'setPaneFollow'>
+
+// What the pane (pane-run.tsx) draws and acts with, built from one event's `$`: a read closure per atom, the
+// setters, the engine calls and the `$`-taking helpers of this file. The lets of register() come in as `lets`.
+function paneIoOf($: EngineInterface, e: PaneEvent, lets: PaneLets, options: Record<string, unknown>): PaneIo {
+  return {
+    read: {
+      roster: () => read($, roster),
+      activity: () => read($, activity),
+      selected: () => read($, selected),
+      cursor: () => read($, cursor),
+      folded: () => read($, folded),
+      overrideView: () => read($, overrideView),
+      hinted: () => read($, hinted),
+      now: () => read($, now),
+      handovers: () => read($, handovers),
+      inbox: () => read($, inbox),
+      checks: () => read($, checks),
+      ledger: () => read($, ledger),
+      leftovers: () => read($, leftovers),
+      sessions: () => read($, sessions),
+      harnessLimits: () => read($, harnessLimits),
+      armed: () => read($, armed),
+      deploys: () => read($, deploys),
+      behind: () => read($, behind),
+      pushState: () => read($, pushState),
+      reviewerBreaker: () => read($, reviewerBreaker),
+      plan: () => read($, plan),
+      viewMode: () => read($, viewMode),
+      prShown: () => read($, prShown),
+      prBack: () => read($, prBack),
+      batchPick: () => read($, batchPick),
+      prDetails: () => read($, prDetails),
+      inboxCursor: () => read($, inboxCursor),
+      cardBack: () => read($, cardBack),
+      inboxFolds: () => read($, inboxFolds),
+      inboxOpen: () => read($, inboxOpen),
+      inboxDraft: () => read($, inboxDraft),
+      inboxNote: () => read($, inboxNote),
+      graphFocus: () => read($, graphFocus),
+      demo: () => read($, demo),
+    },
+    set: {
+      selected: fn => update($, selected, fn),
+      cursor: fn => update($, cursor, fn),
+      folded: fn => update($, folded, fn),
+      overrideView: fn => update($, overrideView, fn),
+      hinted: fn => update($, hinted, fn),
+      armed: fn => update($, armed, fn),
+      viewMode: fn => update($, viewMode, fn),
+      prShown: fn => update($, prShown, fn),
+      prBack: fn => update($, prBack, fn),
+      batchPick: fn => update($, batchPick, fn),
+      prDetails: fn => update($, prDetails, fn),
+      inboxCursor: fn => update($, inboxCursor, fn),
+      cardBack: fn => update($, cardBack, fn),
+      inboxFolds: fn => update($, inboxFolds, fn),
+      inboxOpen: fn => update($, inboxOpen, fn),
+      inboxDraft: fn => update($, inboxDraft, fn),
+      inboxNote: fn => update($, inboxNote, fn),
+      graphFocus: fn => update($, graphFocus, fn),
+      demo: fn => update($, demo, fn),
+    },
+    resolve: () => $.ui.resolve(e as never),
+    now: () => $.clock.now(),
+    usage: () => $.session.usage().then(u => u, () => undefined),
+    toast: text => { void $.ui.toast(text) },
+    focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
+    fill: text => $.prompt.fill({ text, mode: 'replace' }),
+    runProcess: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
+    serial: paneSerial,
+    ...lets,
+    paneView: () => paneView,
+    setPaneView: v => { paneView = v },
+    unhanded: () => currentUnhanded($),
+    endedOwners: () => endedOwnersOf($),
+    demoArm: s => demoArm($, s),
+    demoMove: fn => demoMove($, fn),
+    demoStop: () => demoStop($),
+    pushAct: (act, by) => pushAct($, act, by),
+    approve: n => approvePr(commandIoOf($), n),
+    reject: (n, why) => rejectPr(commandIoOf($), n, why),
+    platform: () => platformOf($),
+    paneInboxRows: () => paneInboxRows($),
+    suggestions: () => paneSuggestions(standingIoOf($), options),
+    dismiss: async ids => { await dismissSuggestionIds(standingIoOf($), options, ids) },
+    answer: (id, choice) => answerQuestion($, id, choice, 'main', {}, true),
+    sessionTool: input => sessionTool($, input, { id: 'main', name: 'main' }, lets.settings()),
+  }
+}
+
 export const register: Register = (on, options) => {
   let settings = settingsOf(renameOptions(options), 'main')
   heldSettings = settings
@@ -3005,19 +3075,19 @@ export const register: Register = (on, options) => {
     return r
   })
 
-  // Arrows and Tab move the focus ring over the cards; the highlight follows it.
+  const paneLets: PaneLets = {
+    settings: () => settings,
+    installed: () => installed,
+    mainModel: () => mainModel,
+    mainWindow: () => mainWindow,
+    setMainWindow: w => { mainWindow = w },
+    paneFollow: () => paneFollow,
+    setPaneFollow: f => { paneFollow = f },
+  }
+  // Arrows and Tab move the focus ring over the cards; the highlight follows it (pane-run.tsx).
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const r = await next(e)
-    if (e.element !== undefined && (await read($, roster)).some(a => a.id === e.element)) {
-      // Acting while following keeps what was shown, then the person's move applies on top.
-      if (paneFollow !== null) {
-        const f = paneFollow
-        await update($, selected, () => f.pick)
-        await update($, cursor, () => f.cur)
-      }
-      await update($, overrideView, () => paneView)
-      await update($, cursor, () => e.element!)
-    }
+    await paneFocus(paneIoOf($, {}, paneLets, options), e.element)
     return r
   })
 
@@ -3030,322 +3100,6 @@ export const register: Register = (on, options) => {
     return { value: undefined }
   })
 
-  // The body's rows, not the terminal's: viewport.rows counts the whole screen, so a tree that tall
-  // would push its bottom rows (the hotkey row) under the prompt.
-  const bodyRowsOf = (e: { props: unknown; viewport?: { rows: number } }) =>
-    (e.props as { scroll?: { bodyRows?: number } }).scroll?.bodyRows ?? e.viewport?.rows ?? 24
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    // A throw while building the tree would leave the pane blank with no hint why; draw one line instead.
-    // The body below is wrapped as is (not re-indented) to keep the diff to this fix.
-    try {
-    return await (async () => {
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const dm = await read($, demo)
-    if (dm !== null) {
-      const Input = ($.ui.resolve(e) as unknown as { Input?: Parameters<typeof demoView>[0]['Input'] }).Input
-      return demoView({
-        els: { Box, Text, Button }, Input, rows: bodyRowsOf(e), state: dm, now: await read($, now), draft: await read($, inboxDraft), note: await read($, inboxNote),
-        io: {
-          setDraft: v => update($, inboxDraft, () => v),
-          setNote: v => update($, inboxNote, () => v),
-          answer: (id, choice) => paneSerial(async () => {
-            const cur = await read($, demo)
-            if (cur === null) return 'The demo has ended.'
-            const r = demoAnswer(cur, id, choice, await $.clock.now())
-            await update($, demo, () => r.state)
-            await update($, inboxDraft, () => '')
-            if (r.state.step !== cur.step) { if (demoIsLast(r.state)) void $.ui.toast(DEMO_DONE); demoArm($, r.state) }
-            return r.text
-          }),
-          toast: text => { void $.ui.toast(text) },
-          focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
-          advance: () => demoMove($, (s, t) => (canAdvance(s) ? demoAdvance(s, t) : s)),
-          stop: async () => { void $.ui.toast(await demoStop($)) },
-        },
-      })
-    }
-    let [list, acts, pick, t, hs, cur, fold, unhanded, leftCounts] = await Promise.all([
-      read($, roster), read($, activity), read($, selected), read($, now), read($, handovers),
-      read($, cursor), read($, folded), currentUnhanded($), read($, leftovers),
-    ])
-    const leftover = leftoverLine(leftCounts)
-    // The push item is drawn as the banner on top, not as a question.
-    const boxNow = await read($, inbox)
-    const dupRows = dupHidden(openAll(boxNow))
-    const openQs = openAll(boxNow).filter(q => !isFyi(q) && q.kind !== PUSH_KIND && !hiddenByLink(boxNow, q) && !dupRows.has(q.id)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
-    const gate = (await read($, pushState)).batch
-    const breakerNote = breakerLine(await read($, reviewerBreaker), t)
-    const askers = askingNames(await read($, inbox))
-    const fyiCount = openAll(await read($, inbox)).filter(isFyi).length
-    // Rows in the tree: questions and approvals, not decisions; those fold into the one Inbox line.
-    const openItems = [...openQs, ...foldedOf(await read($, inbox), await endedOwnersOf($)).shown.filter(q => q.kind !== PUSH_KIND && !isFyi(q)).reverse()]
-    // The key row is drawn when any key in it works: the agents' keys, the reviewer's, or the inbox's.
-    // The inbox key also opens the archive, so answered items keep it drawn.
-    const anyOpen = (await read($, inbox)).items.length > 0
-    const checksLine = paneChecksLine(await read($, checks), installed)
-    // The questions block's rows depend on the pane height and its fold; the tree counts them itself (questionsBlock).
-    const inboxRows = (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
-    const deployLines = behindLines(mirror.deployInfos, await read($, deploys), await read($, behind)).slice(0, 3)
-    const shown = await read($, hinted)
-    const override = await read($, overrideView)
-    const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
-    const [sessionMap, hLimits, arm] = await Promise.all([read($, sessions), read($, harnessLimits), read($, armed)])
-
-    // The pane follows the transcript in view, derived here without writing: the viewed agent wins
-    // until the person acts in the pane under that view. An id not in the roster is ignored.
-    const viewId = (e.props as { view?: { agentId?: string } }).view?.agentId ?? null
-    const following = viewId !== null && list.some(a => a.id === viewId) && viewId !== override
-    if (following) {
-      pick = viewId
-      cur = viewId
-    }
-    paneFollow = following ? { pick: viewId!, cur: viewId! } : null
-    // Handlers record which view they acted in, so a later view change follows again.
-    paneView = viewId
-    const acted = async () => {
-      // Acting while following adopts what was shown, so the stored state does not jump back.
-      if (following) {
-        await update($, selected, () => viewId)
-        await update($, cursor, () => viewId)
-      }
-      await update($, overrideView, () => viewId)
-    }
-    const rows = bodyRowsOf(e)
-    const warnOf = (window: number) => warnPercent(settings, window)
-    // Free: no breakdown asked. Main's figures also size a subagent on the same model.
-    const usage = await $.session.usage().then(u => u, () => undefined)
-    const main = usage?.context
-    if (main !== undefined) mainWindow = main.window
-
-    const usageOf = (a: AgentRow): Usage | undefined => {
-      const u = acts[a.id]?.usage
-      if (u === undefined) return undefined
-      const window = u.window ?? windowOf(u.model, mainModel, mainWindow, u.tokens)
-      return { percent: Math.round(u.tokens / window * 100), tokens: u.tokens, window }
-    }
-    const meter = (u: Usage | undefined, dim: boolean, time: string) => meterTo({ Box, Text, Button }, settings, warnOf, u, dim, time)
-    // Running time: to now while live, frozen at the end once it ended (the moment the roster saw
-    // it end, else its last activity). No start on record, no time.
-    const runTime = (act: Activity | undefined, isEnded: boolean): string =>
-      act?.startedAt === undefined ? '' : elapsed((isEnded ? act.endedAt ?? act.lastAt : t) - act.startedAt)
-
-    // Quota left per window, for Claude (this session's account) and the harnesses flow can read:
-    // the share left as a bar that turns at 40% and 20%, the reset, and when the pace runs it out.
-    const limits = [...claudeLimits(usage?.rateLimits ?? []), ...hLimits]
-
-    // A control on a session worker, run here without a model turn. Restart and stop take a second
-    // press within ARM_MS, so a stray key never kills a worker.
-    const control = (name: string, input: Record<string, unknown>, confirm?: string) => async () => {
-      await acted()
-      if (confirm !== undefined) {
-        const key = `${name}:${String(input.action)}`
-        const now2 = await $.clock.now()
-        const was = await read($, armed)
-        if (was?.key !== key || now2 - was.at > ARM_MS) {
-          await update($, armed, () => ({ key, at: now2 }))
-          return
-        }
-        await update($, armed, () => null)
-      }
-      const result = await sessionTool($, { name, ...input }, { id: 'main', name: 'main' }, settings)
-      void $.ui.toast(result.length > 200 ? `${result.slice(0, 199)}…` : result)
-    }
-
-    // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
-    // Only a top-level card has a border; deeper ones read as a tree by their indent.
-    const open = async (id: string) => {
-      await acted()
-      await update($, cursor, () => id)
-      await update($, selected, () => id)
-      // No API switches the transcript, so say once how to get to it.
-      if (!shown) {
-        await update($, hinted, () => true)
-        const a = list.find(x => x.id === id)
-        void $.ui.toast(`To see its chat: ← then pick ${a === undefined ? 'it' : labelOf(a)}`)
-      }
-    }
-    // Flips a card from what is drawn now; the choice is read fresh so rapid presses each count once.
-    const toggleFold = async (a: AgentRow, shown: boolean) => {
-      await acted()
-      await update($, folded, f => ({ ...f, [a.id]: !(f[a.id] ?? foldDefault(a) ?? shown) }))
-    }
-    const spent = await read($, ledger)
-    const modelOf = (a: AgentRow) => a.type === SESSION ? sessionMap[a.name ?? '']?.harness : shortModel(spent[a.id]?.spawnModel)
-    const columns = e.viewport?.columns ?? 80
-    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, collapsed?: boolean) => cardTo({
-      els: { Box, Text, Button }, list, acts, askers, decisionPhrases: settings.decisionPhrases, t, usageOf, warnOf, meter, runTime, toggleFold, open, columns, modelOf,
-    }, a, depth, full, bordered, hot, collapsed)
-    const agent = list.find(a => a.id === pick)
-
-    const toggle = <Button key="toggle-view" plain dimColor hotkey="g" onPress={async () => {
-      await acted()
-      await update($, viewMode, m => (m === 'graph' ? 'tree' : 'graph'))
-    }}>g {mode === 'graph' ? 'tree' : 'graph'}</Button>
-
-    const toggleQueue = async () => {
-      await acted()
-      await update($, folded, f => ({ ...f, [MERGE_QUEUE_KEY]: f[MERGE_QUEUE_KEY] === false }))
-    }
-    const toggleQuestions = async () => {
-      await acted()
-      await update($, folded, f => ({ ...f, [QUESTIONS_KEY]: f[QUESTIONS_KEY] === false }))
-    }
-    const ctx: PaneCtx = {
-      els: { Box, Text, Button }, list, acts, plans, rows, columns, modelOf, t, gfocus, shown, sessionMap, arm, armMs: ARM_MS,
-      askers, decisionPhrases: settings.decisionPhrases, toggle, card, runTime, control, acted, open,
-      back: async parentId => { await acted(); await update($, selected, () => parentId) },
-      fill: text => $.prompt.fill({ text, mode: 'replace' }),
-      toast: text => { void $.ui.toast(text) },
-      readFocus: () => read($, graphFocus),
-      setFocus: id => update($, graphFocus, () => id),
-    }
-
-    if (agent !== undefined && agent.type === MANAGER && mode === 'graph') return managerGraphView(ctx, agent, planOwner(plans, agent.name))
-    if (agent !== undefined) return agentView(ctx, agent)
-
-    if (mode === 'pr' || mode === 'batch') {
-      const [shownPr, back, pickPr, note, draft, cache, sstate] = await Promise.all([read($, prShown), read($, prBack), read($, batchPick), read($, inboxNote), read($, inboxDraft), read($, prDetails), read($, pushState)])
-      const leave = async () => {
-        await update($, inboxNote, () => '')
-        await update($, inboxDraft, () => '')
-        await update($, batchPick, () => null)
-        await update($, viewMode, () => mode === 'pr' ? back : 'tree')
-      }
-      const openPr = async (n: number, from: 'tree' | 'batch') => {
-        fetchPrDetails($, n)
-        await update($, prShown, () => n)
-        await update($, prBack, () => from)
-        await update($, inboxNote, () => '')
-        await update($, inboxDraft, () => '')
-        await update($, viewMode, () => 'pr')
-      }
-      const common = { acted, serial: paneSerial, toast: (text: string) => { void $.ui.toast(text) }, setNote: (v: string) => update($, inboxNote, () => v) }
-      if (mode === 'batch') {
-        return batchCardView({
-          els: { Box, Text, Button }, rows, batch: sstate.batch, hs, note, pick: pickPr, now: t,
-          io: { ...common, act: a => pushAct($, a, 'user'), openPr: n => openPr(n, 'batch'), setPick: n => update($, batchPick, () => n), leave },
-        })
-      }
-      const ho = shownPr === null ? undefined : hs[String(shownPr)]
-      const key = ho === undefined ? undefined : detailsKey(ho)
-      const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
-      return prCardView({
-        els: { Box, Text, Button }, Input, rows, columns, pr: shownPr, ho, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note,
-        io: {
-          ...common, leave,
-          approve: n => approvePr(commandIoOf($), n),
-          reject: (n, why) => rejectPr(commandIoOf($), n, why),
-          readDraft: () => read($, inboxDraft),
-          setDraft: v => update($, inboxDraft, () => v),
-          openUrl: async n => {
-            const url = (await read($, prDetails))[detailsKey((await read($, handovers))[String(n)] ?? { pr: n, head: '' })]?.details?.url
-            if (url === undefined) return 'No URL yet: the details have not loaded.'
-            const opener = openerFor(await platformOf($))
-            if (opener === undefined) return urlNote(url)
-            const r = await $.process.run([opener, url], { timeoutMs: 5_000 }).catch(() => undefined)
-            return r !== undefined && r.exitCode === 0 ? `Opened ${url}` : urlNote(url)
-          },
-        },
-      })
-    }
-    if (mode === 'inbox' || mode === 'card' || mode === 'archive') {
-      // Only some surfaces have an Input; without one the keys still answer.
-      const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
-      const [ibox, icur, draft, note, from, iopen] = await Promise.all([read($, inbox), read($, inboxCursor), read($, inboxDraft), read($, inboxNote), read($, cardBack), read($, inboxOpen)])
-      // The same rows a press reads, so what is drawn and what is pressed fold alike.
-      const irows = (await paneInboxRows($)).rows
-      const sugg = mode === 'inbox' ? await paneSuggestions(standingIoOf($), options) : []
-      const ictx: InboxCtx = {
-        els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, sugg, iopen, list, now: t, from,
-        io: {
-          acted,
-          rows: async () => (await paneInboxRows($)).rows,
-          readInbox: () => read($, inbox),
-          readCursor: () => read($, inboxCursor),
-          setCursor: key => update($, inboxCursor, () => key),
-          readDraft: () => read($, inboxDraft),
-          setDraft: v => update($, inboxDraft, () => v),
-          setNote: v => update($, inboxNote, () => v),
-          answer: (id, choice) => answerQuestion($, id, choice, 'main', {}, true),
-          dismissSugg: async ids => { await dismissSuggestionIds(standingIoOf($), options, ids) },
-          serial: paneSerial,
-          toast: text => { void $.ui.toast(text) },
-          focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
-          back: async () => {
-            await acted()
-            await update($, viewMode, () => 'tree')
-          },
-          open: async (id, origin) => {
-            await update($, inboxCursor, () => id)
-            await update($, cardBack, () => origin)
-            await update($, inboxNote, () => '')
-            await update($, viewMode, () => 'card')
-          },
-          leave: async to => {
-            await update($, inboxNote, () => '')
-            await update($, viewMode, () => to === 'tree' ? 'tree' : to)
-          },
-          toggleFold: async (key, firstKey) => {
-            // Read fresh, so rapid presses each flip once.
-            const was = groupExpanded(await read($, inboxFolds), key)
-            await update($, inboxFolds, f => ({ ...f, [key]: !was }))
-            // A folded-away highlight would move on the next press; park it on the card's row, and on opening go to its first item.
-            await update($, inboxCursor, () => was ? key : firstKey)
-          },
-          // Expands or collapses one item's card; the highlight goes to it.
-          toggleItem: async id => {
-            await update($, inboxOpen, o => ({ ...o, [id]: !o[id] }))
-            await update($, inboxCursor, () => id)
-          },
-        },
-      }
-      if (mode === 'card') return cardView({ ...ictx, id: icur })
-      if (mode === 'archive') return archiveView(ictx)
-      return inboxView(ictx)
-    }
-    if (mode === 'graph') return graphModeView(ctx)
-    const mainTime = usage?.startedAt === undefined ? '' : elapsed(t - usage.startedAt)
-    const mainU = main?.tokens === undefined ? undefined
-      : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
-
-    return treeView({
-      ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, openItems, fyiCount, anyOpen, checksLine, gate, breakerNote, inboxRows, deployLines, mainU, mainModel: shortModel(mainModel), mainTime,
-      mergeQueueKey: MERGE_QUEUE_KEY, questionsKey: QUESTIONS_KEY, warnOf, meter, toggleFold, toggleQueue, toggleQuestions,
-      readCursor: () => read($, cursor),
-      setCursor: id => update($, cursor, () => id),
-      focusRow: id => $.ui.focus({ requestId: PANE, key: id }).catch(() => undefined),
-      openInbox: async () => {
-        await acted()
-        await update($, inboxCursor, () => null)
-        await update($, viewMode, () => 'inbox')
-      },
-      openCard: async id => {
-        await acted()
-        await update($, inboxCursor, () => id)
-        await update($, cardBack, () => 'tree')
-        await update($, viewMode, () => 'card')
-      },
-      openPr: async n => {
-        fetchPrDetails($, n)
-        await acted()
-        await update($, prShown, () => n)
-        await update($, prBack, () => 'tree')
-        await update($, inboxNote, () => '')
-        await update($, inboxDraft, () => '')
-        await update($, viewMode, () => 'pr')
-      },
-      openBatch: async () => {
-        await acted()
-        await update($, batchPick, () => null)
-        await update($, inboxNote, () => '')
-        await update($, viewMode, () => 'batch')
-      },
-    })
-    })()
-    } catch (err) {
-      const { Text } = $.ui.resolve(e)
-      return <Text>flow: pane failed to draw: {err instanceof Error ? err.message : String(err)}</Text>
-    }
-  })
+  // The pane draws in pane-run.tsx.
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => renderPane(paneIoOf($, e, paneLets, options), e))
 }
