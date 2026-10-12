@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.94] - 2026-10-13
+
+### Changed
+
+- Group duplicate questions across managers: one row, one answer (#197)
+
 ## [0.6.93] - 2026-10-13
 
 ### Changed
