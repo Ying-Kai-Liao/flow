@@ -21,7 +21,7 @@ type World = {
 }
 
 const handover = (pr: number, branch: string, status: Handover['status'], extra: Partial<Handover> = {}): Handover => ({
-  pr, title: `title ${pr}`, head: 'abc', branch, reportTo: 'mgr', verified: 'yes.', pending: 'none', afterDeploy: 'none', status, ...extra,
+  pr, title: `title ${pr}`, head: 'abc', branch, reportTo: 'mgr', verified: 'yes.', pending: 'none', afterDeploy: 'none', status, at: 1, ...extra,
 })
 
 // A fake of the git/gh calls gatherLeftovers makes, keyed by what the command is.
@@ -36,7 +36,7 @@ function fake(w: World = {}) {
       if (f === 'throw') throw new Error('spawn ENOENT')
       if (f !== undefined) return f
       if (key === 'git fetch origin') return ok()
-      if (key === 'gh pr list --state') return ok(JSON.stringify(argv.includes('open') ? (w.open ?? []) : (w.all ?? [])))
+      if (key === 'gh pr list') return ok(JSON.stringify(argv.includes('open') ? (w.open ?? []) : (w.all ?? [])))
       if (key === 'git for-each-ref --format=%(refname:short)') return ok((w.refs ?? []).join('\n'))
       if (key === 'git worktree list') {
         return ok(wts.map(t => `worktree ${t.path}\nHEAD ${t.head ?? 'h'}\n${t.branch ? `branch refs/heads/${t.branch}` : 'detached'}`).join('\n\n') + '\n')
@@ -169,7 +169,7 @@ test('an item already resumed this session is reported as skipped, not listed ag
 })
 
 test('a failing or throwing git/gh call gives an error, not a throw', async () => {
-  for (const [key, label] of [['git fetch origin', 'git fetch origin'], ['gh pr list --state', 'gh pr list'], ['git for-each-ref --format=%(refname:short)', 'git for-each-ref']] as const) {
+  for (const [key, label] of [['git fetch origin', 'git fetch origin'], ['gh pr list', 'gh pr list'], ['git for-each-ref --format=%(refname:short)', 'git for-each-ref']] as const) {
     const g = await gatherLeftovers(fake({ fail: { [key]: bad('boom\nsecond line') } }).io, 'main', new Set())
     expect(g.items).toEqual([])
     expect(g.error).toBe(`Cannot look for unfinished work: ${label} failed: boom`)
@@ -182,7 +182,7 @@ test('a failing or throwing git/gh call gives an error, not a throw', async () =
 
 test('when gh fails, unfinished handovers on disk are still listed, minus resumed ones', async () => {
   const handovers = { '8': handover(8, 'flow/h', 'pending'), '9': handover(9, 'flow/r', 'returned', { reason: 'tests' }) }
-  const { io } = fake({ fail: { 'gh pr list --state': bad('no auth') }, handovers })
+  const { io } = fake({ fail: { 'gh pr list': bad('no auth') }, handovers })
   const g = await gatherLeftovers(io, 'main', new Set(['flow/r']))
   expect(g.items.map(i => i.key)).toEqual(['flow/h'])
   expect(g.skipped.map(i => i.key)).toEqual(['flow/r'])
@@ -280,7 +280,7 @@ test('resumeInstructions groups by owner, quotes notes, and lists ownerless item
   const notes = new Map([['alice', { path: '/n/alice.md', text: 'user said: keep the API' }]])
   const text = resumeInstructions([item('flow/a', 'alice'), item('flow/b', 'bob'), item('flow/c'), item('flow/d', 'alice')], 1, notes)
   expect(text).toContain('at most 1 at a time')
-  expect(text).toContain('Owner alice:\n- Branch flow/a\n    second\n- Branch flow/d')
+  expect(text).toContain('Owner alice:\n- Branch flow/a\n  second\n- Branch flow/d')
   expect(text).toContain('Notes (/n/alice.md):\nuser said: keep the API')
   expect(text).toContain('Owner bob:')
   expect(text).toContain('Notes: none.')

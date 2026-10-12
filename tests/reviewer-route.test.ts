@@ -221,10 +221,10 @@ test('reviewerSendGuard does not send the same needs lines to main twice', async
   const reworded = await reviewerSendGuard(n.io, 'r1', 'boss', 'again #4 #5 | needs a person: PR #4 still needs a look')
   expect(reworded).toContain('already forwarded to main')
   expect(n.main).toHaveLength(1)
-  // a different PR's line is new and only the new lines go to main
+  // a different PR's line is new: a fresh key sends the whole report
   const fresh = await reviewerSendGuard(n.io, 'r1', 'boss', 'done #6 | needs a person: check PR #6 live')
-  expect(fresh).toContain('sent the new lines to main')
-  expect(n.main[1]).toBe('Report for boss (finished), from the reviewer:\nneeds a person: check PR #6 live')
+  expect(fresh).toContain('sent it to main')
+  expect(n.main[1]).toBe('Report for boss (finished), from the reviewer:\ndone #6 | needs a person: check PR #6 live')
   // another run id starts fresh
   expect(await reviewerSendGuard(n.io, 'r2', 'boss', 'done #4 | needs a person: check PR #4 live')).toContain('sent it to main')
 })

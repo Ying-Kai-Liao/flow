@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Direct unit tests for `hooks/resume.ts` (leftover gathering, disk items, resume instructions), `hooks/reviewer-route.ts` (send guard, report routing, need lines) and `hooks/roster-run.ts` (plan owner, manager ownership, live managers).
+
 ## [0.6.87] - 2026-10-13
 
 ### Added
