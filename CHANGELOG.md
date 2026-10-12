@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Manager and dispatch prompts: a fix whose root cause is not known yet is never sized small.
+
 ## [0.6.72] - 2026-10-12
 
 ### Added

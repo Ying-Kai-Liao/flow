@@ -241,7 +241,7 @@ A manager picks a model per worker by size, not by name. It writes `Size: small 
 
 | Size | Setting (default) | Use for |
 |---|---|---|
-| `small` | `worker_model_small` (`haiku`) | docs, one-file fixes, renames, mechanical changes |
+| `small` | `worker_model_small` (`haiku`) | docs, one-file fixes, renames, mechanical changes (not bug fixes whose root cause is unknown) |
 | `normal` | `worker_model_normal` (`sonnet`) | an ordinary change in a few files with clear scope |
 | `large` | `worker_model` (`sonnet[1m]`) | cross-cutting work, big files, unclear scope, anything needing a long context |
 
