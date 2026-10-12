@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Two main sessions in one repo no longer both pump and deliver for the same terminal manager or reviewer: each role session records its owning main (session id and pid), a main handles only its own, and takes over ones whose owner is gone or unrecorded. A subagent of a terminal manager can now only read through the flow tools (status, guard_tests, migrations, test_slot, list actions); its writes are refused.
+
 ## [0.6.86] - 2026-10-13
 
 ### Added

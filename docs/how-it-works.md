@@ -618,4 +618,5 @@ claude); any other falls back to the agent with one toast.
   text; everything else is refused with a note to report to the manager. The reviewer's subagents are not
   restricted.
 - **Known limits.** A restart of main keeps terminal sessions (they are saved in `sessions.json`), and an agent reviewer running
-  when the setting changes finishes as it is.
+  when the setting changes finishes as it is. With two mains, the one that saves last keeps only its own records in
+  `sessions.json`, so the other's terminals are not restored after its restart.
