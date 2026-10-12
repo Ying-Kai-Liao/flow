@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dispatch: the small-change rule splits "auth or secrets" by risk. Code that reads, stores, sends, logs or validates a secret value, or auth/permission logic, stays a full manager; renaming, documenting or relabelling a secret setting goes lite when tests prove the value is still read.
+
 ## [0.6.69] - 2026-10-12
 
 ### Changed

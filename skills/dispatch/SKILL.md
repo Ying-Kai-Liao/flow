@@ -60,7 +60,7 @@ Never write to the source yourself unless asked.
 
 ## Small changes
 
-One clear task, no fan-out, not risky (no migrations, data rewrites, deploy/CI/infra, auth or secrets, deletions): start a `flow:manager` whose prompt has the line `Mode: lite` (or `/flow lite <task>`); it skips pre-flight and merges its own PR. You may instead start one `flow:worker` yourself, review its PR and hand it over with `mcp__flow__handover`; never edit the main checkout. Otherwise the normal flow.
+One clear task, no fan-out, not risky (no migrations, data rewrites, deploy/CI/infra, auth, secrets, deletions; a secret is risky only if code reads, stores, sends, logs or validates its value, or auth/permission logic, anything that could expose a key; renaming, documenting or relabelling a secret setting is fine if tests prove the value is still read, via any existing alias or fallback): start a `flow:manager` whose prompt has the line `Mode: lite` (or `/flow lite <task>`); it skips pre-flight and merges its own PR. You may instead start one `flow:worker` yourself, review its PR and hand it over with `mcp__flow__handover`; never edit the main checkout. Otherwise the normal flow.
 
 ## After a restart
 
