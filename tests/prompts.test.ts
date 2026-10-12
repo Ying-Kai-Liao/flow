@@ -167,3 +167,15 @@ test('the manager prompt routes by the Size line and never tells an agent to pas
   expect(m).not.toMatch(/model "sonnet\[1m\]"/)
   expect(fill(REVIEWER_PROMPT, s)).toContain('subagent_type "general-purpose", model "opus"')
 })
+
+test('a terminal mode tells the manager to start workers with the session tool; agent mode drops that section', () => {
+  const m = (s: Settings) => fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', REVIEWER_RULE), s)
+  const term = m({ ...base, mode: 'tmux', workerHarness: 'codex' })
+  expect(term).toContain('Start each worker with `mcp__flow__session` action "start" (this repo runs in mode tmux')
+  expect(term).not.toContain('Start each worker with the Agent tool')
+  expect(term).not.toContain('{{')
+  expect(term).toContain('workers run in codex by default')
+  const agent = m(base)
+  expect(agent).toContain('Start each worker with the Agent tool')
+  expect(agent).not.toContain('## Workers in a terminal')
+})

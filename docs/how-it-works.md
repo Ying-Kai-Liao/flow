@@ -502,14 +502,14 @@ Not verified:
 ## Workers in other harnesses
 
 A manager can run a worker outside this session, in any harness, with `mcp__flow__session`: when
-the task asks for one ("do the UI part with codex"), or for every worker when `worker_harness`
-names a harness. Every harness is driven through its terminal with the same controls, so one that
+the task asks for one ("do the UI part with codex"), and, in mode `orca` or `tmux`, for every worker
+(`worker_harness` picks the CLI, `claude` by default). In mode `agent` a `start` is refused. Every harness is driven through its terminal with the same controls, so one that
 flow knows nothing about (harness `command`, or one added in `harnesses`) is as controllable as a
 built-in.
 
 | Action | What it does, for any harness |
 |---|---|
-| `start` (name, brief, harness, host?, command?) | worktree on `flow/<name>` from the base, a terminal in it, the harness started with the worker rules and the brief |
+| `start` (name, brief, harness?, command?) | worktree on `flow/<name>` from the base, a terminal in it, the harness started with the worker rules and the brief |
 | `send` (name, text) | types a message and submits it (a bracketed paste in tmux, so multi-line text stays whole) |
 | `keys` (name, keys) | presses keys: `"1"`, `"y enter"`, `"escape"`, `"interrupt"` (Ctrl-C), `"down down enter"`; named keys are enter, escape, interrupt, tab, up, down, left, right, backspace, space, anything else is typed |
 | `read` (name, lines?) | the end of its terminal |
@@ -519,8 +519,8 @@ built-in.
 
 - **Where.** In an Orca terminal (Orca is a terminal and worktree app; `orca worktree create`, then `orca terminal create`) or a
   detached tmux session (`git worktree add` under `.claude/worktrees/`; watch it with
-  `tmux attach -t flow-<name>`). `session_host` `auto` takes Orca when its runtime answers, else
-  tmux; a manager can name one per worker.
+  `tmux attach -t flow-<name>`). The host is the `mode` setting (`orca` or `tmux`),
+  one for the whole run: there is no per-worker host and no fallback to the other.
 - **What it watches, the same for every harness.**
   - The report file: the worker writes `<git-common-dir>/flow/sessions/<name>/report.md`
     (rewritten each time); a new one, settled for 2 s, goes to the manager as a `flow session:`
@@ -583,33 +583,31 @@ built-in.
 
 ## Managers and the reviewer in a terminal
 
-`manager_harness` and `reviewer_harness` (default `agent`, which changes nothing) run the manager or the
-reviewer as a claude of its own in a terminal (Orca or tmux, by `session_host`), the way a session worker
-runs. Only a harness that runs claude is accepted (`claude`, or one added in `harnesses` whose start line is
-claude); any other falls back to the agent with one toast. Their start line carries the routed model
+`mode` `orca` or `tmux` (default `agent`, which changes nothing) runs every manager and the reviewer as a
+claude of its own in that terminal host, the way a session worker runs. They are always claude, whatever
+`worker_harness` is. Their start line carries the routed model
 and the reasoning effort as `--model` and `--effort` (`manager_effort`, `reviewer_effort`; a session worker gets
 the `worker_effort*` of its brief's `Size:` line); `inherit`, an unset effort or `CLAUDE_CODE_EFFORT_LEVEL` in the
 environment passes none.
 
-- **Managers.** When main starts a `flow:manager` and `manager_harness` is set, the plugin starts the terminal
+- **Managers.** When main starts a `flow:manager` in a terminal mode, the plugin starts the terminal
   instead and answers the Agent tool with a refusal worded as a success ("started manager ... it runs as a
   terminal session. This is not an error"). The manager works in the main checkout. It reports by writing
   `<git-common-dir>/flow/sessions/<name>/report.md`; each new report reaches main as "Report from manager
-  <name>:", and the terminal ending is told to main once. If the terminal cannot start, the manager starts as an
-  agent and a toast says why.
+  <name>:", and the terminal ending is told to main once. If the terminal cannot start (Orca not running, tmux
+  missing), the Agent call is refused with the reason and a toast says why; no agent takes its place.
 - **The relay.** A claude in a terminal loads its own copy of the plugin. Its flow tools (`mcp__flow__*`) are not
   run there: each call is left as a file in the session's relay directory, main's pump runs it as that session
   and leaves the answer, so the manager's notes, asks, plan, handovers and the reviewer's take / done / back
   behave as for an agent. A message to a terminal is typed into it.
-- **Workers of a terminal manager** are always session workers (`mcp__flow__session`, claude unless told
-  otherwise): a terminal has no `flow:worker` agent type.
+- **Workers of a terminal manager** are always session workers (`mcp__flow__session`, `worker_harness` or claude): a terminal has no `flow:worker` agent type.
 - **The reviewer in auto mode** is one long-lived terminal in a worktree of its own. A handover while it
   lives does not start another reviewer: the plugin types `new handover: #N` into it (due deploys and a push run
   likewise), once per PR. When the list is empty, or it is blocked (a PR awaiting approval, a batch awaiting
   `/flow push`, a deploy awaiting approval, a PR sent back) it writes its report and waits with the terminal
   kept; later lines come only from real events (a handover, an approval, a push), never a loop. Its report
   goes to main like an agent's. A terminal that goes away counts in the respawn circuit breaker like a short or
-  failed agent run.
+  failed agent run. If its terminal cannot start, a toast and a log line give the reason and the handover stays pending until the next trigger.
 - **The reviewer in confirm mode** reviews one batch and ends like the agent: after its report (merge_mode is
   read then, so a change while it worked counts) the plugin stops the terminal, removes its worktree if clean,
   and the next handover starts reviewer-N+1. The same happens in auto mode when a batch awaits `/flow push`.

@@ -32,12 +32,12 @@ test('the harnesses setting adds, replaces and removes harnesses, as a line or a
   expect(Object.keys(harnessesOf('not json'))).toEqual(['claude', 'codex', 'gemini', 'opencode'])
 })
 
-test('auto picks Orca when it answers, else tmux; a named host must be there', () => {
-  expect(pickHost('auto', true, true)).toBe('orca')
-  expect(pickHost('auto', false, true)).toBe('tmux')
+test('the mode names the host; a host that is down is an error, with no fallback', () => {
+  expect(pickHost('orca', true, true)).toBe('orca')
   expect(pickHost('tmux', true, true)).toBe('tmux')
-  expect(pickHost('orca', false, true)).toMatchObject({ error: expect.stringContaining('Orca') })
-  expect(pickHost('auto', false, false)).toMatchObject({ error: expect.stringContaining('tmux') })
+  expect(pickHost('orca', false, true)).toMatchObject({ error: expect.stringContaining('mode orca') })
+  expect(pickHost('tmux', true, false)).toMatchObject({ error: expect.stringContaining('mode tmux') })
+  expect(pickHost('agent', true, true)).toMatchObject({ error: expect.stringContaining('agent mode') })
 })
 
 // A repo at /r with a manager m1, an in-memory state dir, and every command recorded.
@@ -93,7 +93,7 @@ const call = async ($: Dollar, input: Record<string, unknown>) =>
 
 const START = { action: 'start', name: 'csv-codex', harness: 'codex', brief: 'Your name: csv-codex\n\n# csv: export orders' }
 
-test('start in tmux: a worktree on flow/<name>, the prompt in a file, codex typed into the session', async ($, on) => {
+test('start in tmux: a worktree on flow/<name>, the prompt in a file, codex typed into the session', { options: { mode: 'tmux' } }, async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const w = world(on)
   const r = await call($, START)
@@ -115,7 +115,7 @@ test('start in tmux: a worktree on flow/<name>, the prompt in a file, codex type
   expect(await call($, START)).toContain('already running')
 })
 
-test('start in Orca: an Orca worktree renamed to flow/<name>, the harness in an Orca terminal', async ($, on) => {
+test('start in Orca: an Orca worktree renamed to flow/<name>, the harness in an Orca terminal', { options: { mode: 'orca' } }, async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const w = world(on, { orca: true })
   const r = await call($, { ...START, harness: 'claude' })
@@ -127,7 +127,7 @@ test('start in Orca: an Orca worktree renamed to flow/<name>, the harness in an 
   expect(w.runs.some(a => a[0] === 'tmux')).toBe(false)
 })
 
-test('an unknown harness or a bad name is refused before anything is made', async ($, on) => {
+test('an unknown harness or a bad name is refused before anything is made', { options: { mode: 'tmux' } }, async ($, on) => {
   mock.clock(on, { now: 1 })
   const w = world(on)
   expect(await call($, { ...START, harness: 'nope' })).toContain('unknown harness "nope"')
@@ -136,7 +136,7 @@ test('an unknown harness or a bad name is refused before anything is made', asyn
   expect(w.runs.some(a => a.includes('worktree') && a.includes('add'))).toBe(false)
 })
 
-test('a written report goes to the manager once; send types into the terminal; a gone terminal is told', async ($, on) => {
+test('a written report goes to the manager once; send types into the terminal; a gone terminal is told', { options: { mode: 'tmux' } }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const w = world(on)
   for (const k of ['command.register', 'agent.register', 'tool.register']) on(k as 'tool.register', () => ({ value: undefined }) as never)
@@ -165,7 +165,7 @@ test('a written report goes to the manager once; send types into the terminal; a
   expect(reports().length).toBe(2)
 })
 
-test('a harness back at its shell without a report is told once; stop keeps a dirty worktree', async ($, on) => {
+test('a harness back at its shell without a report is told once; stop keeps a dirty worktree', { options: { mode: 'tmux' } }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const w = world(on, { paneCommand: 'zsh' })
   for (const k of ['command.register', 'agent.register', 'tool.register']) on(k as 'tool.register', () => ({ value: undefined }) as never)
@@ -183,7 +183,7 @@ test('a harness back at its shell without a report is told once; stop keeps a di
   expect(w.runs.some(a => a.join(' ') === 'git worktree remove /r/.claude/worktrees/csv-codex')).toBe(false)
 })
 
-test('an Orca terminal that closed still answers show: connected false counts as gone', async ($, on) => {
+test('an Orca terminal that closed still answers show: connected false counts as gone', { options: { mode: 'orca' } }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const w = world(on, { orca: true, orcaClosed: true })
   for (const k of ['command.register', 'agent.register', 'tool.register']) on(k as 'tool.register', () => ({ value: undefined }) as never)
@@ -219,14 +219,14 @@ test('keys: named keys for tmux and as bytes for Orca; other words are typed', (
   expect(screenHash('a')).not.toBe(screenHash('b'))
 })
 
-test('a missing harness or a Codex low on quota is refused before anything is made', async ($, on) => {
+test('a missing harness or a Codex low on quota is refused before anything is made', { options: { mode: 'tmux' } }, async ($, on) => {
   mock.clock(on, { now: Date.parse('2026-10-09T12:00:00Z') })
   const w = world(on, { missing: true })
   expect(await call($, START)).toContain('codex is not installed')
   expect(w.runs.some(a => a.includes('worktree') && a.includes('add'))).toBe(false)
 })
 
-test('Codex under codex_min_quota is refused; Claude is not checked', async ($, on) => {
+test('Codex under codex_min_quota is refused; Claude is not checked', { options: { mode: 'tmux' } }, async ($, on) => {
   mock.clock(on, { now: Date.parse('2026-10-09T12:00:00Z') })
   const w = world(on, { quotaLine: rl('2026-10-09T11:30:00Z', 10, 96) })
   expect(await call($, START)).toContain('codex has 4% of its quota left')
@@ -243,7 +243,7 @@ async function started($: Dollar, on: On, o: Parameters<typeof world>[1] = {}) {
   return { clock, w }
 }
 
-test('keys are pressed the same way in any harness: tmux key names, Orca bytes', async ($, on) => {
+test('keys are pressed the same way in any harness: tmux key names, Orca bytes', { options: { mode: 'tmux' } }, async ($, on) => {
   const { w } = await started($, on)
   await call($, { ...START, harness: 'gemini' })
   expect(await call($, { action: 'keys', name: 'csv-codex', keys: '2 enter' })).toContain('Pressed 2 enter')
@@ -251,7 +251,7 @@ test('keys are pressed the same way in any harness: tmux key names, Orca bytes',
   expect(await call($, { action: 'keys', name: 'csv-codex', keys: '' })).toContain('Named keys')
 })
 
-test('a screen that stops changing with no report is told once as idle; a change wakes it again', async ($, on) => {
+test('a screen that stops changing with no report is told once as idle; a change wakes it again', { options: { mode: 'tmux' } }, async ($, on) => {
   let screen = 'Do you want to run git push? 1. Yes 2. No'
   const { clock, w } = await started($, on, { screen: () => screen })
   await call($, START)
@@ -272,7 +272,7 @@ test('a screen that stops changing with no report is told once as idle; a change
   expect(idle().length).toBe(2)
 })
 
-test('restart in tmux: a fresh shell in the same pane, then the harness resume line', async ($, on) => {
+test('restart in tmux: a fresh shell in the same pane, then the harness resume line', { options: { mode: 'tmux' } }, async ($, on) => {
   const { w } = await started($, on)
   await call($, START)
   expect(await call($, { action: 'restart', name: 'csv-codex' })).toContain('codex resume --last')
@@ -286,7 +286,7 @@ test('restart in tmux: a fresh shell in the same pane, then the harness resume l
   expect(await call($, { action: 'restart', name: 'csv-gem' })).toContain('its start line and the same prompt')
 })
 
-test('restart in Orca opens a new terminal in the worktree and closes the old one', async ($, on) => {
+test('restart in Orca opens a new terminal in the worktree and closes the old one', { options: { mode: 'orca' } }, async ($, on) => {
   const { w } = await started($, on, { orca: true })
   await call($, { ...START, harness: 'claude' })
   expect(await call($, { action: 'restart', name: 'csv-codex' })).toContain('claude --continue')
@@ -296,7 +296,7 @@ test('restart in Orca opens a new terminal in the worktree and closes the old on
   expect(w.runs).toContainEqual(['orca', 'terminal', 'close', '--terminal', 'term_abc', '--json'])
 })
 
-test('a harness with its own quota command is checked against min_quota', async ($, on) => {
+test('a harness with its own quota command is checked against min_quota', { options: { mode: 'tmux' } }, async ($, on) => {
   mock.clock(on, { now: 1 })
   const w = world(on)
   on('session.start', () => ({ cwd: '/r' }))
@@ -365,7 +365,7 @@ test('quota windows: Codex and Claude as limits, and the pace that runs one out'
   expect(claude[0]!.windowMs).toBe(5 * 3600_000)
 })
 
-test('a Codex worker whose own log says its turn ended, with no report, is told once with its last words', async ($, on) => {
+test('a Codex worker whose own log says its turn ended, with no report, is told once with its last words', { options: { mode: 'tmux' } }, async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-09T12:00:00Z') })
   const w = world(on, { rollout: ROLLOUT, screen: () => 'codex › Should the CSV include refunded orders?' })
   for (const k of ['command.register', 'agent.register', 'tool.register']) on(k as 'tool.register', () => ({ value: undefined }) as never)
@@ -383,7 +383,7 @@ test('a Codex worker whose own log says its turn ended, with no report, is told 
   expect(status).toContain('worker csv-codex: waiting')
 })
 
-test('the pane: a session shows its digest and screen; restart takes a second press; quota meters on the root', async ($, on) => {
+test('the pane: a session shows its digest and screen; restart takes a second press; quota meters on the root', { options: { mode: 'tmux' } }, async ($, on) => {
   mock.clock(on, { now: Date.parse('2026-10-09T12:00:00Z') })
   const w = world(on, { rollout: ROLLOUT, screen: () => 'line one\n› waiting for input' })
   for (const k of ['command.register', 'agent.register', 'tool.register']) on(k as 'tool.register', () => ({ value: undefined }) as never)

@@ -89,7 +89,9 @@ export const KEYS: Record<string, Kind> = {
   cleanup: 'string',
   size_feedback: 'boolean',
   size_ab: 'string',
+  mode: 'string',
   worker_harness: 'string',
+  // Replaced by mode; still read (modeOf) so an old settings file keeps working.
   manager_harness: 'string',
   reviewer_harness: 'string',
   session_host: 'string',
@@ -107,7 +109,8 @@ export const KEYS: Record<string, Kind> = {
 // String settings with a closed set of values: another value is dropped with a warning.
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const EFFORT_KEYS = ['explore_effort', 'worker_effort', 'worker_effort_small', 'worker_effort_normal', 'manager_effort', 'reviewer_effort']
-export const CHOICES: Record<string, string[]> = { ...Object.fromEntries(EFFORT_KEYS.map(k => [k, [...EFFORT_LEVELS, 'inherit']])), push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'], size_ab: ['off', 'daily'] }
+export const MODES = ['agent', 'orca', 'tmux']
+export const CHOICES: Record<string, string[]> = { ...Object.fromEntries(EFFORT_KEYS.map(k => [k, [...EFFORT_LEVELS, 'inherit']])), push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'], size_ab: ['off', 'daily'], mode: MODES }
 
 // API keys are sensitive /config options (kept in secure storage); a settings file, which may be committed, can't set them.
 export const SECRET_KEYS = ['typesafe_api_key', 'jev_api_key', 'openrouter_api_key', 'openai_api_key']
@@ -170,6 +173,22 @@ export function renameOptions(options: Record<string, unknown>): Record<string, 
     delete out[old]
   }
   return out
+}
+// The one run mode. `mode` wins when it is a terminal mode; else the replaced keys map onto it: a
+// manager or reviewer harness other than agent meant a terminal, in session_host (orca or tmux, else orca).
+export const OLD_MODE_KEYS = ['manager_harness', 'reviewer_harness', 'session_host']
+export function modeOf(options: Record<string, unknown>): { mode: 'agent' | 'orca' | 'tmux'; note?: string } {
+  const mode = options.mode
+  if (mode === 'orca' || mode === 'tmux') return { mode }
+  const has = OLD_MODE_KEYS.filter(k => k in options)
+  const role = (k: string) => typeof options[k] === 'string' && !['', 'agent'].includes((options[k] as string).trim())
+  if (role('manager_harness') || role('reviewer_harness')) {
+    const host = options.session_host
+    const m = host === 'tmux' ? 'tmux' : 'orca'
+    return { mode: m, note: `flow: ${has.join('/')} are replaced by \`mode\`; using mode ${m}` }
+  }
+  const note = has.length > 0 ? `flow: ${has.join('/')} are replaced by \`mode\`; using mode agent` : undefined
+  return { mode: 'agent', ...(note !== undefined && { note }) }
 }
 // Deprecation warnings already shown, so a settings re-check (mtime change) doesn't toast them again.
 const warnedRenamed = new Set<string>()
@@ -261,6 +280,12 @@ export function mergeLayers(options: Record<string, unknown>, layers: { path: st
     }
   }
   if (hasRules) raw.standing_answers = [...rules.personal, ...rules.repo, ...rules.config]
+  const { mode, note } = modeOf(raw)
+  if (note !== undefined) warnings.push(note)
+  const wh = raw.worker_harness
+  if (mode === 'agent' && typeof wh === 'string' && !['', 'agent'].includes(wh.trim())) {
+    warnings.push(`flow: worker_harness ${wh} runs in a terminal; terminal workers need mode orca or tmux`)
+  }
   return { raw, files, warnings }
 }
 
@@ -363,9 +388,7 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     changelogFile: str('changelog_file', 'CHANGELOG.md'),
     guardTests: parseGuardTests(options.guard_tests) ?? {},
     workerHarness: str('worker_harness', 'agent'),
-    managerHarness: str('manager_harness', 'agent'),
-    reviewerHarness: str('reviewer_harness', 'agent'),
-    sessionHost: ['orca', 'tmux'].includes(str('session_host', 'auto')) ? str('session_host', 'auto') : 'auto',
+    mode: modeOf(options).mode,
     harnesses,
     harnessNames: Object.keys(harnesses),
     minQuota: Math.min(100, Math.max(0, Math.round(num('min_quota', 10)))),

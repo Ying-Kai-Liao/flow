@@ -74,10 +74,8 @@ The ones most repos set. Everything else is under Advanced settings.
 | `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
 | `context_warn_tokens` | 0 | `/config`, file | an optional cap in tokens over both percents; the lower applies. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
 | `handoff` | on | `/config`, file | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
-| `worker_harness` | `agent` | `/config`, file | managers: `agent` starts `flow:worker` agents; a harness name (`codex`, …) starts every worker in a terminal instead (see Workers in other harnesses) |
-| `manager_harness` | `agent` | `/config`, file | main: `agent` starts `flow:manager` as an agent; a claude-running harness name (`claude`, …) starts each manager as a claude in a terminal instead (see Managers and the reviewer in a terminal) |
-| `reviewer_harness` | `agent` | `/config`, file | `agent` starts the reviewer as an agent; a claude-running harness runs it in a terminal: one long-lived session while `merge_mode` is auto, one batch in confirm mode |
-| `session_host` | `auto` | `/config`, file | where session workers, terminal managers and the terminal reviewer run: `auto` (Orca when it runs, else tmux), `orca`, `tmux` |
+| `mode` | `agent` | `/config`, file | one mode for the whole run: `agent` (managers, workers and the reviewer are agents in this session), `orca` or `tmux` (every manager, worker and the reviewer is a terminal in that host; see Without Orca). Managers and the reviewer in a terminal are always Claude Code |
+| `worker_harness` | `agent` | `/config`, file | the CLI terminal workers run in mode `orca` or `tmux`: `claude` (the default; `agent` means `claude`), `codex`, `gemini`, `opencode` or a name from `harnesses`. Has no effect in mode `agent` (a toast says so) |
 | `harnesses` | the four built-ins | `/config` (JSON string), file | harness name to a start line or `{start, resume?, program?, quota?, digest?}`, over the built-ins; `""` removes one |
 | `min_quota` | 10 | `/config`, file | a session worker whose harness has a `quota` is refused below this percent left; 0 = never |
 | `base_branch` | the remote's default branch | `/config`, file | everyone |
@@ -148,17 +146,17 @@ Advanced settings are only mentioned by init, with a pointer here: `size_model` 
 
 ## Without Orca
 
-Orca is an optional place to run session workers; flow does not need it. Nothing here changes setting names or defaults.
+Orca and tmux are optional places to run flow's terminal modes; flow does not need either. Nothing here changes setting names or defaults.
 
-- **The default path needs neither Orca nor tmux.** With `worker_harness` at `agent`, managers start `flow:worker` agents inside the Claude session. No terminal host is involved.
-- **Session workers** (a `worker_harness` such as `codex`) run in a terminal, picked by `session_host`. `auto` uses Orca only when `orca status` exits 0 and reports `runtimeReachable: true`; otherwise it uses tmux when `tmux -V` works; otherwise it refuses to start with `Neither Orca (orca status) nor tmux is available to run a session in.`
-- **Managers and the reviewer** can run in a terminal too (`manager_harness`, `reviewer_harness`), on the same host choice; with both at `agent` (the default) neither is used.
-- **Pure tmux:** set `session_host` to `tmux`. The Orca probe is then skipped. If tmux is missing the start is refused with `tmux is not installed.` (With `orca` set and Orca not running: `Orca is not reachable (orca status). Open Orca, or use host "tmux".`)
+- **The default path (`mode` `agent`) needs neither Orca nor tmux.** Managers, workers and the reviewer are agents inside the Claude session. `mcp__flow__session` `start` is refused: `flow runs in agent mode; terminal workers need mode orca or tmux.`
+- **One mode at a time.** With `mode` `orca` or `tmux`, every manager, every worker and the reviewer run in that host; there is no mixing and no fallback to the other host or to an agent. Managers and the reviewer are always Claude Code. Workers run `worker_harness` (`claude` by default).
+- **Mode `orca`** needs `orca status` to exit 0 and report `runtimeReachable: true`; otherwise a start is refused with `mode orca, but Orca is not reachable (orca status). Start Orca, or set mode to agent or tmux.` A manager whose terminal cannot start is refused (the Agent call is denied with that message); the reviewer's handover stays pending and a toast gives the reason.
+- **Mode `tmux`** needs `tmux -V` to work; otherwise a start is refused with `mode tmux, but tmux is not installed (tmux -V failed). Install tmux, or set mode to agent or orca.`
 - **What the tmux path does:** it makes the worktree with plain git (`git worktree add -b flow/<name> <repo>/.claude/worktrees/<name> origin/<base>`), then starts the harness in a detached session named `flow-<name>` (`tmux new-session -d`). `stop` runs `tmux kill-session`; `remove_worktree` runs `git worktree remove` only when the tree is clean and pushed; `restart` uses `respawn-pane -k`. If tmux itself fails to start, the worktree stays and the message says so. Cleanup and worktree handling elsewhere use plain git.
-- **A missing `orca` binary is harmless.** A command that cannot start counts as a failed probe (exit 127), so `auto` falls back to tmux.
+- **A missing `orca` binary is harmless.** A command that cannot start counts as a failed probe (exit 127), so the start is refused with the message above.
 - **Quota** applies only to harness specs with a `quota` field (only the built-in `codex` has one, `codex-logs`, read from `~/.codex/sessions`). A stale or unreadable log never blocks a start.
 
-Settings that matter on this path: `worker_harness`, `manager_harness`, `reviewer_harness`, `session_host`, `harnesses`, `min_quota`. See Workers in other harnesses and Managers and the reviewer in a terminal in [How flow works](how-it-works.md).
+Settings that matter on this path: `mode`, `worker_harness`, `harnesses`, `min_quota`. The older `manager_harness`, `reviewer_harness` and `session_host` are replaced by `mode`: a file that still has them is read (a terminal manager or reviewer harness means mode `session_host` if it is `orca` or `tmux`, else `orca`) and a toast says which mode was used. See Workers in other harnesses and Managers and the reviewer in a terminal in [How flow works](how-it-works.md).
 
 ## Tools the agents use
 

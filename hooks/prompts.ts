@@ -74,11 +74,8 @@ export type Settings = {
   changelogFile?: string
   // "agent" (the Agent tool) or a harness name: what managers start workers with by default.
   workerHarness?: string
-  // "agent" or a claude harness: where the manager and the reviewer run.
-  managerHarness?: string
-  reviewerHarness?: string
-  // Where session workers run: "auto", "orca" or "tmux".
-  sessionHost?: string
+  // One mode for the whole run: "agent" (in-session agents), "orca" or "tmux" (every manager, worker and the reviewer in a terminal).
+  mode?: string
   // The harness names the session tool accepts.
   harnessNames?: string[]
 }
@@ -231,8 +228,8 @@ function alwaysTestsLine(s: Settings): string {
 // Step 5's default for this repo: the Agent tool, or a harness through the session tool.
 function harnessRule(s: Settings): string {
   const h = s.workerHarness ?? 'agent'
-  if (h === 'agent') return ''
-  return ` This repo runs workers in ${h}: start each with \`mcp__flow__session\` action "start", harness "${h}" (see Workers in a terminal), not the Agent tool, unless the task asks for an agent.`
+  if (s.mode === undefined || s.mode === 'agent') return ''
+  return ` This repo runs in mode ${s.mode}: workers run in ${h === 'agent' ? 'claude' : h} by default (harness picks another CLI).`
 }
 
 function releaseFiles(s: Settings): string {
@@ -260,11 +257,22 @@ The user holds the push (push_mode confirm). When \`mcp__flow__reviewer\` action
 
 export function fill(text: string, s: Settings): string {
   const mig = s.migrationsDir
-  const host = s.sessionHost ?? 'auto'
+  const terminal = s.mode === 'orca' || s.mode === 'tmux'
+  // In a terminal mode there are no agent workers: the Agent tool is not how a worker starts.
+  if (!terminal) {
+    // Agent mode refuses session starts: the terminal-worker section would only mislead.
+    text = text.replace(/## Workers in a terminal\n[\s\S]*?\n(?=## )/, '')
+  } else {
+    text = text
+      .replace('Start each worker with the Agent tool: subagent_type "flow:worker", name', `Start each worker with \`mcp__flow__session\` action "start" (this repo runs in mode ${s.mode}: there is no flow:worker agent, never use the Agent tool for a worker), name`)
+      .replace('run_in_background true, and the brief as the prompt, its first line', 'and the brief, its first line')
+      .replace('start a check-only worker with the Agent tool: subagent_type "flow:worker", name', 'start a check-only worker with `mcp__flow__session` action "start", name')
+      .replace(', run_in_background, brief starting with', ', brief starting with')
+  }
   return text
     .replaceAll('{{HARNESS_RULE}}', harnessRule(s))
     .replaceAll('{{HARNESS_LIST}}', (s.harnessNames ?? ['claude', 'codex', 'gemini', 'opencode']).map(n => `"${n}"`).join(', '))
-    .replaceAll('{{SESSION_HOST}}', host === 'auto' ? 'Orca when it is running, else tmux' : host)
+    .replaceAll('{{SESSION_HOST}}', s.mode === 'tmux' ? 'tmux' : 'Orca')
     .replaceAll('{{LANGUAGE}}', languageLine(s))
     .replaceAll('{{BIG_FILES}}', bigFilesLine(s))
     .replaceAll('{{WORKER_CHECKS}}', workerChecksLine(s))
@@ -399,8 +407,8 @@ export const MANAGER_PROMPT = `You are a flow manager. You own one task, given a
 
 ## Workers in a terminal
 
-When the task or the user asks for a worker in another harness (codex, gemini, opencode, or claude on its own) or in a terminal the user can watch, start it with \`mcp__flow__session\` action "start" instead of the Agent tool: name (the same naming rule as agent workers), harness (one of {{HARNESS_LIST}}, or "command" with your own command line for a harness the plugin doesn't know), and the brief, its first line "Your name: <name>". It runs in {{SESSION_HOST}}; pass host only when the task names one. The plugin makes a worktree on branch \`flow/<name>\` from {{BASE}}, opens the terminal and starts the harness with the worker rules and your brief. Session workers count against your {{MAX_WORKERS}}.
-- A start refused because the harness isn't installed or Codex is low on quota: start that worker as a flow:worker agent instead, without asking, and say so in your report.
+Every worker is a terminal session (claude, or another CLI such as codex, gemini, opencode): start it with \`mcp__flow__session\` action "start", not the Agent tool: name (the same naming rule as agent workers), harness (one of {{HARNESS_LIST}}, or "command" with your own command line for a harness the plugin doesn't know), and the brief, its first line "Your name: <name>". It runs in {{SESSION_HOST}} (the mode setting; there is no per-worker host). The plugin makes a worktree on branch \`flow/<name>\` from {{BASE}}, opens the terminal and starts the harness with the worker rules and your brief. Session workers count against your {{MAX_WORKERS}}.
+- A start refused because the harness isn't installed or Codex is low on quota: start that worker with harness "claude" instead, without asking, and say so in your report.
 - Its report arrives as a \`flow session:\` message, like an agent's notification: end your turn while you wait. Never sleep or poll.
 - Its report follows the worker rules: BLOCKED, a PR, or HANDOFF. Its questions come through \`mcp__flow__ask\` like any worker's. Send answers to a report and review feedback with action "send" (name, text), never SendMessage. "read" shows the end of its terminal, "list" all sessions.
 - Every harness is driven the same way, whatever it is. A \`flow session:\` message that it is idle means its turn ended or its screen stopped changing, with no report; it carries the screen and, where the harness logs them, its last words: "read" it, then answer what it shows, with "send" for a message or "keys" for a prompt or menu ("1", "y enter", "escape", "down enter"); "keys" "interrupt" stops what it is doing. One that crashed, exited or is stuck past that: "restart", which continues its conversation where the harness supports it, then "send" what to do next.
@@ -538,7 +546,7 @@ This task runs lite: you and your workers are the whole team, to save tokens. Th
 {{LITE_STEPS}}
 - The final report is a few lines at most: the PR number, merged / ready for /flow push / handed over, the full check result, the released version if any. No recap of the work.`
 
-// A manager that runs in a terminal as its own claude (manager_harness). Prepended to the manager prompt.
+// A manager that runs in a terminal as its own claude (mode orca or tmux). Prepended to the manager prompt.
 // {{NAME}} and {{REPORT}} are filled when the session starts.
 export const MANAGER_SESSION_RULES = `# Your session
 

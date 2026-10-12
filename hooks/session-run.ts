@@ -7,7 +7,7 @@ import { EFFORT_LEVELS } from './settings'
 import {
   ago, claudeProjectDir, codexLimits, codexRemaining, commandFor, findHandle, findWorktreePath, goneMessage,
   idleMessage, keysOf, NAME_RULE, parseClaudeTranscript, parseCodexRollout, percentOf, pickHost, programOf, reportMessage,
-  relayEnv, roleHarnessOf, screenHash, sessionKey, sessionLine, sessionLive, shellQuote, tmuxName,
+  relayEnv, screenHash, sessionKey, sessionLine, sessionLive, shellQuote, tmuxName,
 } from './sessions'
 import type { Digest, HarnessSpec, Limit } from './sessions'
 
@@ -82,7 +82,7 @@ type Launch = {
   harness: string
   spec: HarnessSpec
   owner: Caller
-  hostChoice: string
+  mode: string
   model?: string
   effort?: string
   // Absent on a worker; a manager or the reviewer running in a terminal with its tools relayed.
@@ -160,10 +160,9 @@ async function launch(io: SessionIo, l: Launch, s: SessionSettings): Promise<{ e
   const wl = await io.run(['git', 'worktree', 'list', '--porcelain'])
   const main = /^worktree (.+)$/m.exec(wl.stdout)?.[1]
   if (dir === undefined || main === undefined) return { error: 'Refused: not in a git repo.' }
-  const choice = l.hostChoice
-  const orcaUp = choice !== 'tmux' && await io.run(['orca', 'status'], 10_000).then(r => r.exitCode === 0 && /runtimeReachable:\s*true/.test(r.stdout))
-  const tmuxUp = choice !== 'orca' && !orcaUp && (await io.run(['tmux', '-V'], 10_000)).exitCode === 0
-  const host = pickHost(choice, orcaUp, tmuxUp)
+  const orcaUp = l.mode === 'orca' && await io.run(['orca', 'status'], 10_000).then(r => r.exitCode === 0 && /runtimeReachable:\s*true/.test(r.stdout))
+  const tmuxUp = l.mode === 'tmux' && (await io.run(['tmux', '-V'], 10_000)).exitCode === 0
+  const host = pickHost(l.mode, orcaUp, tmuxUp)
   if (typeof host !== 'string') return { error: `Refused: ${host.error}` }
 
   // A manager works in the main checkout; the reviewer in a detached worktree; a worker on a branch of its own.
@@ -243,6 +242,7 @@ async function launch(io: SessionIo, l: Launch, s: SessionSettings): Promise<{ e
 async function startSession(io: SessionIo, input: Record<string, unknown>, caller: Caller, s: SessionSettings): Promise<string> {
   const gated = await io.gate(caller.id === 'main' ? undefined : caller.id)
   if (gated !== undefined) return `Refused: ${gated}`
+  if ((s.mode ?? 'agent') === 'agent') return 'Refused: flow runs in agent mode; terminal workers need mode orca or tmux.'
   const name = String(input.name ?? '').trim()
   if (!NAME_RULE.test(name)) return 'Refused: name must be letters, digits, "-" or "_" (it becomes the branch flow/<name>).'
   const brief = String(input.brief ?? '').trim()
@@ -251,9 +251,8 @@ async function startSession(io: SessionIo, input: Record<string, unknown>, calle
   const old = sessions[name]
   if (old !== undefined && !['exited', 'stopped'].includes(old.status)) return `Refused: session ${name} is already running (${old.harness} in ${old.host}).`
   if ((await io.agents()).some(a => a.name === name && !ENDED.has(a.status))) return `Refused: an agent named ${name} is running; pick another name.`
-  // A manager running in a terminal has no Agent tool for flow:worker: its workers are sessions, claude unless set otherwise.
-  const fromRole = caller.id.startsWith('session:') && sessions[caller.id.slice('session:'.length)]?.role !== undefined
-  const harness = String(input.harness ?? (s.workerHarness === 'agent' ? (fromRole ? 'claude' : '') : s.workerHarness)).trim()
+  // In a terminal mode a worker is claude unless worker_harness or the call says otherwise.
+  const harness = String(input.harness ?? (s.workerHarness === 'agent' ? 'claude' : s.workerHarness)).trim()
   const custom = String(input.command ?? '').trim()
   const spec: HarnessSpec | undefined = harness === 'command' ? (custom ? { start: custom } : undefined) : s.harnesses[harness]
   if (harness === 'command' && spec === undefined) return 'Refused: harness "command" needs command, the command line that starts it ({prompt} or {prompt_file} where the prompt goes).'
@@ -264,7 +263,7 @@ async function startSession(io: SessionIo, input: Record<string, unknown>, calle
   // The worker effort of the brief's Size line, as an agent gets it; CLAUDE_CODE_EFFORT_LEVEL set disables the override.
   const effort = effortFor('worker', parseSize(brief)?.size, s, await io.effortEnv?.().catch(() => undefined))
   const r = await launch(io, {
-    name, harness, spec, owner: caller, hostChoice: String(input.host ?? s.sessionHost),
+    name, harness, spec, owner: caller, mode: s.mode ?? 'agent',
     ...(effort !== undefined && { effort }),
     promptOf: ({ reportFile, branch }) => {
       const prompt = fill(SESSION_PROMPT, s)
@@ -279,23 +278,22 @@ async function startSession(io: SessionIo, input: Record<string, unknown>, calle
 }
 
 // A manager or the reviewer in a terminal (a manager in the main checkout, the reviewer in a
-// detached worktree of its own). The harness is the manager_harness / reviewer_harness setting, or
-// `harness`; it must be one that loads the plugin (roleHarnessOf). `prompt` is the whole prompt;
-// {{REPORT}} and {{NAME}} in it are filled here. Not gated: the caller decides when to start one.
-export type RoleStart = { role: 'manager' | 'reviewer'; name: string; prompt: string; model?: string; effort?: string; owner: Caller; harness?: string; host?: string }
+// detached worktree of its own), always claude: the only harness that loads the plugin. `prompt` is
+// the whole prompt; {{REPORT}} and {{NAME}} in it are filled here. Not gated: the caller decides when
+// to start one.
+export type RoleStart = { role: 'manager' | 'reviewer'; name: string; prompt: string; model?: string; effort?: string; owner: Caller }
 
 export async function startRoleSession(io: SessionIo, p: RoleStart, s: SessionSettings): Promise<{ ok: true; session: Session; text: string } | { ok: false; text: string }> {
   if (!NAME_RULE.test(p.name)) return { ok: false, text: 'Refused: name must be letters, digits, "-" or "_".' }
   const old = (await io.sessions())[p.name]
   if (old !== undefined && !['exited', 'stopped'].includes(old.status)) return { ok: false, text: `Refused: session ${p.name} is already running (${old.harness} in ${old.host}).` }
-  const want = p.harness ?? (p.role === 'manager' ? s.managerHarness : s.reviewerHarness) ?? 'agent'
-  const picked = roleHarnessOf(want, s.harnesses)
-  if (picked.harness === 'agent') return { ok: false, text: `Refused: ${picked.reason ?? `the ${p.role} harness is agent`}.` }
-  const spec = s.harnesses[picked.harness]!
-  const refused = await checkHarness(io, picked.harness, spec, s)
+  if ((s.mode ?? 'agent') === 'agent') return { ok: false, text: `Refused: flow runs in agent mode; a ${p.role} in a terminal needs mode orca or tmux.` }
+  const spec = s.harnesses.claude
+  if (spec === undefined) return { ok: false, text: 'Refused: the claude harness is removed in the harnesses setting; managers and the reviewer need it.' }
+  const refused = await checkHarness(io, 'claude', spec, s)
   if (refused !== undefined) return { ok: false, text: refused }
   const r = await launch(io, {
-    name: p.name, harness: picked.harness, spec, owner: p.owner, hostChoice: p.host ?? s.sessionHost ?? 'auto', role: p.role,
+    name: p.name, harness: 'claude', spec, owner: p.owner, mode: s.mode ?? 'agent', role: p.role,
     ...(p.model !== undefined && { model: p.model }),
     ...(p.effort !== undefined && { effort: p.effort }),
     promptOf: ({ reportFile }) => `${p.prompt.replaceAll('{{REPORT}}', reportFile).replaceAll('{{NAME}}', p.name)}\n`,

@@ -63,7 +63,8 @@ function world(o: { orca?: boolean; orcaTerminalInMain?: boolean; screen?: strin
   return { io, files, mtimes, runs, told, roleReports, roleGone, sessions: () => sessions, tick: (ms: number) => { now += ms }, kill: () => { alive = false } }
 }
 
-const SETTINGS: SessionSettings = { ...settingsOf({ manager_harness: 'claude', reviewer_harness: 'claude' }, 'main'), harnesses: harnessesOf(undefined) }
+const SETTINGS: SessionSettings = { ...settingsOf({ mode: 'tmux' }, 'main'), harnesses: harnessesOf(undefined) }
+const ORCA: SessionSettings = { ...SETTINGS, mode: 'orca' }
 
 const OWNER = { id: 'main', name: 'main' }
 
@@ -83,13 +84,13 @@ test('a manager session runs in the main checkout, no new worktree, with its rel
 
 test('a manager in Orca tries a terminal in the main checkout, and falls back to a detached Orca worktree', async () => {
   const w = world({ orca: true })
-  await startRoleSession(w.io, { role: 'manager', name: 'm1', prompt: 'p', owner: OWNER }, SETTINGS)
+  await startRoleSession(w.io, { role: 'manager', name: 'm1', prompt: 'p', owner: OWNER }, ORCA)
   const first = w.runs.filter(a => a.join(' ').startsWith('orca terminal create'))
   expect(first.length).toBe(1)
   expect(first[0]).toContain('path:/r')
 
   const f = world({ orca: true, orcaTerminalInMain: false })
-  const r = await startRoleSession(f.io, { role: 'manager', name: 'm1', prompt: 'p', owner: OWNER }, SETTINGS)
+  const r = await startRoleSession(f.io, { role: 'manager', name: 'm1', prompt: 'p', owner: OWNER }, ORCA)
   expect(r.ok).toBe(true)
   expect(f.runs).toContainEqual(['orca', 'worktree', 'create', '--repo', 'path:/r', '--name', 'mgr-m1', '--base-branch', 'origin/main', '--json'])
   expect(f.runs).toContainEqual(['git', '-C', '/o/mgr-m1', 'checkout', '--detach'])
@@ -107,17 +108,37 @@ test('the reviewer gets a detached worktree of its own', async () => {
   expect(w.sessions().rev).toMatchObject({ role: 'reviewer', worktree: '/r/.claude/worktrees/rev' })
 
   const o = world({ orca: true })
-  await startRoleSession(o.io, { role: 'reviewer', name: 'rev', prompt: 'p', owner: OWNER }, SETTINGS)
+  await startRoleSession(o.io, { role: 'reviewer', name: 'rev', prompt: 'p', owner: OWNER }, ORCA)
   expect(o.runs).toContainEqual(['orca', 'worktree', 'create', '--repo', 'path:/r', '--name', 'rev', '--base-branch', 'origin/main', '--json'])
   expect(o.runs).toContainEqual(['git', '-C', '/o/mgr-m1', 'checkout', '--detach'])
 })
 
-test('a role harness that is not claude, or the agent, starts nothing', async () => {
+test('agent mode starts no role session; a terminal mode starts claude whatever worker_harness is', async () => {
   const w = world()
-  const r = await startRoleSession(w.io, { role: 'manager', name: 'm1', prompt: 'p', owner: OWNER }, { ...SETTINGS, managerHarness: 'codex' })
-  expect(r.ok).toBe(false)
+  const agent = { ...SETTINGS, mode: 'agent' }
+  const r = await startRoleSession(w.io, { role: 'manager', name: 'm1', prompt: 'p', owner: OWNER }, agent)
+  expect(r).toMatchObject({ ok: false, text: expect.stringContaining('agent mode') })
   expect(w.runs.some(a => a[0] === 'tmux' && a[1] === 'new-session')).toBe(false)
-  expect((await startRoleSession(w.io, { role: 'manager', name: 'm1', prompt: 'p', owner: OWNER }, { ...SETTINGS, managerHarness: 'agent' })).ok).toBe(false)
+  const c = await startRoleSession(w.io, { role: 'manager', name: 'm2', prompt: 'p', owner: OWNER }, { ...SETTINGS, workerHarness: 'codex' })
+  expect(c.ok && c.session.harness).toBe('claude')
+})
+
+test('agent mode refuses a session start; other actions keep working', async () => {
+  const w = world()
+  const agent = { ...SETTINGS, mode: 'agent' }
+  expect(await sessionTool(w.io, { action: 'start', name: 'w1', harness: 'codex', brief: 'x' }, { id: 'm1', name: 'csv' }, agent)).toBe('Refused: flow runs in agent mode; terminal workers need mode orca or tmux.')
+  expect(await sessionTool(w.io, { action: 'list' }, { id: 'm1', name: 'csv' }, agent)).not.toContain('Refused')
+})
+
+test('a host that is down refuses the start: no fallback to the other host', async () => {
+  const w = world()
+  const orca = await sessionTool(w.io, { action: 'start', name: 'w1', harness: 'claude', brief: 'x' }, { id: 'm1', name: 'csv' }, ORCA)
+  expect(orca).toContain('mode orca, but Orca is not reachable')
+  expect(w.runs.some(a => a[0] === 'tmux' && a[1] === 'new-session')).toBe(false)
+  const o = world({ orca: true })
+  const tmuxDown = (await sessionTool({ ...o.io, run: async a => a.join(' ') === 'tmux -V' ? { exitCode: 127, stdout: '', stderr: '' } : o.io.run(a) }, { action: 'start', name: 'w1', harness: 'claude', brief: 'x' }, { id: 'm1', name: 'csv' }, SETTINGS))
+  expect(tmuxDown).toContain('mode tmux, but tmux is not installed')
+  expect(o.runs.some(a => a[0] === 'orca' && a[1] === 'terminal')).toBe(false)
 })
 
 test('a worker session gets the worker marker in front of its command line', async () => {
@@ -135,8 +156,8 @@ test('a worker started by a role session defaults to claude, or to worker_harnes
   expect(a).toContain('Started w1: claude in tmux')
   const b = await sessionTool(base.io, { action: 'start', name: 'w2', brief: 'x' }, { id: 'session:m1', name: 'm1' }, { ...SETTINGS, workerHarness: 'codex' })
   expect(b).toContain('Started w2: codex in tmux')
-  // A caller that is no role session still gets the old "unknown harness" refusal.
-  expect(await sessionTool(base.io, { action: 'start', name: 'w3', brief: 'x' }, { id: 'm9', name: 'm9' }, SETTINGS)).toContain('unknown harness ""')
+  // Any caller: claude in a terminal mode.
+  expect(await sessionTool(base.io, { action: 'start', name: 'w3', brief: 'x' }, { id: 'm9', name: 'm9' }, SETTINGS)).toContain('Started w3: claude in tmux')
 })
 
 test('sendToSession: one short line is typed, anything else goes through a file', async () => {

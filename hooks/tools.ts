@@ -396,7 +396,7 @@ export const SIZE_AB_TOOL: ToolSpec = {
 
 export const SESSION_TOOL: ToolSpec = {
   name: 'session',
-  description: 'Workers outside this session: another harness (codex, gemini, opencode, claude, or your own command line) in an Orca terminal or tmux session the user can watch. "start" (name, brief, harness, host?, command?) makes a worktree on flow/<name> and starts the harness with the worker rules and the brief; its report comes back as a "flow session:" message. "send" (name, text), "keys" (name, keys), "read" (name, lines?), "restart" (name), "list", "stop" (name, remove_worktree?).',
+  description: 'Workers outside this session: another harness (codex, gemini, opencode, claude, or your own command line) in a terminal (Orca or tmux, per the mode setting) the user can watch. "start" (name, brief, harness?, command?) makes a worktree on flow/<name> and starts the harness with the worker rules and the brief; its report comes back as a "flow session:" message. "send" (name, text), "keys" (name, keys), "read" (name, lines?), "restart" (name), "list", "stop" (name, remove_worktree?).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -405,7 +405,6 @@ export const SESSION_TOOL: ToolSpec = {
       brief: { type: 'string', description: 'start: the whole brief, first line "Your name: <name>"' },
       harness: { type: 'string', description: 'start: claude, codex, gemini, opencode, a harnesses-setting name, or "command" (default: worker_harness setting)' },
       command: { type: 'string', description: 'harness "command": the command line; {prompt} is the prompt as one shell word, {prompt_file} its path' },
-      host: { type: 'string', enum: ['orca', 'tmux'], description: 'start: where it runs (default: session_host setting)' },
       text: { type: 'string', description: 'send: what to type into its terminal' },
       keys: { type: 'string', description: 'keys: space-separated; named keys (enter, escape, interrupt, tab, arrows, backspace, space), any other word typed as is' },
       lines: { type: 'number', description: 'read: how many lines from the end (default 80)' },

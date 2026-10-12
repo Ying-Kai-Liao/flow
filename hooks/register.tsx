@@ -113,7 +113,7 @@ import type { WriteTarget } from './guards'
 import { slotRefusal, suiteRun } from './testguard'
 import { flowCatch, isFlowTool, toolCatch } from './toolguard'
 import {
-  ago, claudeLimits, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, SESSION, sessionKey, sessionLive, sessionRow,
+  ago, claudeLimits, harnessesOf, roleAgents, runsOutIn, SESSION, sessionKey, sessionLive, sessionRow,
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
 import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSessions as watchSessionsTo } from './session-run'
@@ -927,30 +927,30 @@ async function toolCallerOf($: EngineInterface, agentId: string | undefined): Pr
   return me.type === MANAGER || WORKERS.has(me.type) ? { kind: 'other' } : { kind: 'reviewer' }
 }
 
-// main's flow:manager spawn as a terminal session (manager_harness), after the model routing. Undefined: the
-// agent starts as usual. The bookkeeping an in-process manager gets (pre-flight record, lite record, size
+// main's flow:manager spawn as a terminal session (mode orca or tmux), after the model routing. Undefined: the
+// agent starts as usual (agent mode); a terminal that cannot start is a refusal, not an agent. The bookkeeping an in-process manager gets (pre-flight record, lite record, size
 // decision) is done here; the session's own start logs the spawn and opens its activity card.
 async function startManagerSession($: EngineInterface, options: Record<string, unknown>, e: AgentSpawnInput, ctx: { routed: Routed | undefined; liteMode: boolean }): Promise<{ deny: string } | undefined> {
-  const route = roleHarnessFor($, 'manager')
-  if (route === undefined) return undefined
+  const settings = terminalSettings()
+  if (settings === undefined) return undefined
   const name = (e as { name?: string }).name ?? e.description
   // The same manager asked for twice: it is running, so the answer is the same success, not a second manager.
   const live = (await read($, sessions))[name]
   if (live !== undefined && live.role === 'manager' && sessionLive(live)) {
     return { deny: `flow: manager ${name} already runs in ${live.host} (${live.handle}) as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
   }
-  const model = e.model ?? route.settings.managerModel
-  const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', route.settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), route.settings)
-  const managerEffort = effortFor('manager', undefined, route.settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
+  const model = e.model ?? settings.managerModel
+  const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), settings)
+  const managerEffort = effortFor('manager', undefined, settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
   const r = await startRoleSession(sessionIoOf($), {
-    role: 'manager', name, harness: route.harness, owner: { id: 'main', name: 'main' },
+    role: 'manager', name, owner: { id: 'main', name: 'main' },
     ...(typeof model === 'string' && { model }),
     ...(managerEffort !== undefined && { effort: managerEffort }),
     prompt: `${MANAGER_SESSION_RULES}${rules}\n\n${e.prompt}`,
-  }, route.settings)
+  }, settings)
   if (!r.ok) {
-    void $.ui.toast(`flow: could not start manager ${name} in a terminal (${r.text}); starting it as an agent`)
-    return undefined
+    void $.ui.toast(`flow: could not start manager ${name} in a terminal (${r.text})`)
+    return { deny: `flow: could not start manager ${name} in a terminal: ${r.text}` }
   }
   const id = sessionKey(name)
   if (mirror.preflightOn) await best($, 'recording a pre-flight', () => recordManager($, name, e.prompt, ctx.liteMode))
@@ -1570,36 +1570,29 @@ async function reviewerRan($: EngineInterface, id: string, name: string, end: { 
 // is a closure variable).
 let heldSettings: ReturnType<typeof settingsOf> | undefined
 
-// A role harness that cannot run (unknown, or not claude) is said once per reason, then the agent runs as before.
-const roleReasons = new Set<string>()
-function roleHarnessFor($: EngineInterface, role: 'manager' | 'reviewer'): { harness: string; settings: ReturnType<typeof settingsOf> } | undefined {
-  const s = heldSettings
-  if (s === undefined) return undefined
-  const picked = roleHarnessOf((role === 'manager' ? s.managerHarness : s.reviewerHarness) ?? 'agent', s.harnesses)
-  if (picked.reason !== undefined && !roleReasons.has(`${role}:${picked.reason}`)) {
-    roleReasons.add(`${role}:${picked.reason}`)
-    void $.ui.toast(`flow: ${role}_harness: ${picked.reason}`)
-  }
-  return picked.harness === 'agent' ? undefined : { harness: picked.harness, settings: s }
+// The settings when flow runs in a terminal mode (orca or tmux); undefined in agent mode.
+function terminalSettings(): ReturnType<typeof settingsOf> | undefined {
+  return heldSettings !== undefined && (heldSettings.mode ?? 'agent') !== 'agent' ? heldSettings : undefined
 }
 
-// The reviewer: a terminal session when reviewer_harness names a claude harness, else the agent as always.
-// A session that cannot start falls back to the agent (and says why) so the queue is not stuck on it.
+// The reviewer: a terminal session in mode orca or tmux, else the agent as always. A terminal that cannot
+// start is not replaced by an agent: the handover stays pending and the next trigger tries again.
 async function spawnReviewer($: EngineInterface, input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }): Promise<{ deny?: string }> {
   const { pending, ...agentInput } = input
-  const route = roleHarnessFor($, 'reviewer')
-  if (route === undefined) return $.agent.spawn(agentInput)
-  const rules = parseMode(route.settings.mergeMode) === 'confirm' ? REVIEWER_SESSION_RULES_CONFIRM : REVIEWER_SESSION_RULES_AUTO
-  const reviewerEffort = effortFor('reviewer', undefined, route.settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
+  const settings = terminalSettings()
+  if (settings === undefined) return $.agent.spawn(agentInput)
+  const rules = parseMode(settings.mergeMode) === 'confirm' ? REVIEWER_SESSION_RULES_CONFIRM : REVIEWER_SESSION_RULES_AUTO
+  const reviewerEffort = effortFor('reviewer', undefined, settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
   const r = await startRoleSession(sessionIoOf($), {
-    role: 'reviewer', name: input.name, harness: route.harness, owner: { id: 'main', name: 'main' },
-    ...(route.settings.reviewerModel !== undefined && { model: route.settings.reviewerModel }),
+    role: 'reviewer', name: input.name, owner: { id: 'main', name: 'main' },
+    ...(settings.reviewerModel !== undefined && { model: settings.reviewerModel }),
     ...(reviewerEffort !== undefined && { effort: reviewerEffort }),
-    prompt: `${rules}${fill(REVIEWER_PROMPT, route.settings)}\n\n${input.prompt}`,
-  }, route.settings)
+    prompt: `${rules}${fill(REVIEWER_PROMPT, settings)}\n\n${input.prompt}`,
+  }, settings)
   if (!r.ok) {
-    void $.ui.toast(`flow: could not start the reviewer in a terminal (${r.text}); using an agent`)
-    return $.agent.spawn(agentInput)
+    void $.ui.toast(`flow: could not start the reviewer in a terminal (${r.text})`)
+    await best($, 'logging the reviewer start failure', () => appendLog($, { event: 'note', owner: 'main', agent: input.name, text: `reviewer could not start in a terminal: ${r.text}` }))
+    return { deny: r.text }
   }
   const told = pending ?? []
   if (told.length > 0) await sessionIoOf($).updateSessions(all => all[input.name] === undefined ? all : { ...all, [input.name]: { ...all[input.name]!, nudged: told } })
@@ -2889,7 +2882,7 @@ export const register: Register = (on, options) => {
     // The env is read only when there is an effort to apply; a failed read counts as unset.
     const wantEffort = effortRole === undefined || explicit ? undefined : effortFor(effortRole, routed?.size, settings, undefined)
     const targetEffort = wantEffort === undefined ? undefined : effortFor(effortRole!, routed?.size, settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
-    // manager_harness: main's manager runs as a claude in a terminal. The Agent tool is answered with a refusal that
+    // mode orca/tmux: main's manager runs as a claude in a terminal. The Agent tool is answered with a refusal that
     // says it started; on a start failure the normal spawn below goes on.
     if (e.subagentType === MANAGER && e.parentAgentId === undefined) {
       const started = await startManagerSession($, options, e, { routed, liteMode })

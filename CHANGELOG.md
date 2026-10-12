@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- One `mode` setting (`agent` default, `orca` or `tmux`) for the whole run. In `orca` or `tmux` every manager, worker and the reviewer runs in that host; managers and the reviewer are always claude, workers run `worker_harness` (claude by default). In `agent` mode `mcp__flow__session` `start` is refused. No mixing: a host that is not up refuses the start (a manager's Agent call is denied; the reviewer's handover stays pending) instead of falling back to the other host or an agent. Terminal managers' prompts say to start workers with `mcp__flow__session`, not the Agent tool.
+
+### Removed
+
+- The `manager_harness`, `reviewer_harness` and `session_host` settings and the session tool's `host` parameter. A file that still has them is read once per load with a toast: a terminal manager or reviewer harness maps to mode `session_host` (`orca` or `tmux`, else `orca`).
+
 ## [0.6.88] - 2026-10-13
 
 ### Changed
