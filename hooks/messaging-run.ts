@@ -5,7 +5,8 @@ import { MANAGER } from './core'
 import { LIVE } from './deliver'
 import type { DeliverOptions } from './deliver'
 import { ENV_KIND } from './deploy'
-import { answerMessage, findItem, isAddressee, isFyi, markAnswered, needsMessage, notesOwner, overridesManager, endedOwners, paneRows } from './inbox'
+import { dupGroupOf } from './inbox-dups'
+import { answerMessage, findItem, parseChoice, isAddressee, isFyi, markAnswered, needsMessage, notesOwner, overridesManager, endedOwners, paneRows } from './inbox'
 import type { Inbox, Marked, PaneRow, Question } from './inbox'
 import { PUSH_KIND } from './pushgate'
 import { backNote } from './routing'
@@ -46,6 +47,23 @@ export const noteText = (q: Question): string => (q.env === undefined ? q.questi
 // choice null takes the question's default. Returns one result line.
 // user: the person answering from the pane or a /flow command, who may answer any question, a manager's included.
 export async function answerQuestionTo(io: MessagingIo, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> {
+  // The same question asked by several managers: main's (or the user's) answer to one answers every open member,
+  // each through the ordinary path below (delivery, notes, escalation links). Closed members report as answered.
+  const box = await io.inbox()
+  const first = findItem(box, wanted)
+  const group = first !== undefined && (user || by === 'main') ? dupGroupOf(box, first.id) : []
+  if (group.length >= 2) {
+    // Each its own default when they differ. A letter or number is resolved against this question's options: the members' orders may differ.
+    if (choice === null && !group.every(m => m.default === first!.default)) return answerOneTo(io, wanted, choice, by, options, user)
+    const shared = choice === null ? first!.default : parseChoice(first!.options, choice).text
+    const lines: string[] = []
+    for (const m of group) lines.push(await answerOneTo(io, m.id, shared, by, options, user))
+    return [...lines, `Answered together (same question): ${group.map(m => `${m.id} (${m.owner})`).join(', ')}.`].join('\n')
+  }
+  return answerOneTo(io, wanted, choice, by, options, user)
+}
+
+async function answerOneTo(io: MessagingIo, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> {
   const at = await io.now()
   // A decision filed before decisions had d-ids is also found by its old q-id.
   const id = findItem(await io.inbox(), wanted)?.id ?? wanted.trim().toLowerCase()

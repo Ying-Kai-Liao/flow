@@ -43,7 +43,7 @@ const lower = (s: string) => norm(s).toLowerCase()
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
 // A topic as compared: "Worker_Sizes", "worker size" and "worker-size" are one topic.
 export const normTopic = (s: string): string => lower(s).replace(/[\s_-]+/g, '-').replace(/s$/, '')
-const optionSet = (o: string[]): string => JSON.stringify([...new Set(o.map(lower))].sort())
+export const optionSet = (o: string[]): string => JSON.stringify([...new Set(o.map(lower))].sort())
 
 export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { error: string } {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { error: 'not an object' }

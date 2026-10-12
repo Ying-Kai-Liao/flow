@@ -64,6 +64,7 @@ import { advance as demoAdvance, answer as demoAnswer, canAdvance, isLast as dem
 import type { DemoState } from './demo-replay'
 import { demoView } from './demo-view'
 import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
+import { dupHidden } from './inbox-dups'
 import { agentView, archiveView, batchCardView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, prCardView, treeView } from './pane-view'
 import type { InboxCtx, PaneCtx, Usage } from './pane-view'
 import { approvePr, detailsKey, detailsStale, fetchDetails, openerFor, platformOfUname, rejectPr, urlNote } from './prcard'
@@ -3247,7 +3248,8 @@ export const register: Register = (on, options) => {
     const leftover = leftoverLine(leftCounts)
     // The push item is drawn as the banner on top, not as a question.
     const boxNow = await read($, inbox)
-    const openQs = openAll(boxNow).filter(q => !isFyi(q) && q.kind !== PUSH_KIND && !hiddenByLink(boxNow, q)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
+    const dupRows = dupHidden(openAll(boxNow))
+    const openQs = openAll(boxNow).filter(q => !isFyi(q) && q.kind !== PUSH_KIND && !hiddenByLink(boxNow, q) && !dupRows.has(q.id)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
     const gate = (await read($, pushState)).batch
     const breakerNote = breakerLine(await read($, reviewerBreaker), t)
     const askers = askingNames(await read($, inbox))

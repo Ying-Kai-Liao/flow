@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Duplicate question groups: the same open question (same topic and options, or same text and options) from several managers shows once in `/flow inbox`, the Flow pane and `mcp__flow__status` (`x3` and the askers), and one answer from main or the user answers every open member. Deploy, env, push, reviewer, guard and escalated items are never grouped.
+
 ## [0.6.91] - 2026-10-13
 
 ### Changed
