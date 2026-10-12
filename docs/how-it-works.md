@@ -496,7 +496,7 @@ Not verified:
 - `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
   `text` it returns the notes.
 - `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.
-- `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`). See below.
+- `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`; `kind: "typecheck"` for the separate typecheck pool). See below.
 - `guard_tests`: the guard tests the worker's diff requires (see Guard tests).
 
 ## Workers in other harnesses

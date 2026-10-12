@@ -352,6 +352,7 @@ export const TEST_SLOT_TOOL: ToolSpec = {
     type: 'object',
     properties: {
       action: { type: 'string', enum: ['acquire', 'release', 'status'] },
+      kind: { type: 'string', enum: ['test', 'typecheck'], description: 'Which pool: "test" (default) or "typecheck", a separate lighter pool for npm run typecheck / tsc (typecheck_slots, 10 minute lease). Holding one does not grant the other.' },
       label: { type: 'string', description: 'What you will run, e.g. "full suite"' },
       result: { type: 'string', enum: ['pass', 'fail'], description: 'release: how the run ended' },
       failed_tests: { type: 'array', items: { type: 'string' }, description: 'release with result fail: the exact names of the failing tests' },

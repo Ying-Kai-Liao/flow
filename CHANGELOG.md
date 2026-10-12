@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Typechecks (`npm run typecheck`, `tsc`, `npx tsc`) take a lock of their own: `test_slot` with `kind: "typecheck"`, settings `typecheck_slots` (default 1) and `typecheck_commands` (empty: off), a 10 minute lease, shown in the Flow status line as `tsc 1/1`. The hook refuses a typecheck without a typecheck slot (a test-slot holder, like the reviewer's full check, may typecheck).
+- `scripts/test-files.sh` runs only the named test files (`claude plugin test` takes a folder, not files), or with `--jobs N` the whole suite in chunks of N files to cap the runner's child processes.
+
+### Changed
+
+- A worker's whole-suite run is refused even when it holds a test slot; workers run only the files they touched. The worker prompt says so. The reviewer's full check is unchanged.
+- `claude plugin test --help`, `-h` and `--version` are no longer treated as suite runs.
+- docs: the runner starts min(files, CPU cores) child processes, not one per file; sizing advice for `test_slots`.
+
 ## [0.6.88] - 2026-10-13
 
 ### Changed

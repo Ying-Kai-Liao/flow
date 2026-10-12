@@ -475,6 +475,7 @@ declare module 'claude-code' {
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots
+      typecheckSlots: TestSlots
       viewMode: 'tree' | 'graph' | 'inbox' | 'card' | 'archive' | 'pr' | 'batch'
       // The PR card: the PR shown and where Back goes; the PR picked to send back from the batch card.
       prShown: number | null

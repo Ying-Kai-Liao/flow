@@ -281,7 +281,7 @@ test('a refused [1m] model falls back once to the plain model, tells once, and l
 // A key the loader does not know would be set in the plugin UI and silently ignored.
 const USER_CONFIG_KEYS = [
   'test_command', 'full_check_command', 'deploy_command', 'merge_method', 'merge_mode', 'push_mode', 'reviewer', 'max_managers', 'max_workers',
-  'test_slots', 'test_slot_commands', 'context_warn_percent', 'context_warn_percent_1m', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow', 'max_continues', 'size_feedback', 'size_ab',
+  'test_slots', 'test_slot_commands', 'typecheck_slots', 'typecheck_commands', 'context_warn_percent', 'context_warn_percent_1m', 'context_warn_tokens', 'handoff', 'main_checkout_guard', 'main_checkout_allow', 'max_continues', 'size_feedback', 'size_ab',
   'worker_model', 'worker_model_small', 'worker_model_normal', 'explore_model', 'explore_effort', 'worker_effort', 'worker_effort_small', 'worker_effort_normal', 'manager_effort', 'reviewer_effort', 'decision_api', 'size_model', 'jev_model', 'openai_model', 'conflict_model', 'manager_model', 'manager_model_normal', 'reviewer_model', 'language', 'base_branch', 'cleanup',
 ]
 

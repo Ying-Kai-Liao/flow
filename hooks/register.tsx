@@ -9,6 +9,7 @@ import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'clau
 
 import type { Activity, AgentRow, Breaker, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { grantFile, grantSlots, reapSlots } from './slots'
+import { grantTypecheck, reapTypecheck, typecheckDir } from './typecheck-slots'
 import type { Evidence } from './evidence'
 import type { RunWork } from './mainff'
 import { NO_FAILS, type TestFails } from './testfail'
@@ -110,7 +111,7 @@ import {
   allowed, allowList, flowActive, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
 } from './guards'
 import type { WriteTarget } from './guards'
-import { slotRefusal, suiteRun } from './testguard'
+import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun, workerSuiteRefusal } from './testguard'
 import { flowCatch, isFlowTool, toolCatch } from './toolguard'
 import {
   ago, claudeLimits, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, SESSION, sessionKey, sessionLive, sessionRow,
@@ -265,6 +266,8 @@ const inboxDraft = atom({ plugin: 'flow', key: 'inboxDraft' } as const, '')
 const inboxNote = atom({ plugin: 'flow', key: 'inboxNote' } as const, '')
 const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
 const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders: [], waiters: [] } as TestSlots)
+// Its own key, so state persisted before this pool existed loads as empty.
+const typecheckSlots = atom({ plugin: 'flow', key: 'typecheckSlots' } as const, { holders: [], waiters: [] } as TestSlots)
 
 // <git-common-dir>/flow/test-slots, set at session start; undefined when not in a git repo.
 let slotDir: string | undefined
@@ -295,18 +298,40 @@ async function settleSlots($: EngineInterface, rows: AgentRow[], t: number, pre:
 const sh = ($: EngineInterface, script: string, ...args: string[]) =>
   $.process.run(['sh', '-c', script, 'sh', ...args], { timeoutMs: 5_000 }).catch(() => undefined)
 
-async function signalSlots($: EngineInterface, granted: SlotEntry[], left: string[]): Promise<void> {
+async function signalSlots($: EngineInterface, granted: SlotEntry[], left: string[], kind: 'test' | 'typecheck' = 'test'): Promise<void> {
+  const dir = kind === 'test' ? slotDir : typecheckDir(slotDir)
   for (const key of left) {
-    const f = grantFile(slotDir, key)
+    const f = grantFile(dir, key)
     if (f) await sh($, 'rm -f "$1"', f)
   }
   for (const g of granted) {
-    const f = grantFile(slotDir, g.key)
+    const f = grantFile(dir, g.key)
     if (f) await sh($, 'mkdir -p "$(dirname "$1")" && : > "$1"', f)
     if (g.key !== 'main') {
-      await deliver($, g.key, `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`, { onGone: () => undefined }).catch(() => undefined)
+      await deliver($, g.key, kind === 'test' ? `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.` : `flow: your typecheck slot is granted (${g.label}). Call mcp__flow__test_slot kind "typecheck" action "acquire" to confirm, run, then release.`, { onGone: () => undefined }).catch(() => undefined)
     }
   }
+}
+
+// settleSlots for the typecheck pool: the same steps, its own state, limit and lease.
+async function settleTypecheck($: EngineInterface, rows: AgentRow[], t: number, pre: (s: TestSlots) => TestSlots = s => s, me?: string): Promise<void> {
+  const notes: string[] = []
+  let granted: SlotEntry[] = []
+  let left: string[] = []
+  await update($, typecheckSlots, st => {
+    notes.length = 0
+    const r = reapTypecheck(pre(st), rows, t)
+    const g = grantTypecheck(r.state, heldSettings?.typecheckSlots ?? 1, t)
+    notes.push(...r.notes, ...g.notes)
+    const state = me === undefined ? g.state
+      : { ...g.state, holders: g.state.holders.map(holder => holder.key === me ? { ...holder, claimed: true } : holder) }
+    granted = g.granted.filter(holder => holder.key !== me)
+    const stay = new Set([...state.holders, ...state.waiters].map(e => e.key))
+    left = [...st.holders, ...st.waiters].map(e => e.key).filter(k => !stay.has(k))
+    return state
+  })
+  for (const n of notes) void $.ui.toast(n)
+  await signalSlots($, granted, left, 'typecheck')
 }
 
 // The last batch the release tool cut, so a retried push does not release twice.
@@ -395,6 +420,8 @@ function slotsIoOf($: EngineInterface): SlotsIo {
     setTestFails: async state => { await update($, testFails, () => state) },
     appendLog: event => appendLog($, event),
     slotDir: () => slotDir,
+    typecheckSlots: () => read($, typecheckSlots),
+    settleTypecheck: (rows, t, pre, me) => settleTypecheck($, rows, t, pre, me),
   }
 }
 
@@ -422,6 +449,7 @@ function statusIoOf($: EngineInterface, options: Record<string, unknown>, base: 
     inbox: () => read($, inbox),
     plans: () => read($, plan),
     slots: () => read($, testSlots),
+    typecheckSlots: () => read($, typecheckSlots),
     offerSeeds: () => offerSeedsOnce(standingIoOf($), options),
     pushState: () => read($, pushState),
     breaker: () => read($, reviewerBreaker),
@@ -621,6 +649,7 @@ function rosterIoOf($: EngineInterface): RosterIo {
     setNow: t => update($, now, () => t).then(() => undefined),
     sessions: () => read($, sessions),
     testSlots: () => read($, testSlots),
+    typecheckSlots: () => read($, typecheckSlots),
     toast: text => { void $.ui.toast(text) },
     status: line => $.ui.status(line),
     wakeMain: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
@@ -634,6 +663,7 @@ function rosterIoOf($: EngineInterface): RosterIo {
     decisionPhrases: () => mirror.decisionPhrases,
     maxManagers: () => mirror.maxManagers,
     slotLimit: () => mirror.slotLimit,
+    typecheckLimit: () => heldSettings?.typecheckSlots ?? 1,
   }
 }
 
@@ -2272,6 +2302,12 @@ async function relayToolCall($: EngineInterface, settings: ReturnType<typeof set
       // Anything but "ok" is the relay failing to reach main: the run waits, as a refusal would.
       if (a.result !== 'ok') return { deny: String(a.result) }
     }
+    const typecheck = typecheckRun(command, settings.typecheckCommands ?? [])
+    if (typecheck !== undefined) {
+      const a = await ask('slot-check', { typecheck })
+      if (a.deny !== undefined) return { deny: a.deny }
+      if (a.result !== 'ok') return { deny: String(a.result) }
+    }
     const del = remoteDeleteRefusal(command)
     if (del !== undefined) return { deny: del }
   }
@@ -2359,6 +2395,10 @@ async function relayExec($: EngineInterface, c: FlowCtx, call: RelayCall, name: 
       return { ...acts, [key]: { ...a, lastAt: t, log: [...a.log, line].slice(-LOG_MAX) } }
     })
   })
+  if (call.tool === 'slot-check' && typeof input.typecheck === 'string') {
+    const refused = typecheckRefusal(await read($, typecheckSlots), await read($, testSlots), await refresh($), key, (c.settings.typecheckSlots ?? 1), await $.clock.now(), input.typecheck)
+    return refused === undefined ? { result: 'ok' } : { deny: refused }
+  }
   if (call.tool === 'slot-check') {
     const refused = slotRefusal(await read($, testSlots), await refresh($), key, c.settings.testSlots, await $.clock.now(), String(input.suite ?? ''))
     return refused === undefined ? { result: 'ok' } : { deny: refused }
@@ -3004,7 +3044,14 @@ export const register: Register = (on, options) => {
       // A whole-suite run needs a held test slot. Slot state is read only when the command matches.
       const suite = suiteRun(e.command, settings.testSlotCommands ?? [])
       if (suite !== undefined) {
-        const refused = slotRefusal(await read($, testSlots), await refresh($), id ?? 'main', settings.testSlots, await $.clock.now(), suite)
+        const rows = await refresh($)
+        const worker = id !== undefined && WORKERS.has(rows.find(a => a.id === id)?.type ?? '')
+        const refused = workerSuiteRefusal(worker, suite) ?? slotRefusal(await read($, testSlots), rows, id ?? 'main', settings.testSlots, await $.clock.now(), suite)
+        if (refused !== undefined) return { deny: refused }
+      }
+      const typecheck = typecheckRun(e.command, settings.typecheckCommands ?? [])
+      if (typecheck !== undefined) {
+        const refused = typecheckRefusal(await read($, typecheckSlots), await read($, testSlots), await refresh($), id ?? 'main', (settings.typecheckSlots ?? 1), await $.clock.now(), typecheck)
         if (refused !== undefined) return { deny: refused }
       }
       // Merged branches are deleted by the plugin on the reviewer's "done"; a subagent never deletes a remote ref.
