@@ -18,7 +18,8 @@ const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
 
 export const SKIP_LINE = /^\s*Pre-flight:\s*skip\b/im
 // Lite mode (lite.ts): one task as just a manager and its workers. It implies no pre-flight.
-export const LITE_LINE = /^\s*Mode:\s*lite\b/im
+// The whole line: a sentence that starts with it ("Mode: lite is NOT wanted") must not turn lite on.
+export const LITE_LINE = /^[ \t]*Mode:[ \t]*lite[ \t]*\r?$/im
 export const isLite = (prompt: string): boolean => LITE_LINE.test(prompt)
 export const isSkip = (prompt: string): boolean => SKIP_LINE.test(prompt) || isLite(prompt)
 
