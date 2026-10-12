@@ -17,7 +17,7 @@ register('data:text/javascript,' + encodeURIComponent(
 ))
 
 const root = join(dirname(new URL(import.meta.url).pathname), '..')
-const { EXPORT_FILE, exportJson, formatRoute, formatSize, formatSizeSplit, loadDatasets, managerCounterfactual, routeBaselines, sizeBaselines, sizeSplit } = await import(pathToFileURL(join(root, 'hooks/decide-eval.ts')).href)
+const { EXPORT_FILE, exportJson, feedbackSplit, formatFeedbackSplit, formatRoute, formatSize, formatSizeSplit, loadDatasets, managerCounterfactual, routeBaselines, sizeBaselines, sizeSplit } = await import(pathToFileURL(join(root, 'hooks/decide-eval.ts')).href)
 
 const argv = process.argv.slice(2)
 const opt = (name, dflt) => { const i = argv.indexOf(`--${name}`); return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : dflt }
@@ -99,7 +99,7 @@ for (const d of datasets) {
   for (const r of d.records) labels[r.label] = (labels[r.label] ?? 0) + 1
   console.log(`\n== ${d.key}: ${d.records.length} records${d.guard ? ` (+${d.guard.length} must-not-auto-answer)` : ''}; labels ${JSON.stringify(labels)}`)
   for (const note of d.notes) console.log(`   ${note}`)
-  if (d.key === 'size') console.log(`${formatSize(sizeBaselines(d.records))}\n\n${formatSizeSplit(sizeSplit(d.records), managerCounterfactual(d.records))}`)
+  if (d.key === 'size') console.log(`${formatSize(sizeBaselines(d.records))}\n\n${formatSizeSplit(sizeSplit(d.records), managerCounterfactual(d.records))}\n\n${formatFeedbackSplit(feedbackSplit(d.records))}`)
   if (d.key === 'route') console.log(formatRoute(routeBaselines(d.records)))
   for (const r of d.records.slice(0, samples)) console.log(`--- sample ${r.id} (actual: ${r.label}) ---\n${r.text.slice(0, 1200)}${r.text.length > 1200 ? '\n[...]' : ''}`)
 }

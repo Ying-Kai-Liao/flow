@@ -13,6 +13,7 @@ import { isSize } from './routing'
 import type { Size, SizeModels } from './routing'
 import type { Decision, Question as DecideQuestion } from './decide'
 import { isFable } from './settings'
+import { sizeDigest, withDigest } from './sizefeedback'
 import { autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
 import type { AutoHits, StandingIo } from './standing-run'
 import { findWorktree } from './state'
@@ -286,3 +287,18 @@ export function refusedLong(r: unknown): boolean {
   return /model|1m|context/i.test(text)
 }
 export const withoutLong = (model: string): string => model.replace('[1m]', '')
+
+// A manager's spawn prompt with the digest of how earlier workers' Size lines turned out, appended once at spawn (nothing
+// per turn, so the cached prefix is stable). `fed` is whether this prompt carries it. Best-effort: any failure
+// returns the spawn unchanged.
+export async function withSizeFeedback(io: SpawnIo, e: AgentSpawnInput): Promise<{ e: AgentSpawnInput; fed: boolean }> {
+  try {
+    await io.loadLedger()
+    const digest = sizeDigest(await io.ledger(), await io.readLog())
+    const prompt = withDigest(e.prompt, digest)
+    return prompt === e.prompt ? { e, fed: digest !== '' } : { e: { ...e, prompt }, fed: true }
+  } catch (err) {
+    await io.warn('adding the size feedback digest', err).catch(() => undefined)
+    return { e, fed: false }
+  }
+}

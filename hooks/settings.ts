@@ -87,6 +87,7 @@ export const KEYS: Record<string, Kind> = {
   main_checkout_guard: 'boolean',
   main_checkout_allow: 'string',
   cleanup: 'string',
+  size_feedback: 'boolean',
   worker_harness: 'string',
   session_host: 'string',
   harnesses: 'object',
@@ -269,7 +270,7 @@ export type WarnSettings = { contextWarn: number; contextWarn1m: number; context
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-export function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; preflight: boolean; preflightWait: number; askCards: boolean; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
+export function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; sizeFeedback: boolean; preflight: boolean; preflightWait: number; askCards: boolean; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
@@ -290,6 +291,7 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     mainGuard: options.main_checkout_guard !== false,
     mainAllow: allowList(typeof options.main_checkout_allow === 'string' ? options.main_checkout_allow : '.claude/'),
     maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
+    sizeFeedback: options.size_feedback !== false,
     preflight: str('preflight', 'on') !== 'off',
     preflightWait: Math.max(1, num('preflight_wait', 10)),
     askCards: str('ask_cards', 'on') !== 'off',

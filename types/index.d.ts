@@ -13,6 +13,8 @@ export type LedgerEntry = {
   spawnModel?: string
   // The worker's brief size (small/normal/large) once model routing applied one; unset otherwise.
   size?: string
+  // A manager whose spawn prompt carried the size feedback digest (hooks/sizefeedback.ts); absent when it did not.
+  sizeFeedback?: boolean
   // The reasoning effort flow set for the agent at spawn (turn.step rewrite); unset when it inherited the session's.
   effort?: string
   // When the agent was first and last counted (ms); the status block and the 90-day prune use them.

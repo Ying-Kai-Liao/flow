@@ -184,7 +184,7 @@ export async function handoffData(log: LogLine[], maxContinues: number, readNote
 
 // ---- savings: the ledger's average cost of one turn by role, at hooks/cost.ts list prices ----
 export type Unit = { usd: number; tokens: number; basis: string }
-type LedgerRow = { role?: string; name?: string; manager?: string; branch?: string; spawnModel?: string; size?: string; turns?: number; models?: Record<string, { input: number; write5m: number; write1h: number; read: number; output: number }> }
+type LedgerRow = { role?: string; name?: string; manager?: string; branch?: string; spawnModel?: string; size?: string; turns?: number; sizeFeedback?: boolean; models?: Record<string, { input: number; write5m: number; write1h: number; read: number; output: number }> }
 export function unitCosts(ledger: Record<string, LedgerRow>): Record<FeatureKey, Unit> {
   const acc: Record<string, { usd: number; tokens: number; turns: number; entries: number }> = {}
   for (const e of Object.values(ledger)) {
@@ -238,6 +238,8 @@ export type SizeMeta = {
   // The real USD of the successors, when the package needed a rerun and they are in the ledger.
   rerunUsd?: number
   lines?: number
+  // A worker: whether its manager's spawn prompt carried the size feedback digest (ledger sizeFeedback); rows from before it read as false.
+  fed?: boolean
 }
 
 // Which model a size runs on, with the defaults of settings.ts: worker small/normal/large = haiku/sonnet/sonnet[1m];
@@ -335,8 +337,9 @@ export function sizeData(src: SizeSource): Dataset {
       else { label = 'ok'; right = used }
       const brief = parseSize(text)?.size
       const rec = dec === undefined ? undefined : recordedSize(dec.question ?? '')
+      const fedBy = role === 'worker' && first.manager !== undefined ? rows.some(r => r.role === 'manager' && r.name === first.manager && r.sizeFeedback === true) : undefined
       const meta: SizeMeta = {
-        role, used, right, ...(brief !== undefined ? { brief } : {}),
+        role, used, right, ...(fedBy !== undefined ? { fed: fedBy } : {}), ...(brief !== undefined ? { brief } : {}),
         ...(rec?.answered ? { recorded: { size: rec.size, ...(rec.confidence !== undefined ? { confidence: rec.confidence } : {}) } } : {}),
         tokens: sumTokens(own), ...(under && successors.length > 0 ? { rerunUsd: usdOfRows(successors) } : {}), lines,
       }
@@ -658,6 +661,30 @@ export function sizeSplit(records: EvalRecord[]): SplitRow[] {
     rows.set(k, row)
   }
   return [...rows.values()].sort((a, b) => (a.role === b.role ? a.model.localeCompare(b.model) : a.role.localeCompare(b.role)))
+}
+
+export type FeedbackRow = { fed: boolean; n: number; agree: number; under: number; over: number }
+// Worker records split by whether their manager's spawn prompt carried the size feedback digest. "agree" is the Size line
+// (or the size it ran at) against the right size; under/over are the Size line below/above it. Worker records only.
+export function feedbackSplit(records: EvalRecord[]): FeedbackRow[] {
+  const rows: FeedbackRow[] = [false, true].map(fed => ({ fed, n: 0, agree: 0, under: 0, over: 0 }))
+  for (const m of records.map(r => r.size).filter((x): x is SizeMeta => x !== undefined && x.role === 'worker')) {
+    const row = rows[m.fed === true ? 1 : 0]!
+    const line = sizeClass('worker', m.brief ?? m.used)
+    const right = sizeClass('worker', m.right)
+    row.n++
+    if (line === right) row.agree++
+    else if (line < right) row.under++
+    else row.over++
+  }
+  return rows
+}
+
+export function formatFeedbackSplit(rows: FeedbackRow[]): string {
+  const pc = (a: number, b: number): string => (b === 0 ? '-' : `${Math.round((100 * a) / b)}%`)
+  const lines = ['worker Size lines by whether the manager had the size feedback digest   n    agree        under-sized  over-sized']
+  for (const x of rows) lines.push(`${(x.fed ? 'with digest' : 'without digest (incl. before it shipped)').padEnd(71)} ${String(x.n).padEnd(4)} ${`${pc(x.agree, x.n)} (${x.agree})`.padEnd(12)} ${`${pc(x.under, x.n)} (${x.under})`.padEnd(12)} ${pc(x.over, x.n)} (${x.over})`)
+  return lines.join('\n')
 }
 
 export type ManagerCounterfactual = { n: number; smallN: number; underRate: number; currentUsd: number; counterfactualUsd: number }

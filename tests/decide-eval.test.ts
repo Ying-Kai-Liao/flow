@@ -3,7 +3,7 @@ import { test } from './support'
 
 import type { DecideIo, FetchLike } from '../hooks/decide'
 import { decide } from '../hooks/decide'
-import { conflictData, exportJson, formatRoute, formatSizeSplit, handoffData, inboxData, loadDatasets, managerCounterfactual, parseExport, parseLog, recordedSize, reportText, routeBaselines, routeData, runEval, sizeBaselines, sizeData, sizeSplit, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
+import { conflictData, exportJson, feedbackSplit, formatFeedbackSplit, formatRoute, formatSizeSplit, handoffData, inboxData, loadDatasets, managerCounterfactual, parseExport, parseLog, recordedSize, reportText, routeBaselines, routeData, runEval, sizeBaselines, sizeData, sizeSplit, testDataFromTranscripts, unitCosts } from '../hooks/decide-eval'
 import type { Ask, EvalRecord, LogLine, SizeMeta, TranscriptEvent } from '../hooks/decide-eval'
 import { decideEvalTool } from '../hooks/decide-eval-run'
 import { costOf } from '../hooks/cost'
@@ -358,4 +358,19 @@ test('size split prints "no data", not NaN, for an empty role', () => {
   expect(out).toContain('manager: no data')
   expect(out).toContain('normal managers on sonnet: no data')
   expect(out).not.toContain('NaN')
+})
+
+// ---- size feedback split ----
+test('feedback split: workers are grouped by whether their manager had the digest; old rows count as without', () => {
+  const src = sizeSrc()
+  const without = feedbackSplit(sizeData(src).records)
+  expect(without[0]).toMatchObject({ fed: false, n: 6 })
+  expect(without[1]).toMatchObject({ fed: true, n: 0 })
+  const fedSrc = { ...src, ledger: { ...src.ledger, j: { ...src.ledger.j, sizeFeedback: true } } }
+  const rows = feedbackSplit(sizeData(fedSrc).records)
+  // 6 worker records, all under manager 'mgr'; the manager's own record is not in the table
+  expect(rows[0]!.n).toBe(0)
+  expect(rows[1]!.n).toBe(6)
+  expect(rows[1]!.agree + rows[1]!.under + rows[1]!.over).toBe(6)
+  expect(formatFeedbackSplit(rows)).toContain('with digest')
 })
