@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.92] - 2026-10-13
+
+### Changed
+
+- Reviewer carries many PRs per full check (batch_max, late join, bisect, timeout rerun) (#192)
+- Typecheck slot pool; workers run only their test files (#194)
+
 ## [0.6.91] - 2026-10-13
 
 ### Changed
