@@ -55,7 +55,7 @@ export function demoView(c: DemoCtx) {
       <Box flexDirection="column" height={c.rows}>
         {head}
         {cardView({ ...ictx, id: ask.id })}
-        {stop}
+        <Box flexDirection="row" gap={1}>{stop}<Text dimColor>esc home</Text></Box>
       </Box>
     )
   }
@@ -77,6 +77,7 @@ export function demoView(c: DemoCtx) {
       <Box flexDirection="row" gap={1}>
         {!isLast(c.state) && <Button key="demo-next" plain dimColor hotkey="m" onPress={() => void c.io.advance()}>m next</Button>}
         {stop}
+        <Text dimColor>esc home</Text>
       </Box>
     </Box>
   )

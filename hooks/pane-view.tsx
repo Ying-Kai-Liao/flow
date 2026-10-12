@@ -340,6 +340,7 @@ export function managerGraphView(c: PaneCtx, agent: AgentRow, owner: string) {
     <Box flexDirection="column">
       <Box flexDirection="row" gap={1}>
         <Button key="back" hotkey="b" onPress={() => c.back(parent?.id ?? null)}>Back</Button>
+        <Text dimColor>esc home</Text>
       </Box>
       <Text bold color={COLOR[agent.status]}>{GLYPH[agent.status] ?? '?'} {labelOf(agent)} <Text dimColor>{ROLE[agent.type]} · {agent.status}</Text></Text>
       {graphView(c, owner, list.filter(a => a.parentId === agent.id), 5)}
@@ -362,6 +363,7 @@ export function agentView(c: PaneCtx, agent: AgentRow) {
     <Box flexDirection="column">
       <Box flexDirection="row" gap={1}>
         <Button key="back" hotkey="b" onPress={() => c.back(parent?.id ?? null)}>Back</Button>
+        <Text dimColor>esc home</Text>
         {agent.type === MANAGER && c.toggle}
         <Button key="msg" hotkey="m" onPress={() => c.fill(
           agent.type === SESSION
@@ -734,7 +736,7 @@ export function inboxView(x: InboxCtx) {
         {hasGroup && (
           <Box flexDirection="row" gap={1}>
             <Button key="inbox-fold" plain dimColor hotkey="c" onPress={foldHot}>{hotRow?.group?.expanded ? 'c collapse' : 'c expand'}</Button>
-            {hotRow?.q === undefined && hotRow?.group !== undefined && <Text dimColor>{fit(`· ${groupHint(hotRow.group)}`, Math.max(8, W - 32))}</Text>}
+            {hotRow?.q === undefined && hotRow?.group !== undefined && <Text dimColor>{fit(`· ${groupHint(hotRow.group)}`, Math.max(8, W - 42))}</Text>}
           </Box>
         )}
         {hq !== undefined && hotRow !== undefined && (
@@ -743,6 +745,7 @@ export function inboxView(x: InboxCtx) {
         {/* x stays as an alias of c, and e opens or closes the hot item's card (a hotkey is one letter, so not Enter); neither is labelled. */}
         {hasGroup && <Button key="inbox-fold-x" plain hotkey="x" onPress={foldHot}>{''}</Button>}
         {hasGroup && <Button key="inbox-toggle" plain hotkey="e" onPress={toggleHot}>{''}</Button>}
+        <Text dimColor>esc home</Text>
       </Box>
       <Box flexDirection="row" gap={2}>
         <Button key="inbox-yes" plain dimColor hotkey="y" onPress={() => takeDefault()}>{hq !== undefined && !isFyi(hq) ? 'y default' : 'y keep'}</Button>
@@ -840,7 +843,7 @@ export function treeView(c: TreeCtx) {
         ].join(' · ')
         const line = (
           <Text color={blocking > 0 ? 'warning' : undefined} dimColor={blocking === 0} wrap="truncate-end">
-            {canFold && `${qOpen ? '▾' : '▸'} `}<Text color="warning" dimColor={false}>{ICON.inbox}</Text> {openQs.length > 0 && askMark(Text, c.t)}{openQs.length > 0 && ' '}{summary} · i
+            {canFold && `${qOpen ? '▾' : '▸'} `}<Text color="warning" dimColor={false}>{ICON.inbox}</Text> {openQs.length > 0 && askMark(Text, c.t)}{openQs.length > 0 && ' '}{summary}
           </Text>
         )
         return canFold ? <Button key={`fold-${c.questionsKey}`} plain onPress={toggleQuestions}>{line}</Button> : line
@@ -850,7 +853,7 @@ export function treeView(c: TreeCtx) {
           <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">  {q.id} {q.owner}: {q.question}</Text>
         </Button>
       ))}
-      {qOpen && qBlock.more > 0 && <Text dimColor>  and {qBlock.more} more · i inbox</Text>}
+      {qOpen && qBlock.more > 0 && <Text dimColor>  and {qBlock.more} more</Text>}
       {checksLine !== undefined && <Text dimColor wrap="truncate-end">{ICON.checks} {checksLine}</Text>}
       {unhanded.length > 0 && (
         <Text color="warning" wrap="truncate-end">
@@ -934,7 +937,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
   if (q === undefined) {
     return (
       <Box flexDirection="column" height={rows}>
-        <Box flexDirection="row" gap={1}>{backBtn}</Box>
+        <Box flexDirection="row" gap={1}>{backBtn}<Text dimColor>esc home</Text></Box>
         <Text dimColor>{x.id ?? 'That item'} is not in the inbox any more.</Text>
       </Box>
     )
@@ -990,6 +993,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
       <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
       <Box flexDirection="row" gap={1}>
         {backBtn}
+        <Text dimColor>esc home</Text>
         {open && <Button key="card-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
         {open && <Button key="card-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
       </Box>
@@ -1079,6 +1083,7 @@ export function archiveView(x: InboxCtx) {
           if (q !== undefined) await io.open(q.id, 'archive')
         })}>o open</Button>
         <Button key="arch-back" plain dimColor hotkey="b" onPress={() => void io.serial(async () => { await io.acted(); await io.leave('inbox') })}>b back</Button>
+        <Text dimColor>esc home</Text>
       </Box>
     </Box>
   )
@@ -1128,7 +1133,7 @@ export function prCardView(x: PrCardCtx) {
   if (ho === undefined) {
     return (
       <Box flexDirection="column" height={rows}>
-        <Box flexDirection="row" gap={1}>{backBtn}</Box>
+        <Box flexDirection="row" gap={1}>{backBtn}<Text dimColor>esc home</Text></Box>
         <Text dimColor>PR #{x.pr ?? '?'} is not handed over any more.</Text>
       </Box>
     )
@@ -1154,7 +1159,7 @@ export function prCardView(x: PrCardCtx) {
   return (
     <Box flexDirection="column" height={rows}>
 <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
-      <Box flexDirection="row" gap={1}>{backBtn}</Box>
+      <Box flexDirection="row" gap={1}>{backBtn}<Text dimColor>esc home</Text></Box>
       {shown.map((r, i) => <Text key={`pr-row-${i}`} bold={r.bold} dimColor={r.dim} color={toneOf(r)} wrap="truncate-end">{r.text === '' ? ' ' : r.text}</Text>)}
       {body.length > shown.length && <Text dimColor>+{body.length - shown.length} more lines</Text>}
       </Box>
@@ -1205,7 +1210,7 @@ export function batchCardView(x: BatchCtx) {
   if (batch === undefined) {
     return (
       <Box flexDirection="column" height={rows}>
-        <Box flexDirection="row" gap={1}>{backBtn}</Box>
+        <Box flexDirection="row" gap={1}>{backBtn}<Text dimColor>esc home</Text></Box>
         <Text dimColor>No batch is waiting for a push.</Text>
         {note !== '' && <Text color="suggestion">{note}</Text>}
       </Box>
@@ -1223,7 +1228,7 @@ export function batchCardView(x: BatchCtx) {
   return (
     <Box flexDirection="column" height={rows}>
 <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
-      <Box flexDirection="row" gap={1}>{backBtn}</Box>
+      <Box flexDirection="row" gap={1}>{backBtn}<Text dimColor>esc home</Text></Box>
       <Text bold color="warning">Batch {batch.id}{batch.version === undefined ? '' : ` (${batch.version})`} <Text dimColor>{ready ? 'ready to push' : batch.state}</Text></Text>
       <Text dimColor wrap="truncate-end">checked {age(x.now - batch.createdAt)} ago · check: {batch.check === '' ? '(none recorded)' : batch.check}</Text>
       {!ready && <Text color="suggestion">Not waiting for you: {batch.state === 'pushing' ? 'a reviewer is pushing it' : `it is being rebuilt${batch.reason === undefined ? '' : ` (${batch.reason})`}`}.</Text>}

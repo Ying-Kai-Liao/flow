@@ -38,6 +38,7 @@ export type CommandIo = {
   endedManagers: (rows: AgentRow[]) => Set<string>
   panes: () => Promise<Array<{ id: string }>>
   close: () => Promise<unknown>
+  home: () => Promise<void>
   open: () => Promise<unknown>
   gatherLeftovers: (base: string, resumed: Set<string>) => Promise<Gathered>
   // Ends a reviewer halt or back-off (true when it was halted).
@@ -147,6 +148,11 @@ export async function flowCommand(
     }
     if (arg === 'preflight') {
       return { text: renderStatus(await io.preflight(), await io.inbox(), io.endedManagers(await io.roster()), await io.now(), mirror.preflightWaitMs) }
+    }
+    // What Esc does in the pane, for when the key is out of reach.
+    if (arg === 'home') {
+      await io.home()
+      return { text: 'Flow pane is on its home view.' }
     }
     if (arg === 'close') {
       if (!(await io.panes()).some(p => p.id === PANE)) return { text: 'The Flow pane is not open.' }

@@ -443,7 +443,8 @@ function commandIoOf($: EngineInterface): CommandIo {
     endedOwners: () => endedOwnersOf($),
     panes: async () => [...(await $.ui.panes())],
     close: () => $.ui.close({ id: PANE }),
-    open: () => $.ui.open({ id: PANE, title: 'Flow', focus: true }),
+    home: () => paneHome($),
+    open: () => $.ui.open({ id: PANE, title: 'Flow', focus: true, closeOnEscape: true }),
     gatherLeftovers: (base, resumed) => gatherLeftovers($, base, resumed),
     pushState: () => read($, pushState),
     after: (ms, fn) => { $.clock.after(ms, fn) },
@@ -531,8 +532,27 @@ async function demoStart($: EngineInterface): Promise<string> {
   await update($, inboxDraft, () => '')
   await update($, inboxNote, () => '')
   demoArm($, s)
-  await $.ui.open({ id: PANE, title: 'Flow', focus: true })
+  await $.ui.open({ id: PANE, title: 'Flow', focus: true, closeOnEscape: true })
   return 'Demo started in the Flow pane: a replay of one task with canned agents. No agents run, no tokens are used, nothing is written. m = next step, x = stop, or /flow init demo stop.'
+}
+
+// The view the pane was last drawn under: a focus event carries none, and a focus move is the
+// person acting in that view.
+let paneView: string | null = null
+
+// Home: the tree with nothing selected and every card, view and demo closed. The followed transcript is
+// adopted as the ui.focus handler does, so the pane does not jump back to it. inboxDraft stays: an
+// unsent draft survives.
+async function paneHome($: EngineInterface): Promise<void> {
+  await update($, overrideView, () => paneView)
+  await update($, selected, () => null)
+  await update($, graphFocus, () => null)
+  await update($, viewMode, () => 'tree')
+  await update($, inboxNote, () => '')
+  await update($, inboxOpen, () => ({}))
+  await update($, batchPick, () => null)
+  await update($, prShown, () => null)
+  if (await read($, demo) !== null) await demoStop($)
 }
 
 async function demoStop($: EngineInterface): Promise<string> {
@@ -622,7 +642,7 @@ function syncPlans($: EngineInterface, rows: AgentRow[], edit?: (p: Plan) => Pla
 function refresh($: EngineInterface): Promise<AgentRow[]> { return refreshTo(rosterIoOf($)) }
 
 async function openPane($: EngineInterface): Promise<void> {
-  const r = await $.ui.open({ id: PANE, title: 'Flow' })
+  const r = await $.ui.open({ id: PANE, title: 'Flow', closeOnEscape: true })
   if (!r.isPlaced) void $.ui.toast('flow is running agents: type /flow to watch them')
 }
 
@@ -1861,9 +1881,6 @@ export const register: Register = (on, options) => {
   // Main's model and window, to size a subagent that runs the same model.
   let mainModel: string | undefined
   let mainWindow: number | undefined
-  // The view the pane was last drawn under: a focus event carries none, and a focus move is the
-  // person acting in that view.
-  let paneView: string | null = null
   // What the last drawing showed in place of the stored state while following, else null.
   let paneFollow: { pick: string; cur: string } | null = null
   // What /flow resume already handed to managers in this session.
@@ -2538,6 +2555,15 @@ export const register: Register = (on, options) => {
       await update($, cursor, () => e.element!)
     }
     return r
+  })
+
+  // Esc in the pane goes home from any sub-view. closeOnEscape makes the engine raise ui.close
+  // (origin person) for it; answering without next keeps the pane open, so Esc never closes it.
+  // inboxDraft stays: an unsent draft survives. A focused field keeps its own Esc (it only blurs).
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    if (e.origin.kind !== 'person') return next(e)
+    await paneHome($)
+    return { value: undefined }
   })
 
   // The body's rows, not the terminal's: viewport.rows counts the whole screen, so a tree that tall
