@@ -132,12 +132,12 @@ test('reviewer_harness claude, auto: two handovers use one terminal; the second 
   expect(w.spawns).toEqual([])
   expect(newSessions(w)).toEqual(['flow-reviewer-1'])
   expect(w.files.get(`${DIR}/sessions/reviewer-1/prompt.md`)).toContain('typed into the terminal means start again')
-  expect(stored(w, 'sessions')['reviewer-1']).toMatchObject({ role: 'reviewer', nudged: [7] })
+  expect(stored(w, 'sessions')['reviewer-1']).toMatchObject({ role: 'reviewer', nudged: [expect.stringMatching(/^7:/)] })
 
   expect(await handover($, 8)).toContain('The reviewer in tmux picks it up')
   expect(newSessions(w)).toEqual(['flow-reviewer-1'])
   expect(typed(w)).toEqual(['new handover: #8'])
-  expect(stored(w, 'sessions')['reviewer-1'].nudged).toEqual([7, 8])
+  expect(stored(w, 'sessions')['reviewer-1'].nudged).toHaveLength(2)
   // Told once: a repeat ensureQueue types nothing more.
   expect(await handover($, 8)).toContain('already been told')
   expect(typed(w)).toEqual(['new handover: #8'])
@@ -185,4 +185,32 @@ test('both harness settings agent: the reviewer is an agent and no session is st
   expect(await handover($, 7)).toContain('Started reviewer reviewer-1')
   expect(w.spawns.map(s => s.name)).toEqual(['reviewer-1'])
   expect(newSessions(w)).toEqual([])
+})
+
+test('a PR sent back and handed over again, or approved after being held, is typed into the live reviewer again', { options: { reviewer_harness: 'claude', ...TMUX } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await handover($, 7)
+  const rv = (input: Record<string, unknown>) => $.tool.call({ tool: 'mcp__flow__reviewer', agentId: 'session:reviewer-1', ...input } as never).then(r => String(r.result))
+  await rv({ action: 'take', pr: 7 })
+  await rv({ action: 'back', pr: 7, reason: 'head moved' })
+  await w.clock.advance(1000)
+  expect(await handover($, 7)).toContain('picks it up')
+  expect(typed(w)).toEqual(['new handover: #7'])
+  // A PR handed over for approval is not typed; the approval is.
+  await $.tool.call({ tool: 'mcp__flow__handover', pr: 9, mode: 'confirm', agentId: 'm1' } as never)
+  expect(typed(w)).toEqual(['new handover: #7'])
+  await $.command.run({ command: 'flow', args: 'approve 9' } as never)
+  await w.clock.settle()
+  expect(typed(w)).toEqual(['new handover: #7', 'new handover: #9'])
+})
+
+test('a manager whose terminal already runs is answered as started, not spawned as an agent', { options: { manager_harness: 'claude', ...TMUX } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await spawnManager($, 'csv-mgr')
+  const again = await spawnManager($, 'csv-mgr')
+  expect(again).toContain('already runs in tmux')
+  expect(w.spawns).toEqual([])
+  expect(newSessions(w)).toEqual(['flow-csv-mgr'])
 })

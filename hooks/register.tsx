@@ -934,6 +934,11 @@ async function startManagerSession($: EngineInterface, options: Record<string, u
   const route = roleHarnessFor($, 'manager')
   if (route === undefined) return undefined
   const name = (e as { name?: string }).name ?? e.description
+  // The same manager asked for twice: it is running, so the answer is the same success, not a second manager.
+  const live = (await read($, sessions))[name]
+  if (live !== undefined && live.role === 'manager' && sessionLive(live)) {
+    return { deny: `flow: manager ${name} already runs in ${live.host} (${live.handle}) as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
+  }
   const model = e.model ?? route.settings.managerModel
   const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', route.settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), route.settings)
   const r = await startRoleSession(sessionIoOf($), {
@@ -947,6 +952,11 @@ async function startManagerSession($: EngineInterface, options: Record<string, u
   }
   const id = sessionKey(name)
   if (mirror.preflightOn) await best($, 'recording a pre-flight', () => recordManager($, name, e.prompt, ctx.liteMode))
+  await best($, 'recording an agent in the cost ledger', () => changeLedger($, (l, now) => setIdentity(l, id, {
+    role: 'manager', name,
+    ...(typeof model === 'string' && { spawnModel: model }),
+    ...(ctx.routed !== undefined && { size: ctx.routed.size }),
+  }, now)))
   if (ctx.liteMode) await best($, 'recording a lite manager', async () => { const at = await $.clock.now(); await withLite($, cur => ({ state: recordLite(cur, name, at), out: undefined })) })
   if (ctx.routed !== undefined && !ctx.liteMode) {
     const routed = ctx.routed
@@ -1505,6 +1515,7 @@ function queueIoOf($: EngineInterface): QueueIo {
     setRuns: n => update($, queueRuns, () => n),
     spawn: input => spawnReviewer($, input),
     reviewerSession: async () => Object.values(await read($, sessions)).find(x => x.role === 'reviewer' && sessionLive(x)),
+    setTold: (s, told) => sessionIoOf($).updateSessions(all => all[s.name] === undefined ? all : { ...all, [s.name]: { ...all[s.name]!, nudged: told } }),
     nudge: async (s, text, told) => {
       const r = await sendToSession(sessionIoOf($), s, text)
       if (r.exitCode !== 0) return r.stderr.trim() || `could not type into ${s.name}`
@@ -1572,7 +1583,7 @@ function roleHarnessFor($: EngineInterface, role: 'manager' | 'reviewer'): { har
 
 // The reviewer: a terminal session when reviewer_harness names a claude harness, else the agent as always.
 // A session that cannot start falls back to the agent (and says why) so the queue is not stuck on it.
-async function spawnReviewer($: EngineInterface, input: { subagentType: string; name: string; description: string; prompt: string; pending?: number[] }): Promise<{ deny?: string }> {
+async function spawnReviewer($: EngineInterface, input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }): Promise<{ deny?: string }> {
   const { pending, ...agentInput } = input
   const route = roleHarnessFor($, 'reviewer')
   if (route === undefined) return $.agent.spawn(agentInput)
@@ -1993,6 +2004,8 @@ async function onRoleGone($: EngineInterface, s: Session, tail: string): Promise
     await refresh($)
     return
   }
+  // Work done since its last report would otherwise be lost: main gets the run's summary line.
+  await best($, 'relaying the reviewer end', () => relayReviewerReport($, sessionKey(s.name), s.name, 'The reviewer terminal ended without a final report.'))
   await reviewerEnded($, s.name, { answer: tail.trim() === '' ? 'the terminal ended' : tail })
 }
 // The sessions record on disk (<state dir>/sessions.json): a main that restarts keeps its terminal

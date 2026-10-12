@@ -146,11 +146,13 @@ export type QueueIo = {
   runs: () => Promise<number>
   setRuns: (n: number) => Promise<unknown>
   // `pending` is for a reviewer in a terminal: the handovers its first prompt already names count as told.
-  spawn: (input: { subagentType: string; name: string; description: string; prompt: string; pending?: number[] }) => Promise<{ deny?: string }>
+  spawn: (input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }) => Promise<{ deny?: string }>
   // The live reviewer running in a terminal, if any, and the way to type a line into it (a failure is the
   // refusal text). Absent when the plugin has no terminal sessions to offer.
   reviewerSession?: () => Promise<Session | undefined>
-  nudge?: (s: Session, text: string, told: number[]) => Promise<string | undefined>
+  nudge?: (s: Session, text: string, told: string[]) => Promise<string | undefined>
+  // Replaces what a reviewer terminal counts as told (see toldKey).
+  setTold?: (s: Session, told: string[]) => Promise<unknown>
   breaker: BreakerIo
   // Calls ensureQueue again after ms (one timer at a time; the caller dedupes).
   wait: (ms: number) => void
@@ -251,14 +253,27 @@ export async function startQueue(io: QueueIo): Promise<string> {
   const batch = await io.batch()
   const pending = batch !== undefined ? [] : Object.values(await io.handovers()).filter(h => h.status === 'pending')
   const pushDue = batch !== undefined && batch.state !== 'ready'
-  const dueTargets = Object.entries((await io.deploys()).targets).filter(([name, t]) => t.due === true && mirror.deployInfos.some(i => i.name === name)).map(([name]) => name)
+  const dueEntries = Object.entries((await io.deploys()).targets).filter(([name, t]) => t.due === true && mirror.deployInfos.some(i => i.name === name))
+  const dueTargets = dueEntries.map(([name]) => name)
+  // What makes a target due again is a new approval or a new deploy, so those are in the signature.
+  const dueSig = dueEntries.map(([name, t]) => `${name}:${t.deployedAt ?? 0}:${t.approval?.at ?? 0}`).join(',')
   const session = io.reviewerSession === undefined ? undefined : await io.reviewerSession()
-  if (session !== undefined && dueTargets.length === 0) sigNudged.delete(`${session.name}|deploy`)
-  if (session !== undefined && !pushDue) sigNudged.delete(`${session.name}|push`)
+  if (session !== undefined) {
+    // Forget what is no longer true before any early return: a PR that went back to pending (approved, handed
+    // over again) has another key and is typed again; a target or push run that was cleared can be due anew.
+    if (dueTargets.length === 0) sigNudged.delete(`${session.name}|deploy`)
+    if (!pushDue) sigNudged.delete(`${session.name}|push`)
+    const keys = new Set(pending.map(toldKey))
+    const kept = (session.nudged ?? []).filter(k => keys.has(k))
+    if (kept.length !== (session.nudged ?? []).length && io.setTold !== undefined) {
+      await io.setTold(session, kept)
+      session.nudged = kept
+    }
+  }
   if (pending.length === 0 && dueTargets.length === 0 && !pushDue) {
     return batch === undefined ? 'Nothing pending.' : `Batch ${batch.id} awaits the user's /flow push; new handovers wait behind it.`
   }
-  if (session !== undefined && io.nudge !== undefined) return nudgeReviewer(io, session, pending.map(h => h.pr), dueTargets, pushDue ? batch : undefined)
+  if (session !== undefined && io.nudge !== undefined) return nudgeReviewer(io, session, pending, dueTargets, dueSig, pushDue ? batch : undefined)
   // The respawn circuit breaker: a halted queue waits for main, and a start soon after a failed one waits its turn.
   const now = await io.breaker.now()
   const d = decide(await currentBreaker(io.breaker), now)
@@ -280,7 +295,7 @@ export async function startQueue(io: QueueIo): Promise<string> {
     subagentType: REVIEWER,
     name: `reviewer-${n}`,
     description: 'reviewer',
-    pending: pending.map(h => h.pr),
+    pending: pending.map(toldKey),
     prompt: `Pending handovers: ${batch !== undefined ? 'wait behind the batch' : pending.length === 0 ? 'none' : pending.map(h => `#${h.pr}`).join(', ')}.${dueTargets.length === 0 ? '' : ` Deploy-only work due: ${dueTargets.join(', ')}.`}${batch === undefined ? '' : batch.state === 'ready' ? ` Batch ${batch.id} awaits the user's push: leave it alone.` : ` ${batch.state === 'pushing' ? 'Push run' : 'Rebuild run'} for batch ${batch.id}: see "Push run" in your instructions.`} Start with mcp__flow__deploy action "list" and mcp__flow__reviewer action "list".`,
   })
   if (started.deny !== undefined) {
@@ -290,6 +305,9 @@ export async function startQueue(io: QueueIo): Promise<string> {
   return `Started reviewer reviewer-${n}.`
 }
 
+// One handover as it stands: a new hand-over or an approval of the same PR is a new instance, typed again.
+export const toldKey = (h: Handover): string => `${h.pr}:${h.at}:${h.approvedHead ?? ''}`
+
 // What a waiting reviewer terminal was last told about deploys and the push run (by session name and kind): a
 // signature, so the same due work is typed once, and a reviewer that reports "awaiting approval" is not
 // told again in a loop. Handovers are tracked in the session's own `nudged` list instead (persisted).
@@ -297,18 +315,17 @@ const sigNudged = new Map<string, string>()
 
 // A reviewer already runs in a terminal: it is not started again, the new work is typed into it. Only work it
 // was not told about goes in: a handover already in `nudged`, the same due deploys, the same push run.
-async function nudgeReviewer(io: QueueIo, s: Session, pending: number[], dueTargets: string[], push: NonNullable<PushState['batch']> | undefined): Promise<string> {
-  const told = (s.nudged ?? []).filter(n => pending.includes(n))
-  const fresh = pending.filter(n => !told.includes(n))
+async function nudgeReviewer(io: QueueIo, s: Session, pending: Handover[], dueTargets: string[], deploySig: string, push: NonNullable<PushState['batch']> | undefined): Promise<string> {
+  const told = (s.nudged ?? []).filter(k => pending.some(h => toldKey(h) === k))
+  const fresh = pending.filter(h => !told.includes(toldKey(h)))
   const parts: string[] = []
-  if (fresh.length > 0) parts.push(`new handover: ${fresh.map(n => `#${n}`).join(', ')}`)
-  const deploySig = dueTargets.join(',')
+  if (fresh.length > 0) parts.push(`new handover: ${fresh.map(h => `#${h.pr}`).join(', ')}`)
   if (dueTargets.length > 0 && sigNudged.get(`${s.name}|deploy`) !== deploySig) parts.push(`deploy due: ${dueTargets.join(', ')}`)
   const pushSig = push === undefined ? '' : `${push.id}:${push.state}`
   if (push !== undefined && sigNudged.get(`${s.name}|push`) !== pushSig) parts.push(`push run due: batch ${push.id}`)
   const where = `The reviewer in ${s.host}`
   if (parts.length === 0) return `${where} has already been told.`
-  const failed = await io.nudge!(s, parts.join('; '), [...told, ...fresh])
+  const failed = await io.nudge!(s, parts.join('; '), [...told, ...fresh.map(toldKey)])
   if (failed !== undefined) return `Could not reach ${s.name} in ${s.host}: ${failed}`
   if (dueTargets.length > 0) sigNudged.set(`${s.name}|deploy`, deploySig)
   if (push !== undefined) sigNudged.set(`${s.name}|push`, pushSig)

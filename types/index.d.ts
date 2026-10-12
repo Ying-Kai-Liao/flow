@@ -203,8 +203,8 @@ export type Session = {
   relayDir?: string
   // A manager's terminal, when Orca refused one in the main checkout: the detached Orca worktree hosting it.
   hostWorktree?: string
-  // Handover numbers already typed into a reviewer terminal.
-  nudged?: number[]
+  // Handover instances (reviewer-run's toldKey) already typed into a reviewer terminal.
+  nudged?: string[]
   // The report file's mtime when it was last delivered.
   reportAt?: number
   // When the terminal was last seen alive.
