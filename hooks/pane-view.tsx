@@ -204,10 +204,12 @@ export type TreeCtx = PaneCtx & {
   mainModel: string | undefined
   mainTime: string
   mergeQueueKey: string
+  questionsKey: string
   warnOf: (window: number) => number
   meter: (u: Usage | undefined, dim: boolean, time: string) => ReturnType<typeof meter>
   toggleFold: (a: AgentRow, shown: boolean) => Promise<void>
   toggleQueue: () => Promise<void>
+  toggleQuestions: () => Promise<void>
   readCursor: () => Promise<string | null>
   setCursor: (id: string) => Promise<unknown>
   focusRow: (id: string) => Promise<unknown>
@@ -755,10 +757,21 @@ export function inboxView(x: InboxCtx) {
   )
 }
 
+// The questions block: one row folded; unfolded, the items capped at a third of the pane (the
+// header and "and N more" lines included) so the agent tree keeps its room.
+export function questionsBlock(count: number, open: boolean, rows: number) {
+  if (count === 0) return { shown: 0, more: 0, rows: 0 }
+  if (!open) return { shown: 0, more: 0, rows: 1 }
+  const cap = Math.max(3, Math.floor(rows / 3))
+  const clipped = count > cap - 1
+  const shown = clipped ? cap - 2 : count
+  return { shown, more: count - shown, rows: 1 + shown + (clipped ? 1 : 0) }
+}
+
 export function treeView(c: TreeCtx) {
   const { Box, Text, Button } = c.els
   const { list, fold, acts, hs, rows, limits, anyOpen, unhanded, leftover, inboxRows, deployLines, cur, gate, openQs, fyiCount, checksLine, breakerNote, mainU, mainTime, toggle, card } = c
-  const { toggleFold, toggleQueue, open } = c
+  const { toggleFold, toggleQueue, toggleQuestions, open } = c
   // The tree: each agent under the one that started it, what needs a person first.
   const first = treeItems(list, fold, undefined, false, acts).items[0]?.a.id
   const prs = Object.values(hs).sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
@@ -769,7 +782,12 @@ export function treeView(c: TreeCtx) {
   const queueOpen = fold[c.mergeQueueKey] === false
   const prRows = prs.length > 0 ? 1 + (queueOpen ? Math.min(prs.length, 5) : 0) : 0
   const usageRows = rows >= 20 ? Math.min(4, limits.length) : 0
-  const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 || anyOpen || Object.keys(hs).length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows - deployLines.length
+  const qOpen = fold[c.questionsKey] === false
+  // Nothing to unfold (decisions only) keeps the plain Inbox line.
+  const canFold = c.openItems.length > 0
+  const qBlock = questionsBlock(c.openItems.length, qOpen, rows)
+  const qRows = canFold ? qBlock.rows : openQs.length > 0 || fyiCount > 0 ? 1 : 0
+  const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 || anyOpen || Object.keys(hs).length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows - qRows - deployLines.length
   const wide = treeItems(list, fold, cur ?? first, false, acts)
   const fullTree = CARD_ROWS + wide.items.reduce((n, i) => n + (i.collapsed ? 1 : CARD_ROWS), 0) <= avail
   const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
@@ -814,20 +832,25 @@ export function treeView(c: TreeCtx) {
         <Text color="suggestion" wrap="truncate-end">⇪ Batch {gate.id} {gate.state === 'pushing' ? 'released, a reviewer is pushing it' : `is being rebuilt${gate.reason === undefined ? '' : ` (${gate.reason})`}`}: {gate.prs.map(n => `#${n}`).join(' ')}</Text>
       )}
       <Text dimColor>{ICON.agents} {list.length} agents · {live} live{prs.length ? ` · ${prs.length} PR${prs.length === 1 ? '' : 's'} with the reviewer` : ''}{list.length > 0 ? ' · press an agent to open it' : ''}</Text>
-      {c.openItems.slice(0, 5).map(q => (
+      {qRows > 0 && (() => {
+        const blocking = openQs.filter(q => q.blocking).length
+        const summary = [
+          ...(openQs.length > 0 ? [`${openQs.length} question${openQs.length === 1 ? '' : 's'}${blocking > 0 ? ` (${blocking} blocking)` : ''}`] : []),
+          ...(fyiCount > 0 ? [`${fyiCount} decision${fyiCount === 1 ? '' : 's'}`] : []),
+        ].join(' · ')
+        const line = (
+          <Text color={blocking > 0 ? 'warning' : undefined} dimColor={blocking === 0} wrap="truncate-end">
+            {canFold && `${qOpen ? '▾' : '▸'} `}<Text color="warning" dimColor={false}>{ICON.inbox}</Text> {openQs.length > 0 && askMark(Text, c.t)}{openQs.length > 0 && ' '}{summary} · i
+          </Text>
+        )
+        return canFold ? <Button key={`fold-${c.questionsKey}`} plain onPress={toggleQuestions}>{line}</Button> : line
+      })()}
+      {qOpen && c.openItems.slice(0, qBlock.shown).map(q => (
         <Button key={`open-${q.id}`} plain onPress={() => c.openCard(q.id)}>
-          <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{q.id} {q.owner}: {q.question}</Text>
+          <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">  {q.id} {q.owner}: {q.question}</Text>
         </Button>
       ))}
-      {c.openItems.length > 5 && <Text dimColor>and {c.openItems.length - 5} more</Text>}
-      {(openQs.length > 0 || fyiCount > 0) && (
-        <Text dimColor wrap="truncate-end">
-          <Text color="warning" dimColor={false}>{ICON.inbox}</Text> {openQs.length > 0 && askMark(Text, c.t)}{openQs.length > 0 && ' '}{[
-            ...(openQs.length > 0 ? [`${openQs.length} question${openQs.length === 1 ? '' : 's'}${openQs.some(q => q.blocking) ? ` (${openQs.filter(q => q.blocking).length} blocking)` : ''}`] : []),
-            ...(fyiCount > 0 ? [`${fyiCount} decision${fyiCount === 1 ? '' : 's'}`] : []),
-          ].join(' · ')} · i
-        </Text>
-      )}
+      {qOpen && qBlock.more > 0 && <Text dimColor>  and {qBlock.more} more · i inbox</Text>}
       {checksLine !== undefined && <Text dimColor wrap="truncate-end">{ICON.checks} {checksLine}</Text>}
       {unhanded.length > 0 && (
         <Text color="warning" wrap="truncate-end">
@@ -886,6 +909,7 @@ export function treeView(c: TreeCtx) {
             if (i) await toggleFold(i.a, i.collapsed)
           }}>{items[hotIdx]?.collapsed ? 'c expand' : 'c collapse'}</Button>}
           {prs.length > 0 && <Button key="nav-queue" plain dimColor hotkey="q" onPress={toggleQueue}>q reviewer</Button>}
+          {canFold && <Button key="nav-questions" plain dimColor hotkey="a" onPress={toggleQuestions}>{qOpen ? 'a fold' : 'a questions'}</Button>}
           {anyOpen && <Button key="nav-inbox" plain dimColor hotkey="i" onPress={c.openInbox}>i inbox</Button>}
           {list.length > 0 && toggle}
         </Box>
