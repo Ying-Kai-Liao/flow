@@ -5,9 +5,9 @@
 import { atom, read, update } from 'claude-code'
 import { lastLineAsks, REPORT_HINT } from './askcards'
 import { parseMode } from './mergemode'
-import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Breaker, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, Breaker, Ledger, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { grantFile, grantSlots, reapSlots } from './slots'
 import { grantTypecheck, reapTypecheck, typecheckDir } from './typecheck-slots'
 import type { Evidence } from './evidence'
@@ -18,20 +18,22 @@ import { sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
 import { gatherLeftovers as gatherLeftoversTo } from './resume'
 import type { Gathered, Leftover, ResumeIo } from './resume'
-import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo, resetDelivery, ENDED, LIVE, type DeliverIo, type DeliverOptions } from './deliver'
-import { addStep, addTurn, baseName, entriesOfBranch, setIdentity } from './cost'
+import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo, resetDelivery, ENDED, type DeliverIo, type DeliverOptions } from './deliver'
+import { addStep, addTurn, baseName, entriesOfBranch } from './cost'
 import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
 import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
-import { backNote, effortFor, generation, type EffortRole } from './routing'
-import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withSizeFeedback, withoutLong } from './spawn'
+import { backNote, effortFor, generation } from './routing'
+import { dispatch, FLOW_TYPES } from './spawn'
 import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
 import { decide, DECIDE_TIMEOUT_MS, sourceOf } from './decide'
 import type { DecideIo, DecideSettings, FetchLike } from './decide'
 import { adviceLine, adviceSuffix, handoffLean } from './decide-use'
 import type { DecideUseSettings } from './decide-use'
-import type { Routed, SpawnIo } from './spawn'
+import type { SpawnIo } from './spawn'
+import { onSpawn } from './spawn-run'
+import type { SpawnHookIo } from './spawn-run'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
 import {
@@ -39,11 +41,10 @@ import {
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
-  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, isLite, isSkip, markDelivered, normalizePreflight,
-  recordSpawn, renderRound,
+  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, markDelivered, normalizePreflight, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
-import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, recordLite, releaseToolAccess, reviewerToolAccess, withLiteRules } from './lite'
+import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess, reviewerToolAccess } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
   addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, paneChecksLine, parseNeeds,
@@ -54,10 +55,9 @@ import type { Inbox, Marked, Question } from './inbox'
 import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, paneSuggestions, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
 import { decideEvalTool } from './decide-eval-run'
-import { sizeAbTool, sizeArmOf, sizerFor } from './size-ab'
-import { armHidden, armOfSpawn, armsTool, checkAndReserve, groupUsed, parseArm } from './bestof'
+import { sizeAbTool } from './size-ab'
+import { armHidden, armsTool } from './bestof'
 import type { ArmsIo } from './bestof'
-import type { SizeArm } from './size-ab'
 import type { DecideEvalIo } from './decide-eval-run'
 import { DEMO_TOOL, SETTINGS_TOOL } from './init-tools'
 import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, ARMS_TOOL, reviewerTool, SESSION_TOOL, SIZE_AB_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
@@ -74,7 +74,7 @@ import { approvePr, detailsKey, detailsStale, fetchDetails, openerFor, platformO
 import type { DetailsCache } from './prcard'
 import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
 import {
-  fill, LITE_MARK, LITE_RULES, MANAGER_PROMPT, MANAGER_SESSION_RULES, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO,
+  fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO,
   REVIEWER_SESSION_RULES_CONFIRM, WORKER_PROMPT,
 } from './prompts'
 import type { Settings } from './prompts'
@@ -108,7 +108,7 @@ import { statusTool } from './status-run'
 import type { StatusIo, Unhanded } from './status-run'
 import { flowCommand } from './command'
 import type { CommandIo } from './command'
-import { elapsed, tokensDown, LARGE_WINDOW, labelOf, limitLabel, thresholdOf, warnPercent, windowOf, wrapUpText } from './meter'
+import { elapsed, tokensDown, labelOf, limitLabel, thresholdOf, warnPercent, windowOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
 import {
   allowed, allowList, flowActive, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
@@ -445,25 +445,6 @@ function armsIoOf($: EngineInterface): ArmsIo {
     callerName: async id => id === undefined ? undefined : (await agentsOf($)).find(a => a.id === id)?.name,
     liveNames: async () => (await agentsOf($)).filter(a => !ENDED.has(a.status) && a.name !== undefined).map(a => a.name!),
   }
-}
-
-// The arm-spawn refusal (hooks/bestof.ts) for a worker spawn, or a reservation of its slot under max_workers. The roster
-// read is the only await between the count and the reservation. A spawn with no Arm line is never checked.
-async function armSpawnCheck($: EngineInterface, e: AgentSpawnInput, settings: ReturnType<typeof settingsOf>): Promise<{ deny: string } | { release: () => void }> {
-  const arm = parseArm(e.prompt)
-  if (arm === undefined) return { release: () => undefined }
-  const name = (e as { name?: string }).name ?? e.description
-  await loadLedger($)
-  const [l, log, now, rows] = await Promise.all([read($, ledger), readLog($), $.clock.now(), agentsOf($)])
-  const parent = e.parentAgentId === undefined ? undefined : rows.find(a => a.id === e.parentAgentId)
-  const group = /^(.+)-[a-c](-\d+)?$/.exec(name)?.[1]
-  return checkAndReserve({
-    name, prompt: e.prompt, bestOfN: settings.bestOfN, arms: settings.bestOfNArms,
-    parentIsManager: parent?.type === MANAGER, maxWorkers: settings.maxWorkers,
-    // Working now: an idle worker (turn over) and the spawn's own predecessors (a HANDOFF arm a before a-2) do not count.
-    liveSiblings: rows.filter(a => a.parentId === e.parentAgentId && (a.type === WORKER || a.type === CONTINUE) && LIVE.has(a.status) && (a.name === undefined || baseName(a.name) !== baseName(name))).map(a => a.name ?? a.id),
-    groupUsed: group !== undefined && groupUsed(l, log, group, arm.id),
-  }, e.parentAgentId, now)
 }
 
 function migrationsIoOf($: EngineInterface): MigrationsIo {
@@ -998,57 +979,6 @@ async function toolCallerOf($: EngineInterface, agentId: string | undefined): Pr
   return me.type === MANAGER || WORKERS.has(me.type) ? { kind: 'other' } : { kind: 'reviewer' }
 }
 
-// main's flow:manager spawn as a terminal session (manager_harness), after the model routing. Undefined: the
-// agent starts as usual. The bookkeeping an in-process manager gets (pre-flight record, lite record, size
-// decision) is done here; the session's own start logs the spawn and opens its activity card.
-async function startManagerSession($: EngineInterface, options: Record<string, unknown>, e: AgentSpawnInput, ctx: { routed: Routed | undefined; liteMode: boolean }): Promise<{ deny: string } | undefined> {
-  const route = roleHarnessFor($, 'manager')
-  if (route === undefined) return undefined
-  const name = (e as { name?: string }).name ?? e.description
-  // The same manager asked for twice: it is running, so the answer is the same success, not a second manager.
-  const live = (await read($, sessions))[name]
-  if (live !== undefined && live.role === 'manager' && sessionLive(live)) {
-    return { deny: `flow: manager ${name} already runs in ${live.host} (${live.handle}) as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
-  }
-  const model = e.model ?? route.settings.managerModel
-  // A terminal manager has no Agent tool, so it cannot start arms: no best-of-N text for it.
-  const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', route.settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), { ...route.settings, bestOfN: 'off' })
-  const managerEffort = effortFor('manager', undefined, route.settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
-  const r = await startRoleSession(sessionIoOf($), {
-    role: 'manager', name, harness: route.harness, owner: { id: 'main', name: 'main' },
-    ...(typeof model === 'string' && { model }),
-    ...(managerEffort !== undefined && { effort: managerEffort }),
-    prompt: `${MANAGER_SESSION_RULES}${rules}\n\n${e.prompt}`,
-  }, route.settings)
-  if (!r.ok) {
-    void $.ui.toast(`flow: could not start manager ${name} in a terminal (${r.text}); starting it as an agent`)
-    return undefined
-  }
-  const id = sessionKey(name)
-  if (mirror.preflightOn) await best($, 'recording a pre-flight', () => recordManager($, name, e.prompt, ctx.liteMode))
-  await best($, 'recording an agent in the cost ledger', () => changeLedger($, (l, now) => setIdentity(l, id, {
-    role: 'manager', name,
-    ...(typeof model === 'string' && { spawnModel: model }),
-    ...(ctx.routed !== undefined && { size: ctx.routed.size }),
-  }, now)))
-  if (ctx.liteMode) await best($, 'recording a lite manager', async () => { const at = await $.clock.now(); await withLite($, cur => ({ state: recordLite(cur, name, at), out: undefined })) })
-  if (ctx.routed !== undefined && !ctx.liteMode) {
-    const routed = ctx.routed
-    await best($, 'filing a manager-size decision', () => fileManagerSizeFyi(spawnIoOf($), options, name, id, routed))
-  }
-  return { deny: `flow: started manager ${name} in ${r.session.host} (${r.session.handle}); it runs as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
-}
-
-// A manager main just started joins the open round, or opens one with a timer for the wait. A lite one is skipped.
-async function recordManager($: EngineInterface, name: string, prompt: string, liteMode: boolean): Promise<void> {
-  const t = await $.clock.now()
-  const opened = await withPreflight($, cur => {
-    const changed = recordSpawn(cur, name, isSkip(prompt) || liteMode, t, mirror.preflightWaitMs)
-    return { state: changed, out: changed.rounds.length > cur.rounds.length }
-  })
-  if (opened) $.clock.after(mirror.preflightWaitMs, () => void refresh($).catch(() => undefined))
-}
-
 const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOString().slice(0, 10)
 
 function messagingIoOf($: EngineInterface): MessagingIo {
@@ -1469,6 +1399,34 @@ function spawnIoOf($: EngineInterface): SpawnIo {
     loadLedger: () => loadLedger($),
     ledger: () => read($, ledger),
     standing: standingIoOf($),
+  }
+}
+
+// What the agent.spawn hook (spawn-run.ts) needs from the engine and the plugin's atoms; the rest of its io is register()'s state.
+type SpawnState = Pick<SpawnHookIo, 'relay' | 'settings' | 'options' | 'noLong' | 'setNoLong' | 'noContinue' | 'setNoContinue' | 'takeExplicit' | 'setEffort'>
+function spawnHookIoOf($: EngineInterface, state: SpawnState): SpawnHookIo {
+  return {
+    ...state,
+    spawn: spawnIoOf($),
+    now: () => $.clock.now(),
+    agentList: () => $.agent.list(),
+    plans: () => read($, plan),
+    lite: () => read($, lite),
+    gate: agentId => preflightGate($, agentId),
+    jev: () => jevOf($, state.settings()),
+    effortEnv: () => $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined),
+    toast: text => $.ui.toast(text),
+    best: (what, fn) => best($, what, fn),
+    refresh: () => refresh($),
+    openPane: () => openPane($),
+    updateActivity: fn => update($, activity, fn),
+    changeLedger: fn => changeLedger($, fn),
+    withLite: fn => withLite($, fn),
+    withPreflight: fn => withPreflight($, fn),
+    after: (ms, fn) => $.clock.after(ms, fn),
+    sessions: () => read($, sessions),
+    roleHarness: () => roleHarnessFor($, 'manager'),
+    startRoleSession: (p, s) => startRoleSession(sessionIoOf($), p, s),
   }
 }
 
@@ -2909,195 +2867,19 @@ export const register: Register = (on, options) => {
   // then replays the refusal to a second next), so the type stays offered; a model's own spawn of it is denied below.
   on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: true }))
 
-  on('agent.spawn', async ($, input, next) => {
-    // A terminal session's own subagents (Explore and the like) are plain. Its workers are sessions.
-    if (relay !== undefined) {
-      if (relay.role !== 'worker' && String(input.subagentType ?? '').startsWith('flow:')) {
-        return { deny: 'flow: start workers with mcp__flow__session action start (this session runs in a terminal and has no flow:* agent types).' }
-      }
-      return next(input)
-    }
-    let e = input
-    // Only the plugin's own rewrite below starts flow:continue: it needs the old worktree as cwd.
-    if (e.subagentType === CONTINUE) return { deny: 'flow: flow:continue is started by the plugin only; spawn a flow:worker with "Continue on branch: <branch>" in the brief.' }
-    // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
-    const plans = await read($, plan)
-    if (Object.keys(plans).length > 0 && e.name !== undefined) {
-      const parent = e.parentAgentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.parentAgentId)
-      const graph = plans[planOwner(plans, parent?.name)] ?? {}
-      const node = Object.values(graph).find(n => n.state === 'waiting' && isManagerOf(n.id, e.name))
-      if (node) {
-        const deps = node.after.filter(d => graph[d]?.state !== 'done').map(d => `${d} (${graph[d]?.state ?? '?'})`)
-        return { deny: `flow plan: ${node.id} waits on ${deps.join(', ')}. Start it when the plugin says it is ready.` }
-      }
-    }
-    // A manager may not start workers before its pre-flight is filed (and its blocking questions answered).
-    if (e.subagentType === WORKER) {
-      const gated = await preflightGate($, e.parentAgentId)
-      if (gated !== undefined) return { deny: gated }
-    }
-    // Attachments: every listed file must exist, and a relative path becomes absolute here, since the
-    // worker runs in another worktree. Before the continue rewrite and the retries, which carry this prompt.
-    if (e.subagentType === WORKER || e.subagentType === CONTINUE || e.subagentType === MANAGER) {
-      const checked = await checkAttachments(spawnIoOf($), e.prompt)
-      if ('deny' in checked) return { deny: checked.deny }
-      if (checked.prompt !== e.prompt) e = { ...e, prompt: checked.prompt }
-    }
-    // Lite mode: a `Mode: lite` line (or an earlier spawn of this manager's task) puts the LITE rules in front of the prompt.
-    let liteMode = false
-    if (e.subagentType === MANAGER) {
-      liteMode = isLite(e.prompt) || isLiteName(await read($, lite), (e as { name?: string }).name ?? e.description)
-      if (liteMode) e = { ...e, prompt: withLiteRules(e.prompt, fill(LITE_RULES, settings), LITE_MARK) }
-    }
-    if (await fableDenied(spawnIoOf($), e)) return { deny: FABLE_DENY }
-    // Best-of-N: an arm spawn is checked against best_of_n, the manager's live workers and max_workers.
-    // The slot it reserves is given back when the spawn returns or fails (and expires on its own).
-    let arm: ReturnType<typeof armOfSpawn>
-    let releaseArm = (): void => undefined
-    if (e.subagentType === WORKER) {
-      const checked = await armSpawnCheck($, e, settings)
-      if ('deny' in checked) return { deny: checked.deny }
-      releaseArm = checked.release
-      const name = (e as { name?: string }).name ?? e.description
-      if (parseArm(e.prompt) !== undefined || generation(name) >= 2) {
-        await loadLedger($)
-        arm = armOfSpawn(name, e.prompt, await read($, ledger))
-      }
-    }
-    // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
-    let routed: Routed | undefined
-    let effortRole: EffortRole | undefined
-    let sizeFed = false
-    // size_ab daily: the day's arm (only with decision_api jev); the off arm asks the decision API nothing.
-    let sizeArm: SizeArm | undefined
-    if (e.subagentType === WORKER || e.subagentType === MANAGER) sizeArm = sizeArmOf(settings.sizeAb, settings.decisionApi, await $.clock.now())
-    const sizer = sizerFor(sizeArm, () => jevOf($, settings))
-    if (e.subagentType === WORKER) {
-      const r = await routeWorker(spawnIoOf($), e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel }, sizer)
-      e = r.e
-      routed = r.routed
-      effortRole = 'worker'
-    } else if (e.subagentType === MANAGER) {
-      const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModelNormal ?? settings.managerModel, settings.managerModel, sizer)
-      e = r.e
-      routed = r.routed
-      effortRole = 'manager'
-      if (settings.sizeFeedback) { const f = await withSizeFeedback(spawnIoOf($), e); e = f.e; sizeFed = f.fed }
-    } else if (e.subagentType === 'Explore' && e.model === undefined && e.parentAgentId !== undefined) {
-      // Read-only exploring by a flow agent runs on the cheap model; main's own and an explicit model stay as they are.
-      const parent = (await $.agent.list()).find(a => a.id === e.parentAgentId)
-      if (parent !== undefined && FLOW_TYPES.has(parent.type)) {
-        e = { ...e, model: settings.exploreModel ?? 'haiku' }
-        effortRole = 'explore'
-      }
-    } else if (isReviewer(e.subagentType)) {
-      effortRole = 'reviewer'
-    }
-    const explicit = explicitEffort.delete(e.tool_use_id)
-    // The env is read only when there is an effort to apply; a failed read counts as unset.
-    const wantEffort = effortRole === undefined || explicit ? undefined : effortFor(effortRole, routed?.size, settings, undefined)
-    const targetEffort = wantEffort === undefined ? undefined : effortFor(effortRole!, routed?.size, settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
-    // manager_harness: main's manager runs as a claude in a terminal. The Agent tool is answered with a refusal that
-    // says it started; on a start failure the normal spawn below goes on.
-    if (e.subagentType === MANAGER && e.parentAgentId === undefined) {
-      const started = await startManagerSession($, options, e, { routed, liteMode })
-      if (started !== undefined) return started
-    }
-    // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
-    // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
-    const spawn = e.subagentType === WORKER ? await prepareContinue(spawnIoOf($), e, !noContinue) : e
-    const role = ROLE[spawn.subagentType]
-    const wanted = role === undefined ? undefined : (spawn.model ?? (settings as Record<string, unknown>)[`${role}Model`])
-    const long = typeof wanted === 'string' && wanted.includes('[1m]') ? wanted : undefined
-    // One try, with the [1m] retry; a fallback try below goes through it too.
-    const go = async (t: AgentSpawnInput) => {
-      let ev = long !== undefined && noLong ? { ...t, model: withoutLong(long) } : t
-      let started: Awaited<ReturnType<typeof next>> | { deny: string }
-      try {
-        started = await dispatch(next, ev)
-      } catch (err) {
-        if (long === undefined || noLong || !refusedLong(err)) throw err
-        started = { deny: String((err as Error).message) }
-      }
-      if (long !== undefined && !noLong && refusedLong(started)) {
-        noLong = true
-        ev = { ...t, model: withoutLong(long) }
-        void $.ui.toast(`flow: ${long} was refused for sub-agents; using ${ev.model}`)
-        started = await dispatch(next, ev)
-      }
-      return { ev, started }
-    }
-    let tried: Awaited<ReturnType<typeof go>>
-    try { tried = await go(spawn) } finally { releaseArm() }
-    let { ev, started } = tried
-    // The host refused our flow:continue rewrite: never fail the spawn for it. Start a plain worker in a
-    // new worktree and give the claimed worktree back.
-    if (spawn.subagentType === CONTINUE && !('agentId' in started && started.agentId !== undefined)) {
-      const name = (e as { name?: string }).name ?? e.description
-      const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
-      await best($, 'releasing a continuation claim', async () => { await update($, handoffs, hs => {
-        const r = branch === undefined ? undefined : hs[branch]
-        if (branch === undefined || r === undefined || r.takenBy !== name) return hs
-        const { takenBy: _t, ...rest } = r
-        return { ...hs, [branch]: rest }
-      }) })
-      // The host replays its refusal to a second next of this spawn, so no retry in this call: later
-      // continuations skip the in-place rewrite, and the manager is told to spawn the brief again.
-      noContinue = true
-      await best($, 'logging a continuation fallback', async () => appendLog($, { event: 'continue', agent: name, owner: await ownerNameOf($, e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
-      return { deny: `flow: the host refused the in-place continuation (flow:continue); spawn the same brief again and it starts as a plain flow:worker in a new worktree on ${branch}.` }
-    }
-    if ('agentId' in started && started.agentId !== undefined) {
-      const t = await $.clock.now()
-      const id = started.agentId
-      // Recorded only for a `[1m]` model finally used (after the refused-[1m] fallback). A plain
-      // model leaves it unset: its window may be the main session's, which windowOf borrows.
-      const used = ev.model ?? wanted
-      const spawnWindow = typeof used === 'string' && used.includes('[1m]') ? LARGE_WINDOW : undefined
-      await update($, activity, acts => ({
-        ...acts, [id]: { startedAt: t, lastAt: t, log: [`started: ${e.description}`], ...(spawnWindow !== undefined && { spawnWindow }), ...(targetEffort !== undefined && { effort: targetEffort }) },
-      }))
-      if (targetEffort !== undefined) agentEffort.set(id, targetEffort)
-      await refresh($)
-      void openPane($)
-      await best($, 'recording an agent in the cost ledger', async () => {
-        const name = (e as { name?: string }).name ?? e.description
-        const role = (ROLE[e.subagentType] ?? 'other') as Role
-        const parent = e.parentAgentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.parentAgentId)
-        await changeLedger($, (l, now) => setIdentity(l, id, {
-          role, name,
-          ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }),
-          ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
-          ...(typeof used === 'string' && { spawnModel: used }),
-          ...(routed !== undefined && { size: routed.size }),
-          ...(sizeFed && { sizeFeedback: true }),
-          ...(sizeArm !== undefined && { sizeArm }),
-          ...(arm !== undefined && { arm }),
-          ...(targetEffort !== undefined && { effort: targetEffort }),
-        }, now))
-      })
-      if (liteMode) await best($, 'recording a lite manager', async () => { const at = await $.clock.now(); await withLite($, cur => ({ state: recordLite(cur, (e as { name?: string }).name ?? e.description, at), out: undefined })) })
-      // A lite task files no size decisions: not for its manager, not for its workers. The routing itself still happens.
-      const liteOwner = e.subagentType === WORKER && routed !== undefined && isLiteName(await read($, lite), (await $.agent.list()).find(a => a.id === e.parentAgentId)?.name)
-      if (routed !== undefined && !liteMode && !liteOwner) {
-        const r = routed
-        if (e.subagentType === MANAGER) await best($, 'filing a manager-size decision', () => fileManagerSizeFyi(spawnIoOf($), options, (e as { name?: string }).name ?? e.description, id, r))
-        else await best($, 'filing a worker-size decision', () => fileSizeFyi(spawnIoOf($), options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
-      }
-      if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
-        await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt, liteMode))
-      }
-      if (FLOW_TYPES.has(e.subagentType)) {
-        await best($, 'logging a spawn', async () => {
-          await appendLog($, {
-            event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerNameOf($, e.parentAgentId),
-            ...(routed !== undefined && { text: `size ${routed.size} -> ${ev.model ?? routed.model}${routed.escalated ? ' (escalated)' : ''}` }),
-          })
-        })
-      }
-    }
-    return started
-  }).catch(($, e, next) => next(e))
+  // The state the agent.spawn hook (spawn-run.ts) reads and writes; it stays single here and is handed through the io.
+  const spawnState: SpawnState = {
+    relay: () => relay,
+    settings: () => settings,
+    options: () => options,
+    noLong: () => noLong,
+    setNoLong: () => { noLong = true },
+    noContinue: () => noContinue,
+    setNoContinue: () => { noContinue = true },
+    takeExplicit: id => explicitEffort.delete(id),
+    setEffort: (id, effort) => { agentEffort.set(id, effort) },
+  }
+  on('agent.spawn', ($, input, next) => onSpawn(spawnHookIoOf($, spawnState), input, next)).catch(($, e, next) => next(e))
 
   // Every tool call, the main session's too: refuse broad process kills and writes to the main
   // checkout. Then, for a subagent: refuse code edits from managers (a change goes into a

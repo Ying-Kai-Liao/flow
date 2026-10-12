@@ -48,7 +48,7 @@ export type SpawnHookIo = {
   jev: () => SizeJev | undefined
   // CLAUDE_CODE_EFFORT_LEVEL of main's environment; a failed read is unset.
   effortEnv: () => Promise<string | undefined>
-  toast: (text: string) => Promise<unknown>
+  toast: (text: string) => unknown
   best: (what: string, fn: () => Promise<void>) => Promise<void>
   refresh: () => Promise<unknown>
   openPane: () => Promise<unknown>
@@ -140,7 +140,7 @@ async function recordManager(io: SpawnHookIo, name: string, prompt: string, lite
   if (opened) io.after(mirror.preflightWaitMs, () => void io.refresh().catch(() => undefined))
 }
 
-export async function onSpawn<R extends object>(io: SpawnHookIo, input: AgentSpawnInput, next: (ev: AgentSpawnInput) => Promise<R>): Promise<R | { deny: string }> {
+export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, input: AgentSpawnInput, next: (ev: AgentSpawnInput) => Promise<R>): Promise<R | { deny: string }> {
   // A terminal session's own subagents (Explore and the like) are plain. Its workers are sessions.
   const relay = io.relay()
   if (relay !== undefined) {
@@ -244,7 +244,7 @@ export async function onSpawn<R extends object>(io: SpawnHookIo, input: AgentSpa
   // One try, with the [1m] retry; a fallback try below goes through it too.
   const go = async (t: AgentSpawnInput) => {
     let ev = long !== undefined && io.noLong() ? { ...t, model: withoutLong(long) } : t
-    let started: Awaited<ReturnType<typeof next>> | { deny: string }
+    let started: R | { deny: string }
     try {
       started = await dispatch(next, ev)
     } catch (err) {
@@ -276,7 +276,7 @@ export async function onSpawn<R extends object>(io: SpawnHookIo, input: AgentSpa
     // The host replays its refusal to a second next of this spawn, so no retry in this call: later
     // continuations skip the in-place rewrite, and the manager is told to spawn the brief again.
     io.setNoContinue()
-    await io.best('logging a continuation fallback', async () => io.spawn.appendLog( { event: 'continue', agent: name, owner: await io.spawn.ownerName(e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
+    await io.best('logging a continuation fallback', async () => io.spawn.appendLog({ event: 'continue', agent: name, owner: await io.spawn.ownerName(e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
     return { deny: `flow: the host refused the in-place continuation (flow:continue); spawn the same brief again and it starts as a plain flow:worker in a new worktree on ${branch}.` }
   }
   if ('agentId' in started && started.agentId !== undefined) {
@@ -296,7 +296,7 @@ export async function onSpawn<R extends object>(io: SpawnHookIo, input: AgentSpa
       const name = (e as { name?: string }).name ?? e.description
       const role = (ROLE[e.subagentType] ?? 'other') as Role
       const parent = e.parentAgentId === undefined ? undefined : (await io.agentList()).find(a => a.id === e.parentAgentId)
-      await io.changeLedger( (l, now) => setIdentity(l, id, {
+      await io.changeLedger((l, now) => setIdentity(l, id, {
         role, name,
         ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }),
         ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
@@ -308,7 +308,7 @@ export async function onSpawn<R extends object>(io: SpawnHookIo, input: AgentSpa
         ...(targetEffort !== undefined && { effort: targetEffort }),
       }, now))
     })
-    if (liteMode) await io.best('recording a lite manager', async () => { const at = await io.now(); await io.withLite( cur => ({ state: recordLite(cur, (e as { name?: string }).name ?? e.description, at), out: undefined })) })
+    if (liteMode) await io.best('recording a lite manager', async () => { const at = await io.now(); await io.withLite(cur => ({ state: recordLite(cur, (e as { name?: string }).name ?? e.description, at), out: undefined })) })
     // A lite task files no size decisions: not for its manager, not for its workers. The routing itself still happens.
     const liteOwner = e.subagentType === WORKER && routed !== undefined && isLiteName(await io.lite(), (await io.agentList()).find(a => a.id === e.parentAgentId)?.name)
     if (routed !== undefined && !liteMode && !liteOwner) {
@@ -321,7 +321,7 @@ export async function onSpawn<R extends object>(io: SpawnHookIo, input: AgentSpa
     }
     if (FLOW_TYPES.has(e.subagentType)) {
       await io.best('logging a spawn', async () => {
-        await io.spawn.appendLog( {
+        await io.spawn.appendLog({
           event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await io.spawn.ownerName(e.parentAgentId),
           ...(routed !== undefined && { text: `size ${routed.size} -> ${ev.model ?? routed.model}${routed.escalated ? ' (escalated)' : ''}` }),
         })
