@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Size pane views to the body rows (#170)
+### Changed
+
+- Pane: open questions and approvals fold into one row (`▸ ▤ ? 3 questions (1 blocking) · 2 decisions · i`), collapsed by default so they no longer push the agent tree out of view. Press the row or `a` to list them, capped at about a third of the pane with "and N more · i inbox".
 
 ## [0.6.75] - 2026-10-12
 

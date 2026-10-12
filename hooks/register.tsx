@@ -151,6 +151,7 @@ const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as stri
 // Reviewer section's entry.
 const cursor = atom({ plugin: 'flow', key: 'cursor' } as const, null as string | null)
 const MERGE_QUEUE_KEY = '#merge-queue'
+const QUESTIONS_KEY = '#questions'
 const folded = atom({ plugin: 'flow', key: 'folded' } as const, {} as Record<string, boolean>)
 // Following the chat view: the view (an agent id, null for main) in which the person last acted in
 // the pane. While the view differs from it, the pane shows the viewed agent; written by handlers only.
@@ -2575,8 +2576,8 @@ export const register: Register = (on, options) => {
     // The inbox key also opens the archive, so answered items keep it drawn.
     const anyOpen = (await read($, inbox)).items.length > 0
     const checksLine = paneChecksLine(await read($, checks), installed)
-    // One inbox line (counts and the key) follows the listed questions.
-    const inboxRows = Math.min(openItems.length, 5) + (openItems.length > 5 ? 1 : 0) + (openQs.length > 0 || fyiCount > 0 ? 1 : 0) + (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
+    // The questions block's rows depend on the pane height and its fold; the tree counts them itself (questionsBlock).
+    const inboxRows = (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
     const deployLines = behindLines(mirror.deployInfos, await read($, deploys), await read($, behind)).slice(0, 3)
     const shown = await read($, hinted)
     const override = await read($, overrideView)
@@ -2677,6 +2678,10 @@ export const register: Register = (on, options) => {
     const toggleQueue = async () => {
       await acted()
       await update($, folded, f => ({ ...f, [MERGE_QUEUE_KEY]: f[MERGE_QUEUE_KEY] === false }))
+    }
+    const toggleQuestions = async () => {
+      await acted()
+      await update($, folded, f => ({ ...f, [QUESTIONS_KEY]: f[QUESTIONS_KEY] === false }))
     }
     const ctx: PaneCtx = {
       els: { Box, Text, Button }, list, acts, plans, rows, columns, modelOf, t, gfocus, shown, sessionMap, arm, armMs: ARM_MS,
@@ -2796,7 +2801,7 @@ export const register: Register = (on, options) => {
 
     return treeView({
       ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, openItems, fyiCount, anyOpen, checksLine, gate, breakerNote, inboxRows, deployLines, mainU, mainModel: shortModel(mainModel), mainTime,
-      mergeQueueKey: MERGE_QUEUE_KEY, warnOf, meter, toggleFold, toggleQueue,
+      mergeQueueKey: MERGE_QUEUE_KEY, questionsKey: QUESTIONS_KEY, warnOf, meter, toggleFold, toggleQueue, toggleQuestions,
       readCursor: () => read($, cursor),
       setCursor: id => update($, cursor, () => id),
       focusRow: id => $.ui.focus({ requestId: PANE, key: id }).catch(() => undefined),
