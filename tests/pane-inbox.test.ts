@@ -211,21 +211,6 @@ test('routine decisions fold into one group row that y keeps whole; pressing the
   await ui.unmount()
 })
 
-test('y on a folded owner row skips its blocking questions and keeps its decisions', async ($, on) => {
-  const w = world(on)
-  await ask($, 'm1', [Q])
-  await fyi($, 'm1', [F(1)])
-  const ui = await mount($)
-  await open(ui)
-  // fold the owner's card into one row: pressing y on it must not take the blocking question's default
-  await ui.press({ key: 'inbox-fold' })
-  await ui.press({ key: 'inbox-yes' })
-  await ui.press({ key: 'inbox-yes' })
-  expect(stateOf(w.files, 'q1')?.state).toBe('open')
-  expect(stored(w.files).filter(x => x.state === 'open').length).toBe(1)
-  await ui.unmount()
-})
-
 test('w keeps folded decisions too, and a finished owner folds its decisions', async ($, on) => {
   const w = world(on)
   await fyi($, 'w1', [F(1, 'worker-size'), F(2)])

@@ -183,7 +183,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   and a live manager is told the question is closed. A deploy, push, env or guard item is never answered by `/flow ok`; only `/flow answer` does. All of
   them go through the same path as `mcp__flow__answer`, so delivery, notes and standing-answer suggestions
   are unchanged. Main (the agent) answers with `mcp__flow__answer`: `answers: [{id, choice}]` where choice is the option text, its
-  letter or number, or free text; or `defaults: true` (optionally `ids`) to accept the defaults.
+  letter or number, or free text; or `defaults: true` to accept the defaults of decisions and non-blocking questions; a blocking question is skipped unless its id is in `ids`.
   **In the pane**: with anything open, the key row at the bottom shows `i inbox`. The inbox view lists every
   open question (blocking first; `for <manager>` marks those not addressed to you) and decision (newest first, one row each) with one highlighted row, its options
   and `why:`. Keys: `j`/`k` move, `1`-`9` or `a`-`h` pick that option of the highlighted item, `y` takes a

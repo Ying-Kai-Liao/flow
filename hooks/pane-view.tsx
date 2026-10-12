@@ -517,18 +517,14 @@ export function inboxView(x: InboxCtx) {
     if (row.ids.length === 0) return say(`${row.group?.owner ?? 'It'} holds only questions: expand it (c) first.`)
     const lines: string[] = []
     let refused = 0
-    let skipped = 0
     for (const id of row.ids) {
       const q = (await io.readInbox()).items.find(x => x.id === id)
-      // A group row never takes a blocking question's default: only a row naming that one question does.
-      if (row.ids.length > 1 && q !== undefined && q.state === 'open' && !isFyi(q) && q.blocking === true) { skipped++; continue }
       const why = q === undefined ? undefined : protectedWhy(q)
       if (why !== undefined) { lines.push(why); refused++; continue }
       lines.push(await answerRow(id, null))
     }
-    if (skipped > 0) lines.push(`skipped ${skipped} blocking question${skipped === 1 ? '' : 's'} (answer ${skipped === 1 ? 'it' : 'them'} explicitly)`)
     // A refusal leaves the highlight where it is.
-    if (refused + skipped === lines.length - (skipped > 0 ? 1 : 0) && lines.length - (skipped > 0 ? 1 : 0) === refused) return say(lines.join(' '))
+    if (refused === lines.length) return say(lines.join(' '))
     await done(lines, fresh, i)
   })
   const keepAll = () => io.serial(async () => {

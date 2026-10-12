@@ -153,7 +153,7 @@ export const PREFLIGHT_TOOL: ToolSpec = {
 
 export const ANSWER_TOOL: ToolSpec = {
   name: 'answer',
-  description: 'Answer questions addressed to you in the decision inbox. Decisions (mcp__flow__fyi) work the same way: choice Keep, or defaults: true, keeps them; any other choice or free text undoes the decision and messages the owner. Main may answer any decision. choice: an option\'s letter, number or text, or free text. defaults: true takes every default of your open questions, or only those in ids.',
+  description: 'Answer questions addressed to you in the decision inbox. Decisions (mcp__flow__fyi) work the same way: choice Keep, or defaults: true, keeps them; any other choice or free text undoes the decision and messages the owner. Main may answer any decision. choice: an option\'s letter, number or text, or free text. defaults: true takes the default of your open decisions and non-blocking questions; a blocking question needs an explicit answer or its id in ids.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -169,7 +169,7 @@ export const ANSWER_TOOL: ToolSpec = {
         },
       },
       defaults: { type: 'boolean', description: 'Answer with the defaults' },
-      ids: { type: 'array', items: { type: 'string' }, description: 'With defaults: only these question ids' },
+      ids: { type: 'array', items: { type: 'string' }, description: 'With defaults: only these question ids (naming a blocking question takes its default)' },
     },
   },
   isDeferred: false,
