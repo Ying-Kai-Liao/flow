@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.74] - 2026-10-12
+
+### Changed
+
+- Route reasoning effort per role and size (#168)
+
 ## [0.6.73] - 2026-10-12
 
 ### Changed
