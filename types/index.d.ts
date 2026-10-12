@@ -17,6 +17,8 @@ export type LedgerEntry = {
   sizeFeedback?: boolean
   // The arm of the size_ab A/B this spawn was routed under (hooks/size-ab.ts); absent when the A/B was off.
   sizeArm?: 'jev' | 'off'
+  // A best-of-N arm (hooks/bestof.ts): the group is the package name, id the arm letter (a successor `<pkg>-a-2` stays in arm a), of how many arms.
+  arm?: { group: string; id: string; of: number }
   // The reasoning effort flow set for the agent at spawn (turn.step rewrite); unset when it inherited the session's.
   effort?: string
   // When the agent was first and last counted (ms); the status block and the 90-day prune use them.
@@ -230,7 +232,7 @@ export type Session = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff' | 'branch-delete' | 'tests-failed' | 'flaky' | 'decide'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff' | 'branch-delete' | 'tests-failed' | 'flaky' | 'decide' | 'arm-pick' | 'arm-lost'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string
