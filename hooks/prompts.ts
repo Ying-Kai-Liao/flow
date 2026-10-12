@@ -26,6 +26,13 @@ export type Settings = {
   workerModelSmall?: string
   workerModelNormal?: string
   exploreModel?: string
+  // Reasoning effort per role/size (hooks/routing.ts effortFor); unset = the session's.
+  exploreEffort?: string
+  workerEffort?: string
+  workerEffortSmall?: string
+  workerEffortNormal?: string
+  managerEffort?: string
+  reviewerEffort?: string
   // Optional decision API (decide.ts), used to pick the size at spawn: "jev" or "openai"; absent or "off" never touches the network.
   decisionApi?: 'off' | 'jev' | 'openai'
   jevModel?: string

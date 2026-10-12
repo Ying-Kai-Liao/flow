@@ -162,6 +162,48 @@
       "default": "haiku",
       "options": ["haiku", "sonnet", "opus"]
     },
+    "explore_effort": {
+      "type": "string",
+      "title": "Explore effort",
+      "description": "Advanced: Reasoning effort for Explore sub-agents started by flow agents. low, medium, high, xhigh or max; inherit keeps the session's effort. An explicit Agent effort, or CLAUDE_CODE_EFFORT_LEVEL in the environment, wins.",
+      "default": "low",
+      "options": ["low", "medium", "high", "xhigh", "max", "inherit"]
+    },
+    "worker_effort_small": {
+      "type": "string",
+      "title": "Worker effort, small briefs",
+      "description": "Advanced: Reasoning effort for workers whose brief says `Size: small`. low, medium, high, xhigh or max; inherit keeps the session's effort. An explicit Agent effort, or CLAUDE_CODE_EFFORT_LEVEL in the environment, wins.",
+      "default": "low",
+      "options": ["low", "medium", "high", "xhigh", "max", "inherit"]
+    },
+    "worker_effort_normal": {
+      "type": "string",
+      "title": "Worker effort, normal briefs",
+      "description": "Advanced: Reasoning effort for workers whose brief says `Size: normal`. low, medium, high, xhigh or max; inherit keeps the session's effort. An explicit Agent effort, or CLAUDE_CODE_EFFORT_LEVEL in the environment, wins.",
+      "default": "medium",
+      "options": ["low", "medium", "high", "xhigh", "max", "inherit"]
+    },
+    "worker_effort": {
+      "type": "string",
+      "title": "Worker effort, large briefs",
+      "description": "Advanced: Reasoning effort for workers of size large or with no Size line. low, medium, high, xhigh or max; inherit keeps the session's effort. An explicit Agent effort, or CLAUDE_CODE_EFFORT_LEVEL in the environment, wins.",
+      "default": "inherit",
+      "options": ["low", "medium", "high", "xhigh", "max", "inherit"]
+    },
+    "manager_effort": {
+      "type": "string",
+      "title": "Manager effort",
+      "description": "Advanced: Reasoning effort for managers. low, medium, high, xhigh or max; inherit keeps the session's effort. An explicit Agent effort, or CLAUDE_CODE_EFFORT_LEVEL in the environment, wins.",
+      "default": "inherit",
+      "options": ["low", "medium", "high", "xhigh", "max", "inherit"]
+    },
+    "reviewer_effort": {
+      "type": "string",
+      "title": "Reviewer effort",
+      "description": "Advanced: Reasoning effort for the reviewer. low, medium, high, xhigh or max; inherit keeps the session's effort. An explicit Agent effort, or CLAUDE_CODE_EFFORT_LEVEL in the environment, wins.",
+      "default": "medium",
+      "options": ["low", "medium", "high", "xhigh", "max", "inherit"]
+    },
     "decision_api": {
       "type": "string",
       "title": "Decision API",
