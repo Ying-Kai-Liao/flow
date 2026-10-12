@@ -54,10 +54,12 @@ import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, paneSugg
 import type { StandingIo } from './standing-run'
 import { decideEvalTool } from './decide-eval-run'
 import { sizeAbTool, sizeArmOf, sizerFor } from './size-ab'
+import { armHidden, armOfSpawn, armsTool, armSpawnRefusal } from './bestof'
+import type { ArmsIo } from './bestof'
 import type { SizeArm } from './size-ab'
 import type { DecideEvalIo } from './decide-eval-run'
 import { DEMO_TOOL, SETTINGS_TOOL } from './init-tools'
-import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, SIZE_AB_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
+import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, ARMS_TOOL, reviewerTool, SESSION_TOOL, SIZE_AB_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
 import { detect as initDetect, firstRun, HINT as INIT_HINT, settingsTool, writeMarker } from './init'
 import type { InitIo } from './init'
 import { advance as demoAdvance, answer as demoAnswer, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
@@ -217,13 +219,15 @@ const infosOf = (s: Parameters<typeof targetsOf>[0]): TargetInfo[] => targetsOf(
 // manager again. The worker is the agent named like the branch, or its continuation (-2, -3).
 export function unhandedPrs(
   prs: OpenPr[], handovers: Record<string, Handover>, roster: AgentRow[],
-  activity: Record<string, Activity>, t: number, graceMs = GRACE_MS,
+  activity: Record<string, Activity>, t: number, graceMs = GRACE_MS, armPr?: (branch: string) => boolean,
 ): Unhanded[] {
   const out: Unhanded[] = []
   for (const p of prs) {
     if (p.isDraft || !p.headRefName.startsWith('flow/')) continue
     const ho = handovers[String(p.number)]
     if (ho !== undefined && ho.status !== 'returned') continue
+    // A best-of-N arm waits for its pick: not forgotten while the group is open, never owed once it lost.
+    if (armPr?.(p.headRefName) === true) continue
     const slug = p.headRefName.slice('flow/'.length)
     const mine = roster.filter(a => a.name === slug || (a.name?.startsWith(`${slug}-`) === true && /^\d+$/.test(a.name.slice(slug.length + 1))))
     if (mine.some(a => !ENDED.has(a.status))) continue
@@ -243,7 +247,10 @@ async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
   const [cache, hs, rows, acts, t] = await Promise.all([
     read($, prCache), read($, handovers), read($, roster), read($, activity), $.clock.now(),
   ])
-  return unhandedPrs(cache.prs, hs, rows, acts, t)
+  await loadLedger($)
+  const l = await read($, ledger)
+  const armPr = armHidden(l, await readLog($), name => rows.some(a => a.name === name && !ENDED.has(a.status)))
+  return unhandedPrs(cache.prs, hs, rows, acts, t, undefined, armPr)
 }
 const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
 // The pane draws the agents as a tree of cards or as the dependency graph; the graph's highlight is a node id.
@@ -343,6 +350,7 @@ function handoverIoOf($: EngineInterface, options: Record<string, unknown>): Han
     appendLog: event => appendLog($, event),
     toast: text => { void $.ui.toast(text) },
     refresh: () => refresh($),
+    arms: async () => { await loadLedger($); return { ledger: await read($, ledger), log: await readLog($) } },
     ensureQueue: () => ensureQueue($),
     liteManager: agentId => liteManagerOf($, agentId),
   }
@@ -396,6 +404,28 @@ function slotsIoOf($: EngineInterface): SlotsIo {
     appendLog: event => appendLog($, event),
     slotDir: () => slotDir,
   }
+}
+
+function armsIoOf($: EngineInterface): ArmsIo {
+  return {
+    run: argv => $.process.run(argv),
+    ledger: async () => { await loadLedger($); return read($, ledger) },
+    log: () => readLog($),
+    appendLog: event => appendLog($, event),
+    callerName: async id => id === undefined ? undefined : (await agentsOf($)).find(a => a.id === id)?.name,
+    liveNames: async () => (await agentsOf($)).filter(a => !ENDED.has(a.status) && a.name !== undefined).map(a => a.name!),
+  }
+}
+
+// The arm-spawn refusal (hooks/bestof.ts) for a worker spawn: the parent's type and its live workers come from the roster.
+async function armSpawnCheck($: EngineInterface, e: AgentSpawnInput, settings: ReturnType<typeof settingsOf>): Promise<string | undefined> {
+  const rows = await agentsOf($)
+  const parent = e.parentAgentId === undefined ? undefined : rows.find(a => a.id === e.parentAgentId)
+  return armSpawnRefusal({
+    name: (e as { name?: string }).name ?? e.description, prompt: e.prompt, bestOfN: settings.bestOfN, arms: settings.bestOfNArms,
+    parentIsManager: parent?.type === MANAGER, maxWorkers: settings.maxWorkers,
+    liveSiblings: rows.filter(a => a.parentId === e.parentAgentId && (a.type === WORKER || a.type === CONTINUE) && !ENDED.has(a.status)).map(a => a.name ?? a.id),
+  })
 }
 
 function migrationsIoOf($: EngineInterface): MigrationsIo {
@@ -2246,6 +2276,7 @@ async function registerTools($: EngineInterface): Promise<void> {
   await $.tool.register(DEMO_TOOL)
   await $.tool.register(DECIDE_EVAL_TOOL)
   await $.tool.register(SIZE_AB_TOOL)
+  await $.tool.register(ARMS_TOOL)
 }
 
 
@@ -2415,6 +2446,7 @@ const FLOW_TOOLS = [
   'mcp__flow__settings',
   'mcp__flow__decide_eval',
   'mcp__flow__size_ab_report',
+  'mcp__flow__arms',
   'mcp__flow__demo',
   'mcp__flow__migrations',
   'mcp__flow__session',
@@ -2509,6 +2541,8 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__decide_eval': return ({ result: await decideEvalTool(decideEvalIoOf($), settings, e, e.agentId) })
 
     case 'mcp__flow__size_ab_report': return ({ result: await sizeAbTool({ stateDir: () => stateDir($), readFile: path => $.fs.read(path).then(String, () => undefined) }, e.agentId) })
+
+    case 'mcp__flow__arms': return armsTool(armsIoOf($), e, e.agentId)
 
     case 'mcp__flow__demo': return demoTool($, e, e.agentId)
 
@@ -2864,6 +2898,14 @@ export const register: Register = (on, options) => {
       if (liteMode) e = { ...e, prompt: withLiteRules(e.prompt, fill(LITE_RULES, settings), LITE_MARK) }
     }
     if (await fableDenied(spawnIoOf($), e)) return { deny: FABLE_DENY }
+    // Best-of-N: an arm spawn is checked against best_of_n, the manager's live workers and max_workers.
+    let arm: ReturnType<typeof armOfSpawn>
+    if (e.subagentType === WORKER) {
+      const refused = await armSpawnCheck($, e, settings)
+      if (refused !== undefined) return { deny: refused }
+      await loadLedger($)
+      arm = armOfSpawn((e as { name?: string }).name ?? e.description, e.prompt, await read($, ledger))
+    }
     // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
     let routed: Routed | undefined
     let effortRole: EffortRole | undefined
@@ -2970,6 +3012,7 @@ export const register: Register = (on, options) => {
           ...(routed !== undefined && { size: routed.size }),
           ...(sizeFed && { sizeFeedback: true }),
           ...(sizeArm !== undefined && { sizeArm }),
+          ...(arm !== undefined && { arm }),
           ...(targetEffort !== undefined && { effort: targetEffort }),
         }, now))
       })

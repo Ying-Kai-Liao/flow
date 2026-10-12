@@ -1,4 +1,5 @@
-import type { EnvChange, Handover, LogEvent } from '../types'
+import type { EnvChange, Handover, Ledger, LogEvent } from '../types'
+import { armHandoverRefusal } from './bestof'
 import type { settingsOf } from './settings'
 import type { Ran } from './session-run'
 import { checkEvidence, evidenceRefusal } from './evidence'
@@ -27,6 +28,8 @@ export type HandoverIo = {
   toast: (text: string) => void
   refresh: () => Promise<unknown>
   ensureQueue: () => Promise<string>
+  // The cost ledger and log, for the best-of-N gate (an arm's PR is handed over only once picked).
+  arms: () => Promise<{ ledger: Ledger; log: LogEvent[] }>
   // The name of the lite manager (lite.ts) this agent is, else undefined.
   liteManager: (agentId: string | undefined) => Promise<string | undefined>
 }
@@ -47,6 +50,8 @@ export async function handoverTool(io: HandoverIo, settings: Settings, input: Re
     const info = JSON.parse(view.stdout) as { state: string; isDraft: boolean; headRefOid: string; headRefName: string; title: string; body?: string; labels?: { name: string }[] }
     if (info.state !== 'OPEN') return { result: `Refused: PR #${pr} is ${info.state}.` }
     if (info.isDraft) return { result: `Refused: PR #${pr} is a draft. Mark it ready (gh pr ready ${pr}) first.` }
+    const armed = await io.arms().then(a => armHandoverRefusal(info.headRefName, a.ledger, a.log), () => undefined)
+    if (armed !== undefined) return { result: armed }
     if ((await io.handovers())[String(pr)]?.status === 'ready') {
       return { result: `Refused: PR #${pr} is in a batch that awaits the user's /flow push. Leave it alone; if the user sends it back you hear so.` }
     }

@@ -396,6 +396,22 @@ export const SIZE_AB_TOOL: ToolSpec = {
   isDeferred: true,
 }
 
+export const ARMS_TOOL: ToolSpec = {
+  name: 'arms',
+  description: 'Best-of-N (setting best_of_n): the manager that started competing arms (<pkg>-a, <pkg>-b, <pkg>-c, each with an "Arm: <letter> of <N>" line in its brief) picks the winner. "pick" (group = the package name without the arm letter, pr = the winner\'s PR, reason): closes the other arms\' open PRs with a comment (their branches stay), logs the pick, and returns each arm\'s cost so far and which losing arms still run (stop those with TaskStop yourself). Only the picked arm\'s PR can then be handed over. A repeat with the same PR is a no-op; another PR is refused. "report": per group each arm\'s outcome (won, lost, pending), merged or not, $ per arm and the overhead of the group over the winner; a manager sees its own groups, main all.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['pick', 'report'] },
+      group: { type: 'string', description: 'pick: the package name without the arm letter (csv-export for csv-export-a)' },
+      pr: { type: 'number', description: 'pick: the winner\'s PR number' },
+      reason: { type: 'string', description: 'pick: why this arm won; goes into the comment on the closed PRs' },
+    },
+    required: ['action'],
+  },
+  isDeferred: false,
+}
+
 export const SESSION_TOOL: ToolSpec = {
   name: 'session',
   description: 'Workers outside this session: another harness (codex, gemini, opencode, claude, or your own command line) in an Orca terminal or tmux session the user can watch. "start" (name, brief, harness, host?, command?) makes a worktree on flow/<name> and starts the harness with the worker rules and the brief; its report comes back as a "flow session:" message. "send" (name, text), "keys" (name, keys), "read" (name, lines?), "restart" (name), "list", "stop" (name, remove_worktree?).',
