@@ -581,3 +581,36 @@ built-in.
   Sessions live in this Claude Code session's memory: after a restart the terminals keep running,
   but their reports reach nobody; `/flow resume` picks up their branches like any other.
 
+## Managers and the reviewer in a terminal
+
+`manager_harness` and `reviewer_harness` (default `agent`, which changes nothing) run the manager or the
+reviewer as a claude of its own in a terminal (Orca or tmux, by `session_host`), the way a session worker
+runs. Only a harness that runs claude is accepted (`claude`, or one added in `harnesses` whose start line is
+claude); any other falls back to the agent with one toast.
+
+- **Managers.** When main starts a `flow:manager` and `manager_harness` is set, the plugin starts the terminal
+  instead and answers the Agent tool with a refusal worded as a success ("started manager ... it runs as a
+  terminal session. This is not an error"). The manager works in the main checkout. It reports by writing
+  `<git-common-dir>/flow/sessions/<name>/report.md`; each new report reaches main as "Report from manager
+  <name>:", and the terminal ending is told to main once. If the terminal cannot start, the manager starts as an
+  agent and a toast says why.
+- **The relay.** A claude in a terminal loads its own copy of the plugin. Its flow tools (`mcp__flow__*`) are not
+  run there: each call is left as a file in the session's relay directory, main's pump runs it as that session
+  and leaves the answer, so the manager's notes, asks, plan, handovers and the reviewer's take / done / back
+  behave as for an agent. A message to a terminal is typed into it.
+- **Workers of a terminal manager** are always session workers (`mcp__flow__session`, claude unless told
+  otherwise): a terminal has no `flow:worker` agent type.
+- **The reviewer in auto mode** is one long-lived terminal in a worktree of its own. A handover while it
+  lives does not start another reviewer: the plugin types `new handover: #N` into it (due deploys and a push run
+  likewise), once per PR. When the list is empty, or it is blocked (a PR awaiting approval, a batch awaiting
+  `/flow push`, a deploy awaiting approval, a PR sent back) it writes its report and waits with the terminal
+  kept; later lines come only from real events (a handover, an approval, a push), never a loop. Its report
+  goes to main like an agent's. A terminal that goes away counts in the respawn circuit breaker like a short or
+  failed agent run.
+- **The reviewer in confirm mode** reviews one batch and ends like the agent: after its report (merge_mode is
+  read then, so a change while it worked counts) the plugin stops the terminal, removes its worktree if clean,
+  and the next handover starts reviewer-N+1. The same happens in auto mode when a batch awaits `/flow push`.
+- **Known limits.** Two main sessions in one repo share the relay and the sessions file and can both pump
+  a call. The subagents of a terminal manager (Explore and the like) run their flow calls as the manager. A
+  restart of main keeps terminal sessions (they are saved in `sessions.json`), and an agent reviewer running
+  when the setting changes finishes as it is.

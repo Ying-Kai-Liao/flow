@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `manager_harness` and `reviewer_harness` now take effect. With a claude-running harness, main's `flow:manager` spawn starts a terminal session (the Agent call is answered with a refusal worded as a success, so the manager is not spawned twice), and the reviewer runs in a terminal: one long-lived session while `merge_mode` is auto (new handovers, due deploys and a push run are typed into it once, a block keeps the terminal), one batch in confirm mode (the terminal is stopped after its report and the next handover starts a fresh one). Manager and reviewer reports and ended terminals reach main and the reviewer circuit breaker as an agent's would. With both settings at `agent` nothing changes. Docs: Managers and the reviewer in a terminal.
+
 ## [0.6.85] - 2026-10-13
 
 ### Added
