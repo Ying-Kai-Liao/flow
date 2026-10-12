@@ -201,6 +201,9 @@ export type Session = {
   role?: 'manager' | 'reviewer'
   // Where it leaves its relayed tool calls and reads the answers: <state dir>/sessions/<name>/relay.
   relayDir?: string
+  // The main session that owns a role session's relay and reports: its session id and its claude pid.
+  // A main whose owner is gone, or a record without one, takes it over.
+  mainOwner?: { session: string; pid: number }
   // A manager's terminal, when Orca refused one in the main checkout: the detached Orca worktree hosting it.
   hostWorktree?: string
   // Handover instances (reviewer-run's toldKey) already typed into a reviewer terminal.

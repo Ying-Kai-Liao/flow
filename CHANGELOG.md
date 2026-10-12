@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Claude terminal sessions get flow's routed reasoning effort as `--effort <level>` on their start line: terminal managers (`manager_effort`), the terminal reviewer (`reviewer_effort`) and session workers (`worker_effort_small` / `worker_effort_normal` / `worker_effort` by the brief's `Size:` line). `inherit`, empty, an unknown level or `CLAUDE_CODE_EFFORT_LEVEL` in the environment passes nothing.
+### Fixed
+
+- Two main sessions in one repo no longer both pump and deliver for the same terminal manager or reviewer: each role session records its owning main (session id and pid), a main handles only its own, and takes over ones whose owner is gone or unrecorded. A subagent of a terminal manager can now only read through the flow tools (status, guard_tests, migrations, test_slot, list actions); its writes are refused.
 
 ## [0.6.86] - 2026-10-13
 
