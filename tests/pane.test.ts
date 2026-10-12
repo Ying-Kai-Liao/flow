@@ -195,6 +195,20 @@ test('a short viewport gives compact rows, then "+N more", keeping the header an
   await tiny.unmount()
 })
 
+test('the body rows, not the viewport rows, size the tree', async ($, on) => {
+  await setup($, on, 84_000)
+  const ui = await $.ui.mount({
+    plugin: 'flow', surface: 'terminal', ...PANE, props: { title: 'Flow', scroll: { bodyRows: 4 } } as never,
+    viewport: { columns: 100, rows: 40 },
+  } as never)
+  for (const id of ['m1', 'm2']) {
+    const chevron = await ui.find({ type: 'Button', key: `fold-${id}` })
+    if (chevron && JSON.stringify(chevron).includes('▸')) await ui.press({ key: `fold-${id}` })
+  }
+  expect(await ui.find({ type: 'Text', text: /\+\d+ more/ })).toBeDefined()
+  await ui.unmount()
+})
+
 // The engine's pane record, as a test answers `ui.open`, `ui.close` and `ui.panes` beneath the plugin.
 function paneHost(on: On): { isOpen: () => boolean; opens: () => number } {
   let open = false

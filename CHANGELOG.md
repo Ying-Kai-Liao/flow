@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Cost ledger: a running plugin no longer overwrites a newer `ledger.json` (a `ledger-rebuild --write`, or another session's saves) with its stale in-memory copy. The file carries an `__epoch` stamp, and every save writes the disk ledger plus only this session's unsaved counts.
+### Fixed
+
+- Size pane views to the body's rows (props.scroll.bodyRows) instead of the whole terminal, so the bottom hotkey row is no longer hidden behind the prompt
 
 ## [0.6.74] - 2026-10-12
 
