@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { Activity, Session } from '../types'
 
-import { sendToSession, sessionTool, startRoleSession, watchSessions } from '../hooks/session-run'
+import { sendToSession, sessionTool, startRoleSession, watchSessions, withClaudeFlags } from '../hooks/session-run'
 import type { Ran, SessionIo, SessionSettings } from '../hooks/session-run'
 import { harnessesOf } from '../hooks/sessions'
 import { settingsOf } from '../hooks/settings'
@@ -199,4 +199,30 @@ test('a role session that goes quiet moves to idle without telling anyone; one t
   expect(w.sessions().rev!.status).toBe('exited')
   expect(w.roleGone).toEqual(['rev:working'])
   expect(w.told).toEqual([])
+})
+
+const CL = 'claude --permission-mode bypassPermissions'
+
+test('claude flags: effort next to model, effort alone, none', () => {
+  expect(withClaudeFlags('claude', CL, { effort: 'low' })).toBe("claude --effort 'low' --permission-mode bypassPermissions")
+  expect(withClaudeFlags('claude', CL, { model: 'opus', effort: 'xhigh' })).toBe("claude --model 'opus' --effort 'xhigh' --permission-mode bypassPermissions")
+  expect(withClaudeFlags('claude', CL, { model: 'opus' })).toBe("claude --model 'opus' --permission-mode bypassPermissions")
+  expect(withClaudeFlags('claude', CL, {})).toBe(CL)
+})
+
+test('claude flags: inherit, empty and unknown levels pass nothing', () => {
+  for (const e of ['inherit', '', 'ultra', 'low; rm -rf /']) expect(withClaudeFlags('claude', CL, { effort: e })).toBe(CL)
+})
+
+test('claude flags: other harnesses and non-claude lines are untouched', () => {
+  expect(withClaudeFlags('codex', 'codex exec', { effort: 'high', model: 'x' })).toBe('codex exec')
+  expect(withClaudeFlags('claude', 'sh -c claude', { effort: 'high' })).toBe('sh -c claude')
+})
+
+test('a manager session starts claude with --effort, and a restart keeps it', async () => {
+  const w = world()
+  await startRoleSession(w.io, { role: 'manager', name: 'm1', prompt: 'p', effort: 'high', owner: OWNER }, SETTINGS)
+  const typed = w.runs.find(a => a[0] === 'tmux' && a.includes('-l'))!.at(-1)!
+  expect(typed).toContain("claude --effort 'high' --permission-mode")
+  expect(w.sessions().m1!.start).toContain("--effort 'high'")
 })

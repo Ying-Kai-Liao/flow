@@ -941,9 +941,11 @@ async function startManagerSession($: EngineInterface, options: Record<string, u
   }
   const model = e.model ?? route.settings.managerModel
   const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', route.settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), route.settings)
+  const managerEffort = effortFor('manager', undefined, route.settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
   const r = await startRoleSession(sessionIoOf($), {
     role: 'manager', name, harness: route.harness, owner: { id: 'main', name: 'main' },
     ...(typeof model === 'string' && { model }),
+    ...(managerEffort !== undefined && { effort: managerEffort }),
     prompt: `${MANAGER_SESSION_RULES}${rules}\n\n${e.prompt}`,
   }, route.settings)
   if (!r.ok) {
@@ -1588,9 +1590,11 @@ async function spawnReviewer($: EngineInterface, input: { subagentType: string; 
   const route = roleHarnessFor($, 'reviewer')
   if (route === undefined) return $.agent.spawn(agentInput)
   const rules = parseMode(route.settings.mergeMode) === 'confirm' ? REVIEWER_SESSION_RULES_CONFIRM : REVIEWER_SESSION_RULES_AUTO
+  const reviewerEffort = effortFor('reviewer', undefined, route.settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
   const r = await startRoleSession(sessionIoOf($), {
     role: 'reviewer', name: input.name, harness: route.harness, owner: { id: 'main', name: 'main' },
     ...(route.settings.reviewerModel !== undefined && { model: route.settings.reviewerModel }),
+    ...(reviewerEffort !== undefined && { effort: reviewerEffort }),
     prompt: `${rules}${fill(REVIEWER_PROMPT, route.settings)}\n\n${input.prompt}`,
   }, route.settings)
   if (!r.ok) {
@@ -1971,6 +1975,7 @@ function sessionIoOf($: EngineInterface): SessionIo {
     submit: text => $.prompt.submit({ text }),
     deliver: (id, text) => deliver($, id, text),
     logMax: LOG_MAX,
+    effortEnv: () => $.env.get('CLAUDE_CODE_EFFORT_LEVEL'),
     onRoleReport: (s, report) => onRoleReport($, s, report),
     onRoleGone: (s, tail) => onRoleGone($, s, tail),
   }
