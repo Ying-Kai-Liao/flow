@@ -47,7 +47,7 @@ import {
   closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, markDelivered, normalizePreflight, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
-import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess, reviewerToolAccess } from './lite'
+import { EMPTY_LITE, isLiteName, normalizeLite } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
   addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, parseNeeds,
@@ -73,7 +73,7 @@ import type { PaneEvent, PaneIo } from './pane-run'
 import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
-import { describeCall, ROLE, summarizeCall } from './pane'
+import { describeCall, ROLE } from './pane'
 import {
   fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO,
   REVIEWER_SESSION_RULES_CONFIRM, WORKER_PROMPT,
@@ -109,13 +109,12 @@ import { statusTool } from './status-run'
 import type { StatusIo, Unhanded } from './status-run'
 import { flowCommand } from './command'
 import type { CommandIo } from './command'
-import { elapsed, tokensDown, labelOf, limitLabel, thresholdOf, windowOf, wrapUpText } from './meter'
+import { elapsed, tokensDown, labelOf, thresholdOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
 import {
-  allowed, allowList, flowActive, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
+  allowList, killRefusal, remoteDeleteRefusal,
 } from './guards'
-import type { WriteTarget } from './guards'
-import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun, workerSuiteRefusal } from './testguard'
+import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun } from './testguard'
 import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, releaseCase, reviewerCase, sessionCase, WRITE_TOOLS } from './toolcall-run'
 import type { FlowToolsIo, GuardIo, ToolCallIo } from './toolcall-run'
 import { flowCatch, isFlowTool, toolCatch } from './toolguard'
@@ -127,14 +126,14 @@ import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSes
 import { ownerVerdict, pumpRelay, relayCall, stripEngineFields, subagentRefusal } from './relay'
 import type { MainIdentity, PumpIo, RelayAnswer, RelayCall, RelayIo } from './relay'
 import type { Caller, Ran, SessionIo } from './session-run'
-import { branchOwners, findWorktree, noteKey } from './state'
-import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
+import { branchOwners, noteKey } from './state'
+import { ADD_OPTION } from './guardtests'
 import {
   EMPTY_PUSH, normalizePush,
   
 } from './pushgate'
 import type { PushState } from './pushgate'
-import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, pushLines, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
+import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
 import type { PushAct, PushIo } from './pushgate-run'
 import {
   EMPTY_DEPLOYS, ENV_KIND,

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: the generic tool.call hook body, the main-checkout guard, the wrap-up reminder and the flow tools' multi-line cases (guard_tests, note, clean, push, session, deploy, release, reviewer) moved from hooks/register.tsx to hooks/toolcall-run.ts; no behaviour change.
+
 ## [0.6.97] - 2026-10-13
 
 ### Changed
@@ -18,9 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Move the agent.spawn hook body into hooks/spawn-run.ts (no behaviour change)
-### Changed
-
-- Internal: the generic tool.call hook body, the main-checkout guard, the wrap-up reminder and the flow tools' multi-line cases (guard_tests, note, clean, push, session, deploy, release, reviewer) moved from hooks/register.tsx to hooks/toolcall-run.ts; no behaviour change.
 
 ## [0.6.95] - 2026-10-13
 
