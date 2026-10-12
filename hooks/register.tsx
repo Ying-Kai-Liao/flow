@@ -4,6 +4,7 @@
 // import and wants atoms declared in this file.
 import { atom, read, update } from 'claude-code'
 import { lastLineAsks, REPORT_HINT } from './askcards'
+import { parseMode } from './mergemode'
 import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
 
 import type { Activity, AgentRow, Breaker, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
@@ -69,7 +70,8 @@ import { approvePr, detailsKey, detailsStale, fetchDetails, openerFor, platformO
 import type { DetailsCache } from './prcard'
 import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
 import {
-  fill, LITE_MARK, LITE_RULES, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT,
+  fill, LITE_MARK, LITE_RULES, MANAGER_PROMPT, MANAGER_SESSION_RULES, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO,
+  REVIEWER_SESSION_RULES_CONFIRM, WORKER_PROMPT,
 } from './prompts'
 import type { Settings } from './prompts'
 import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
@@ -111,10 +113,10 @@ import type { WriteTarget } from './guards'
 import { slotRefusal, suiteRun } from './testguard'
 import { flowCatch, isFlowTool, toolCatch } from './toolguard'
 import {
-  ago, claudeLimits, harnessesOf, roleAgents, runsOutIn, SESSION, sessionKey, sessionLive, sessionRow,
+  ago, claudeLimits, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, SESSION, sessionKey, sessionLive, sessionRow,
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
-import { sendToSession, sessionTool as sessionToolTo, watchSessions as watchSessionsTo } from './session-run'
+import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSessions as watchSessionsTo } from './session-run'
 import { pumpRelay, relayCall, stripEngineFields } from './relay'
 import type { PumpIo, RelayAnswer, RelayCall, RelayIo } from './relay'
 import type { Caller, Ran, SessionIo } from './session-run'
@@ -925,6 +927,34 @@ async function toolCallerOf($: EngineInterface, agentId: string | undefined): Pr
   return me.type === MANAGER || WORKERS.has(me.type) ? { kind: 'other' } : { kind: 'reviewer' }
 }
 
+// main's flow:manager spawn as a terminal session (manager_harness), after the model routing. Undefined: the
+// agent starts as usual. The bookkeeping an in-process manager gets (pre-flight record, lite record, size
+// decision) is done here; the session's own start logs the spawn and opens its activity card.
+async function startManagerSession($: EngineInterface, options: Record<string, unknown>, e: AgentSpawnInput, ctx: { routed: Routed | undefined; liteMode: boolean }): Promise<{ deny: string } | undefined> {
+  const route = roleHarnessFor($, 'manager')
+  if (route === undefined) return undefined
+  const name = (e as { name?: string }).name ?? e.description
+  const model = e.model ?? route.settings.managerModel
+  const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', route.settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), route.settings)
+  const r = await startRoleSession(sessionIoOf($), {
+    role: 'manager', name, harness: route.harness, owner: { id: 'main', name: 'main' },
+    ...(typeof model === 'string' && { model }),
+    prompt: `${MANAGER_SESSION_RULES}${rules}\n\n${e.prompt}`,
+  }, route.settings)
+  if (!r.ok) {
+    void $.ui.toast(`flow: could not start manager ${name} in a terminal (${r.text}); starting it as an agent`)
+    return undefined
+  }
+  const id = sessionKey(name)
+  if (mirror.preflightOn) await best($, 'recording a pre-flight', () => recordManager($, name, e.prompt, ctx.liteMode))
+  if (ctx.liteMode) await best($, 'recording a lite manager', async () => { const at = await $.clock.now(); await withLite($, cur => ({ state: recordLite(cur, name, at), out: undefined })) })
+  if (ctx.routed !== undefined && !ctx.liteMode) {
+    const routed = ctx.routed
+    await best($, 'filing a manager-size decision', () => fileManagerSizeFyi(spawnIoOf($), options, name, id, routed))
+  }
+  return { deny: `flow: started manager ${name} in ${r.session.host} (${r.session.handle}); it runs as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
+}
+
 // A manager main just started joins the open round, or opens one with a timer for the wait. A lite one is skipped.
 async function recordManager($: EngineInterface, name: string, prompt: string, liteMode: boolean): Promise<void> {
   const t = await $.clock.now()
@@ -1473,7 +1503,14 @@ function queueIoOf($: EngineInterface): QueueIo {
     deploys: () => read($, deploys),
     runs: () => read($, queueRuns),
     setRuns: n => update($, queueRuns, () => n),
-    spawn: input => $.agent.spawn(input),
+    spawn: input => spawnReviewer($, input),
+    reviewerSession: async () => Object.values(await read($, sessions)).find(x => x.role === 'reviewer' && sessionLive(x)),
+    nudge: async (s, text, told) => {
+      const r = await sendToSession(sessionIoOf($), s, text)
+      if (r.exitCode !== 0) return r.stderr.trim() || `could not type into ${s.name}`
+      await sessionIoOf($).updateSessions(all => all[s.name] === undefined ? all : { ...all, [s.name]: { ...all[s.name]!, nudged: told } })
+      return undefined
+    },
     breaker: breakerIoOf($),
     wait: ms => {
       // One timer at a time: several ends or handovers during a wait start at most one reviewer.
@@ -1488,6 +1525,71 @@ function queueIoOf($: EngineInterface): QueueIo {
 }
 
 let breakerTimer = false
+
+// A reviewer's report to main: its whole answer, only for a run that did batch work, once main's transcript
+// lacks it (the host may have delivered it already). The run's work record goes with it.
+async function relayReviewerReport($: EngineInterface, id: string, name: string, answer: string): Promise<void> {
+  const work = (await read($, reviewerWork))[id]
+  await update($, reviewerWork, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id)))
+  const full = reviewerReport(answer, work)
+  if (full === undefined) return
+  $.clock.after(RELAY_DELAY_MS, () => void (async () => {
+    if (!(await mainHasAnswer($, answer))) toMain($, `Report from reviewer ${name}:\n${full}`)
+  })().catch(() => undefined))
+}
+
+// A reviewer run ended (agent or terminal): the breaker records it, which decides when the next one may start,
+// and a queue with work left gets a fresh reviewer. A reviewer that ends at once must not be replaced at once.
+async function reviewerEnded($: EngineInterface, name: string, end: { answer: string; reason?: string; status?: string }): Promise<void> {
+  await best($, 'recording the reviewer end', () => noteReviewerEnd(breakerIoOf($), { name, ...end }))
+  await ensureQueue($)
+}
+
+// A reviewer in a terminal reported. `ended`: its session is over (one batch in confirm mode, or it went away), so
+// the run closes like an agent's end; otherwise it keeps waiting in its terminal, and leftover work is nudged to it.
+async function reviewerRan($: EngineInterface, id: string, name: string, end: { answer: string; reason?: string; status?: string }, ended: boolean): Promise<void> {
+  await relayReviewerReport($, id, name, end.answer)
+  if (ended) await reviewerEnded($, name, end)
+  else await ensureQueue($)
+}
+
+// The settings as last loaded, for the module-level code that starts terminal sessions (register()'s own copy
+// is a closure variable).
+let heldSettings: ReturnType<typeof settingsOf> | undefined
+
+// A role harness that cannot run (unknown, or not claude) is said once per reason, then the agent runs as before.
+const roleReasons = new Set<string>()
+function roleHarnessFor($: EngineInterface, role: 'manager' | 'reviewer'): { harness: string; settings: ReturnType<typeof settingsOf> } | undefined {
+  const s = heldSettings
+  if (s === undefined) return undefined
+  const picked = roleHarnessOf((role === 'manager' ? s.managerHarness : s.reviewerHarness) ?? 'agent', s.harnesses)
+  if (picked.reason !== undefined && !roleReasons.has(`${role}:${picked.reason}`)) {
+    roleReasons.add(`${role}:${picked.reason}`)
+    void $.ui.toast(`flow: ${role}_harness: ${picked.reason}`)
+  }
+  return picked.harness === 'agent' ? undefined : { harness: picked.harness, settings: s }
+}
+
+// The reviewer: a terminal session when reviewer_harness names a claude harness, else the agent as always.
+// A session that cannot start falls back to the agent (and says why) so the queue is not stuck on it.
+async function spawnReviewer($: EngineInterface, input: { subagentType: string; name: string; description: string; prompt: string; pending?: number[] }): Promise<{ deny?: string }> {
+  const { pending, ...agentInput } = input
+  const route = roleHarnessFor($, 'reviewer')
+  if (route === undefined) return $.agent.spawn(agentInput)
+  const rules = parseMode(route.settings.mergeMode) === 'confirm' ? REVIEWER_SESSION_RULES_CONFIRM : REVIEWER_SESSION_RULES_AUTO
+  const r = await startRoleSession(sessionIoOf($), {
+    role: 'reviewer', name: input.name, harness: route.harness, owner: { id: 'main', name: 'main' },
+    ...(route.settings.reviewerModel !== undefined && { model: route.settings.reviewerModel }),
+    prompt: `${rules}${fill(REVIEWER_PROMPT, route.settings)}\n\n${input.prompt}`,
+  }, route.settings)
+  if (!r.ok) {
+    void $.ui.toast(`flow: could not start the reviewer in a terminal (${r.text}); using an agent`)
+    return $.agent.spawn(agentInput)
+  }
+  const told = pending ?? []
+  if (told.length > 0) await sessionIoOf($).updateSessions(all => all[input.name] === undefined ? all : { ...all, [input.name]: { ...all[input.name]!, nudged: told } })
+  return {}
+}
 
 function breakerIoOf($: EngineInterface): BreakerIo {
   return {
@@ -1858,7 +1960,40 @@ function sessionIoOf($: EngineInterface): SessionIo {
     submit: text => $.prompt.submit({ text }),
     deliver: (id, text) => deliver($, id, text),
     logMax: LOG_MAX,
+    onRoleReport: (s, report) => onRoleReport($, s, report),
+    onRoleGone: (s, tail) => onRoleGone($, s, tail),
   }
+}
+
+// A manager's or the reviewer's terminal wrote its report. A manager's goes to main the way an in-process manager's
+// final answer does; it is not an end (a terminal manager reports, then waits for the reviewer's messages), so
+// nothing is marked finished here.
+async function onRoleReport($: EngineInterface, s: Session, report: string): Promise<void> {
+  if (s.role === 'manager') {
+    toMain($, `Report from manager ${s.name}:\n${report}${mirror.askCards && lastLineAsks(report) ? `\n${REPORT_HINT}` : ''}`)
+    return
+  }
+  const id = sessionKey(s.name)
+  const batch = (await read($, pushState)).batch
+  // Read now, not at the start: merge_mode may have changed while it worked. A batch waiting for /flow push also
+  // ends the session; the push run is a fresh reviewer's.
+  const oneBatch = parseMode(heldSettings?.mergeMode) === 'confirm' || batch?.state === 'ready'
+  if (!oneBatch || heldSettings === undefined) {
+    await reviewerRan($, id, s.name, { answer: report }, false)
+    return
+  }
+  await best($, 'stopping the reviewer terminal', async () => void await sessionToolTo(sessionIoOf($), { action: 'stop', name: s.name, remove_worktree: true }, { id: 'main', name: 'main' }, heldSettings!))
+  await reviewerRan($, id, s.name, { answer: report }, true)
+}
+
+// A manager's or the reviewer's terminal went away. The session is 'exited', so the roster no longer lists it.
+async function onRoleGone($: EngineInterface, s: Session, tail: string): Promise<void> {
+  if (s.role === 'manager') {
+    toMain($, `flow session: manager "${s.name}" (${s.host}) ended its terminal. Its session is over; start a new manager if its task is not done.${tail.trim() ? `\nLast terminal lines:\n${tail.trim()}` : ''}`)
+    await refresh($)
+    return
+  }
+  await reviewerEnded($, s.name, { answer: tail.trim() === '' ? 'the terminal ended' : tail })
 }
 // The sessions record on disk (<state dir>/sessions.json): a main that restarts keeps its terminal
 // sessions, so their relay directories are pumped again and their reports still reach their owner.
@@ -2294,6 +2429,7 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
 
 export const register: Register = (on, options) => {
   let settings = settingsOf(renameOptions(options), 'main')
+  heldSettings = settings
   mirror.queueOn = settings.useReviewer
   mirror.cleanupMode = settings.cleanup
   mirror.cleanupBase = settings.base
@@ -2312,6 +2448,7 @@ export const register: Register = (on, options) => {
   // Everything that mirrors the settings in a module-level variable is refreshed together.
   const apply = (s: typeof settings) => {
     settings = s
+    heldSettings = s
     mirror.queueOn = s.useReviewer
     mirror.cleanupMode = s.cleanup
     mirror.cleanupBase = s.base
@@ -2635,6 +2772,12 @@ export const register: Register = (on, options) => {
     // The env is read only when there is an effort to apply; a failed read counts as unset.
     const wantEffort = effortRole === undefined || explicit ? undefined : effortFor(effortRole, routed?.size, settings, undefined)
     const targetEffort = wantEffort === undefined ? undefined : effortFor(effortRole!, routed?.size, settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
+    // manager_harness: main's manager runs as a claude in a terminal. The Agent tool is answered with a refusal that
+    // says it started; on a start failure the normal spawn below goes on.
+    if (e.subagentType === MANAGER && e.parentAgentId === undefined) {
+      const started = await startManagerSession($, options, e, { routed, liteMode })
+      if (started !== undefined) return started
+    }
     // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
     // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
     const spawn = e.subagentType === WORKER ? await prepareContinue(spawnIoOf($), e, !noContinue) : e
@@ -2880,14 +3023,7 @@ export const register: Register = (on, options) => {
       // No host notification reaches main for a reviewer the plugin spawned: relay its whole report,
       // only for runs that did batch work.
       if (me !== undefined && isReviewer(me.type)) {
-        const work = runWork
-        await update($, reviewerWork, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id)))
-        const full = reviewerReport(e.answer, work)
-        if (full !== undefined) {
-          $.clock.after(RELAY_DELAY_MS, () => void (async () => {
-            if (!(await mainHasAnswer($, e.answer))) toMain($, `Report from reviewer ${me.name}:\n${full}`)
-          })().catch(() => undefined))
-        }
+        await relayReviewerReport($, id, me.name ?? '', e.answer)
       }
       // A manager someone other than main woke: the host returned its answer to that agent, so main
       // gets it here (once; main's own wake-ups never set the mark).
@@ -2907,10 +3043,7 @@ export const register: Register = (on, options) => {
       }
       // A reviewer that ends at once (no answer, an API error) must not be replaced at once: the breaker records
       // the end and decides when, or whether, the next one starts.
-      if (me && isReviewer(me.type)) {
-        await best($, 'recording the reviewer end', () => noteReviewerEnd(breakerIoOf($), { name: me.name ?? '', answer: e.answer, reason: e.reason, status: me.status }))
-        await ensureQueue($)
-      }
+      if (me && isReviewer(me.type)) await reviewerEnded($, me.name ?? '', { answer: e.answer, reason: e.reason, status: me.status })
     }
     return next(e)
   })

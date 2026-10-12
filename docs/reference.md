@@ -75,7 +75,9 @@ The ones most repos set. Everything else is under Advanced settings.
 | `context_warn_tokens` | 0 | `/config`, file | an optional cap in tokens over both percents; the lower applies. 0 = off, percent only. Drives the handoff, the meter marker and the yellow point |
 | `handoff` | on | `/config`, file | workers and managers: at the limit they are told to hand off (see Continuing work). Off: the meter only shows |
 | `worker_harness` | `agent` | `/config`, file | managers: `agent` starts `flow:worker` agents; a harness name (`codex`, …) starts every worker in a terminal instead (see Workers in other harnesses) |
-| `session_host` | `auto` | `/config`, file | where session workers run: `auto` (Orca when it runs, else tmux), `orca`, `tmux` |
+| `manager_harness` | `agent` | `/config`, file | main: `agent` starts `flow:manager` as an agent; a claude-running harness name (`claude`, …) starts each manager as a claude in a terminal instead (see Managers and the reviewer in a terminal) |
+| `reviewer_harness` | `agent` | `/config`, file | `agent` starts the reviewer as an agent; a claude-running harness runs it in a terminal: one long-lived session while `merge_mode` is auto, one batch in confirm mode |
+| `session_host` | `auto` | `/config`, file | where session workers, terminal managers and the terminal reviewer run: `auto` (Orca when it runs, else tmux), `orca`, `tmux` |
 | `harnesses` | the four built-ins | `/config` (JSON string), file | harness name to a start line or `{start, resume?, program?, quota?, digest?}`, over the built-ins; `""` removes one |
 | `min_quota` | 10 | `/config`, file | a session worker whose harness has a `quota` is refused below this percent left; 0 = never |
 | `base_branch` | the remote's default branch | `/config`, file | everyone |
@@ -150,12 +152,13 @@ Orca is an optional place to run session workers; flow does not need it. Nothing
 
 - **The default path needs neither Orca nor tmux.** With `worker_harness` at `agent`, managers start `flow:worker` agents inside the Claude session. No terminal host is involved.
 - **Session workers** (a `worker_harness` such as `codex`) run in a terminal, picked by `session_host`. `auto` uses Orca only when `orca status` exits 0 and reports `runtimeReachable: true`; otherwise it uses tmux when `tmux -V` works; otherwise it refuses to start with `Neither Orca (orca status) nor tmux is available to run a session in.`
+- **Managers and the reviewer** can run in a terminal too (`manager_harness`, `reviewer_harness`), on the same host choice; with both at `agent` (the default) neither is used.
 - **Pure tmux:** set `session_host` to `tmux`. The Orca probe is then skipped. If tmux is missing the start is refused with `tmux is not installed.` (With `orca` set and Orca not running: `Orca is not reachable (orca status). Open Orca, or use host "tmux".`)
 - **What the tmux path does:** it makes the worktree with plain git (`git worktree add -b flow/<name> <repo>/.claude/worktrees/<name> origin/<base>`), then starts the harness in a detached session named `flow-<name>` (`tmux new-session -d`). `stop` runs `tmux kill-session`; `remove_worktree` runs `git worktree remove` only when the tree is clean and pushed; `restart` uses `respawn-pane -k`. If tmux itself fails to start, the worktree stays and the message says so. Cleanup and worktree handling elsewhere use plain git.
 - **A missing `orca` binary is harmless.** A command that cannot start counts as a failed probe (exit 127), so `auto` falls back to tmux.
 - **Quota** applies only to harness specs with a `quota` field (only the built-in `codex` has one, `codex-logs`, read from `~/.codex/sessions`). A stale or unreadable log never blocks a start.
 
-Settings that matter on this path: `worker_harness`, `session_host`, `harnesses`, `min_quota`. See Workers in other harnesses in [How flow works](how-it-works.md).
+Settings that matter on this path: `worker_harness`, `manager_harness`, `reviewer_harness`, `session_host`, `harnesses`, `min_quota`. See Workers in other harnesses and Managers and the reviewer in a terminal in [How flow works](how-it-works.md).
 
 ## Tools the agents use
 
