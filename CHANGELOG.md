@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.84] - 2026-10-12
+
 ### Added
 
 - Building blocks for running managers and the reviewer as terminal (Orca or tmux) claude sessions: `manager_harness` and `reviewer_harness` settings (default `agent`, today's behaviour; only a claude-running harness is accepted), a disk relay (hooks/relay.ts) that forwards a terminal session's flow tool calls to the main session, role-aware session rows, start, watch and message delivery (hooks/sessions.ts, hooks/session-run.ts), and the manager and reviewer terminal prompts. Not wired in yet.
