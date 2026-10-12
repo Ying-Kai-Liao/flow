@@ -10,7 +10,7 @@ export const JEV_DEFAULT_MODEL = 'jev-latest'
 
 type JevSettings = { jevApiKey?: string; jevBaseUrl?: string; jevModel?: string; openrouterApiKey?: string; openrouterBaseUrl?: string; openrouterJevModel?: string }
 
-// The route to Jev: the direct key (jev_api_key, jev_base_url, jev_model) wins; else the OpenRouter key
+// The route to Jev: the direct key (typesafe_api_key, jev_base_url, jev_model) wins; else the OpenRouter key
 // (openrouter_api_key, openrouter_base_url, openrouter_jev_model), same request and response. `via` names the route in notes.
 export function jevConfig(s: JevSettings): { key?: string; baseUrl: string; model: string; via?: 'openrouter' } {
   const trim = (u: string) => u.replace(/\/+$/, '')

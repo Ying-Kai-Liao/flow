@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The `jev_api_key` option is now `typesafe_api_key`. `jev_api_key` still works as a deprecated alias, read only while `typesafe_api_key` is empty.
+
 ## [0.6.69] - 2026-10-12
 
 ### Changed

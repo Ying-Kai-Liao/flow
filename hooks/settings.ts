@@ -45,6 +45,7 @@ export const KEYS: Record<string, Kind> = {
   decide_handoff: 'boolean',
   decide_min_confidence: 'number',
   size_min_confidence: 'number',
+  typesafe_api_key: 'string',
   jev_api_key: 'string',
   jev_base_url: 'string',
   openrouter_api_key: 'string',
@@ -97,7 +98,7 @@ export const KEYS: Record<string, Kind> = {
 export const CHOICES: Record<string, string[]> = { push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'] }
 
 // API keys are sensitive /config options (kept in secure storage); a settings file, which may be committed, can't set them.
-export const SECRET_KEYS = ['jev_api_key', 'openrouter_api_key', 'openai_api_key']
+export const SECRET_KEYS = ['typesafe_api_key', 'jev_api_key', 'openrouter_api_key', 'openai_api_key']
 
 export const APPEND_KEYS = ['worker_checks', 'always_tests', 'flaky_tests', 'big_files', 'decision_phrases']
 
@@ -304,7 +305,8 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     decideHandoff: options.decide_handoff === true,
     decideMinConfidence: Math.min(1, Math.max(0, num('decide_min_confidence', 0.8))),
     sizeMinConfidence: Math.min(1, Math.max(0, num('size_min_confidence', 0))),
-    ...(str('jev_api_key', '') ? { jevApiKey: str('jev_api_key', '') } : {}),
+    // jev_api_key is the old name of typesafe_api_key; it applies only while typesafe_api_key is empty.
+    ...(str('typesafe_api_key', '') || str('jev_api_key', '') ? { jevApiKey: str('typesafe_api_key', '') || str('jev_api_key', '') } : {}),
     ...(str('jev_base_url', '') ? { jevBaseUrl: str('jev_base_url', '') } : {}),
     ...(str('openrouter_api_key', '') ? { openrouterApiKey: str('openrouter_api_key', '') } : {}),
     ...(str('openrouter_jev_model', '') ? { openrouterJevModel: str('openrouter_jev_model', '') } : {}),
