@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.90] - 2026-10-13
+
+### Changed
+
+- Live-test fixes: lite line, manager report write, relayed ask test (#195)
+
 ## [0.6.89] - 2026-10-13
 
 ### Changed
@@ -15,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The reviewer (agent or terminal) queues ahead of worker and main waiters for a test slot, so its full check no longer waits behind every worker's run; it never preempts a holder or an offered grant.
+### Fixed
+
+- A task line that merely starts with "Mode: lite" (such as "Mode: lite is NOT wanted") no longer starts the manager in lite mode; only a line that is exactly `Mode: lite` does.
+- A terminal manager can write its own session report file (`sessions/<name>/report.md`); every other edit stays refused.
+- Test that a blocking ask relayed from a terminal manager stays open in main's inbox and cannot be answered by the manager.
 
 ## [0.6.88] - 2026-10-13
 
@@ -39,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Two main sessions in one repo no longer both pump and deliver for the same terminal manager or reviewer: each role session records its owning main (session id and pid), a main handles only its own, and takes over ones whose owner is gone or unrecorded. A subagent of a terminal manager can now only read through the flow tools (status, guard_tests, migrations, test_slot, list actions); its writes are refused.
+### Added
+
+- Tests for the reviewer terminal re-tell (a due deploy or push run is typed again only when its signature changes) and for the gone-reviewer relay to main.
 
 ## [0.6.86] - 2026-10-13
 

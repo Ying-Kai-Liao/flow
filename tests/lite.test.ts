@@ -76,6 +76,10 @@ test('Mode: lite is detected and implies Pre-flight: skip', () => {
   expect(isLite('task\n  Mode:  Lite\n')).toBe(true)
   expect(isLite('The Mode: lite switch')).toBe(false)
   expect(isLite('Mode: litezone')).toBe(false)
+  // The live Orca test: a task that says lite is not wanted must not start lite.
+  expect(isLite('Mode: lite is NOT wanted: use normal handovers')).toBe(false)
+  expect(isLite('Mode: lite, no pre-flight')).toBe(false)
+  expect(isSkip('Mode: lite is NOT wanted')).toBe(false)
   expect(isSkip('Mode: lite\nx')).toBe(true)
   expect(isSkip('plain task')).toBe(false)
 })
