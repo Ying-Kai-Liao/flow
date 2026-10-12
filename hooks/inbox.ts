@@ -1,4 +1,5 @@
 import { noteKey } from './state'
+import { dupAskers, dupHeads, dupHidden, dupMark } from './inbox-dups'
 import { mdPlain } from './markdown'
 import { DEFAULT_WIDTH, renderTable } from './table'
 import type { Inbox, Question } from '../types'
@@ -233,6 +234,17 @@ export const hiddenByLink = (inbox: Inbox | undefined, q: Question): boolean => 
   return via !== undefined && via.state === 'open'
 }
 const questionsOf = (inbox: Inbox | undefined): Question[] => openAll(inbox ?? EMPTY_INBOX).filter(q => !isFyi(q) && !hiddenByLink(inbox, q))
+// The questions as a person sees them: a duplicate group is its first-asked question (blocking if any member is).
+// A member's own id still answers the whole group (messaging-run).
+const shownQuestions = (inbox: Inbox | undefined): Question[] => {
+  const qs = questionsOf(inbox)
+  const heads = dupHeads(qs)
+  const hidden = dupHidden(qs)
+  return qs.filter(q => !hidden.has(q.id)).map(q => {
+    const g = heads.get(q.id)
+    return g !== undefined && !q.blocking && g.some(m => m.blocking) ? { ...q, blocking: true } : q
+  })
+}
 const fyisOf = (inbox: Inbox | undefined): Question[] => openAll(inbox ?? EMPTY_INBOX).filter(isFyi).sort((a, b) => a.askedAt - b.askedAt)
 
 // Blocking questions first, then oldest first.
@@ -284,7 +296,7 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
 
 // "2 questions (1 blocking), 9 decisions." for what is open.
 function summary(inbox: Inbox | undefined): string {
-  const qs = questionsOf(inbox)
+  const qs = shownQuestions(inbox)
   const f = fyisOf(inbox).length
   const blocking = qs.filter(q => q.blocking).length
   const parts = [
@@ -342,12 +354,13 @@ const optionLines = (q: Question, pad: string): string[] =>
 // Options on one line: "a) Keep (default)  b) Undo".
 const optionsLine = (q: Question): string => q.options.map((opt, i) => `${String.fromCharCode(97 + i)}) ${opt}${opt === q.default ? ' (default)' : ''}`).join('  ')
 
-function questionLines(q: Question, now: number): string[] {
+function questionLines(q: Question, now: number, dup?: Question[]): string[] {
   const tags = tagsOf(q)
-  const who = isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`
+  const who = dup !== undefined ? dupAskers(dup) : isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`
   return [
-    `  ${q.id}${tags === '' ? '' : ` ${tags}`} (${who}, ${age(now - q.askedAt)}): ${q.guard !== undefined ? q.question : clip(q.question)}`,
+    `  ${q.id}${dup === undefined ? '' : ` ${dupMark(dup)}`}${tags === '' ? '' : ` ${tags}`} (${who}, ${age(now - q.askedAt)}): ${q.guard !== undefined ? q.question : clip(q.question)}`,
     `      ${clip(optionsLine(q), 110)}`,
+    ...(dup === undefined ? [] : [`      the same question from ${dup.length} managers (${dup.slice(1).map(m => `${m.id} ${m.owner}`).join(', ')}): answering ${q.id} answers all`]),
   ]
 }
 
@@ -361,6 +374,8 @@ export type PaneRow = {
   q?: Question
   // The card the row belongs to: on a collapsed group's single row, and on every item row of an expanded one.
   group?: PaneGroup
+  // The members of a duplicate group (this row's question first): one row stands for all of them.
+  dups?: Question[]
 }
 
 // An owner's decisions and questions drawn as one card; the routine decisions are one such card too.
@@ -425,7 +440,8 @@ export const groupKey = (owner: string): string => `grp:${owner}`
 // decisions; a collapsed one is a single row. Folded decisions stay open and undoable.
 export function paneRows(inbox: Inbox | undefined, ended?: Set<string>, folds: Record<string, boolean> = {}): PaneRow[] {
   const { folded, shown, labels } = foldedOf(inbox, ended)
-  const flat = [...ordered(questionsOf(inbox)), ...[...shown].reverse()]
+  const heads = dupHeads(questionsOf(inbox))
+  const flat = [...ordered(shownQuestions(inbox)), ...[...shown].reverse()]
   const owners: string[] = []
   for (const q of flat) if (!owners.includes(q.owner)) owners.push(q.owner)
   const rows: PaneRow[] = []
@@ -435,7 +451,7 @@ export function paneRows(inbox: Inbox | undefined, ended?: Set<string>, folds: R
       ...info, count: decisions.length, total: items.length, asks: items.some(q => !isFyi(q)), blocking: items.some(q => !isFyi(q) && q.blocking),
       expanded: groupExpanded(folds, info.key), firstKey: items[0]!.id,
     }
-    if (group.expanded) rows.push(...items.map(q => ({ key: q.id, ids: [q.id], q, group })))
+    if (group.expanded) rows.push(...items.map(q => ({ key: q.id, ids: [q.id], q, group, ...(heads.has(q.id) ? { dups: heads.get(q.id)! } : {}) })))
     else rows.push({ key: group.key, ids: decisions.map(q => q.id), group })
   }
   for (const owner of owners) {
@@ -460,7 +476,8 @@ export function paneRowText(r: PaneRow): string {
   const q = r.q!
   if (isFyi(q)) return `${q.id} ${q.owner}${q.topic ? ` [${q.topic}]` : ''}: ${clip(mdPlain(q.question), 80)}`
   const tags = tagsOf(q)
-  return `${q.id}${tags === '' ? '' : ` ${tags}`} ${isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`}: ${q.guard !== undefined ? q.question : clip(mdPlain(q.question), 80)}`
+  const mark = r.dups === undefined ? '' : ` ${dupMark(r.dups)}`
+  return `${q.id}${mark}${tags === '' ? '' : ` ${tags}`} ${r.dups !== undefined ? dupAskers(r.dups) : isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`}: ${q.guard !== undefined ? q.question : clip(mdPlain(q.question), 80)}`
 }
 
 // What y and c do on a collapsed card's row; the pane's key line shows it while that row is hot.
@@ -490,7 +507,8 @@ export function decisionRows(decisions: Question[], now: number, all: boolean, w
 // opts.all: every decision, not just the newest few.
 // Routine decisions and those of finished agents (opts.ended) are one line, unless opts.all lists everything.
 export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?: boolean; width?: number; ended?: Set<string> } = {}): string {
-  const open = ordered(questionsOf(inbox))
+  const open = ordered(shownQuestions(inbox))
+  const heads = dupHeads(questionsOf(inbox))
   const allDecisions = fyisOf(inbox)
   const fold = foldedOf(inbox, opts.ended)
   const decisions = opts.all === true ? allDecisions : fold.shown
@@ -512,7 +530,7 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?:
   const lines = [summary(inbox)]
   if (open.length > 0) {
     lines.push('', 'Questions')
-    for (const q of open) lines.push(...questionLines(q, now))
+    for (const q of open) lines.push(...questionLines(q, now, heads.get(q.id)))
   }
   if (decisions.length > 0) {
     lines.push('', 'Decisions agents made (keep or undo)', ...decisionRows(decisions, now, opts.all === true, opts.width))
@@ -591,7 +609,8 @@ export function renderItem(inbox: Inbox | undefined, id: string, now: number): s
 
 // The head of mcp__flow__status: a count and one line per open question, blocking first.
 export function inboxHead(inbox: Inbox | undefined, now = Date.now()): string[] {
-  const open = ordered(questionsOf(inbox))
+  const open = ordered(shownQuestions(inbox))
+  const heads = dupHeads(questionsOf(inbox))
   const fyi = fyisOf(inbox).length
   const auto = recentAuto(inbox, now).length
   const autoLine = auto === 0 ? [] : [`Inbox: ${auto} auto-answered by standing answers in the last 24 h (/flow inbox).`]
@@ -603,7 +622,10 @@ export function inboxHead(inbox: Inbox | undefined, now = Date.now()): string[] 
   const blocking = open.filter(q => q.blocking).length
   return [
     `Inbox: ${open.length} open${blocking ? `, ${blocking} blocking` : ''} (/flow inbox shows them with options):`,
-    ...open.map(q => `  ${q.id} ${q.blocking ? 'BLOCKING ' : ''}${q.owner}: ${q.question.slice(0, 140)}`),
+    ...open.map(q => {
+      const g = heads.get(q.id)
+      return `  ${q.id}${g === undefined ? '' : ` ${dupMark(g)}`} ${q.blocking ? 'BLOCKING ' : ''}${g === undefined ? q.owner : `${dupAskers(g)} (also ${g.slice(1).map(m => m.id).join(', ')}; one answer answers all)`}: ${q.question.slice(0, 140)}`
+    }),
     ...fyiLine,
     ...keptLine,
     ...autoLine,

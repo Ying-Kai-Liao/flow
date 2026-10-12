@@ -10,6 +10,7 @@ import { askBright, COLOR, GLYPH, handoffOf, ICON, handoffText, HANDOVER_GLYPH, 
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
 import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, groupTitle, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
+import { dupAskers, dupHidden, dupMark } from './inbox-dups'
 import type { Inbox, PaneGroup, PaneRow, Question } from './inbox'
 import { MANAGER } from './core'
 import type { PushState } from './pushgate'
@@ -576,7 +577,8 @@ export function inboxView(x: InboxCtx) {
     if (to !== undefined) await io.setCursor(to.key)
   })
   const back = io.back
-  const nQ = ibox.items.filter(x => x.state === 'open' && !isFyi(x)).length
+  const dupRows = dupHidden(ibox.items)
+  const nQ = ibox.items.filter(x => x.state === 'open' && !isFyi(x) && !dupRows.has(x.id)).length
   const nF = ibox.items.filter(x => x.state === 'open' && isFyi(x)).length
   const archived = archiveOf(ibox).length
   const hasGroup = irows.length > 0
@@ -628,10 +630,11 @@ export function inboxView(x: InboxCtx) {
       const open = iopen[q.id] === true
       if (!open) {
         const other = fyi ? '' : tagsOf(q).replace(/^BLOCKING ?/, '')
-        const lead = `  ▸ ${q.id}${q.blocking && !fyi ? ' BLOCKING' : ''}${other === '' ? '' : ` ${other}`} `
+        const mark = r.dups === undefined ? '' : ` ${dupMark(r.dups)}`
+        const lead = `  ▸ ${q.id}${mark}${q.blocking && !fyi ? ' BLOCKING' : ''}${other === '' ? '' : ` ${other}`} `
         const line = (
           <Text inverse={hot}>
-            {'  ▸ '}<Text dimColor={!hot}>{q.id}</Text>{q.blocking && !fyi && <Text color="warning"> BLOCKING</Text>}{other === '' ? '' : ` ${other}`} {inlineEl(Text, q.question, `ql-${q.id}`, W - 1 - lead.length)}
+            {'  ▸ '}<Text dimColor={!hot}>{q.id}</Text>{mark}{q.blocking && !fyi && <Text color="warning"> BLOCKING</Text>}{other === '' ? '' : ` ${other}`} {inlineEl(Text, q.question, `ql-${q.id}`, W - 1 - lead.length)}
           </Text>
         )
         blocks.push({ key: `item-${q.id}`, height: 1, hot, rows: 1, node: <Button key={`item-${q.id}`} plain onPress={toggleItem(q.id)}>{line}</Button> })
@@ -643,7 +646,7 @@ export function inboxView(x: InboxCtx) {
       const shownOpts = fyi ? [] : q.options.slice(0, 9)
       const buttons = fyi ? 1 : shownOpts.length + 1
       const height = 2 + 1 + text.n + (why?.n ?? 0) + (alt?.n ?? 0) + buttons
-      const who = fyi || isAddressee(q, 'main') ? '' : `, for ${q.addressee}`
+      const who = r.dups !== undefined ? `, ${dupMark(r.dups)} (answers all): ${dupAskers(r.dups)}` : fyi || isAddressee(q, 'main') ? '' : `, for ${q.addressee}`
       blocks.push({
         key: `item-${q.id}`, height, hot, rows: 1,
         node: (

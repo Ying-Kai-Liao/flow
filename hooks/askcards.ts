@@ -11,6 +11,7 @@ export const CARDS_TEXT = [
   'Per card: header = the owner or a short label (max 12 chars); question = the full question with its context; options = the item\'s options, default first, its label ending in " (Recommended)" (env/deploy/push/reviewer items get no Recommended mark).',
   'An item with more than 4 options or a very long context stays as text.',
   'Turn the picks into ONE mcp__flow__answer call; an "Other" free-text answer goes in quoted as the choice.',
+  'An item marked xN (or listed with "also ...") is the same question from N managers: ask it once; answering any of its ids answers them all.',
   'Never answer env/deploy/push/reviewer items with defaults.',
   'If more than 4 are open, say how many remain and pop the next ones after the answer.',
   'Non-blocking questions and decisions are not popped: they stay in the text list and the inbox.',
