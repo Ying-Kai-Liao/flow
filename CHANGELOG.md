@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: the turn.step and turn.complete hook bodies and the handoff recording moved from hooks/register.tsx to hooks/turn-run.ts; no behaviour change.
+
 ## [0.6.94] - 2026-10-13
 
 ### Changed
