@@ -85,12 +85,25 @@
       "description": "Advanced: How many heavy test runs (a whole suite, the full check) may run at once across all agents of the session. Minimum 1.",
       "default": 1
     },
+    "typecheck_slots": {
+      "type": "number",
+      "title": "Typecheck slots",
+      "description": "How many typechecks (npm run typecheck, tsc) may run at once across all agents. A separate, lighter pool than the test slots. Minimum 1.",
+      "default": 1
+    },
+    "typecheck_commands": {
+      "type": "string",
+      "multiple": true,
+      "title": "Typecheck commands",
+      "description": "Advanced: Bash commands that run a typecheck. Flow refuses them unless the caller holds a typecheck slot (mcp__flow__test_slot kind typecheck). Empty: not enforced.",
+      "default": ["npm run typecheck", "tsc", "npx tsc"]
+    },
     "test_slot_commands": {
       "type": "string",
       "multiple": true,
       "title": "Test slot commands",
       "description": "Advanced: Bash commands that run a whole test suite. Flow refuses them unless the caller holds a test slot (mcp__flow__test_slot acquire). Empty: not enforced.",
-      "default": ["claude plugin test", "npm run check", "npm test", "npm run test"]
+      "default": ["claude plugin test", "npm run check", "npm test", "npm run test", "sh scripts/test-files.sh", "bash scripts/test-files.sh", "test-files.sh"]
     },
     "context_warn_percent": {
       "type": "number",

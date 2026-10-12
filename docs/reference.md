@@ -68,7 +68,9 @@ The ones most repos set. Everything else is under Advanced settings.
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
 | `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `test_slots` | 1 | `/config`, file | how many heavy test runs may run at once across all agents (minimum 1) |
-| `test_slot_commands` | `claude plugin test`, `npm run check`, `npm test`, `npm run test` | `/config`, file | Bash commands that run a whole suite; refused unless the caller holds a test slot. Empty list: not enforced |
+| `test_slot_commands` | `claude plugin test`, `npm run check`, `npm test`, `npm run test`, `sh scripts/test-files.sh`, `bash scripts/test-files.sh`, `test-files.sh` | `/config`, file | Bash commands that run a whole suite; refused unless the caller holds a test slot. Empty list: not enforced |
+| `typecheck_slots` | 1 | `/config`, file | how many typechecks may run at once across all agents (minimum 1); a separate, lighter pool than `test_slots` |
+| `typecheck_commands` | `npm run typecheck`, `tsc`, `npx tsc` | `/config`, file | Bash commands that run a typecheck; refused unless the caller holds a typecheck slot (or a test slot). `--help` and `--version` run freely. Empty list: not enforced |
 | `language` | `English` | `/config`, file | the language agents write reports and PR text in |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
 | `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
@@ -222,10 +224,35 @@ as a suite when a segment of a `&&`, `||`, `;`, `|` or newline chain (behind `cd
 (`tests/*.test.ts`), a directory (an argument without a file extension: `.`, `tests/`,
 `/tmp/copy`), or more than 5 files. Flags are ignored; 1 to 5
 explicit files run freely. An empty `test_slot_commands` turns it off; other stacks list their own
-(`pytest`, `go test ./...`). Workers started in other harnesses (`mcp__flow__session`) do not pass
-through the hook. One `claude plugin test` run already starts one child process per test file, and
-the runner has no jobs or concurrency flag or environment variable, which is why `test_slots`
-defaults to 1.
+(`pytest`, `go test ./...`). `--help`, `-h` and `--version` only print text and are never a suite run.
+Workers started in other harnesses (`mcp__flow__session`) do not pass through the hook, so only the
+worker prompt applies to them.
+
+A worker never runs the whole suite, even holding a slot: the hook refuses a suite run from a
+worker (a `flow:worker` or `flow:continue` agent) with advice to run the files it touched. The
+reviewer's full check and the main session are unaffected. `claude plugin test` takes a folder, not
+files, so `sh scripts/test-files.sh tests/a.test.ts tests/b.test.ts` runs only the named files
+(it copies the plugin and those tests to a scratch folder and runs that; the plugin's own tests
+need no slot).
+
+Typechecks take a lock of their own: `test_slot` with `kind: "typecheck"` (acquire, release,
+status work as above), at most `typecheck_slots` at once, a 10 minute lease, grant files under
+`<git-common-dir>/flow/test-slots/typecheck/`. A typecheck never waits behind a suite. Holding a test
+slot does not grant a typecheck slot, but the hook lets a test-slot holder typecheck, so the
+reviewer's full check never deadlocks on the typecheck inside it (`npm run check` itself is judged as
+a suite run only). The Flow status line shows `tsc 1/1` beside `tests 1/1`.
+
+What the runner does with processes (checked against `claude plugin test --help` and the runner,
+version 2.1.296): the parent starts a pool of `min(number of files, CPU cores)` child processes,
+each running one file with `--file`, and starts the next file as one finishes. There is no jobs or
+concurrency flag and no environment variable, so a run on a 10 core machine has about 10 children at
+once, each 250 to 300 MB and busy, whatever the number of agents. Two mitigations: a worker's
+file-only runs start one child per file (at most a handful); and
+`sh scripts/test-files.sh --jobs N --all` runs the whole suite in chunks of N files one after the
+other, which caps the children at N and still runs every file. A chunk waits for its slowest file: on a 10 core machine the suite took 121 s in chunks of 4 against 37 s in the pool, so
+it is for small machines only; `npm run check` keeps the full pool. On a small machine, keep
+`test_slots` at 1 (each suite run already uses every core), or point `full_check_command` at the
+chunked script.
 
 ## Guard tests
 
