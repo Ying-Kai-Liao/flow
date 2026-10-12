@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The pane's `y` on a group row skips blocking questions (it keeps decisions and takes non-blocking defaults only) and says how many it skipped; a single highlighted question still takes its default.
+
 ## [0.6.89] - 2026-10-13
 
 ### Changed
