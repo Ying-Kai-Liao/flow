@@ -2515,6 +2515,11 @@ export const register: Register = (on, options) => {
     return r
   })
 
+  // The body's rows, not the terminal's: viewport.rows counts the whole screen, so a tree that tall
+  // would push its bottom rows (the hotkey row) under the prompt.
+  const bodyRowsOf = (e: { props: unknown; viewport?: { rows: number } }) =>
+    (e.props as { scroll?: { bodyRows?: number } }).scroll?.bodyRows ?? e.viewport?.rows ?? 24
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     // A throw while building the tree would leave the pane blank with no hint why; draw one line instead.
     // The body below is wrapped as is (not re-indented) to keep the diff to this fix.
@@ -2525,7 +2530,7 @@ export const register: Register = (on, options) => {
     if (dm !== null) {
       const Input = ($.ui.resolve(e) as unknown as { Input?: Parameters<typeof demoView>[0]['Input'] }).Input
       return demoView({
-        els: { Box, Text, Button }, Input, rows: e.viewport?.rows ?? 24, state: dm, now: await read($, now), draft: await read($, inboxDraft), note: await read($, inboxNote),
+        els: { Box, Text, Button }, Input, rows: bodyRowsOf(e), state: dm, now: await read($, now), draft: await read($, inboxDraft), note: await read($, inboxNote),
         io: {
           setDraft: v => update($, inboxDraft, () => v),
           setNote: v => update($, inboxNote, () => v),
@@ -2590,7 +2595,7 @@ export const register: Register = (on, options) => {
       }
       await update($, overrideView, () => viewId)
     }
-    const rows = e.viewport?.rows ?? 24
+    const rows = bodyRowsOf(e)
     const warnOf = (window: number) => warnPercent(settings, window)
     // Free: no breakdown asked. Main's figures also size a subagent on the same model.
     const usage = await $.session.usage().then(u => u, () => undefined)

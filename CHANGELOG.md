@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Size pane views to the body's rows (props.scroll.bodyRows) instead of the whole terminal, so the bottom hotkey row is no longer hidden behind the prompt
+
 ## [0.6.74] - 2026-10-12
 
 ### Changed
