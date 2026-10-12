@@ -209,6 +209,38 @@ test('the body rows, not the viewport rows, size the tree', async ($, on) => {
   await ui.unmount()
 })
 
+test('an overflowing body keeps the key-hint row last; bodyRows beats the viewport, which beats 24', async ($, on) => {
+  await setup($, on, 84_000)
+  const lastButton = async (ui: Awaited<ReturnType<typeof mountCollapsed>>) => (await ui.findAll({ type: 'Button' })).at(-1)?.key
+  const open = async (props: unknown, viewport?: { columns: number; rows: number }) => {
+    const ui = await $.ui.mount({ plugin: 'flow', surface: 'terminal', ...PANE, props: { title: 'Flow', ...(props as object) } as never, ...(viewport && { viewport }) } as never)
+    for (const id of ['m1', 'm2']) {
+      const chevron = await ui.find({ type: 'Button', key: `fold-${id}` })
+      if (chevron && JSON.stringify(chevron).includes('▸')) await ui.press({ key: `fold-${id}` })
+    }
+    return ui
+  }
+  const more = { type: 'Text', text: /\+\d+ more/ } as const
+
+  // 4 body rows in a 40-row viewport: the body rows win, the tree overflows, the hint row stays.
+  const small = await open({ scroll: { bodyRows: 4 } }, { columns: 100, rows: 40 })
+  expect(await small.find(more)).toBeDefined()
+  expect(await lastButton(small)).toBe('toggle-view')
+  await small.unmount()
+
+  // No body rows: the viewport's rows size the tree.
+  const view = await open({}, { columns: 100, rows: 4 })
+  expect(await view.find(more)).toBeDefined()
+  await view.unmount()
+
+  // Neither: 24 rows, room for the whole tree.
+  const bare = await open({})
+  expect(await bare.find(more)).toBeUndefined()
+  expect(await bare.find({ type: 'Button', key: 'w2' })).toBeDefined()
+  expect(await lastButton(bare)).toBe('toggle-view')
+  await bare.unmount()
+})
+
 // The engine's pane record, as a test answers `ui.open`, `ui.close` and `ui.panes` beneath the plugin.
 function paneHost(on: On): { isOpen: () => boolean; opens: () => number } {
   let open = false

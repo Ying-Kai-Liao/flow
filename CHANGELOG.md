@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Unit tests for the `/flow` command dispatch (`tests/command.test.ts`), the usage accounting behind `turn.step` and `turn.complete` (`tests/usage-run.test.ts`: tokens in the ledger, a turn counted once, the hand-off warning) and the pane's body-rows sizing (the key-hint row stays last when the tree overflows).
+
 ## [0.6.87] - 2026-10-13
 
 ### Added
