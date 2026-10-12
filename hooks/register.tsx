@@ -2766,7 +2766,7 @@ export const register: Register = (on, options) => {
       const key = ho === undefined ? undefined : detailsKey(ho)
       const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
       return prCardView({
-        els: { Box, Text, Button }, Input, rows, pr: shownPr, ho, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note,
+        els: { Box, Text, Button }, Input, rows, columns, pr: shownPr, ho, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note,
         io: {
           ...common, leave,
           approve: n => approvePr(commandIoOf($), n),

@@ -869,5 +869,84 @@ test('every sub-view draws "esc home", and its hint row exactly once', async ($,
   lines = await rendered(ui)
   expect(count(lines, /j next/)).toBe(1)
   expect(count(lines, /esc home/)).toBe(1)
+
+// ---- markdown in the free text ----
+
+const MD_Q = {
+  question: 'Which **format** should `export.csv` use?\n\n- keep `snake_case` names\n- drop the `hooks/foo_bar.ts` path',
+  options: ['csv', 'tsv'], default: 'csv', blocking: true,
+  context: '## Why\nThe *downstream* job reads it, see [the spec](https://example.com/spec).\n\n| col | meaning |\n| --- | --- |\n| id | row id |',
+}
+const noMarks = (lines: string[]) => {
+  const t = lines.join('\n')
+  expect(t).not.toMatch(/\*\*|`|## |\]\(/)
+}
+
+for (const columns of [60, 100]) {
+  test(`at ${columns} columns a question's markdown shows in the collapsed row, the opened item and the full card`, async ($, on) => {
+    const w = world(on)
+    await ask($, 'w1', [MD_Q])
+    const ui = await mount($, 40, columns)
+    await open(ui)
+    let lines = await rendered(ui)
+    // The collapsed row is one line: markers gone, the text kept.
+    expect(lines.some(l => /▸ q1 BLOCKING Which format should export\.csv use\?/.test(l))).toBe(true)
+    noMarks(lines)
+    await ui.press({ key: 'item-q1' })
+    lines = await rendered(ui)
+    noMarks(lines)
+    for (const l of lines) expect(cols(l)).toBeLessThanOrEqual(columns)
+    expect(lines.some(l => /Which format should export\.csv use\?/.test(l))).toBe(true)
+    expect(lines.some(l => /why: Why/.test(l))).toBe(true)
+    await ui.press({ key: 'inbox-open' })
+    lines = await rendered(ui)
+    noMarks(lines)
+    expect(lines.some(l => /^Which format should export\.csv use\?$/.test(l))).toBe(true)
+    expect(lines.some(l => /^• keep snake_case names$/.test(l))).toBe(true)
+    expect(lines.some(l => /^• drop the hooks\/foo_bar\.ts path$/.test(l))).toBe(true)
+    expect(lines.some(l => /^why: Why$/.test(l))).toBe(true)
+    expect(lines.some(l => /The downstream job reads it, see the spec/.test(l))).toBe(true)
+    expect(lines.some(l => /^col +│ meaning$/.test(l))).toBe(true)
+    expect(lines.some(l => /^id +│ row id$/.test(l))).toBe(true)
+    // The options stay plain buttons, and nothing was answered by looking.
+    expect(lines.some(l => /\(https:\/\/example\.com\/spec\)\./.test(l))).toBe(true)
+    expect(await ui.find({ type: 'Button', key: 'card-opt-0' })).toBeDefined()
+    expect(stateOf(w.files, 'q1')?.state).toBe('open')
+    await ui.unmount()
+  })
+}
+
+test('a decision with markdown in its text, why and alternative reads cleanly in the card and the archive', async ($, on) => {
+  const w = world(on)
+  await fyi($, 'w1', [{ decision: 'Use **ndjson** for `export`', why: 'streams', alternative: 'a `csv` with a header *row*' }])
+  const ui = await mount($, 40, 60)
+  await open(ui)
+  await openCard(ui, 'd1')
+  let lines = await rendered(ui)
+  noMarks(lines)
+  expect(lines.some(l => /^Use ndjson for export$/.test(l))).toBe(true)
+  expect(lines.some(l => /^instead could: a csv with a header row$/.test(l))).toBe(true)
+  await ui.press({ key: 'card-yes' })
+  expect(stateOf(w.files, 'd1')?.state).not.toBe('open')
+  await ui.press({ key: 'inbox-archive' })
+  lines = await rendered(ui)
+  noMarks(lines)
+  expect(lines.some(l => /d1 .*Use ndjson for export/.test(l))).toBe(true)
+  await ui.unmount()
+})
+
+test('a long markdown question in a short pane ends in a marker and keeps the options and the footer', async ($, on) => {
+  world(on)
+  await ask($, 'w1', [{ ...Q, question: Array.from({ length: 30 }, (_, i) => `- point ${i} of a long **list**`).join('\n') }])
+  const ui = await mount($, 24, 60)
+  await open(ui)
+  await openCard(ui, 'q1')
+  const lines = await rendered(ui)
+  // (the render helper splits each option button into pieces, so it cannot count the height itself)
+  expect(lines.filter(l => /^• point/.test(l)).length).toBeLessThanOrEqual(5)
+  expect(lines.some(l => /\+\d+ more lines/.test(l))).toBe(true)
+  expect(await ui.find({ type: 'Button', key: 'card-opt-0' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'card-opt-2' })).toBeDefined()
+  expect(lines.some(l => /^y default/.test(l))).toBe(true)
   await ui.unmount()
 })

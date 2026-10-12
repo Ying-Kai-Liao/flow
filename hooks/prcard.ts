@@ -132,7 +132,13 @@ export function whyAwaits(h: Handover, setting: MergeMode, labels: string[] = []
   return 'approval was asked for (no flow:* label or mode on record)'
 }
 
-export type CardRow = { text: string; tone?: 'warning' | 'success' | 'error'; dim?: boolean; bold?: boolean }
+// `md` is the [from, to) part of `text` that is free text written by someone (shown as markdown); the rest
+// (labels, ids, branches, commands) stays literal.
+export type CardRow = { text: string; tone?: 'warning' | 'success' | 'error'; dim?: boolean; bold?: boolean; md?: readonly [number, number] }
+
+// A row of a literal prefix, markdown free text and a literal suffix; an empty body is all literal.
+const mdRow = (prefix: string, body: string, suffix = '', style: Omit<CardRow, 'text' | 'md'> = {}): CardRow =>
+  ({ text: prefix + body + suffix, ...style, ...(body === '' ? {} : { md: [prefix.length, prefix.length + body.length] as const }) })
 
 // The platform's opener for a URL; undefined where there is none.
 export const openerFor = (platform: string): string | undefined => platform === 'darwin' ? 'open' : platform === 'linux' ? 'xdg-open' : platform === 'win32' ? 'explorer' : undefined
@@ -149,25 +155,25 @@ export function platformOfUname(out: string | undefined): string {
 export function prCardRows(h: Handover, o: { entry: DetailsEntry | undefined; mergeMode: string; now: number }): CardRow[] {
   const rows: CardRow[] = []
   const d = o.entry?.details
-  rows.push({ text: `#${h.pr} ${h.title}`, bold: true })
-  rows.push({ text: `${h.status}${h.status === 'returned' && h.reason !== undefined ? `: ${h.reason}` : ''} · ${h.branch} · head ${h.head.slice(0, 8)}`, tone: h.status === 'awaiting' ? 'warning' : undefined })
+  rows.push(mdRow(`#${h.pr} `, h.title, '', { bold: true }))
+  rows.push(mdRow(`${h.status}${h.status === 'returned' && h.reason !== undefined ? ': ' : ''}`, h.status === 'returned' ? h.reason ?? '' : '', ` · ${h.branch} · head ${h.head.slice(0, 8)}`, { tone: h.status === 'awaiting' ? 'warning' : undefined }))
   rows.push({ text: `handed over by ${h.reportTo}, ${age(o.now - h.at)} ago`, dim: true })
   if (h.status === 'awaiting') rows.push({ text: `awaits you because ${whyAwaits(h, parseMode(o.mergeMode), d?.labels)}`, tone: 'warning' })
   if (d?.headRefOid !== undefined && !d.headRefOid.startsWith(h.head) && !h.head.startsWith(d.headRefOid)) {
     rows.push({ text: `PR moved since handover: approving approves the stored head ${h.head.slice(0, 8)}, GitHub has ${d.headRefOid.slice(0, 8)}`, tone: 'warning' })
   }
   rows.push({ text: '' })
-  rows.push({ text: `verified: ${h.verified === '' ? '(nothing said)' : h.verified}` })
-  if (h.pending !== '' && h.pending !== 'none') rows.push({ text: `pending decisions: ${h.pending}` })
-  rows.push({ text: `after deploy: ${h.afterDeploy === '' ? 'none' : h.afterDeploy}${h.verifyCommand === undefined ? '' : ` (verify: ${h.verifyCommand})`}` })
+  rows.push(mdRow('verified: ', h.verified === '' ? '' : h.verified, h.verified === '' ? '(nothing said)' : ''))
+  if (h.pending !== '' && h.pending !== 'none') rows.push(mdRow('pending decisions: ', h.pending))
+  rows.push(mdRow('after deploy: ', h.afterDeploy === '' ? '' : h.afterDeploy, `${h.afterDeploy === '' ? 'none' : ''}${h.verifyCommand === undefined ? '' : ` (verify: ${h.verifyCommand})`}`))
   if (h.evidence === undefined) rows.push({ text: 'no evidence stored (handed over before evidence was recorded)', dim: true })
   else {
-    rows.push({ text: 'Ran:', bold: true }, ...h.evidence.ran.map(r => ({ text: `  - ${r}` })))
-    rows.push({ text: `Exercised: ${h.evidence.exercised}` })
-    rows.push({ text: 'Not verified:', bold: true }, ...h.evidence.notVerified.map(r => ({ text: `  - ${r}` })))
+    rows.push({ text: 'Ran:', bold: true }, ...h.evidence.ran.map(r => mdRow('  - ', r)))
+    rows.push(mdRow('Exercised: ', h.evidence.exercised))
+    rows.push({ text: 'Not verified:', bold: true }, ...h.evidence.notVerified.map(r => mdRow('  - ', r)))
   }
   if (h.env !== undefined && h.env.length > 0) {
-    rows.push({ text: 'env changes:', bold: true }, ...h.env.map(e => ({ text: `  - ${e.name} on ${e.target}${e.secret === true ? ' (secret, you set it)' : e.value === undefined ? '' : ` = ${e.value}`}: ${e.why}`, tone: 'warning' as const })))
+    rows.push({ text: 'env changes:', bold: true }, ...h.env.map(e => mdRow(`  - ${e.name} on ${e.target}${e.secret === true ? ' (secret, you set it)' : e.value === undefined ? '' : ` = ${e.value}`}: `, e.why, '', { tone: 'warning' as const })))
   }
   rows.push({ text: '' })
   if (o.entry === undefined || (d === undefined && o.entry.error === undefined)) rows.push({ text: 'loading details…', dim: true })
