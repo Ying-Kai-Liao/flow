@@ -273,3 +273,41 @@ test('sessions persist to sessions.json and come back after a restart', async ($
   await $.tool.call({ tool: 'mcp__flow__session', action: 'send', name: 'm1', text: 'again' } as never)
   expect(JSON.parse(w.files.get(`${DIR}/sessions.json`) ?? '{}').m1.screenText).toBeUndefined()
 })
+
+test('a terminal manager may write its own report file and nothing else', async ($, on) => {
+  world(on, { FLOW_ROLE: 'manager', FLOW_NAME: 'm1', FLOW_RELAY: RELAY })
+  on('tool.call', () => ({ result: 'ran' }))
+  await start($)
+  const report = `${DIR}/sessions/m1/report.md`
+  expect((await $.tool.call({ tool: 'Write', file_path: report, content: 'done' } as never)).result).toBe('ran')
+  expect((await $.tool.call({ tool: 'Edit', file_path: report, old_string: 'a', new_string: 'b' } as never)).result).toBe('ran')
+  // Another session's report, a sibling file and a subagent's write stay refused.
+  for (const e of [
+    { tool: 'Write', file_path: `${DIR}/sessions/m2/report.md`, content: 'x' },
+    { tool: 'Write', file_path: `${DIR}/sessions/m1/prompt.md`, content: 'x' },
+    { tool: 'Write', file_path: `${report}/../prompt.md`, content: 'x' },
+    { tool: 'Write', file_path: '/r/a.ts', content: 'x' },
+    { tool: 'Write', file_path: report, content: 'x', agentId: 'sub1' },
+  ]) expect(JSON.stringify(await $.tool.call(e as never))).toContain("managers don't edit code")
+})
+
+test('a blocking ask from a terminal manager waits open in main\'s inbox, whoever calls answer for it', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER }))
+  await start($)
+  const ask = { from: 'm1', questions: [{ question: 'Which way?', options: ['a', 'b'], default: 'b', blocking: true, topic: 'which-way' }] }
+  leave(w, 'k1', 'mcp__flow__ask', ask)
+  await w.clock.advance(1200)
+  expect(answerOf(w, 'k1')?.result).toContain('end your turn')
+  const items = () => (JSON.parse(w.files.get(`${DIR}/inbox.json`) ?? '{"items":[]}') as { items: { id: string; state: string; addressee: string; answeredBy?: string }[] }).items
+  expect(items()[0]).toMatchObject({ state: 'open', addressee: 'main' })
+  // The relay retrying the same call after a timeout does not make a second question.
+  leave(w, 'k2', 'mcp__flow__ask', ask)
+  // The manager answering for main (its own question, or all of main's with defaults) is refused: only main answers.
+  leave(w, 'k3', 'mcp__flow__answer', { answers: [{ id: items()[0]!.id, choice: 'b' }] })
+  leave(w, 'k4', 'mcp__flow__answer', { defaults: true })
+  await w.clock.advance(1200)
+  expect(items().length).toBe(1)
+  expect(items()[0]).toMatchObject({ state: 'open' })
+  expect(answerOf(w, 'k3')?.result).toContain('refused')
+})

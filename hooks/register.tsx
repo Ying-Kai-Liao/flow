@@ -2249,6 +2249,14 @@ async function registerTools($: EngineInterface): Promise<void> {
 }
 
 
+// A terminal manager's report is a file it writes itself: <state dir>/sessions/<name>/report.md, next to its relay dir.
+// Exactly that path, by the manager's own thread (not a subagent); nothing else.
+function ownReport(r: RelayMode, agentId: string | undefined, e: { tool: string }): boolean {
+  if (agentId !== undefined || r.dir === undefined || (e.tool !== 'Write' && e.tool !== 'Edit')) return false
+  const file = (e as { file_path?: unknown }).file_path
+  return typeof file === 'string' && file === `${r.dir.replace(/\/relay\/?$/, '')}/report.md`
+}
+
 // The generic hook in a relay copy. A worker's passes straight through. A manager's or the reviewer's keeps
 // the guards that need no state (kills, remote deletes, code edits by a manager, the main checkout), asks
 // main for the ones that do (test slots), and answers every flow tool, and a SendMessage to anyone this
@@ -2275,7 +2283,7 @@ async function relayToolCall($: EngineInterface, settings: ReturnType<typeof set
     const del = remoteDeleteRefusal(command)
     if (del !== undefined) return { deny: del }
   }
-  if (WRITE_TOOLS.includes(e.tool) && r.role === 'manager') {
+  if (WRITE_TOOLS.includes(e.tool) && r.role === 'manager' && !ownReport(r, id, e)) {
     return { deny: 'flow: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
   }
   if (settings.mainGuard) {
