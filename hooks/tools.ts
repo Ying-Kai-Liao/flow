@@ -409,7 +409,7 @@ export const ARMS_TOOL: ToolSpec = {
     },
     required: ['action'],
   },
-  isDeferred: false,
+  isDeferred: true,
 }
 
 export const SESSION_TOOL: ToolSpec = {

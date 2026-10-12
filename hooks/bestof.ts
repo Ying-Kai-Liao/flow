@@ -31,9 +31,13 @@ export type SpawnFacts = {
   bestOfN: 'off' | 'brief' | 'auto'
   arms: number
   parentIsManager: boolean
-  // Names of the parent's workers that are live now.
+  // Names of the parent's workers at work now (not idle ones; the spawn's own predecessors are left out by the caller).
   liveSiblings: string[]
+  // Arm spawns of the same parent that passed this check but are not in the roster yet.
+  pending?: number
   maxWorkers: number
+  // This arm letter already has ledger rows in the group, or the group was picked: the slug is used up.
+  groupUsed?: boolean
 }
 
 // The refusal for an arm spawn that breaks the protocol; undefined for a spawn that is no arm or is fine.
@@ -49,8 +53,33 @@ export function armSpawnRefusal(f: SpawnFacts): string | undefined {
   const own = generation(f.name) >= 2 ? baseName(f.name) : f.name
   const named = armName(own)
   if (named === undefined || named.id !== arm.id) return `flow: arm ${arm.id} must be named "<package>-${arm.id}" (a letter suffix, never a number; got "${f.name}").`
-  if (f.liveSiblings.length + 1 > f.maxWorkers) return `flow: starting ${f.name} would put ${f.liveSiblings.length + 1} workers of yours at work and max_workers is ${f.maxWorkers}. Arms count against it: start fewer arms, or wait for a worker to finish.`
+  if (f.groupUsed === true && generation(f.name) < 2) return `flow: group "${named.group}" already has an arm ${arm.id} or a picked winner. Use a new package slug for a new set of arms.`
+  const at = f.liveSiblings.length + (f.pending ?? 0)
+  if (at + 1 > f.maxWorkers) return `flow: starting ${f.name} would put ${at + 1} workers of yours at work and max_workers is ${f.maxWorkers}. Arms count against it: start fewer arms, or wait for a worker to finish.`
   return undefined
+}
+
+// Arm spawns that passed the check and are not in the roster yet, per parent. Agent calls of one message run their
+// hooks concurrently, and each reads the roster before any of them is registered, so the count must be taken and the
+// slot reserved with no await in between. A reservation expires on its own should the spawn never reach its end.
+const reserved = new Map<string, number[]>()
+const RESERVE_MS = 60_000
+export const pendingOf = (parent: string, now: number): number => (reserved.get(parent) ?? []).filter(u => u > now).length
+
+// Synchronous: the refusal, or a reservation for this arm spawn (call release when the spawn returned or failed).
+export function checkAndReserve(f: SpawnFacts, parent: string | undefined, now: number): { deny: string } | { release: () => void } {
+  const key = parent ?? ''
+  const deny = armSpawnRefusal({ ...f, pending: pendingOf(key, now) })
+  if (deny !== undefined) return { deny }
+  if (parseArm(f.prompt) === undefined) return { release: () => undefined }
+  const until = now + RESERVE_MS
+  reserved.set(key, [...(reserved.get(key) ?? []).filter(u => u > now), until])
+  return { release: () => { const cur = reserved.get(key) ?? []; const i = cur.indexOf(until); if (i >= 0) reserved.set(key, [...cur.slice(0, i), ...cur.slice(i + 1)]) } }
+}
+
+// Whether the arm's group is used up: this letter has a non-successor row, or the group was picked.
+export function groupUsed(ledger: Ledger, log: globalThis.Pick<LogEvent, 'event' | 'id' | 'pr' | 'branch' | 'text'>[], group: string, id: string): boolean {
+  return pickOf(log, group) !== undefined || Object.values(ledger).some(r => r.role === 'worker' && r.arm?.group === group && r.arm.id === id && generation(r.name) < 2)
 }
 
 // The ledger tag for a spawn: an arm from its brief and name, or the successor of an arm (it stays in the arm).
@@ -83,6 +112,9 @@ export function groupsOf(ledger: Ledger): Group[] {
   for (const g of out.values()) g.arms.sort((x, y) => x.id.localeCompare(y.id))
   return [...out.values()]
 }
+
+// A successor manager (mgr-2) acts for its predecessor's groups.
+const sameManager = (a: string | undefined, b: string | undefined): boolean => a !== undefined && b !== undefined && baseName(a) === baseName(b)
 
 // An arm's branch is flow/<pkg>-<letter>; a successor continues on it, or on a numbered sibling of it.
 const onBranch = (arm: string, branch: string): boolean => branch === arm || (branch.startsWith(`${arm}-`) && /^\d+$/.test(branch.slice(arm.length + 1)))
@@ -122,7 +154,7 @@ export function armHidden(ledger: Ledger, log: globalThis.Pick<LogEvent, 'event'
     if (hit === undefined) return false
     const pick = pickOf(log, hit.g.group)
     if (pick !== undefined) return !(onBranch(pick.branch, branch) || onBranch(branch, pick.branch))
-    return hit.g.arms.some(a => a.rows.some(r => isLiveName(r.name)))
+    return hit.g.arms.some(a => a.rows.some(r => isLiveName(r.name))) || (hit.g.manager !== undefined && isLiveName(hit.g.manager))
   }
 }
 
@@ -161,7 +193,7 @@ const costLine = (g: Group, picked: ArmPick | undefined, merged: Set<string>): s
 
 export function armsReport(ledger: Ledger, log: LogEvent[], manager: string | undefined): string {
   const merged = mergedBranches(log)
-  const groups = groupsOf(ledger).filter(g => manager === undefined || g.manager === manager)
+  const groups = groupsOf(ledger).filter(g => manager === undefined || sameManager(g.manager, manager))
   if (groups.length === 0) return 'No best-of-N arms recorded.'
   const out = ['Best-of-N arms ($ at hooks/cost.ts list prices; overhead = the group\'s cost beyond the winner):']
   for (const g of groups) {
@@ -184,10 +216,12 @@ export async function armsTool(io: ArmsIo, input: Record<string, unknown>, agent
   if (group === '' || !Number.isInteger(pr) || pr <= 0 || reason === '') return { result: 'Refused: pick needs group (the package name without the arm letter), pr (the winner\'s PR number) and reason.' }
   const g = groupsOf(ledger).find(x => x.group === group)
   if (g === undefined) return { result: `Refused: no arms recorded for group "${group}". The group is the package name without the arm letter (csv-export for csv-export-a).` }
-  if (agentId !== undefined && g.manager !== caller) return { result: `Refused: group ${group} belongs to manager ${g.manager ?? '?'}; only it (or main) picks.` }
+  if (agentId !== undefined && !sameManager(g.manager, caller)) return { result: `Refused: group ${group} belongs to manager ${g.manager ?? '?'}; only it (or main) picks.` }
   const view = await io.run(['gh', 'pr', 'view', String(pr), '--json', 'headRefName,state'])
   if (view.exitCode !== 0) return { result: `Refused: gh pr view ${pr} failed: ${view.stderr.trim().slice(0, 300)}` }
-  const info = JSON.parse(view.stdout) as { headRefName: string; state: string }
+  let info: { headRefName: string; state: string }
+  try { info = JSON.parse(view.stdout) as { headRefName: string; state: string } } catch { return { result: `Refused: gh pr view ${pr} gave no JSON; try again.` } }
+  if (typeof info?.headRefName !== 'string') return { result: `Refused: gh pr view ${pr} gave no branch; try again.` }
   const win = armOfBranch(g, info.headRefName)
   if (win === undefined) return { result: `Refused: PR #${pr} is on ${info.headRefName}, which is no arm of group ${group} (arms: ${g.arms.map(a => a.branches.join('/')).join(', ')}).` }
   const prior = pickOf(log, group)
@@ -196,7 +230,10 @@ export async function armsTool(io: ArmsIo, input: Record<string, unknown>, agent
   const loserBranches = g.arms.filter(a => a !== win).flatMap(a => a.branches)
   const list = await io.run(['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,headRefName'])
   if (list.exitCode !== 0) return { result: `Refused: gh pr list failed, so the other arms' PRs cannot be closed: ${list.stderr.trim().slice(0, 300)}` }
-  const open = (JSON.parse(list.stdout || '[]') as { number: number; headRefName: string }[]).filter(p => loserBranches.some(b => onBranch(b, p.headRefName)))
+  let listed: { number: number; headRefName: string }[]
+  try { listed = JSON.parse(list.stdout || '[]') as typeof listed } catch { return { result: 'Refused: gh pr list gave no JSON, so the other arms\' PRs cannot be closed; try again.' } }
+  if (!Array.isArray(listed)) return { result: 'Refused: gh pr list gave an unexpected answer; try again.' }
+  const open = listed.filter(p => loserBranches.some(b => onBranch(b, p.headRefName)))
   if (prior === undefined) await io.appendLog({ event: 'arm-pick', owner: caller ?? 'main', id: group, pr, branch: info.headRefName, text: reason })
   const closed: number[] = []
   const failed: string[] = []

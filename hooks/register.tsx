@@ -22,7 +22,7 @@ import { addStep, addTurn, baseName, entriesOfBranch, setIdentity } from './cost
 import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
 import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
-import { backNote, effortFor, type EffortRole } from './routing'
+import { backNote, effortFor, generation, type EffortRole } from './routing'
 import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withSizeFeedback, withoutLong } from './spawn'
 import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
@@ -54,7 +54,7 @@ import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, paneSugg
 import type { StandingIo } from './standing-run'
 import { decideEvalTool } from './decide-eval-run'
 import { sizeAbTool, sizeArmOf, sizerFor } from './size-ab'
-import { armHidden, armOfSpawn, armsTool, armSpawnRefusal } from './bestof'
+import { armHidden, armOfSpawn, armsTool, checkAndReserve, groupUsed, parseArm } from './bestof'
 import type { ArmsIo } from './bestof'
 import type { SizeArm } from './size-ab'
 import type { DecideEvalIo } from './decide-eval-run'
@@ -249,7 +249,9 @@ async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
   ])
   await loadLedger($)
   const l = await read($, ledger)
-  const armPr = armHidden(l, await readLog($), name => rows.some(a => a.name === name && !ENDED.has(a.status)))
+  // The log is read only once an arm exists: this runs on every pane tick.
+  const armLog = Object.values(l).some(r => r.arm !== undefined) ? await readLog($) : []
+  const armPr = armHidden(l, armLog, name => rows.some(a => a.name !== undefined && baseName(a.name) === baseName(name) && !ENDED.has(a.status)))
   return unhandedPrs(cache.prs, hs, rows, acts, t, undefined, armPr)
 }
 const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
@@ -417,15 +419,23 @@ function armsIoOf($: EngineInterface): ArmsIo {
   }
 }
 
-// The arm-spawn refusal (hooks/bestof.ts) for a worker spawn: the parent's type and its live workers come from the roster.
-async function armSpawnCheck($: EngineInterface, e: AgentSpawnInput, settings: ReturnType<typeof settingsOf>): Promise<string | undefined> {
-  const rows = await agentsOf($)
+// The arm-spawn refusal (hooks/bestof.ts) for a worker spawn, or a reservation of its slot under max_workers. The roster
+// read is the only await between the count and the reservation. A spawn with no Arm line is never checked.
+async function armSpawnCheck($: EngineInterface, e: AgentSpawnInput, settings: ReturnType<typeof settingsOf>): Promise<{ deny: string } | { release: () => void }> {
+  const arm = parseArm(e.prompt)
+  if (arm === undefined) return { release: () => undefined }
+  const name = (e as { name?: string }).name ?? e.description
+  await loadLedger($)
+  const [l, log, now, rows] = await Promise.all([read($, ledger), readLog($), $.clock.now(), agentsOf($)])
   const parent = e.parentAgentId === undefined ? undefined : rows.find(a => a.id === e.parentAgentId)
-  return armSpawnRefusal({
-    name: (e as { name?: string }).name ?? e.description, prompt: e.prompt, bestOfN: settings.bestOfN, arms: settings.bestOfNArms,
+  const group = /^(.+)-[a-c](-\d+)?$/.exec(name)?.[1]
+  return checkAndReserve({
+    name, prompt: e.prompt, bestOfN: settings.bestOfN, arms: settings.bestOfNArms,
     parentIsManager: parent?.type === MANAGER, maxWorkers: settings.maxWorkers,
-    liveSiblings: rows.filter(a => a.parentId === e.parentAgentId && (a.type === WORKER || a.type === CONTINUE) && !ENDED.has(a.status)).map(a => a.name ?? a.id),
-  })
+    // Working now: an idle worker (turn over) and the spawn's own predecessors (a HANDOFF arm a before a-2) do not count.
+    liveSiblings: rows.filter(a => a.parentId === e.parentAgentId && (a.type === WORKER || a.type === CONTINUE) && LIVE.has(a.status) && (a.name === undefined || baseName(a.name) !== baseName(name))).map(a => a.name ?? a.id),
+    groupUsed: group !== undefined && groupUsed(l, log, group, arm.id),
+  }, e.parentAgentId, now)
 }
 
 function migrationsIoOf($: EngineInterface): MigrationsIo {
@@ -970,7 +980,8 @@ async function startManagerSession($: EngineInterface, options: Record<string, u
     return { deny: `flow: manager ${name} already runs in ${live.host} (${live.handle}) as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
   }
   const model = e.model ?? route.settings.managerModel
-  const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', route.settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), route.settings)
+  // A terminal manager has no Agent tool, so it cannot start arms: no best-of-N text for it.
+  const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', route.settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), { ...route.settings, bestOfN: 'off' })
   const managerEffort = effortFor('manager', undefined, route.settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
   const r = await startRoleSession(sessionIoOf($), {
     role: 'manager', name, harness: route.harness, owner: { id: 'main', name: 'main' },
@@ -2899,12 +2910,18 @@ export const register: Register = (on, options) => {
     }
     if (await fableDenied(spawnIoOf($), e)) return { deny: FABLE_DENY }
     // Best-of-N: an arm spawn is checked against best_of_n, the manager's live workers and max_workers.
+    // The slot it reserves is given back when the spawn returns or fails (and expires on its own).
     let arm: ReturnType<typeof armOfSpawn>
+    let releaseArm = (): void => undefined
     if (e.subagentType === WORKER) {
-      const refused = await armSpawnCheck($, e, settings)
-      if (refused !== undefined) return { deny: refused }
-      await loadLedger($)
-      arm = armOfSpawn((e as { name?: string }).name ?? e.description, e.prompt, await read($, ledger))
+      const checked = await armSpawnCheck($, e, settings)
+      if ('deny' in checked) return { deny: checked.deny }
+      releaseArm = checked.release
+      const name = (e as { name?: string }).name ?? e.description
+      if (parseArm(e.prompt) !== undefined || generation(name) >= 2) {
+        await loadLedger($)
+        arm = armOfSpawn(name, e.prompt, await read($, ledger))
+      }
     }
     // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
     let routed: Routed | undefined
@@ -2969,7 +2986,9 @@ export const register: Register = (on, options) => {
       }
       return { ev, started }
     }
-    let { ev, started } = await go(spawn)
+    let tried: Awaited<ReturnType<typeof go>>
+    try { tried = await go(spawn) } finally { releaseArm() }
+    let { ev, started } = tried
     // The host refused our flow:continue rewrite: never fail the spawn for it. Start a plain worker in a
     // new worktree and give the claimed worktree back.
     if (spawn.subagentType === CONTINUE && !('agentId' in started && started.agentId !== undefined)) {

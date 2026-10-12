@@ -50,7 +50,8 @@ export async function handoverTool(io: HandoverIo, settings: Settings, input: Re
     const info = JSON.parse(view.stdout) as { state: string; isDraft: boolean; headRefOid: string; headRefName: string; title: string; body?: string; labels?: { name: string }[] }
     if (info.state !== 'OPEN') return { result: `Refused: PR #${pr} is ${info.state}.` }
     if (info.isDraft) return { result: `Refused: PR #${pr} is a draft. Mark it ready (gh pr ready ${pr}) first.` }
-    const armed = await io.arms().then(a => armHandoverRefusal(info.headRefName, a.ledger, a.log), () => undefined)
+    // Never fail open: an unreadable record could hand over a loser.
+    const armed = await io.arms().then(a => armHandoverRefusal(info.headRefName, a.ledger, a.log), () => `Refused: the best-of-N records could not be read, so PR #${pr} cannot be checked. Try the handover again.`)
     if (armed !== undefined) return { result: armed }
     if ((await io.handovers())[String(pr)]?.status === 'ready') {
       return { result: `Refused: PR #${pr} is in a batch that awaits the user's /flow push. Leave it alone; if the user sends it back you hear so.` }

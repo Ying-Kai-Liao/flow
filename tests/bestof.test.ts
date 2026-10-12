@@ -1,7 +1,10 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 
-import { armHandoverRefusal, armHidden, armOfSpawn, armsReport, armsTool, armSpawnRefusal, parseArm } from '../hooks/bestof'
+import { armHandoverRefusal, armHidden, armOfSpawn, armsReport, armsTool, armSpawnRefusal, checkAndReserve, groupUsed, parseArm } from '../hooks/bestof'
+import { sizeData } from '../hooks/decide-eval'
+import { handoverTool } from '../hooks/handover-run'
+import type { HandoverIo } from '../hooks/handover-run'
 import type { ArmsIo, SpawnFacts } from '../hooks/bestof'
 import { selectCleanup, parsePorcelain } from '../hooks/clean'
 import type { CleanInputs } from '../hooks/clean'
@@ -239,4 +242,75 @@ test('manager prompt: best-of-N text only when the setting is on, filled from th
   const auto = p({ bestOfN: 'auto', bestOfNArms: 3 })
   expect(auto).toContain('bug hunt whose root cause is unknown')
   expect(auto).toContain('`<package>-c`')
+})
+
+test('concurrent arm spawns of one parent: with one slot left one is refused, a release frees the slot', () => {
+  const f = (name: string, letter: string) => facts({ name, prompt: `Arm: ${letter} of 2`, liveSiblings: ['x', 'y'] })
+  const first = checkAndReserve(f('csv-a', 'a'), 'p1', 1000)
+  const second = checkAndReserve(f('csv-b', 'b'), 'p1', 1000)
+  expect('release' in first).toBe(true)
+  expect('deny' in second && second.deny).toMatch(/max_workers is 3/)
+  // another parent is not affected; a plain spawn takes no slot
+  expect('release' in checkAndReserve(f('csv-a', 'a'), 'p2', 1000)).toBe(true)
+  expect('release' in checkAndReserve(facts({ prompt: 'Size: small', liveSiblings: ['x', 'y'] }), 'p1', 1000)).toBe(true)
+  if ('release' in first) first.release()
+  expect('release' in checkAndReserve(f('csv-b', 'b'), 'p1', 1000)).toBe(true)
+  // a reservation that never released expires
+  checkAndReserve(f('z-a', 'a'), 'p3', 0)
+  expect('release' in checkAndReserve(f('z-b', 'b'), 'p3', 70_000)).toBe(true)
+})
+
+test('live count: the caller leaves idle workers and own predecessors out, so csv-a-2 passes with arm a idle', () => {
+  // register.tsx passes only working siblings; two others at work plus the successor is within 3
+  expect(armSpawnRefusal(facts({ name: 'csv-a-2', liveSiblings: ['x', 'y'] }))).toBeUndefined()
+  expect(armSpawnRefusal(facts({ name: 'csv-a-2', liveSiblings: ['x', 'y', 'csv-b'] }))).toMatch(/max_workers/)
+})
+
+test('group reuse: a used letter or a picked group is refused for a new arm, not for its successor', () => {
+  const l = ledgerOf(GROUP)
+  expect(groupUsed(l, [], 'csv', 'a')).toBe(true)
+  expect(groupUsed(l, [], 'csv', 'c')).toBe(false)
+  expect(groupUsed({}, [PICK], 'csv', 'c')).toBe(true)
+  expect(armSpawnRefusal(facts({ groupUsed: true }))).toMatch(/new package slug/)
+  expect(armSpawnRefusal(facts({ name: 'csv-a-2', groupUsed: true }))).toBeUndefined()
+})
+
+test('a successor manager picks and reports its predecessor\'s groups', async () => {
+  const f = fake({ caller: 'mgr-2' })
+  expect((await armsTool(f.io, { action: 'pick', group: 'csv', pr: 11, reason: 'r' }, 'x')).result).toContain('Picked arm a')
+  expect((await armsTool(f.io, { action: 'report' }, 'x')).result).toContain('group csv')
+  const g = fake({ caller: 'mgr2' })
+  expect((await armsTool(g.io, { action: 'pick', group: 'csv', pr: 11, reason: 'r' }, 'x')).result).toMatch(/belongs to manager mgr/)
+})
+
+test('an unpicked group stays hidden while its manager (or successor) is live', () => {
+  const l = ledgerOf(GROUP)
+  expect(armHidden(l, [], n => n === 'mgr')('flow/csv-a')).toBe(true)
+  expect(armHidden(l, [], () => false)('flow/csv-a')).toBe(false)
+})
+
+test('a gh output that is not JSON is refused, not thrown', async () => {
+  const f = fake({})
+  const io = { ...f.io, run: async () => ({ exitCode: 0, stdout: 'oops', stderr: '' }) }
+  expect((await armsTool(io, { action: 'pick', group: 'csv', pr: 11, reason: 'r' }, undefined)).result).toMatch(/no JSON/)
+})
+
+test('handover refuses when the arm records cannot be read', async () => {
+  const io = {
+    run: async () => ({ exitCode: 0, stdout: JSON.stringify({ state: 'OPEN', isDraft: false, headRefOid: 'abc', headRefName: 'flow/csv-a', title: 't', body: '' }), stderr: '' }),
+    arms: async () => { throw new Error('disk') },
+  } as unknown as HandoverIo
+  const settings = settingsOf({}, 'main')
+  expect((await handoverTool(io, settings, { pr: 11 }, 'x')).result).toMatch(/could not be read.*again/)
+})
+
+test('decide-eval size data: a lost arm is skipped, the merged winner is one package', () => {
+  const tok = { 'claude-sonnet-5-5': USAGE }
+  const w = (name: string, id: string) => ({ role: 'worker', name, manager: 'mgr', branch: `flow/${name}`, spawnModel: 'sonnet', arm: arm('csv', id), models: tok })
+  const brief = (n: string) => `Your name: ${n}\nSize: normal - why\ndo it`
+  const ag = (n: string) => ({ t: 'agent' as const, model: 'sonnet', type: 'flow:worker', prompt: brief(n) })
+  const pr = (state: string) => ({ state, files: [{ path: 'hooks/a.ts', additions: 20, deletions: 0 }] })
+  const d = sizeData({ log: [], ledger: { a: w('csv-a', 'a'), b: w('csv-b', 'b') }, inbox: [], transcripts: [[ag('csv-a'), ag('csv-b')]], prs: { 'flow/csv-a': pr('MERGED'), 'flow/csv-b': pr('CLOSED') } })
+  expect(d.records.map(r => r.id)).toEqual(['w-csv-a'])
+  expect(d.notes.join(' ')).toContain('"unpicked arm":1')
 })
