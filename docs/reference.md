@@ -186,6 +186,8 @@ The queue is in memory: a plugin reload loses it (held texts are at most 10 minu
 
 Measure what wake-ups cost with `node scripts/wake-cost.mjs [projectDir] [--md]`: it reads manager transcripts and lists wake turns by kind with their cache-write tokens and list-price dollars. Most of the cost is cold wake-ups (cache expired) for worker and reviewer reports, which the host delivers and the plugin cannot hold. Claude Code can keep subagent prompt caches for an hour: set `subagentPromptCacheTtl` to `"1h"` in its settings or `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`. The plugin cannot set it (a spawn takes no such parameter), and it applies to workers too (a 1h write costs 1.6x a 5m one).
 
+Repair a cost ledger inflated before 0.6.70 (every plugin reload then added the disk totals onto the live ones) with `node scripts/ledger-rebuild.mjs [--ledger PATH] [--project DIR] [--write]`. It recomputes every entry's tokens (and turns, where the entry has them) from the agents' transcripts under `~/.claude/projects/<repo>`, keeps names, sizes, manager links and times, and keeps and flags entries whose transcript is gone. It is a dry run by default: before/after tokens and dollars per role, the spread of the inflation factor and the flagged entries. `--write` first copies the old file to `ledger-pre-rebuild-<date>.json` (a taken name gets `-2`, `-3`), then replaces the ledger. Run `--write` with flow idle (no managers, workers or reviewer running) and restart the plugin afterwards (`/reload` or a new session): the running plugin keeps the ledger in memory and would overwrite the file on its next save.
+
 ## The test lock
 
 Six worktrees running the whole suite at once can exhaust memory and time out the real check.
