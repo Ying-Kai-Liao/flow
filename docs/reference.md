@@ -87,6 +87,7 @@ The ones most repos set. Everything else is under Advanced settings.
 | `big_files` | none | file only | files workers grep and never read whole (a list) |
 | `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
 | `migrations_dir` | none | file only | the directory of migrations: workers number new ones after the highest on the base branch, and the reviewer renumbers a clash (see Reviewer rules) |
+| `size_ab` | off | `/config`, file | `daily`, with `decision_api` `jev`: spawns alternate by local epoch day (even: Jev sizes, odd: the `Size:` line alone, no decision API call); each worker and manager ledger row gets `sizeArm`. Read the outcome with `size_ab_report` or `scripts/size-ab.mjs` (packages are attributed to the arm of their first spawn; under 20 packages an arm is too small to conclude) |
 | `size_feedback` | on | `/config`, file | each `flow:manager` spawn prompt gets, once, a short digest of how this repo's earlier workers' `Size:` lines turned out (see Model routing). `off`: no digest |
 | `main_checkout_guard` | on | `/config`, file | flow's agents always, the main session only while flow has a worktree or live agent in the repo: writes to the main checkout (the repo's folder, not the main branch) are refused (see Guards) |
 | `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |

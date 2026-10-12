@@ -387,6 +387,13 @@ export const DECIDE_EVAL_TOOL: ToolSpec = {
   isDeferred: true,
 }
 
+export const SIZE_AB_TOOL: ToolSpec = {
+  name: 'size_ab_report',
+  description: 'Main only. Reads the cost ledger and log of the size_ab A/B (Jev sizing on even local days, the Size line alone on odd days) and prints, per arm and role, packages, $ per merged PR, how many needed a -N successor and the model mix; says when an arm has too few packages to conclude. Read-only, no network.',
+  inputSchema: { type: 'object', properties: {} },
+  isDeferred: true,
+}
+
 export const SESSION_TOOL: ToolSpec = {
   name: 'session',
   description: 'Workers outside this session: another harness (codex, gemini, opencode, claude, or your own command line) in an Orca terminal or tmux session the user can watch. "start" (name, brief, harness, host?, command?) makes a worktree on flow/<name> and starts the harness with the worker rules and the brief; its report comes back as a "flow session:" message. "send" (name, text), "keys" (name, keys), "read" (name, lines?), "restart" (name), "list", "stop" (name, remove_worktree?).',

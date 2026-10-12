@@ -52,9 +52,11 @@ import type { Inbox, Marked, Question } from './inbox'
 import { addGuardTest, loadRules, offerSeedsOnce, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
 import { decideEvalTool } from './decide-eval-run'
+import { sizeAbTool, sizeArmOf, sizerFor } from './size-ab'
+import type { SizeArm } from './size-ab'
 import type { DecideEvalIo } from './decide-eval-run'
 import { DEMO_TOOL, SETTINGS_TOOL } from './init-tools'
-import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
+import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, SIZE_AB_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
 import { detect as initDetect, firstRun, HINT as INIT_HINT, settingsTool, writeMarker } from './init'
 import type { InitIo } from './init'
 import { advance as demoAdvance, answer as demoAnswer, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
@@ -2016,6 +2018,7 @@ export const register: Register = (on, options) => {
     await $.tool.register(SETTINGS_TOOL)
     await $.tool.register(DEMO_TOOL)
     await $.tool.register(DECIDE_EVAL_TOOL)
+    await $.tool.register(SIZE_AB_TOOL)
 
     $.clock.every(POLL_MS, () => {
       void refresh($)
@@ -2098,13 +2101,17 @@ export const register: Register = (on, options) => {
     let routed: Routed | undefined
     let effortRole: EffortRole | undefined
     let sizeFed = false
+    // size_ab daily: the day's arm (only with decision_api jev); the off arm asks the decision API nothing.
+    let sizeArm: SizeArm | undefined
+    if (e.subagentType === WORKER || e.subagentType === MANAGER) sizeArm = sizeArmOf(settings.sizeAb, settings.decisionApi, await $.clock.now())
+    const sizer = sizerFor(sizeArm, () => jevOf($, settings))
     if (e.subagentType === WORKER) {
-      const r = await routeWorker(spawnIoOf($), e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel }, jevOf($, settings))
+      const r = await routeWorker(spawnIoOf($), e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel }, sizer)
       e = r.e
       routed = r.routed
       effortRole = 'worker'
     } else if (e.subagentType === MANAGER) {
-      const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModelNormal ?? settings.managerModel, settings.managerModel, jevOf($, settings))
+      const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModelNormal ?? settings.managerModel, settings.managerModel, sizer)
       e = r.e
       routed = r.routed
       effortRole = 'manager'
@@ -2189,6 +2196,7 @@ export const register: Register = (on, options) => {
           ...(typeof used === 'string' && { spawnModel: used }),
           ...(routed !== undefined && { size: routed.size }),
           ...(sizeFed && { sizeFeedback: true }),
+          ...(sizeArm !== undefined && { sizeArm }),
           ...(targetEffort !== undefined && { effort: targetEffort }),
         }, now))
       })
@@ -2371,6 +2379,8 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__flow__settings' }, ($, e) => settingsTool(initIoOf($), options, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__decide_eval' }, async ($, e) => ({ result: await decideEvalTool(decideEvalIoOf($), settings, e as unknown as Record<string, unknown>, e.agentId) })).catch(toolCatch)
+
+  on('tool.call', { tool: 'mcp__flow__size_ab_report' }, async ($, e) => ({ result: await sizeAbTool({ stateDir: () => stateDir($), readFile: path => $.fs.read(path).then(String, () => undefined) }, e.agentId) })).catch(toolCatch)
 
   on('tool.call', { tool: 'mcp__flow__demo' }, ($, e) => demoTool($, e as unknown as Record<string, unknown>, e.agentId)).catch(toolCatch)
 
