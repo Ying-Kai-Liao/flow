@@ -23,14 +23,15 @@ import { addStep, addTurn, baseName, entriesOfBranch } from './cost'
 import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
 import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
+import { beforeStep, completeTurn } from './turn-run'
+import type { TurnIo } from './turn-run'
 import { backNote, effortFor, generation } from './routing'
 import { dispatch, FLOW_TYPES } from './spawn'
 import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
 import { decide, DECIDE_TIMEOUT_MS, sourceOf } from './decide'
 import type { DecideIo, DecideSettings, FetchLike } from './decide'
-import { adviceLine, adviceSuffix, handoffLean } from './decide-use'
-import type { DecideUseSettings } from './decide-use'
+import { handoffLean } from './decide-use'
 import type { SpawnIo } from './spawn'
 import { onSpawn } from './spawn-run'
 import type { SpawnHookIo } from './spawn-run'
@@ -124,7 +125,7 @@ import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSes
 import { ownerVerdict, pumpRelay, relayCall, stripEngineFields, subagentRefusal } from './relay'
 import type { MainIdentity, PumpIo, RelayAnswer, RelayCall, RelayIo } from './relay'
 import type { Caller, Ran, SessionIo } from './session-run'
-import { branchOwners, buildDigest, findWorktree, noteKey } from './state'
+import { branchOwners, findWorktree, noteKey } from './state'
 import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
 import {
   EMPTY_PUSH, normalizePush,
@@ -1338,51 +1339,6 @@ const resolveReportTo = ($: EngineInterface, given: unknown, callerId: string | 
 const managerFinished = ($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[], report?: string) => managerFinishedTo(routeIoOf($), ids, name, rows, report)
 const mainHasAnswer = ($: EngineInterface, answer: string) => mainHasAnswerTo(routeIoOf($), answer)
 
-// A worker's HANDOFF: write the digest, log it, remember where its worktree is, and warn the owner when the
-// package keeps handing off. Best-effort throughout: a missing digest still leaves the record.
-async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, owner: string, maxContinues: number, decideSettings: DecideUseSettings): Promise<void> {
-  const prior = (await readLog($)).filter(ev => ev.event === 'handoff' && ev.branch === branch)
-  // turn.complete can fire again for the same agent; count its handoff once.
-  if (prior.some(ev => ev.agent === me.name)) return
-  const count = prior.length + 1
-  let digestPath: string | undefined
-  let note: string | undefined
-  await best($, 'writing a handoff digest', async () => {
-    const dir = await stateDir($)
-    if (dir === undefined) return
-    const msgs = await $.session.messages({ agentId: me.id })
-    if ('deny' in msgs) return
-    const path = `${dir}/handoffs/${branch.replaceAll('/', '-')}/${count}.md`
-    await $.process.run(['mkdir', '-p', path.slice(0, path.lastIndexOf('/'))])
-    note = buildDigest(msgs, branch, me.name ?? me.id)
-    await $.fs.write(path, note)
-    digestPath = path
-  })
-  let wt: { path: string; head?: string } | undefined
-  await best($, 'finding the worktree', async () => {
-    const r = await $.process.run(['git', 'worktree', 'list', '--porcelain'])
-    if (r.exitCode === 0) wt = findWorktree(r.stdout, me.id, branch)
-  })
-  await appendLog($, { event: 'handoff', agent: me.name, owner, branch, text: digestPath })
-  const record: HandoffRecord = {
-    branch, agent: me.name ?? me.id, agentId: me.id, owner, at: await $.clock.now(), count,
-    ...(digestPath && { digestPath }), ...(wt && { worktree: wt.path, ...(wt.head && { head: wt.head }) }),
-  }
-  await update($, handoffs, hs => ({ ...hs, [branch]: record }))
-  // decide_handoff: the provider's lean, advice only; max_continues is enforced the same either way.
-  const lean = me.parentId === undefined ? undefined : await handoffLean(decideIoOf($), standingIoOf($), decideSettings, { branch, owner, note, count, maxContinues }).catch(() => undefined)
-  const source = sourceOf(decideSettings)
-  if (count > maxContinues && me.parentId !== undefined) {
-    void $.ui.toast(`${branch} has handed off ${count} times: split it`)
-    await deliver($, me.parentId, `flow: ${branch} has handed off ${count} times (max_continues ${maxContinues}). The package is too big for one worker: split the Remaining part of its handoff note into smaller briefs instead of another plain continuation.${lean === undefined ? '' : adviceSuffix(source, lean)}`, { urgent: true }).catch(() => undefined)
-  } else if (lean !== undefined && me.parentId !== undefined) {
-    const line = adviceLine(source, branch, lean)
-    // Advice only: it waits for the manager's next turn (the handoff report itself wakes it).
-    if (line !== undefined) await deliver($, me.parentId, line, { held: true }).catch(() => undefined)
-  }
-}
-
-
 // Everything the spawn routing in spawn.ts needs from the engine and the plugin's state.
 function spawnIoOf($: EngineInterface): SpawnIo {
   return {
@@ -1809,6 +1765,40 @@ function usageIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, 
     toast: text => { void $.ui.toast(text) },
     sendWrapUp: (me, percent, limit) => sendWrapUp($, me, percent, limit),
     warnMain: () => warnMain($, settings, mainWarn),
+  }
+}
+
+// The turn hooks' bodies live in turn-run.ts; this builds their io over register()'s state.
+function turnIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, held: Pick<TurnIo, 'agentEffort' | 'effortSeen'>): TurnIo {
+  return {
+    now: () => $.clock.now(),
+    flushAgent: id => flushAgent($, id),
+    activity: () => read($, activity),
+    updateActivity: async fn => { await update($, activity, fn) },
+    ...held,
+    refresh: () => refresh($),
+    best: (what, fn) => best($, what, fn),
+    appendLog: (event, max) => appendLog($, event, max),
+    readLog: () => readLog($),
+    reviewerWork: async id => (await read($, reviewerWork))[id],
+    relayReviewerReport: (id, name, answer) => relayReviewerReport($, id, name, answer),
+    reviewerEnded: (name, end) => reviewerEnded($, name, end),
+    wokenByOthers,
+    mainHasAnswer: answer => mainHasAnswer($, answer),
+    toMain: text => toMain($, text),
+    after: (ms, fn) => $.clock.after(ms, fn),
+    stateDir: () => stateDir($),
+    messages: agentId => $.session.messages({ agentId }),
+    run: argv => $.process.run(argv),
+    mkdirp: async dir => { await $.process.run(['mkdir', '-p', dir]) },
+    write: async (path, text) => { await $.fs.write(path, text) },
+    setHandoff: async (branch, record) => { await update($, handoffs, hs => ({ ...hs, [branch]: record })) },
+    lean: ask => handoffLean(decideIoOf($), standingIoOf($), settings, ask),
+    toast: text => { void $.ui.toast(text) },
+    deliver: (id, text, opts) => deliver($, id, text, opts),
+    maxContinues: () => settings.maxContinues,
+    decideSettings: () => settings,
+    askCards: () => mirror.askCards,
   }
 }
 
@@ -2993,21 +2983,7 @@ export const register: Register = (on, options) => {
   }
   on('turn.step', async function* ($, e, next) {
     if (relay !== undefined) return yield* next(e)
-    // The agent is running now: texts held for it ride along.
-    if (e.agentId !== undefined) await flushAgent($, e.agentId).catch(() => undefined)
-    // flow's effort for this agent, only on a model that takes one (e.effort set) and never on main (no agentId).
-    let step = e
-    if (e.agentId !== undefined && e.effort !== undefined) {
-      if (!effortSeen.has(e.agentId)) {
-        effortSeen.add(e.agentId)
-        if (!agentEffort.has(e.agentId)) {
-          const saved = (await read($, activity).catch(() => ({} as Record<string, { effort?: string }>)))[e.agentId]?.effort
-          if (saved !== undefined) agentEffort.set(e.agentId, saved)
-        }
-      }
-      const target = agentEffort.get(e.agentId)
-      if (target !== undefined) step = { ...e, effort: target as typeof e.effort }
-    }
+    const step = await beforeStep(turnIoOf($, settings, { agentEffort, effortSeen }), e)
     const r = yield* next(step)
     await meterStep(usageIoOf($, settings, mainWarn, mainHeld), settings, e, r)
     await countStep(usageIoOf($, settings, mainWarn, mainHeld), e, r)
@@ -3018,50 +2994,8 @@ export const register: Register = (on, options) => {
   const countedTurns = new Set<string>()
   on('turn.complete', async ($, e, next) => {
     if (relay !== undefined) return next(e)
-    const id = e.agentId
-    await countTurn(costIoOf($), countedTurns, id, (e as { turnId?: string }).turnId)
-    if (id !== undefined) {
-      const t = await $.clock.now()
-      await update($, activity, acts => {
-        const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
-        return { ...acts, [id]: { ...a, lastAt: t, answer: e.answer } }
-      })
-      // A queue that ended while PRs were still pending: start a fresh one for them.
-      const rows = await refresh($)
-      const me = rows.find(a => a.id === id)
-      const runWork = me !== undefined && isReviewer(me.type) ? (await read($, reviewerWork))[id] : undefined
-      if (me !== undefined && FLOW_TYPES.has(me.type)) {
-        await best($, 'logging a report', async () => {
-          const last = e.answer.trim().split('\n').pop() ?? ''
-          const full = isReviewer(me.type) ? reviewerReport(e.answer, runWork) : undefined
-          await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: full ?? last }, full === undefined ? TEXT_MAX : 4000)
-        })
-      }
-      // No host notification reaches main for a reviewer the plugin spawned: relay its whole report,
-      // only for runs that did batch work.
-      if (me !== undefined && isReviewer(me.type)) {
-        await relayReviewerReport($, id, me.name ?? '', e.answer)
-      }
-      // A manager someone other than main woke: the host returned its answer to that agent, so main
-      // gets it here (once; main's own wake-ups never set the mark).
-      if (me?.type === MANAGER && wokenByOthers.delete(id) && e.answer.trim() !== '') {
-        const answer = e.answer.trim()
-        // The host may deliver the answer to main itself (a task notification): give it a moment to land,
-        // then relay only when main's transcript lacks it.
-        $.clock.after(RELAY_DELAY_MS, () => void (async () => {
-          if (!(await mainHasAnswer($, answer))) toMain($, `Report from manager ${me.name}:\n${answer}${mirror.askCards && lastLineAsks(answer) ? `\n${REPORT_HINT}` : ''}`)
-        })().catch(() => undefined))
-      }
-      // `HANDOFF: manager <name>` is a manager's own note, not a worker's branch.
-      const handedOff = /^HANDOFF:\s*(?!manager\b)(\S+)\s*$/.exec(e.answer.trim().split('\n').pop() ?? '')
-      if (me && WORKERS.has(me.type) && handedOff?.[1] !== undefined) {
-        const owner = rows.find(a => a.id === me.parentId)?.name ?? 'main'
-        await best($, 'recording a handoff', () => recordHandoff($, me, handedOff[1] as string, owner, settings.maxContinues, settings))
-      }
-      // A reviewer that ends at once (no answer, an API error) must not be replaced at once: the breaker records
-      // the end and decides when, or whether, the next one starts.
-      if (me && isReviewer(me.type)) await reviewerEnded($, me.name ?? '', { answer: e.answer, reason: e.reason, status: me.status })
-    }
+    await countTurn(costIoOf($), countedTurns, e.agentId, (e as { turnId?: string }).turnId)
+    await completeTurn(turnIoOf($, settings, { agentEffort, effortSeen }), e)
     return next(e)
   })
 
