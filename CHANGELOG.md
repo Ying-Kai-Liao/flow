@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Flow pane redraws background updates (activity, ledger, roster, clock) at most about 4 times a second with a trailing redraw, skips draws that change nothing, reads each atom once per draw and caches session usage for 1 s; key presses and selection still redraw at once
+
 ## [0.6.97] - 2026-10-13
 
 ### Changed
