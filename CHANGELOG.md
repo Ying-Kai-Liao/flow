@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN finding at the `flowToolsIoOf($, settings, options)` calls, at its source: the four `$` shapes register.tsx gained after 0.6.84 (the last release the directory passed) are gone. agentsOf no longer spreads `await $.agent.list()` inside square brackets, the pane's `resolve` has no cast inside `$.ui.resolve(...)`, nothing spreads a call passing `$` into an object (`...guardIoOf($)`, `...relayIoOf($)`, `...relayRunIoOf($)`), and nothing reads `.updateSessions` straight off `sessionIoOf($)`. flowToolsIoOf and paneIoOf now hold only plain `$.noun.method(...)` calls or single calls passing `$` to a function in the file. `scripts/plain-names.mjs` gains check 7, which follows `$` from each hook through the file's functions: it reports 2142, 2145 and 2151 on 0.6.109 and nothing on 0.6.84.
 
+## [0.6.110] - 2026-10-14
+
+### Added
+
+- Flow pane: finished managers (ended, nothing live under them, no open handover, inbox item or plan node of their own) and their workers fold into one "▸ N finished · M workers" row after the other agents, collapsed by default; press it, or `f`, to expand or collapse. The transcript the pane follows stays drawn.
+
 ## [0.6.109] - 2026-10-14
 
 ### Fixed
