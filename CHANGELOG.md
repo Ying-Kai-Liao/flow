@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The `manager_harness`, `reviewer_harness` and `session_host` settings and the session tool's `host` parameter. A file that still has them is read once per load with a toast: a terminal manager or reviewer harness maps to mode `session_host` (`orca` or `tmux`, else `orca`).
+### Fixed
+- Plugin directory checks: `$.agent.register` takes its spec as an object literal written in the call (MOD_PERMISSION_ANSWER_UNREAD), and the `(await f($, x))?.y` / `[...]` reads in hooks/register.tsx go through a const (MOD_CAPABILITY_USE_NOT_PLAIN); `scripts/plain-names.mjs` now guards both.
 
 ## [0.6.103] - 2026-10-13
 

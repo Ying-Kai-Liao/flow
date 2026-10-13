@@ -1215,7 +1215,9 @@ async function agentsOf($: EngineInterface): Promise<AgentInfo[]> {
 
 // The session an id names (`session:<name>`), if there is one on record.
 async function sessionOfId($: EngineInterface, id: string): Promise<Session | undefined> {
-  return id.startsWith('session:') ? (await read($, sessions))[id.slice('session:'.length)] : undefined
+  if (!id.startsWith('session:')) return undefined
+  const all = await read($, sessions)
+  return all[id.slice('session:'.length)]
 }
 
 // `from` is who the messages are from, named in a long message's file pointer (a session's terminal).
@@ -1246,7 +1248,10 @@ function ioOf($: EngineInterface, from = 'main'): DeliverIo {
       refusals.delete(id)
     },
     after: (ms, fn) => void $.clock.after(ms, fn),
-    name: async id => (await sessionOfId($, id))?.name ?? (await $.agent.list()).find(a => a.id === id)?.name,
+    name: async id => {
+      const s = await sessionOfId($, id)
+      return s?.name ?? (await $.agent.list()).find(a => a.id === id)?.name
+    },
   }
 }
 const refusals = new Map<string, string>()
@@ -1468,7 +1473,8 @@ let breakerTimer = false
 // A reviewer's report to main: its whole answer, only for a run that did batch work, once main's transcript
 // lacks it (the host may have delivered it already). The run's work record goes with it.
 async function relayReviewerReport($: EngineInterface, id: string, name: string, answer: string): Promise<void> {
-  const work = (await read($, reviewerWork))[id]
+  const works = await read($, reviewerWork)
+  const work = works[id]
   await update($, reviewerWork, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id)))
   const full = reviewerReport(answer, work)
   if (full === undefined) return
@@ -1653,7 +1659,10 @@ function turnIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, h
     best: (what, fn) => best($, what, fn),
     appendLog: (event, max) => appendLog($, event, max),
     readLog: () => readLog($),
-    reviewerWork: async id => (await read($, reviewerWork))[id],
+    reviewerWork: async id => {
+      const works = await read($, reviewerWork)
+      return works[id]
+    },
     relayReviewerReport: (id, name, answer) => relayReviewerReport($, id, name, answer),
     reviewerEnded: (name, end) => reviewerEnded($, name, end),
     wokenByOthers,
@@ -1743,7 +1752,9 @@ function startupIoOf($: EngineInterface, options: Record<string, unknown>, held:
     locate: () => locate($),
     readText: path => readText($, path),
     mtime: async path => (await $.fs.stat(path)).mtimeMs,
-    registerAgent: spec => $.agent.register(spec),
+    // Written out field by field: the plugin directory confirms an agent leaves permissions with the user only
+    // from an object literal in the call. These are the fields registerAgents (startup-run.ts) sets.
+    registerAgent: spec => $.agent.register({ name: spec.name, description: spec.description, prompt: spec.prompt, model: spec.model, isolation: spec.isolation, background: spec.background }),
     registerCommand: spec => $.command.register(spec),
     registerTools: () => registerTools($),
     resetDelivery: () => resetDelivery(text => toMain($, text)),
@@ -2057,7 +2068,10 @@ function flowToolsIoOf($: EngineInterface, c: FlowCtx, e: FlowCall): FlowToolsIo
     exec: argv => $.process.run(argv),
     cwd: () => $.session.cwd(),
     now: () => $.clock.now(),
-    sessionWorktree: async id => (await sessionOfId($, id))?.worktree,
+    sessionWorktree: async id => {
+      const s = await sessionOfId($, id)
+      return s?.worktree
+    },
     toolCaller: agentId => toolCallerOf($, agentId),
     handovers: () => read($, handovers),
     ownerName: id => ownerNameOf($, id),

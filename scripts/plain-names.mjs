@@ -1,5 +1,5 @@
-// Guards the plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN rule on the source, which the test sandbox cannot
-// read (it has no fs, and compiled code has lost its types). Run by scripts/typecheck.sh; exits 1 on a finding.
+// Guards the plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN rule, and MOD_PERMISSION_ANSWER_UNREAD for agent.register,
+// on the source, which the test sandbox cannot read (it has no fs, and compiled code has lost its types). Run by scripts/typecheck.sh; exits 1 on a finding.
 //
 // 1. A .tsx/.jsx file writes `h` (the JSX factory) only to call it, and never names anything h or Fragment:
 //    no variable, parameter, property or shorthand property.
@@ -7,7 +7,10 @@
 //    directory reads a typed arrow taking `$` as a hook declared as something else.
 // 3. Under hooks/, a file that registers hooks declares nothing else under the names it gives `on` (register's
 //    first parameter), `$` or a hook's third parameter (`next`).
-// 4. Under hooks/, a call taking `$` is never the operand of a parenthesized non-null assertion: `(await f($, x))!`.
+// 4. Under hooks/, a call taking `$`, awaited or not, is never parenthesized and then followed by `!`, `?.`, `[...]`
+//    or `as`: `(await f($, x))?.y`. Assign it to a const first.
+// 5. Under hooks/, `$.agent.register(...)` takes an object literal written in the call, with no spread: the directory
+//    (MOD_PERMISSION_ANSWER_UNREAD) can only confirm an agent leaves permission decisions with the user from that.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -72,11 +75,25 @@ for (const file of files) {
         (ts.isVariableDeclaration(fn.parent) && ts.isIdentifier(fn.parent.name) && fn.parent.name.text === 'register'))
       if (!ok) say(n, `declares ${n.name.text}, a name this file gives on, $ or a hook's next`)
     }
-    if (hooks && ts.isNonNullExpression(n) && ts.isParenthesizedExpression(n.expression)) {
-      let inner = n.expression.expression
+    if (hooks && ts.isParenthesizedExpression(n)) {
+      const p = n.parent
+      const what = ts.isNonNullExpression(p) ? '!'
+        : (ts.isPropertyAccessExpression(p) || ts.isElementAccessExpression(p)) && p.expression === n
+          ? (p.questionDotToken ? '?.' : ts.isElementAccessExpression(p) ? '[...]' : undefined)
+          : ts.isAsExpression(p) ? 'as' : undefined
+      let inner = n.expression
       if (ts.isAwaitExpression(inner)) inner = inner.expression
-      if (ts.isCallExpression(inner) && inner.arguments.some(a => ts.isIdentifier(a) && a.text === '$')) {
-        say(n, 'a call taking $ is wrapped in parentheses and !: assign it to a const first')
+      if (what && ts.isCallExpression(inner) && inner.arguments.some(a => ts.isIdentifier(a) && a.text === '$')) {
+        say(n, `a call taking $ is wrapped in parentheses and ${what}: assign it to a const first`)
+      }
+    }
+    if (hooks && ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'register') {
+      const noun = n.expression.expression
+      if (ts.isPropertyAccessExpression(noun) && noun.name.text === 'agent' && ts.isIdentifier(noun.expression) && noun.expression.text === '$') {
+        const arg = n.arguments[0]
+        if (n.arguments.length !== 1 || !ts.isObjectLiteralExpression(arg) || arg.properties.some(ts.isSpreadAssignment)) {
+          say(n, '$.agent.register takes something other than an object literal without spread: write the fields in the call')
+        }
       }
     }
     ts.forEachChild(n, visit)
@@ -85,7 +102,7 @@ for (const file of files) {
 }
 
 if (findings.length > 0) {
-  console.error(`plain-names: ${findings.length} finding(s) the plugin directory flags as MOD_CAPABILITY_USE_NOT_PLAIN:`)
+  console.error(`plain-names: ${findings.length} finding(s) the plugin directory flags (MOD_CAPABILITY_USE_NOT_PLAIN, MOD_PERMISSION_ANSWER_UNREAD):`)
   for (const f of findings) console.error(`  ${f}`)
   process.exit(1)
 }
