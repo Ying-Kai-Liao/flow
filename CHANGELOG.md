@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.109] - 2026-10-14
+
 ### Fixed
 
 - The plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN finding at the `flowToolsIoOf($, c, e)` calls in register.tsx: no closure holds `$` and a hook's event together any more (flowToolsIoOf takes settings and options, the flow tool cases pass the call to the io methods that need it, and the pane's `resolve` takes the render event). `scripts/plain-names.mjs` gains check 6, which reports those call sites on 0.6.103 and 0.6.108 as the directory did.
