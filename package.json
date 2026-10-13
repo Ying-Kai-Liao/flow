@@ -6,7 +6,7 @@
   "scripts": {
     "typecheck": "sh scripts/typecheck.sh",
     "validate": "claude plugin validate .",
-    "check": "npm run typecheck && npm run validate && claude plugin test . && node --test tests/ledger-rebuild-io.node-test.mjs tests/plain-capability.node-test.mjs"
+    "check": "npm run typecheck && npm run validate && claude plugin test . && node --test tests/ledger-rebuild-io.node-test.mjs"
   },
   "devDependencies": {
     "typescript": "6.0.3"

@@ -1,90 +1,96 @@
 // This file is the wiring only: atoms, `on(...)` hooks, `$.tool.register` calls, and io builders whose
 // closures spell out each `$.noun.event(...)` call. New logic goes into a module under hooks/, either
-// pure or taking an io object of closures (see deliver.ts), because the engine refuses `$` across an
-// import and wants atoms declared in this file.
+// pure or taking an io object of closures (deliver.ts; pane-run.tsx holds the pane's hook bodies this way).
+// Which module holds each hook's body: docs/reference.md, "Where code goes".
+// The engine's rules: `$` never crosses an import (no imported function taking `$`, no `$`-taking closure
+// passed as an argument); a module may register its own hooks with an exported registerX(on, ctx) when
+// everything its hooks call with `$` is in that same file; atoms are declared with literal refs in each
+// file that uses them (the same key is the same state).
 import { atom, read, update } from 'claude-code'
-import { lastLineAsks, REPORT_HINT } from './askcards'
+import { startSession } from './startup-run'
+import type { StartupIo } from './startup-run'
 import { parseMode } from './mergemode'
-import type { AgentInfo, AgentSpawnInput, EngineInterface, Register } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
-import type { Activity, AgentRow, Breaker, Ledger, Role, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
+import type { Activity, AgentRow, Breaker, Ledger, EnvChange, Handover, HandoffRecord, Leftovers, LogEvent, OpenPr, PrCache, Session, SlotEntry, TestSlots } from '../types'
 import { grantFile, grantSlots, reapSlots } from './slots'
+import { grantTypecheck, reapTypecheck, typecheckDir } from './typecheck-slots'
 import type { Evidence } from './evidence'
 import type { RunWork } from './mainff'
 import { NO_FAILS, type TestFails } from './testfail'
-import { leftoverLine } from './clean'
 import { sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
 import { gatherLeftovers as gatherLeftoversTo } from './resume'
 import type { Gathered, Leftover, ResumeIo } from './resume'
-import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo, resetDelivery, ENDED, LIVE, type DeliverIo, type DeliverOptions } from './deliver'
-import { addStep, addTurn, baseName, entriesOfBranch, setIdentity } from './cost'
+import { deliver as deliverTo, flushAgent as flushTo, holdForReviewer as holdTo, resetDelivery, ENDED, type DeliverIo, type DeliverOptions } from './deliver'
+import { addStep, addTurn, baseName, entriesOfBranch } from './cost'
 import { changeLedger as changeLedgerTo, costLines as costLinesTo, loadLedger as loadLedgerTo, mainKey as mainKeyTo, withCost as withCostTo } from './cost-run'
 import type { CostIo } from './cost-run'
 import { countStep, countTurn, meterStep, type UsageIo } from './usage-run'
-import { backNote, effortFor, type EffortRole } from './routing'
-import { checkAttachments, CONTINUE_LINE, dispatch, fableDenied, FABLE_DENY, fileManagerSizeFyi, fileSizeFyi, FLOW_TYPES, prepareContinue, refusedLong, routeManager, routeWorker, withSizeFeedback, withoutLong } from './spawn'
+import { beforeStep, completeTurn } from './turn-run'
+import type { TurnIo } from './turn-run'
+import { backNote, effortFor } from './routing'
 import { sizeWith } from './spawn'
 import type { SizeJev } from './spawn'
 import { decide, DECIDE_TIMEOUT_MS, sourceOf } from './decide'
 import type { DecideIo, DecideSettings, FetchLike } from './decide'
-import { adviceLine, adviceSuffix, handoffLean } from './decide-use'
-import type { DecideUseSettings } from './decide-use'
-import type { Routed, SpawnIo } from './spawn'
+import { handoffLean } from './decide-use'
+import type { SpawnIo } from './spawn'
+import { onSpawn } from './spawn-run'
+import type { SpawnHookIo } from './spawn-run'
 import { agentFor, asksQuestion, noticeText, settle } from './dag'
 import type { AgentFact, Facts, Notice, Plan } from './dag'
 import {
-  answerMessage, askingNames, EMPTY_INBOX, isFyi, openAll, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner, endedOwners, foldedOf, FOLD_KEY, groupExpanded, hiddenByLink,
+  answerMessage, EMPTY_INBOX, findItem, markAnswered, overridesManager, paneRows, needsMessage, normalizeInbox, notesOwner, endedOwners, FOLD_KEY, 
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
-  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, isLite, isSkip, markDelivered, normalizePreflight,
-  recordSpawn, renderRound,
+  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, markDelivered, normalizePreflight, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
-import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, recordLite, releaseToolAccess, reviewerToolAccess, withLiteRules } from './lite'
+import { EMPTY_LITE, isLiteName, normalizeLite } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
-  addChecks, anyMatch, dueForPrompt, EMPTY_CHECKS, normalizeChecks, paneChecksLine, parseNeeds,
+  addChecks, anyMatch, EMPTY_CHECKS, normalizeChecks, parseNeeds,
   SKIP_NOTE, versionInSteps,
 } from './checks'
 import type { Check, Checks } from './checks'
 import type { Inbox, Marked, Question } from './inbox'
-import { addGuardTest, loadRules, offerSeedsOnce, standingTool, suggestGuardTests } from './standing-run'
+import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, paneSuggestions, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
 import { decideEvalTool } from './decide-eval-run'
-import { sizeAbTool, sizeArmOf, sizerFor } from './size-ab'
-import type { SizeArm } from './size-ab'
+import { sizeAbTool } from './size-ab'
+import { armHidden, armsTool } from './bestof'
+import type { ArmsIo } from './bestof'
 import type { DecideEvalIo } from './decide-eval-run'
 import { DEMO_TOOL, SETTINGS_TOOL } from './init-tools'
-import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, reviewerTool, SESSION_TOOL, SIZE_AB_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
+import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, ARMS_TOOL, reviewerTool, SESSION_TOOL, SIZE_AB_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
 import { detect as initDetect, firstRun, HINT as INIT_HINT, settingsTool, writeMarker } from './init'
 import type { InitIo } from './init'
-import { advance as demoAdvance, answer as demoAnswer, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
+import { demoArm, demoMove, demoStart, demoStop, demoTool } from './demo-run'
+import type { DemoIo } from './demo-run'
 import type { DemoState } from './demo-replay'
-import { demoView } from './demo-view'
-import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
-import { agentView, archiveView, batchCardView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, prCardView, treeView } from './pane-view'
-import type { InboxCtx, PaneCtx, Usage } from './pane-view'
-import { approvePr, detailsKey, detailsStale, fetchDetails, openerFor, platformOfUname, rejectPr, urlNote } from './prcard'
+import { paneDraw, paneFocus } from './pane-run'
+import type { PaneEvent, PaneIo } from './pane-run'
+import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
-import { describeCall, foldDefault, ROLE, shortModel, summarizeCall } from './pane'
+import { ROLE } from './pane'
 import {
-  fill, LITE_MARK, LITE_RULES, MANAGER_PROMPT, MANAGER_SESSION_RULES, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO,
-  REVIEWER_SESSION_RULES_CONFIRM, WORKER_PROMPT,
+  fill, REVIEWER_PROMPT, REVIEWER_SESSION_RULES_AUTO,
+  REVIEWER_SESSION_RULES_CONFIRM,
 } from './prompts'
 import type { Settings } from './prompts'
-import { deployModeWarnings, deployTargetsOf, stateFileOf, targetsOf } from './prompts'
-import { mergeLayers, renameOptions, settingsOf } from './settings'
+import { deployTargetsOf, stateFileOf, targetsOf } from './prompts'
+import { renameOptions, settingsOf } from './settings'
 import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
-import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, needLines, normText, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
+import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
 import type { Forwarded, RouteIo } from './reviewer-route'
 import { noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue } from './reviewer-run'
 import { reconcileStale } from './stale-handovers'
 import type { StaleIo } from './stale-handovers'
 import type { BreakerIo, QueueIo, ReviewerIo } from './reviewer-run'
-import { breakerLine, EMPTY_BREAKER, normalizeBreaker, REVIEWER_KIND } from './reviewer-breaker'
+import { EMPTY_BREAKER, REVIEWER_KIND } from './reviewer-breaker'
 import { handoverTool } from './handover-run'
 import type { HandoverIo } from './handover-run'
 import { answerQuestionTo, noteText, paneInboxRowsTo, sizeBackNoteTo, tellMainTo, tellManagerTo, type MessagingIo } from './messaging-run'
@@ -104,37 +110,37 @@ import { statusTool } from './status-run'
 import type { StatusIo, Unhanded } from './status-run'
 import { flowCommand } from './command'
 import type { CommandIo } from './command'
-import { elapsed, tokensDown, LARGE_WINDOW, labelOf, limitLabel, thresholdOf, warnPercent, windowOf, wrapUpText } from './meter'
+import { elapsed, tokensDown, labelOf, thresholdOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
+import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, releaseCase, reviewerCase, sessionCase } from './toolcall-run'
+import type { FlowToolsIo, GuardIo, ToolCallIo } from './toolcall-run'
+import { flowCatch, toolCatch } from './toolguard'
 import {
-  allowed, allowList, flowActive, killRefusal, remoteDeleteRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, resolvePath, writeTargets,
-} from './guards'
-import type { WriteTarget } from './guards'
-import { slotRefusal, suiteRun } from './testguard'
-import { flowCatch, isFlowTool, toolCatch } from './toolguard'
-import {
-  ago, claudeLimits, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, SESSION, sessionKey, sessionLive, sessionRow,
+  ago, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, sessionLive, sessionRow,
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
 import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSessions as watchSessionsTo } from './session-run'
-import { pumpRelay, relayCall, stripEngineFields } from './relay'
-import type { PumpIo, RelayAnswer, RelayCall, RelayIo } from './relay'
+import { relayCall } from './relay'
+import type { MainIdentity, PumpIo, RelayIo } from './relay'
+import { alreadyForwardedTo, deliverToSessionTo, pumpOnceTo, relayToolCallTo } from './relay-run'
+import type { RelayExecIo, RelayMode, RelayRunIo } from './relay-run'
+import { adoptSessionsTo, durableSessions, identityTo, myRoleSessionsTo, normalizeSessions, onRoleGoneTo, onRoleReportTo, ownsSessionTo, persistSessionsTo, roleState } from './role-session-run'
+import type { RoleIo } from './role-session-run'
+
 import type { Caller, Ran, SessionIo } from './session-run'
-import { branchOwners, buildDigest, findWorktree, noteKey } from './state'
-import { ADD_OPTION, guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
+import { branchOwners, noteKey } from './state'
+import { ADD_OPTION } from './guardtests'
 import {
-  EMPTY_PUSH, normalizePush,
-  PUSH_KIND,
+  EMPTY_PUSH,
 } from './pushgate'
 import type { PushState } from './pushgate'
-import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, pushLines, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
+import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
 import type { PushAct, PushIo } from './pushgate-run'
 import {
-  behindLines, EMPTY_DEPLOYS, ENV_KIND,
-  normalizeDeploys,
+  EMPTY_DEPLOYS, ENV_KIND,
   release,
 } from './deploy'
-import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, TEXT_MAX, WORKER, WORKERS } from './core'
+import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, TEXT_MAX, WORKER, WORKERS } from './core'
 import type { Deploys, Draft, Hold, TargetInfo } from './deploy'
 import {
   closeReturnedEnv as closeReturnedEnvTo, deployTool as deployToolTo, holdTarget as holdTargetTo, onDeployAnswer as onDeployAnswerTo, onEnvAnswer as onEnvAnswerTo,
@@ -156,8 +162,6 @@ const selected = atom({ plugin: 'flow', key: 'selected' } as const, null as stri
 // the role's default (managers and the reviewer collapsed), else automatic. MERGE_QUEUE_KEY is the
 // Reviewer section's entry.
 const cursor = atom({ plugin: 'flow', key: 'cursor' } as const, null as string | null)
-const MERGE_QUEUE_KEY = '#merge-queue'
-const QUESTIONS_KEY = '#questions'
 const folded = atom({ plugin: 'flow', key: 'folded' } as const, {} as Record<string, boolean>)
 // Following the chat view: the view (an agent id, null for main) in which the person last acted in
 // the pane. While the view differs from it, the pane shows the viewed agent; written by handlers only.
@@ -217,13 +221,15 @@ const infosOf = (s: Parameters<typeof targetsOf>[0]): TargetInfo[] => targetsOf(
 // manager again. The worker is the agent named like the branch, or its continuation (-2, -3).
 export function unhandedPrs(
   prs: OpenPr[], handovers: Record<string, Handover>, roster: AgentRow[],
-  activity: Record<string, Activity>, t: number, graceMs = GRACE_MS,
+  activity: Record<string, Activity>, t: number, graceMs = GRACE_MS, armPr?: (branch: string) => boolean,
 ): Unhanded[] {
   const out: Unhanded[] = []
   for (const p of prs) {
     if (p.isDraft || !p.headRefName.startsWith('flow/')) continue
     const ho = handovers[String(p.number)]
     if (ho !== undefined && ho.status !== 'returned') continue
+    // A best-of-N arm waits for its pick: not forgotten while the group is open, never owed once it lost.
+    if (armPr?.(p.headRefName) === true) continue
     const slug = p.headRefName.slice('flow/'.length)
     const mine = roster.filter(a => a.name === slug || (a.name?.startsWith(`${slug}-`) === true && /^\d+$/.test(a.name.slice(slug.length + 1))))
     if (mine.some(a => !ENDED.has(a.status))) continue
@@ -243,7 +249,12 @@ async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
   const [cache, hs, rows, acts, t] = await Promise.all([
     read($, prCache), read($, handovers), read($, roster), read($, activity), $.clock.now(),
   ])
-  return unhandedPrs(cache.prs, hs, rows, acts, t)
+  await loadLedger($)
+  const l = await read($, ledger)
+  // The log is read only once an arm exists: this runs on every pane tick.
+  const armLog = Object.values(l).some(r => r.arm !== undefined) ? await readLog($) : []
+  const armPr = armHidden(l, armLog, name => rows.some(a => a.name !== undefined && baseName(a.name) === baseName(name) && !ENDED.has(a.status)))
+  return unhandedPrs(cache.prs, hs, rows, acts, t, undefined, armPr)
 }
 const plan = atom({ plugin: 'flow', key: 'plan' } as const, {} as Plan)
 // The pane draws the agents as a tree of cards or as the dependency graph; the graph's highlight is a node id.
@@ -265,6 +276,8 @@ const inboxDraft = atom({ plugin: 'flow', key: 'inboxDraft' } as const, '')
 const inboxNote = atom({ plugin: 'flow', key: 'inboxNote' } as const, '')
 const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
 const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders: [], waiters: [] } as TestSlots)
+// Its own key, so state persisted before this pool existed loads as empty.
+const typecheckSlots = atom({ plugin: 'flow', key: 'typecheckSlots' } as const, { holders: [], waiters: [] } as TestSlots)
 
 // <git-common-dir>/flow/test-slots, set at session start; undefined when not in a git repo.
 let slotDir: string | undefined
@@ -295,18 +308,40 @@ async function settleSlots($: EngineInterface, rows: AgentRow[], t: number, pre:
 const sh = ($: EngineInterface, script: string, ...args: string[]) =>
   $.process.run(['sh', '-c', script, 'sh', ...args], { timeoutMs: 5_000 }).catch(() => undefined)
 
-async function signalSlots($: EngineInterface, granted: SlotEntry[], left: string[]): Promise<void> {
+async function signalSlots($: EngineInterface, granted: SlotEntry[], left: string[], kind: 'test' | 'typecheck' = 'test'): Promise<void> {
+  const dir = kind === 'test' ? slotDir : typecheckDir(slotDir)
   for (const key of left) {
-    const f = grantFile(slotDir, key)
+    const f = grantFile(dir, key)
     if (f) await sh($, 'rm -f "$1"', f)
   }
   for (const g of granted) {
-    const f = grantFile(slotDir, g.key)
+    const f = grantFile(dir, g.key)
     if (f) await sh($, 'mkdir -p "$(dirname "$1")" && : > "$1"', f)
     if (g.key !== 'main') {
-      await deliver($, g.key, `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.`, { onGone: () => undefined }).catch(() => undefined)
+      await deliver($, g.key, kind === 'test' ? `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.` : `flow: your typecheck slot is granted (${g.label}). Call mcp__flow__test_slot kind "typecheck" action "acquire" to confirm, run, then release.`, { onGone: () => undefined }).catch(() => undefined)
     }
   }
+}
+
+// settleSlots for the typecheck pool: the same steps, its own state, limit and lease.
+async function settleTypecheck($: EngineInterface, rows: AgentRow[], t: number, pre: (s: TestSlots) => TestSlots = s => s, me?: string): Promise<void> {
+  const notes: string[] = []
+  let granted: SlotEntry[] = []
+  let left: string[] = []
+  await update($, typecheckSlots, st => {
+    notes.length = 0
+    const r = reapTypecheck(pre(st), rows, t)
+    const g = grantTypecheck(r.state, heldSettings?.typecheckSlots ?? 1, t)
+    notes.push(...r.notes, ...g.notes)
+    const state = me === undefined ? g.state
+      : { ...g.state, holders: g.state.holders.map(holder => holder.key === me ? { ...holder, claimed: true } : holder) }
+    granted = g.granted.filter(holder => holder.key !== me)
+    const stay = new Set([...state.holders, ...state.waiters].map(e => e.key))
+    left = [...st.holders, ...st.waiters].map(e => e.key).filter(k => !stay.has(k))
+    return state
+  })
+  for (const n of notes) void $.ui.toast(n)
+  await signalSlots($, granted, left, 'typecheck')
 }
 
 // The last batch the release tool cut, so a retried push does not release twice.
@@ -343,6 +378,7 @@ function handoverIoOf($: EngineInterface, options: Record<string, unknown>): Han
     appendLog: event => appendLog($, event),
     toast: text => { void $.ui.toast(text) },
     refresh: () => refresh($),
+    arms: async () => { await loadLedger($); return { ledger: await read($, ledger), log: await readLog($) } },
     ensureQueue: () => ensureQueue($),
     liteManager: agentId => liteManagerOf($, agentId),
   }
@@ -395,6 +431,19 @@ function slotsIoOf($: EngineInterface): SlotsIo {
     setTestFails: async state => { await update($, testFails, () => state) },
     appendLog: event => appendLog($, event),
     slotDir: () => slotDir,
+    typecheckSlots: () => read($, typecheckSlots),
+    settleTypecheck: (rows, t, pre, me) => settleTypecheck($, rows, t, pre, me),
+  }
+}
+
+function armsIoOf($: EngineInterface): ArmsIo {
+  return {
+    run: argv => $.process.run(argv),
+    ledger: async () => { await loadLedger($); return read($, ledger) },
+    log: () => readLog($),
+    appendLog: event => appendLog($, event),
+    callerName: async id => id === undefined ? undefined : (await agentsOf($)).find(a => a.id === id)?.name,
+    liveNames: async () => (await agentsOf($)).filter(a => !ENDED.has(a.status) && a.name !== undefined).map(a => a.name!),
   }
 }
 
@@ -422,6 +471,7 @@ function statusIoOf($: EngineInterface, options: Record<string, unknown>, base: 
     inbox: () => read($, inbox),
     plans: () => read($, plan),
     slots: () => read($, testSlots),
+    typecheckSlots: () => read($, typecheckSlots),
     offerSeeds: () => offerSeedsOnce(standingIoOf($), options),
     pushState: () => read($, pushState),
     breaker: () => read($, reviewerBreaker),
@@ -473,8 +523,8 @@ function commandIoOf($: EngineInterface): CommandIo {
     tellManager: (name, text) => tellManager($, name, text),
     initDetect: options => initDetect(initIoOf($), options),
     initMark: d => writeMarker(initIoOf($), d),
-    demoStart: () => demoStart($),
-    demoStop: () => demoStop($),
+    demoStart: () => demoStart(demoIoOf($)),
+    demoStop: () => demoStop(demoIoOf($)),
   }
 }
 
@@ -505,39 +555,24 @@ function initIoOf($: EngineInterface): InitIo {
 // The replay's state is this atom alone: no agent, handover or inbox row of the real flow is touched, and a
 // restart loses it. Each start gets a new generation, so a timer of an earlier run does nothing.
 const demo = atom({ plugin: 'flow', key: 'demo' } as const, null as DemoState | null)
-let demoGen = 0
 
-const DEMO_DONE = 'Demo finished. /flow init settings sets your commands; /flow init demo live runs it for real (uses tokens).'
-
-// One change to the running replay, in the pane's own order. Timers pass the generation they were set for.
-function demoMove($: EngineInterface, fn: (s: DemoState, t: number) => DemoState, gen?: number): Promise<void> {
-  return paneSerial(async () => {
-    const cur = await read($, demo)
-    if (cur === null || (gen !== undefined && cur.gen !== gen)) return
-    const moved = fn(cur, await $.clock.now())
-    if (moved === cur) return
-    await update($, demo, () => moved)
-    if (moved.step === cur.step) return
-    if (demoIsLast(moved)) void $.ui.toast(DEMO_DONE)
-    demoArm($, moved)
-  })
-}
-
-function demoArm($: EngineInterface, s: DemoState): void {
-  const ms = demoStepOf(s).autoMs
-  if (ms === undefined) return
-  $.clock.after(ms, () => void demoMove($, (cur, t) => (cur.step === s.step && canAdvance(cur) ? demoAdvance(cur, t) : cur), s.gen).catch(() => undefined))
-}
-
-async function demoStart($: EngineInterface): Promise<string> {
-  if (await read($, demo) !== null) return 'The demo is already running in the Flow pane. /flow init demo stop ends it.'
-  const s = startDemo(++demoGen, await $.clock.now())
-  await update($, demo, () => s)
-  await update($, inboxDraft, () => '')
-  await update($, inboxNote, () => '')
-  demoArm($, s)
-  await $.ui.open({ id: PANE, title: 'Flow', focus: true, closeOnEscape: true })
-  return 'Demo started in the Flow pane: a replay of one task with canned agents. No agents run, no tokens are used, nothing is written. m = next step, x = stop, or /flow init demo stop.'
+// The io the demo functions (demo-run.ts) work through; the entry points below stay `$`-taking wrappers.
+function demoIoOf($: EngineInterface): DemoIo {
+  return {
+    get: () => read($, demo),
+    set: fn => update($, demo, fn).then(() => undefined),
+    clearInbox: async () => {
+      await update($, inboxDraft, () => '')
+      await update($, inboxNote, () => '')
+    },
+    serial: paneSerial,
+    now: () => $.clock.now(),
+    toast: text => { void $.ui.toast(text) },
+    after: (ms, fn) => { $.clock.after(ms, fn) },
+    openPane: () => $.ui.open({ id: PANE, title: 'Flow', focus: true, closeOnEscape: true }),
+    listAgents: () => $.agent.list(),
+    run: argv => runCmd($, argv),
+  }
 }
 
 // The view the pane was last drawn under: a focus event carries none, and a focus move is the
@@ -556,51 +591,7 @@ async function paneHome($: EngineInterface): Promise<void> {
   await update($, inboxOpen, () => ({}))
   await update($, batchPick, () => null)
   await update($, prShown, () => null)
-  if (await read($, demo) !== null) await demoStop($)
-}
-
-async function demoStop($: EngineInterface): Promise<string> {
-  if (await read($, demo) === null) return 'No demo is running.'
-  await update($, demo, () => null)
-  await update($, inboxDraft, () => '')
-  await update($, inboxNote, () => '')
-  return 'Demo stopped; the pane shows your real work again.'
-}
-
-// Removes what a real demo left: its worktree and branch, by the demo's own names only. Refused while a demo agent lives.
-async function demoCleanup($: EngineInterface): Promise<string> {
-  const live = (await $.agent.list()).filter(a => a.name !== undefined && DEMO_AGENT.test(a.name) && LIVE_STATUS.has(a.status))
-  if (live.length > 0) return `Not cleaned: ${live.map(a => a.name).join(', ')} still running. Wait for it to end, then clean up.`
-  const trees = await runCmd($, ['git', 'worktree', 'list', '--porcelain'])
-  const refs = await runCmd($, ['git', 'for-each-ref', '--format=%(refname:short)', 'refs/heads/flow/'])
-  // A worker's worktree whose branch is not named for the demo is the demo's only when its one commit is the demo file.
-  const confirmed: string[] = []
-  for (const w of toInspect(trees.stdout)) {
-    const diff = await runCmd($, ['git', '-C', w.path, 'diff', '--name-status', 'HEAD~1', 'HEAD'])
-    const status = await runCmd($, ['git', '-C', w.path, 'status', '--porcelain'])
-    if (diff.exitCode === 0 && status.exitCode === 0 && isDemoCommit(diff.stdout, status.stdout)) confirmed.push(w.path)
-  }
-  const plan = planCleanup(trees.stdout, refs.stdout.split('\n').map(l => l.trim()).filter(l => l !== ''), confirmed)
-  const out: string[] = plan.kept.map(k => `kept: ${k}`)
-  for (const w of plan.worktrees) {
-    const r = await runCmd($, ['git', 'worktree', 'remove', '--force', w.path])
-    out.push(r.exitCode === 0 ? `removed worktree ${w.path}` : `could not remove worktree ${w.path}: ${r.stderr.trim()}`)
-  }
-  for (const b of plan.branches) {
-    const r = await runCmd($, ['git', 'branch', '-D', b])
-    out.push(r.exitCode === 0 ? `deleted branch ${b}` : `could not delete branch ${b}: ${r.stderr.trim()}`)
-  }
-  return out.length === 0 ? 'Nothing of the demo is left.' : out.join('\n')
-}
-
-async function demoTool($: EngineInterface, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
-  if (agentId !== undefined) return { result: 'Refused: only main runs the demo.' }
-  const action = String(input.action ?? 'status')
-  if (action === 'start') return { result: await demoStart($) }
-  if (action === 'stop') return { result: await demoStop($) }
-  if (action === 'cleanup') return { result: await demoCleanup($) }
-  const agents = (await $.agent.list()).filter(a => a.name !== undefined && DEMO_AGENT.test(a.name)).map(a => `${a.name} (${a.status})`)
-  return { result: `Replay: ${(await read($, demo)) === null ? 'not running' : 'running'}. Real demo agents: ${agents.join(', ') || 'none'}.` }
+  if (await read($, demo) !== null) await demoStop(demoIoOf($))
 }
 
 function rosterIoOf($: EngineInterface): RosterIo {
@@ -621,6 +612,7 @@ function rosterIoOf($: EngineInterface): RosterIo {
     setNow: t => update($, now, () => t).then(() => undefined),
     sessions: () => read($, sessions),
     testSlots: () => read($, testSlots),
+    typecheckSlots: () => read($, typecheckSlots),
     toast: text => { void $.ui.toast(text) },
     status: line => $.ui.status(line),
     wakeMain: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
@@ -634,6 +626,7 @@ function rosterIoOf($: EngineInterface): RosterIo {
     decisionPhrases: () => mirror.decisionPhrases,
     maxManagers: () => mirror.maxManagers,
     slotLimit: () => mirror.slotLimit,
+    typecheckLimit: () => heldSettings?.typecheckSlots ?? 1,
   }
 }
 
@@ -925,56 +918,6 @@ async function toolCallerOf($: EngineInterface, agentId: string | undefined): Pr
   const name = await liteManagerOf($, agentId)
   if (name !== undefined) return { kind: 'lite', name }
   return me.type === MANAGER || WORKERS.has(me.type) ? { kind: 'other' } : { kind: 'reviewer' }
-}
-
-// main's flow:manager spawn as a terminal session (manager_harness), after the model routing. Undefined: the
-// agent starts as usual. The bookkeeping an in-process manager gets (pre-flight record, lite record, size
-// decision) is done here; the session's own start logs the spawn and opens its activity card.
-async function startManagerSession($: EngineInterface, options: Record<string, unknown>, e: AgentSpawnInput, ctx: { routed: Routed | undefined; liteMode: boolean }): Promise<{ deny: string } | undefined> {
-  const route = roleHarnessFor($, 'manager')
-  if (route === undefined) return undefined
-  const name = (e as { name?: string }).name ?? e.description
-  // The same manager asked for twice: it is running, so the answer is the same success, not a second manager.
-  const live = (await read($, sessions))[name]
-  if (live !== undefined && live.role === 'manager' && sessionLive(live)) {
-    return { deny: `flow: manager ${name} already runs in ${live.host} (${live.handle}) as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
-  }
-  const model = e.model ?? route.settings.managerModel
-  const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', route.settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), route.settings)
-  const managerEffort = effortFor('manager', undefined, route.settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
-  const r = await startRoleSession(sessionIoOf($), {
-    role: 'manager', name, harness: route.harness, owner: { id: 'main', name: 'main' },
-    ...(typeof model === 'string' && { model }),
-    ...(managerEffort !== undefined && { effort: managerEffort }),
-    prompt: `${MANAGER_SESSION_RULES}${rules}\n\n${e.prompt}`,
-  }, route.settings)
-  if (!r.ok) {
-    void $.ui.toast(`flow: could not start manager ${name} in a terminal (${r.text}); starting it as an agent`)
-    return undefined
-  }
-  const id = sessionKey(name)
-  if (mirror.preflightOn) await best($, 'recording a pre-flight', () => recordManager($, name, e.prompt, ctx.liteMode))
-  await best($, 'recording an agent in the cost ledger', () => changeLedger($, (l, now) => setIdentity(l, id, {
-    role: 'manager', name,
-    ...(typeof model === 'string' && { spawnModel: model }),
-    ...(ctx.routed !== undefined && { size: ctx.routed.size }),
-  }, now)))
-  if (ctx.liteMode) await best($, 'recording a lite manager', async () => { const at = await $.clock.now(); await withLite($, cur => ({ state: recordLite(cur, name, at), out: undefined })) })
-  if (ctx.routed !== undefined && !ctx.liteMode) {
-    const routed = ctx.routed
-    await best($, 'filing a manager-size decision', () => fileManagerSizeFyi(spawnIoOf($), options, name, id, routed))
-  }
-  return { deny: `flow: started manager ${name} in ${r.session.host} (${r.session.handle}); it runs as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
-}
-
-// A manager main just started joins the open round, or opens one with a timer for the wait. A lite one is skipped.
-async function recordManager($: EngineInterface, name: string, prompt: string, liteMode: boolean): Promise<void> {
-  const t = await $.clock.now()
-  const opened = await withPreflight($, cur => {
-    const changed = recordSpawn(cur, name, isSkip(prompt) || liteMode, t, mirror.preflightWaitMs)
-    return { state: changed, out: changed.rounds.length > cur.rounds.length }
-  })
-  if (opened) $.clock.after(mirror.preflightWaitMs, () => void refresh($).catch(() => undefined))
 }
 
 const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOString().slice(0, 10)
@@ -1336,51 +1279,6 @@ const resolveReportTo = ($: EngineInterface, given: unknown, callerId: string | 
 const managerFinished = ($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[], report?: string) => managerFinishedTo(routeIoOf($), ids, name, rows, report)
 const mainHasAnswer = ($: EngineInterface, answer: string) => mainHasAnswerTo(routeIoOf($), answer)
 
-// A worker's HANDOFF: write the digest, log it, remember where its worktree is, and warn the owner when the
-// package keeps handing off. Best-effort throughout: a missing digest still leaves the record.
-async function recordHandoff($: EngineInterface, me: AgentRow, branch: string, owner: string, maxContinues: number, decideSettings: DecideUseSettings): Promise<void> {
-  const prior = (await readLog($)).filter(ev => ev.event === 'handoff' && ev.branch === branch)
-  // turn.complete can fire again for the same agent; count its handoff once.
-  if (prior.some(ev => ev.agent === me.name)) return
-  const count = prior.length + 1
-  let digestPath: string | undefined
-  let note: string | undefined
-  await best($, 'writing a handoff digest', async () => {
-    const dir = await stateDir($)
-    if (dir === undefined) return
-    const msgs = await $.session.messages({ agentId: me.id })
-    if ('deny' in msgs) return
-    const path = `${dir}/handoffs/${branch.replaceAll('/', '-')}/${count}.md`
-    await $.process.run(['mkdir', '-p', path.slice(0, path.lastIndexOf('/'))])
-    note = buildDigest(msgs, branch, me.name ?? me.id)
-    await $.fs.write(path, note)
-    digestPath = path
-  })
-  let wt: { path: string; head?: string } | undefined
-  await best($, 'finding the worktree', async () => {
-    const r = await $.process.run(['git', 'worktree', 'list', '--porcelain'])
-    if (r.exitCode === 0) wt = findWorktree(r.stdout, me.id, branch)
-  })
-  await appendLog($, { event: 'handoff', agent: me.name, owner, branch, text: digestPath })
-  const record: HandoffRecord = {
-    branch, agent: me.name ?? me.id, agentId: me.id, owner, at: await $.clock.now(), count,
-    ...(digestPath && { digestPath }), ...(wt && { worktree: wt.path, ...(wt.head && { head: wt.head }) }),
-  }
-  await update($, handoffs, hs => ({ ...hs, [branch]: record }))
-  // decide_handoff: the provider's lean, advice only; max_continues is enforced the same either way.
-  const lean = me.parentId === undefined ? undefined : await handoffLean(decideIoOf($), standingIoOf($), decideSettings, { branch, owner, note, count, maxContinues }).catch(() => undefined)
-  const source = sourceOf(decideSettings)
-  if (count > maxContinues && me.parentId !== undefined) {
-    void $.ui.toast(`${branch} has handed off ${count} times: split it`)
-    await deliver($, me.parentId, `flow: ${branch} has handed off ${count} times (max_continues ${maxContinues}). The package is too big for one worker: split the Remaining part of its handoff note into smaller briefs instead of another plain continuation.${lean === undefined ? '' : adviceSuffix(source, lean)}`, { urgent: true }).catch(() => undefined)
-  } else if (lean !== undefined && me.parentId !== undefined) {
-    const line = adviceLine(source, branch, lean)
-    // Advice only: it waits for the manager's next turn (the handoff report itself wakes it).
-    if (line !== undefined) await deliver($, me.parentId, line, { held: true }).catch(() => undefined)
-  }
-}
-
-
 // Everything the spawn routing in spawn.ts needs from the engine and the plugin's state.
 function spawnIoOf($: EngineInterface): SpawnIo {
   return {
@@ -1397,6 +1295,34 @@ function spawnIoOf($: EngineInterface): SpawnIo {
     loadLedger: () => loadLedger($),
     ledger: () => read($, ledger),
     standing: standingIoOf($),
+  }
+}
+
+// What the agent.spawn hook (spawn-run.ts) needs from the engine and the plugin's atoms; the rest of its io is register()'s state.
+type SpawnState = Pick<SpawnHookIo, 'relay' | 'settings' | 'options' | 'noLong' | 'setNoLong' | 'noContinue' | 'setNoContinue' | 'takeExplicit' | 'setEffort'>
+function spawnHookIoOf($: EngineInterface, state: SpawnState): SpawnHookIo {
+  return {
+    ...state,
+    spawn: spawnIoOf($),
+    now: () => $.clock.now(),
+    agentList: () => $.agent.list(),
+    plans: () => read($, plan),
+    lite: () => read($, lite),
+    gate: agentId => preflightGate($, agentId),
+    jev: () => jevOf($, state.settings()),
+    effortEnv: () => $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined),
+    toast: text => $.ui.toast(text),
+    best: (what, fn) => best($, what, fn),
+    refresh: () => refresh($),
+    openPane: () => openPane($),
+    updateActivity: fn => update($, activity, fn),
+    changeLedger: fn => changeLedger($, fn),
+    withLite: fn => withLite($, fn),
+    withPreflight: fn => withPreflight($, fn),
+    after: (ms, fn) => $.clock.after(ms, fn),
+    sessions: () => read($, sessions),
+    roleHarness: () => roleHarnessFor($, 'manager'),
+    startRoleSession: (p, s) => startRoleSession(sessionIoOf($), p, s),
   }
 }
 
@@ -1622,45 +1548,11 @@ function breakerIoOf($: EngineInterface): BreakerIo {
 
 function onReviewerAnswer($: EngineInterface, answer: string, by: string): Promise<string> { return onReviewerAnswerTo(breakerIoOf($), () => ensureQueue($), answer, by) }
 
-const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
-
-// Why a call is refused as a write to the repo's main checkout, or undefined. `cwd` is where
-// the caller's shell runs when that is known: the main session and managers run in the
-// session's directory; a worker's or the reviewer's worktree isn't known here, so their relative
-// paths are let through and only absolute ones judged.
-// The main session (and a non-flow subagent of it) is guarded only while flow has work in this
-// repo: a flow worktree, or a live flow agent. `flowCaller` says the caller is itself a flow
-// agent, which is guarded regardless.
-async function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>, cwd: () => Promise<string | undefined>, allow: string[], flowCaller: () => Promise<boolean>): Promise<string | undefined> {
-  let targets: WriteTarget[]
-  if (WRITE_TOOLS.includes(String(e.tool))) {
-    const file = e.file_path ?? e.notebook_path
-    const path = typeof file === 'string' ? resolvePath(file, await cwd()) : undefined
-    targets = path === undefined ? [] : [{ path }]
-  } else if (e.tool === 'Bash' && typeof e.command === 'string') {
-    targets = writeTargets(e.command, await cwd())
-  } else {
-    return undefined
-  }
-  if (targets.length === 0) return undefined
-  // Asked on every judged write, so a worktree made a minute ago counts as one.
-  // Not a git repo, or git failing: nothing to guard.
-  const wt = await $.process.run(['git', 'worktree', 'list', '--porcelain'], { timeoutMs: 10_000 }).catch(() => undefined)
-  const co = wt?.exitCode === 0 ? parseWorktrees(wt.stdout) : undefined
-  if (co === undefined) return undefined
-  // Judged lazily: only a write into the main checkout needs the activity signal.
-  let active: boolean | undefined
-  const guarded = async () => active ??= (await flowCaller()) || flowActive(co) ||
-    (await agentsOf($)).some(a => (a.type === MANAGER || WORKERS.has(a.type) || isReviewer(a.type)) && (LIVE_STATUS.has(a.status) || a.status === 'idle'))
-  for (const t of targets) {
-    const rel = mainRelative(t.path, co)
-    if (rel === undefined) continue
-    if (!(await guarded())) return undefined
-    // A git command changes the whole checkout, whichever directory of it runs it.
-    if (t.git) return mainCheckoutRefusal(co.main, `\`git\` in ${t.path}`, allow)
-    if (!allowed(rel, allow)) return mainCheckoutRefusal(co.main, t.path, allow)
-  }
-  return undefined
+function guardIoOf($: EngineInterface): GuardIo {
+  return { exec: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }), allAgents: () => agentsOf($) }
+}
+function mainCheckoutGuard($: EngineInterface, e: Record<string, unknown>, cwd: () => Promise<string | undefined>, allow: string[], flowCaller: () => Promise<boolean>): Promise<string | undefined> {
+  return mainCheckoutGuardTo(guardIoOf($), e, cwd, allow, flowCaller)
 }
 
 // The reviewer's report with the PR's workers' cost appended, once.
@@ -1723,32 +1615,6 @@ async function sendWrapUp($: EngineInterface, me: { id: string; type: string; na
   if (!sent || refusals.has(me.id)) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered: ${refusals.get(me.id) ?? 'unknown'}`)
 }
 
-// An agent past the threshold reads the wrap-up after a tool result: on its first tool call
-// past it, every 10th after, and when usage rises another 10 points. The result passes untouched.
-async function wrapUpReminder($: EngineInterface, e: { agentId?: string }, r: any, settings: ReturnType<typeof settingsOf>, mainModel: string | undefined, mainWindow: number | undefined): Promise<any> {
-  try {
-    const id = e.agentId
-    if (id === undefined || !settings.handoff || r.deny !== undefined) return r
-    const a = (await read($, activity))[id]
-    if (a?.handoffNotifiedAt === undefined || a.usage === undefined) return r
-    const window = a.usage.window ?? windowOf(a.usage.model, mainModel, mainWindow, a.usage.tokens, a.spawnWindow)
-    const percent = Math.min(100, Math.round(a.usage.tokens / window * 100))
-    const calls = (a.callsPastLimit ?? 0) + 1
-    const due = calls === 1 || calls % 10 === 0 || percent >= (a.remindedPercent ?? a.handoffPercent ?? percent) + 10
-    await update($, activity, acts => {
-      const cur = acts[id]
-      if (cur === undefined) return acts
-      const n = (cur.callsPastLimit ?? 0) + 1
-      return { ...acts, [id]: { ...cur, callsPastLimit: n, ...(due ? { remindersSent: (cur.remindersSent ?? 0) + 1, remindedPercent: percent } : {}) } }
-    })
-    if (!due) return r
-    const me = (await $.agent.list()).find(x => x.id === id)
-    return { ...r, context: [...(r.context ?? []), wrapUpText(ROLE[me?.type ?? WORKER] ?? 'worker', percent, limitLabel(settings, window))] } 
-  } catch {
-    return r
-  }
-}
-
 // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
 // Re-armed when usage drops back below the threshold (after a /compact).
 async function warnMain($: EngineInterface, settings: ReturnType<typeof settingsOf>, state: { warned: boolean }): Promise<number | undefined> {
@@ -1782,20 +1648,38 @@ function usageIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, 
   }
 }
 
-// The PR card's gh details, fetched when the card is opened (a render is pure, it cannot write): the entry
-// is marked first so a second open does not start another call, and the result lands in the cache, which
-// redraws the pane. Keyed by PR and head; a fresh entry is not fetched again.
-function fetchPrDetails($: EngineInterface, pr: number): void {
-  void (async () => {
-    const ho = (await read($, handovers))[String(pr)]
-    if (ho === undefined) return
-    const key = detailsKey(ho)
-    const t = await $.clock.now()
-    if (!detailsStale((await read($, prDetails))[key], t)) return
-    await update($, prDetails, c => ({ ...c, [key]: { ...c[key], fetchedAt: t, fetching: true as const } }))
-    const fresh = await fetchDetails((argv, timeoutMs) => $.process.run(argv, { timeoutMs }), pr, await $.clock.now())
-    await update($, prDetails, c => ({ ...c, [key]: fresh }))
-  })().catch(() => undefined)
+// The turn hooks' bodies live in turn-run.ts; this builds their io over register()'s state.
+function turnIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, held: Pick<TurnIo, 'agentEffort' | 'effortSeen'>): TurnIo {
+  return {
+    now: () => $.clock.now(),
+    flushAgent: id => flushAgent($, id),
+    activity: () => read($, activity),
+    updateActivity: async fn => { await update($, activity, fn) },
+    ...held,
+    refresh: () => refresh($),
+    best: (what, fn) => best($, what, fn),
+    appendLog: (event, max) => appendLog($, event, max),
+    readLog: () => readLog($),
+    reviewerWork: async id => (await read($, reviewerWork))[id],
+    relayReviewerReport: (id, name, answer) => relayReviewerReport($, id, name, answer),
+    reviewerEnded: (name, end) => reviewerEnded($, name, end),
+    wokenByOthers,
+    mainHasAnswer: answer => mainHasAnswer($, answer),
+    toMain: text => toMain($, text),
+    after: (ms, fn) => $.clock.after(ms, fn),
+    stateDir: () => stateDir($),
+    messages: agentId => $.session.messages({ agentId }),
+    run: argv => $.process.run(argv),
+    mkdirp: async dir => { await $.process.run(['mkdir', '-p', dir]) },
+    write: async (path, text) => { await $.fs.write(path, text) },
+    setHandoff: async (branch, record) => { await update($, handoffs, hs => ({ ...hs, [branch]: record })) },
+    lean: ask => handoffLean(decideIoOf($), standingIoOf($), settings, ask),
+    toast: text => { void $.ui.toast(text) },
+    deliver: (id, text, opts) => deliver($, id, text, opts),
+    maxContinues: () => settings.maxContinues,
+    decideSettings: () => settings,
+    askCards: () => mirror.askCards,
+  }
 }
 
 // One gh call at a time: the timer and a status call may meet.
@@ -1845,90 +1729,78 @@ async function readText($: EngineInterface, path: string): Promise<string | unde
   }
 }
 
-// Cheap change check for the roster poll: both files' mtimes, "-" for a missing one.
-async function signature($: EngineInterface, paths: string[]): Promise<string> {
-  const parts = await Promise.all(paths.map(async p => {
-    try {
-      if (p === '') return '-'
-      return String((await $.fs.stat(p)).mtimeMs)
-    } catch {
-      return '-'
-    }
-  }))
-  return parts.join('|')
-}
-
-type Merged = { settings: ReturnType<typeof settingsOf>; seen: string }
-
-// Layer /config under the settings files. The caller assigns the result (register's `apply`),
-// since the hooks compiler only follows `$` into top-level functions.
-async function loadSettings($: EngineInterface, options: Record<string, unknown>, paths: string[], base: string): Promise<Merged> {
-  const seen = await signature($, paths)
-  const layers = await Promise.all(paths.map(async path => ({ path, text: await readText($, path) })))
-  const loaded = mergeLayers(options, layers)
-  const warnings = [...loaded.warnings, ...deployModeWarnings(loaded.raw.deploy_targets)]
-  if (warnings.length > 0) void $.ui.toast(`flow settings:\n${warnings.join('\n')}`)
-  return { settings: settingsOf(loaded.raw, base), seen }
-}
-
-// The agent definitions carry the settings' prompts and models; a re-registered name is
-// replaced from the next turn, so agents already running keep what they started with.
-async function registerAgents($: EngineInterface, settings: ReturnType<typeof settingsOf>) {
-  await $.agent.register({
-    name: 'manager',
-    description: 'A flow manager: owns one task, writes briefs, starts flow:worker agents, reviews their PRs and hands them to the reviewer. ' +
-      'Pass the task in the user\'s words as the prompt and a short task slug as the name; run it in the background.',
-    prompt: fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), settings),
-    model: settings.managerModel,
-    background: true,
-  })
-  await $.agent.register({
-    name: 'worker',
-    description: 'A flow worker: implements one brief in a git worktree of its own and opens a PR. ' +
-      'Pass the whole brief as the prompt, its first line "Your name: <slug>", and the slug as the name.',
-    prompt: fill(WORKER_PROMPT, settings),
-    model: settings.workerModel,
-    isolation: 'worktree',
-    background: true,
-  })
-  await $.agent.register({
-    name: 'continue',
-    description: 'A flow worker that continues a handed-off branch in the same worktree. The plugin picks it when a flow:worker spawn says "Continue on branch:"; never start it yourself.',
-    prompt: fill(WORKER_PROMPT, settings),
-    model: settings.workerModel,
-    background: true,
-  })
-  await $.agent.register({
-    name: 'reviewer',
-    description: 'The flow reviewer. Started by the plugin when a PR is handed over; never start it yourself.',
-    prompt: fill(REVIEWER_PROMPT, settings),
-    model: settings.reviewerModel,
-    isolation: 'worktree',
-    background: true,
-  })
-  // The old agent type name, kept so a spawn or a resume under flow:queue still works.
-  await $.agent.register({
-    name: 'queue',
-    description: 'The old name of flow:reviewer. Never start it; the plugin starts flow:reviewer.',
-    prompt: fill(REVIEWER_PROMPT, settings),
-    model: settings.reviewerModel,
-    isolation: 'worktree',
-    background: true,
-  })
-}
-
-// Re-read the settings when a file's mtime changed (the roster poll calls this): undefined when
-// nothing changed or the reload failed, which never stops the roster refresh.
-async function recheck($: EngineInterface, options: Record<string, unknown>, paths: string[], base: string, seen: string): Promise<Merged | undefined> {
-  try {
-    if ((await signature($, paths)) === seen) return undefined
-    const merged = await loadSettings($, options, paths, base)
-    await registerAgents($, merged.settings)
-    return merged
-  } catch {
-    return undefined
+// The session.start hook (startup-run.ts): what it reads and writes of register()'s state comes in `held`,
+// everything else is closures over `$`, the atoms and the module state here.
+type StartupHeld = Pick<StartupIo, 'settings' | 'applySettings' | 'paths' | 'setPaths' | 'detected' | 'setDetected' | 'seen' | 'setSeen' | 'checking' | 'setChecking' | 'installed' | 'setInstalled'>
+function startupIoOf($: EngineInterface, options: Record<string, unknown>, held: StartupHeld): StartupIo {
+  return {
+    ...held,
+    options,
+    pollMs: POLL_MS,
+    prPollMs: PR_POLL_MS,
+    initHint: INIT_HINT,
+    best: (what, fn) => best($, what, fn),
+    run: (argv, opts) => $.process.run(argv, opts),
+    toast: text => { void $.ui.toast(text) },
+    every: (ms, fn) => { $.clock.every(ms, fn) },
+    after: (ms, fn) => { $.clock.after(ms, fn) },
+    now: () => $.clock.now(),
+    relayMode: () => relayModeOf($),
+    setRelay: r => { relay = r },
+    locate: () => locate($),
+    readText: path => readText($, path),
+    mtime: async path => (await $.fs.stat(path)).mtimeMs,
+    registerAgent: spec => $.agent.register(spec),
+    registerCommand: spec => $.command.register(spec),
+    registerTools: () => registerTools($),
+    resetDelivery: () => resetDelivery(text => toMain($, text)),
+    resetStateDir,
+    readState: async file => {
+      const dir = await stateDir($)
+      if (dir === undefined) return undefined
+      return { disk: await readJson($, `${dir}/${file}`) }
+    },
+    loadHandovers: () => loadHandovers($),
+    mergeHandovers: async disk => { await update($, handovers, hs => ({ ...disk, ...hs })) },
+    autoSweep: () => autoSweep($),
+    setInbox: async disk => { await update($, inbox, () => disk) },
+    setBreaker: async disk => { await update($, reviewerBreaker, () => disk) },
+    releaseHalt: async () => { await releaseHaltTo(breakerIoOf($), 'flow') },
+    installedVersion: () => installedVersion($),
+    handovers: () => read($, handovers),
+    checks: () => read($, checks),
+    setChecks: async disk => { await update($, checks, () => disk) },
+    captureChecks: (ho, verifyPaths) => captureChecks($, ho, verifyPaths, false),
+    markPrompted: async version => { await withChecks($, cur => ({ checks: { ...cur, promptedVersion: version }, out: undefined })) },
+    setDeploys: async disk => { await update($, deploys, () => disk) },
+    deployKnown: name => mirror.deployInfos.some(i => i.name === name),
+    refreshBehind: () => void refreshBehind($),
+    setPush: async disk => { await update($, pushState, () => disk) },
+    setLite: async disk => { await update($, lite, () => disk) },
+    mergeSessions: async raw => {
+      const disk = normalizeSessions(raw, await $.clock.now())
+      await update($, sessions, cur => ({ ...disk, ...cur }))
+    },
+    snapshotSessions: async () => { roleState.saved = JSON.stringify(durableSessions(await read($, sessions))) },
+    adoptSessions: () => adoptSessions($),
+    setPreflight: async disk => { await update($, preflight, () => disk) },
+    agents: () => agentsOf($),
+    closePreflight: async (live, t) => { await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } }) },
+    setSlotDir: dir => { slotDir = dir },
+    sh: (script, arg) => sh($, script, arg),
+    roleSessionCount: async () => (await myRoleSessions($)).length,
+    pump: () => void pumpOnce($, { settings: held.settings(), options, installed: held.installed() }),
+    refresh: () => void refresh($),
+    watchSessions: () => void watchSessions($),
+    fetchPrs: () => void fetchPrs($),
+    refreshLeftovers: () => refreshLeftovers($),
+    tickNow: async () => { await $.clock.now().then(t => update($, now, () => t)) },
+    startReviewer: async () => void (await ensureQueue($)),
+    clearDemo: async () => { await update($, demo, () => null) },
+    firstRun: () => firstRun(initIoOf($)),
   }
 }
+
 // Workers in other harnesses (sessions.ts, session-run.ts): started in an Orca terminal or a tmux
 // session, watched through the report file they write. A command that can't start is an exit code
 // here, never a throw.
@@ -1946,9 +1818,6 @@ function platformOf($: EngineInterface): Promise<string> {
   platform ??= runCmd($, ['uname', '-s'], 5_000).then(r => platformOfUname(r.exitCode === 0 ? r.stdout : undefined))
   return platform
 }
-
-// A second press within this long confirms restart or stop from the pane.
-const ARM_MS = 5000
 
 function sessionIoOf($: EngineInterface): SessionIo {
   return {
@@ -1972,6 +1841,8 @@ function sessionIoOf($: EngineInterface): SessionIo {
     warn: (what, err) => warn($, what, err),
     refresh: () => refresh($),
     openPane: () => openPane($),
+    identity: () => identityOf($),
+    owns: s => ownsSession($, s),
     submit: text => $.prompt.submit({ text }),
     deliver: (id, text) => deliver($, id, text),
     logMax: LOG_MAX,
@@ -1981,84 +1852,48 @@ function sessionIoOf($: EngineInterface): SessionIo {
   }
 }
 
-// A manager's or the reviewer's terminal wrote its report. A manager's goes to main the way an in-process manager's
-// final answer does; it is not an end (a terminal manager reports, then waits for the reviewer's messages), so
-// nothing is marked finished here.
-async function onRoleReport($: EngineInterface, s: Session, report: string): Promise<void> {
-  if (s.role === 'manager') {
-    toMain($, `Report from manager ${s.name}:\n${report}${mirror.askCards && lastLineAsks(report) ? `\n${REPORT_HINT}` : ''}`)
-    return
-  }
-  const id = sessionKey(s.name)
-  const batch = (await read($, pushState)).batch
-  // Read now, not at the start: merge_mode may have changed while it worked. A batch waiting for /flow push also
-  // ends the session; the push run is a fresh reviewer's.
-  const oneBatch = parseMode(heldSettings?.mergeMode) === 'confirm' || batch?.state === 'ready'
-  if (!oneBatch || heldSettings === undefined) {
-    await reviewerRan($, id, s.name, { answer: report }, false)
-    return
-  }
-  await best($, 'stopping the reviewer terminal', async () => void await sessionToolTo(sessionIoOf($), { action: 'stop', name: s.name, remove_worktree: true }, { id: 'main', name: 'main' }, heldSettings!))
-  await reviewerRan($, id, s.name, { answer: report }, true)
-}
-
-// A manager's or the reviewer's terminal went away. The session is 'exited', so the roster no longer lists it.
-async function onRoleGone($: EngineInterface, s: Session, tail: string): Promise<void> {
-  if (s.role === 'manager') {
-    toMain($, `flow session: manager "${s.name}" (${s.host}) ended its terminal. Its session is over; start a new manager if its task is not done.${tail.trim() ? `\nLast terminal lines:\n${tail.trim()}` : ''}`)
-    await refresh($)
-    return
-  }
-  // Work done since its last report would otherwise be lost: main gets the run's summary line.
-  await best($, 'relaying the reviewer end', () => relayReviewerReport($, sessionKey(s.name), s.name, 'The reviewer terminal ended without a final report.'))
-  await reviewerEnded($, s.name, { answer: tail.trim() === '' ? 'the terminal ended' : tail })
-}
-// The sessions record on disk (<state dir>/sessions.json): a main that restarts keeps its terminal
-// sessions, so their relay directories are pumped again and their reports still reach their owner.
-// Written only when it changed; the file is the last one saved, so a reload re-reads it.
-let sessionsSaved = ''
-async function persistSessions($: EngineInterface): Promise<void> {
-  await best($, 'saving sessions', async () => {
-    const dir = await stateDir($)
-    if (dir === undefined) return
-    const durable = durableSessions(await read($, sessions))
-    const text = JSON.stringify(durable)
-    if (text === sessionsSaved) return
-    sessionsSaved = text
-    await $.process.run(['mkdir', '-p', dir])
-    await writeJsonAtomic($, `${dir}/sessions.json`, durable)
-  })
-}
-
-// What the file keeps of a session: the live ones, without what changes on every watch tick (screen,
-// look times, the digest). The watcher rebuilds those; the file only changes on a real change (start,
-// status, report, nudge, stop). An ended session leaves the file, so its name is free again.
-const VOLATILE = ['screenText', 'screen', 'screenAt', 'lookedAt', 'checkedAt', 'digest', 'digestSeen'] as const
-function durableSessions(all: Record<string, Session>): Record<string, Session> {
-  return Object.fromEntries(Object.entries(all).filter(([, v]) => sessionLive(v)).map(([k, v]) =>
-    [k, Object.fromEntries(Object.entries(v).filter(([f]) => !(VOLATILE as readonly string[]).includes(f))) as Session]))
-}
-
-const SESSION_KEEP_MS = 24 * 60 * 60_000
-
-// Records of an older or hand-edited file that cannot be a session are dropped, not trusted, and so are
-// ended ones and reported workers nobody has touched for a day (their terminal is long gone).
-function normalizeSessions(raw: unknown, now: number): Record<string, Session> {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
-  return Object.fromEntries(Object.entries(raw).filter(([k, v]) => {
-    if (typeof v !== 'object' || v === null || (v as { name?: unknown }).name !== k) return false
-    const x = v as Session
-    if (typeof x.status !== 'string' || !sessionLive(x)) return false
-    return !(x.role === undefined && x.status === 'reported' && now - (x.reportAt ?? x.startedAt ?? 0) > SESSION_KEEP_MS)
-  })) as Record<string, Session>
-}
+function onRoleReport($: EngineInterface, s: Session, report: string): Promise<void> { return onRoleReportTo(roleIoOf($), s, report) }
+function onRoleGone($: EngineInterface, s: Session, tail: string): Promise<void> { return onRoleGoneTo(roleIoOf($), s, tail) }
+function persistSessions($: EngineInterface): Promise<void> { return persistSessionsTo(roleIoOf($)) }
 
 const watchSessions = ($: EngineInterface) => watchSessionsTo(sessionIoOf($))
 
+// --- Who owns a role session (role-session-run.ts) ---
+function identityOf($: EngineInterface): Promise<MainIdentity | undefined> { return identityTo(roleIoOf($)) }
+function ownsSession($: EngineInterface, s: Session): Promise<boolean> { return ownsSessionTo(roleIoOf($), s) }
+function adoptSessions($: EngineInterface): Promise<void> { return adoptSessionsTo(roleIoOf($)) }
+function myRoleSessions($: EngineInterface, ended = false): Promise<Session[]> { return myRoleSessionsTo(roleIoOf($), ended) }
+
+// The io of the terminal role sessions' ownership, sessions file and reports (bodies in role-session-run.ts).
+function roleIoOf($: EngineInterface): RoleIo {
+  return {
+    run: (argv, timeoutMs) => runCmd($, argv, timeoutMs),
+    now: () => $.clock.now(),
+    sessionId: () => $.session.id(),
+    sessions: () => read($, sessions),
+    updateSessions: fn => update($, sessions, fn),
+    stateDir: () => stateDir($),
+    readJson: path => readJson($, path),
+    writeJson: (path, obj) => writeJsonAtomic($, path, obj),
+    mkdirp: dir => $.process.run(['mkdir', '-p', dir]),
+    best: (what, fn) => best($, what, fn),
+    warn: (what, err) => warn($, what, err),
+    toMain: text => toMain($, text),
+    refresh: () => refresh($),
+    askCards: () => mirror.askCards,
+    heldMergeMode: () => heldSettings?.mergeMode,
+    heldSettings: () => heldSettings !== undefined,
+    batchReady: async () => (await read($, pushState)).batch?.state === 'ready',
+    stopTerminal: async name => void await sessionToolTo(sessionIoOf($), { action: 'stop', name, remove_worktree: true }, { id: 'main', name: 'main' }, heldSettings!),
+    reviewerRan: (id, name, end, ended) => reviewerRan($, id, name, end, ended),
+    relayReviewerReport: (id, name, answer) => relayReviewerReport($, id, name, answer),
+    reviewerEnded: (name, end) => reviewerEnded($, name, end),
+  }
+}
+
 // --- The disk relay (relay.ts) ---
 // A terminal-started claude loads its own copy of this plugin; FLOW_ROLE / FLOW_NAME / FLOW_RELAY tell
-// that copy what it is. Set at session.start; undefined in a normal session (main, or an Agent-tool subagent).
-type RelayMode = { role: 'worker' | 'manager' | 'reviewer'; name: string; dir: string | undefined }
+// that copy what it is (RelayMode, relay-run.ts). Set at session.start; undefined in a normal session (main, or an Agent-tool subagent).
 let relay: RelayMode | undefined
 
 // The files and processes the relay needs, both for the client in the terminal's copy and for main's pump.
@@ -2089,8 +1924,8 @@ function relayIoOf($: EngineInterface): RelayIo {
 function pumpIoOf($: EngineInterface): PumpIo {
   return {
     ...relayIoOf($),
-    dirs: async () => Object.values(await read($, sessions))
-      .filter(s => s.role !== undefined && s.relayDir !== undefined)
+    dirs: async () => (await myRoleSessions($, true))
+      .filter(s => s.relayDir !== undefined)
       .map(s => ({ name: s.name, dir: s.relayDir!, live: sessionLive(s) })),
   }
 }
@@ -2107,17 +1942,7 @@ async function relayModeOf($: EngineInterface): Promise<RelayMode | undefined> {
 type FlowCall = { agentId?: string } & Record<string, unknown>
 type FlowOut = { result: unknown } | { deny: string }
 
-// What a terminal sees of a message: SendMessage's own envelope names the sender, a typed line cannot.
-const messageFrom = (from: string, text: string): string => `Message from ${from}: ${text}`
-
-// SendMessage to a terminal session, answered as the tool's refusal text: the message went by typing it
-// in, which the model must not retry through the host.
-async function deliverToSession($: EngineInterface, fromId: string | undefined, target: Session, text: string): Promise<string> {
-  const from = fromId === undefined ? 'main' : await ownerNameOf($, fromId)
-  if (!sessionLive(target)) return `Not delivered: session ${target.name} has ${target.status}.`
-  const ok = await deliverTo(ioOf($, from), sessionKey(target.name), messageFrom(from, text))
-  return ok ? `Delivered to ${target.name} by flow (terminal session).` : `Not delivered: session ${target.name} could not be reached.`
-}
+function deliverToSession($: EngineInterface, fromId: string | undefined, target: Session, text: string): Promise<string> { return deliverToSessionTo(relayRunIoOf($), fromId, target, text) }
 const sessionTool = ($: EngineInterface, input: Record<string, unknown>, caller: Caller, s: ReturnType<typeof settingsOf>) =>
   sessionToolTo(sessionIoOf($), input, caller, s)
 
@@ -2154,140 +1979,52 @@ async function registerTools($: EngineInterface): Promise<void> {
   await $.tool.register(DEMO_TOOL)
   await $.tool.register(DECIDE_EVAL_TOOL)
   await $.tool.register(SIZE_AB_TOOL)
+  await $.tool.register(ARMS_TOOL)
 }
 
 
-// The generic hook in a relay copy. A worker's passes straight through. A manager's or the reviewer's keeps
-// the guards that need no state (kills, remote deletes, code edits by a manager, the main checkout), asks
-// main for the ones that do (test slots), and answers every flow tool, and a SendMessage to anyone this
-// session cannot see, through the relay. Activity and the ledger are main's business.
-async function relayToolCall($: EngineInterface, settings: ReturnType<typeof settingsOf>, e: { tool: string; agentId?: string; command?: string }): Promise<FlowOut | undefined> {
-  const r = relay!
-  if (r.role === 'worker') return undefined
-  const id = e.agentId
-  const from = sessionKey(r.name)
-  const ask = (tool: string, input: Record<string, unknown>) => r.dir === undefined
-    ? Promise.resolve<RelayAnswer>({ result: 'flow relay: FLOW_RELAY is not set, so this session cannot reach the main session.' })
-    : relayCall(relayIoOf($), r.dir, { tool, input, from, role: r.role, by: id ?? r.name })
-  if (e.tool === 'Bash') {
-    const command = String(e.command ?? '')
-    const why = killRefusal(command)
-    if (why !== undefined) return { deny: why }
-    const suite = suiteRun(command, settings.testSlotCommands ?? [])
-    if (suite !== undefined) {
-      const a = await ask('slot-check', { suite })
-      if (a.deny !== undefined) return { deny: a.deny }
-      // Anything but "ok" is the relay failing to reach main: the run waits, as a refusal would.
-      if (a.result !== 'ok') return { deny: String(a.result) }
-    }
-    const del = remoteDeleteRefusal(command)
-    if (del !== undefined) return { deny: del }
-  }
-  if (WRITE_TOOLS.includes(e.tool) && r.role === 'manager') {
-    return { deny: 'flow: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
-  }
-  if (settings.mainGuard) {
-    const cwd = async () => (id === undefined || r.role === 'manager' ? $.session.cwd() : undefined)
-    const why = await mainCheckoutGuard($, e as unknown as Record<string, unknown>, cwd, settings.mainAllow, async () => true)
-    if (why !== undefined) return { deny: why }
-  }
-  if (isFlowTool(e.tool)) {
-    const a = await ask(e.tool, stripEngineFields(e as unknown as Record<string, unknown>))
-    return a.deny !== undefined ? { deny: a.deny } : { result: a.result }
-  }
-  if (e.tool === 'SendMessage') {
-    const input = e as unknown as Record<string, unknown>
-    const to = String(input.to ?? '')
-    if (!(await $.agent.list()).some(a => a.id === to || a.name === to)) {
-      const a = await ask('send', { to, text: String(input.message ?? input.text ?? '') })
-      // Whatever main answered is the reason nothing went through the host: "Sent to X by flow." or why not.
-      return { deny: a.deny ?? String(a.result) }
-    }
-  }
-  return undefined
-}
+function alreadyForwarded($: EngineInterface, rid: string, text: string): Promise<boolean> { return alreadyForwardedTo(relayRunIoOf($), rid, text) }
+function pumpOnce($: EngineInterface, c: FlowCtx): Promise<void> { return pumpOnceTo(relayExecIoOf($, c)) }
 
-
-// A SendMessage from a terminal session to someone: as the sender, to a session, an agent or main.
-// Whether every line of a reviewer's text to main was already forwarded to main for that reviewer.
-async function alreadyForwarded($: EngineInterface, rid: string, text: string): Promise<boolean> {
-  const lines = text.split('\n').map(normText).filter(l => l !== '')
-  const sent = (await read($, forwarded)).lines[rid] ?? []
-  return lines.length > 0 && lines.every(l => sent.includes(l) || (needLines(l).length > 0 && needLines(l).every(n => sent.includes(n))))
-}
-
-async function sendFrom($: EngineInterface, key: string, name: string, to: string, text: string): Promise<RelayAnswer> {
-  if (to === '' || to === '*') return { deny: 'Not sent: name one agent or session to send to.' }
-  const all = await read($, sessions)
-  if (all[name]?.role === 'reviewer') {
-    let handled: string | undefined
-    await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard(routeIoOf($), key, to, text) })
-    if (handled !== undefined) return { deny: handled }
-  }
-  const body = messageFrom(name, text)
-  if (to === 'main') {
-    if (all[name]?.role === 'reviewer' && await alreadyForwarded($, key, text)) {
-      return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
-    }
-    toMain($, body)
-    return { result: 'Sent to main by flow.' }
-  }
-  const target = all[to] ?? all[to.replace(/^session:/, '')]
-  const onRoster = (await $.agent.list()).some(a => a.id === to || a.name === to)
-  if (target !== undefined && (sessionLive(target) || !onRoster)) {
-    if (!sessionLive(target)) return { deny: `Not sent: session ${target.name} has ${target.status}.` }
-    return (await deliverTo(ioOf($, name), sessionKey(target.name), body))
-      ? { result: `Sent to ${target.name} by flow.` } : { deny: `Not sent: ${target.name} could not be reached.` }
-  }
-  const listed = (await $.agent.list()).find(a => a.id === to || a.name === to)
-  // A manager the host dropped from the roster is held by the id last seen for it.
-  const seenId = listed === undefined ? (await read($, seenAgents))[to]?.id : undefined
-  const targetId = listed?.id ?? seenId
-  if (targetId === undefined) return { deny: `Not sent: no agent or session named "${to}".` }
-  return (await deliver($, targetId, body)) ? { result: `Sent to ${to} by flow.` } : { deny: `Not sent: ${to} has ended.` }
-}
-
-
-// One relayed call, run in main as the session that left it (`session:<name>`): the flow tools above, and
-// two pseudo-tools for the guards the copy cannot judge itself (it has no slots, and no roster).
-async function relayExec($: EngineInterface, c: FlowCtx, call: RelayCall, name: string): Promise<RelayAnswer> {
-  const key = sessionKey(name)
-  const input = call.input
-  await best($, 'logging a relayed call', async () => {
-    const t = await $.clock.now()
-    const line = describeCall({ ...input, tool: call.tool })
-    await update($, activity, acts => {
-      const a = acts[key] ?? { startedAt: t, lastAt: t, log: [] }
-      return { ...acts, [key]: { ...a, lastAt: t, log: [...a.log, line].slice(-LOG_MAX) } }
-    })
-  })
-  if (call.tool === 'slot-check') {
-    const refused = slotRefusal(await read($, testSlots), await refresh($), key, c.settings.testSlots, await $.clock.now(), String(input.suite ?? ''))
-    return refused === undefined ? { result: 'ok' } : { deny: refused }
-  }
-  if (call.tool === 'send') return sendFrom($, key, name, String(input.to ?? ''), String(input.text ?? ''))
-  if (!(FLOW_TOOLS as readonly string[]).includes(call.tool)) return { deny: `flow relay: ${call.tool} is not a flow tool` }
-  const out = await runFlowTool($, call.tool, { ...input, agentId: key }, c)
-  return out!
-}
-
-
-let pumping = false
-// One tick of main's pump: runs the calls the role sessions left. Does nothing until one is live, and
-// a tick that overlaps the one before it (a slow listing) returns at once.
-async function pumpOnce($: EngineInterface, c: FlowCtx): Promise<void> {
-  if (pumping) return
-  pumping = true
-  try {
-    if (!Object.values(await read($, sessions)).some(x => x.role !== undefined && sessionLive(x))) return
-    await pumpRelay(pumpIoOf($), (call, name) => relayExec($, c, call, name))
-  } catch (err) {
-    await warn($, 'relay pump', err)
-  } finally {
-    pumping = false
+// The io of the relay's client and of main's pump (bodies in relay-run.ts).
+function relayRunIoOf($: EngineInterface): RelayRunIo {
+  return {
+    relay: () => relay!,
+    call: (dir, req) => relayCall(relayIoOf($), dir, req),
+    agents: () => $.agent.list(),
+    sessionCwd: () => $.session.cwd(),
+    mainGuard: (e, cwd, allow) => mainCheckoutGuard($, e, cwd, allow, async () => true),
+    now: () => $.clock.now(),
+    best: (what, fn) => best($, what, fn),
+    sessions: () => read($, sessions),
+    seenAgents: () => read($, seenAgents),
+    forwarded: () => read($, forwarded),
+    toMain: text => toMain($, text),
+    ownerName: id => ownerNameOf($, id),
+    routeGuard: (key, to, text) => reviewerSendGuard(routeIoOf($), key, to, text),
+    deliverTerminal: (from, key, text) => deliverTo(ioOf($, from), key, text),
+    deliver: (id, text) => deliver($, id, text),
+    warn: (what, err) => warn($, what, err),
+    myRoleSessions: () => myRoleSessions($),
+    pumpIo: pumpIoOf($),
   }
 }
 
+function relayExecIoOf($: EngineInterface, c: FlowCtx): RelayExecIo {
+  return {
+    ...relayRunIoOf($),
+    updateActivity: fn => update($, activity, fn),
+    testSlots: () => read($, testSlots),
+    typecheckSlots: () => read($, typecheckSlots),
+    refresh: () => refresh($),
+    slotLimits: () => ({ test: c.settings.testSlots, typecheck: c.settings.typecheckSlots ?? 1 }),
+    flowTools: FLOW_TOOLS,
+    runFlow: async (tool, input) => {
+      const out = await runFlowTool($, tool, input, c)
+      return out!
+    },
+  }
+}
 
 
 type FlowCtx = { settings: ReturnType<typeof settingsOf>; options: Record<string, unknown>; installed: string | undefined }
@@ -2310,6 +2047,7 @@ const FLOW_TOOLS = [
   'mcp__flow__settings',
   'mcp__flow__decide_eval',
   'mcp__flow__size_ab_report',
+  'mcp__flow__arms',
   'mcp__flow__demo',
   'mcp__flow__migrations',
   'mcp__flow__session',
@@ -2317,6 +2055,57 @@ const FLOW_TOOLS = [
   'mcp__flow__push',
   'mcp__flow__status',
 ] as const
+
+// The io of the multi-line flow tool cases (bodies in toolcall-run.ts), over one call's context.
+function flowToolsIoOf($: EngineInterface, c: FlowCtx, e: FlowCall): FlowToolsIo {
+  const { settings, options } = c
+  return {
+    agents: () => $.agent.list(),
+    exec: argv => $.process.run(argv),
+    cwd: () => $.session.cwd(),
+    now: () => $.clock.now(),
+    sessionWorktree: async id => (await sessionOfId($, id))?.worktree,
+    toolCaller: agentId => toolCallerOf($, agentId),
+    handovers: () => read($, handovers),
+    ownerName: id => ownerNameOf($, id),
+    release: async () => releaseTool(releaseIoOf($), settings, e),
+    reviewer: async () => reviewerToolRun(reviewerIoOf($, settings.base), settings, e, e.agentId),
+    readNotes: manager => readNotes($, manager),
+    appendNote: (manager, line) => appendNote($, manager, line),
+    notesPath: manager => notesPath($, manager),
+    logNote: (owner, text) => best($, 'logging a note', () => appendLog($, { event: 'note', owner, text })),
+    sweep: (base, apply) => sweep($, base, apply),
+    pushState: () => read($, pushState),
+    pushAct: act => pushAct($, act, 'main'),
+    sessionTool: caller => sessionTool($, e, caller, settings),
+    deployTool: (isMain, caller) => deployTool($, options, e, isMain, caller),
+  }
+}
+
+// The generic tool.call hook's io (bodies in toolcall-run.ts). The settings and main's model are read live
+// through `held`: register() reassigns them.
+function toolCallIoOf($: EngineInterface, held: Pick<ToolCallIo, 'settings' | 'explicitEffort' | 'mainModel' | 'mainWindow'>): ToolCallIo {
+  return {
+    ...held,
+    ...guardIoOf($),
+    now: () => $.clock.now(),
+    sessionCwd: () => $.session.cwd(),
+    agents: () => $.agent.list(),
+    refresh: () => refresh($),
+    testSlots: () => read($, testSlots),
+    typecheckSlots: () => read($, typecheckSlots),
+    sessions: () => read($, sessions),
+    seenAgents: () => read($, seenAgents),
+    activity: () => read($, activity),
+    updateActivity: async fn => { await update($, activity, fn) },
+    wokenByOthers,
+    best: (what, fn) => best($, what, fn),
+    reviewerSendGuard: (id, to, text) => reviewerSendGuard(routeIoOf($), id, to, text),
+    alreadyForwarded: (id, text) => alreadyForwarded($, id, text),
+    deliverToSession: (fromId, target, text) => deliverToSession($, fromId, target, text),
+    holdForReviewer: id => holdForReviewer($, id),
+  }
+}
 
 // Runs a flow tool for `e.agentId` (a hook's caller, or `session:<name>` for a relayed call). A function with
 // a switch, not a table of closures: the plugin directory only lets `$` into functions declared at the top of the file.
@@ -2326,78 +2115,27 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__handover': return handoverTool(handoverIoOf($, options), settings, e, e.agentId)
 
     // The reviewer's tools: main, the reviewer, and a lite manager for its own PRs. A manager or worker otherwise is refused.
-    case 'mcp__flow__release': {
-      const input = e
-      const refused = releaseToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
-      return refused !== undefined ? { result: refused } : releaseTool(releaseIoOf($), settings, input)
-    }
+    case 'mcp__flow__release': return releaseCase(flowToolsIoOf($, c, e), e)
 
     case 'mcp__flow__reviewer':
-    case 'mcp__flow__queue': {
-      const refused = reviewerToolAccess(await toolCallerOf($, e.agentId), e, await read($, handovers))
-      return refused !== undefined ? { result: refused } : reviewerToolRun(reviewerIoOf($, settings.base), settings, e, e.agentId)
-    }
+    case 'mcp__flow__queue': return reviewerCase(flowToolsIoOf($, c, e), e)
 
     case 'mcp__flow__plan': return planTool(planIoOf($), settings, e, e.agentId)
 
     case 'mcp__flow__test_slot': return testSlotTool(slotsIoOf($), settings, e)
 
-    case 'mcp__flow__guard_tests': {
-      const input = e
-      const map = settings.guardTests
-      if (Object.keys(map).length === 0) return { result: guardReport([], false) }
-      let files: string[]
-      if (Array.isArray(input.files)) files = input.files.filter((f): f is string => typeof f === 'string')
-      else {
-        // The caller's own worktree, else the session's directory.
-        let dir: string | undefined
-        const mine = e.agentId === undefined ? undefined : await sessionOfId($, e.agentId)
-        if (mine !== undefined) dir = mine.worktree
-        else if (e.agentId !== undefined) {
-          const me = (await $.agent.list()).find(a => a.id === e.agentId)
-          const wt = await $.process.run(['git', 'worktree', 'list', '--porcelain']).catch(() => undefined)
-          if (me !== undefined && wt?.exitCode === 0) dir = findWorktree(wt.stdout, me.id, `flow/${me.name ?? me.id}`)?.path
-        }
-        dir ??= await $.session.cwd().catch(() => undefined)
-        const git = (...args: string[]) => $.process.run(['git', ...(dir === undefined ? [] : ['-C', dir]), ...args])
-        const diff = await git('diff', '--name-only', '--no-renames', `origin/${settings.base}...HEAD`)
-        if (diff.exitCode !== 0) return { result: `Could not work out your diff (git diff origin/${settings.base}...HEAD failed: ${diff.stderr.trim().slice(0, 300)}). Call again with files: [...].` }
-        const dirty = await git('status', '--porcelain', '--untracked-files=all')
-        files = [...diff.stdout.split('\n').map(l => l.trim()).filter(Boolean), ...(dirty.exitCode === 0 ? pathsFromStatus(dirty.stdout) : [])]
-      }
-      return { result: guardReport(guardTestsFor(files, map), true) }
-    }
+    case 'mcp__flow__guard_tests': return guardTestsCase(flowToolsIoOf($, c, e), settings.base, settings.guardTests, e)
 
     case 'mcp__flow__ask': return askTool(inboxIoOf($), options, e, e.agentId)
-    case 'mcp__flow__fyi': return fyiTool(inboxIoOf($), e, e.agentId, settings)
+    case 'mcp__flow__fyi': return fyiTool(inboxIoOf($), e, e.agentId, settings, options)
     case 'mcp__flow__preflight': return preflightTool(inboxIoOf($), options, e, e.agentId)
     case 'mcp__flow__answer': return answerTool(inboxIoOf($), options, e, e.agentId)
     case 'mcp__flow__standing': return standingTool(standingIoOf($), options, e, e.agentId)
     case 'mcp__flow__check': return checkTool(checksIoOf($), installed, e, e.agentId)
 
-    case 'mcp__flow__note': {
-      const input = e
-      const manager = String(input.manager ?? '').trim()
-      if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
-      const text = typeof input.text === 'string' ? input.text.trim() : ''
-      if (text === '') {
-        const notes = await readNotes($, manager)
-        return { result: notes === '' ? 'No notes yet.' : notes }
-      }
-      const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
-      const line = input.kind === 'decision' ? `- ${date} decision: "${text}"` : `- ${date} progress: ${text}`
-      if (!await appendNote($, manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
-      await best($, 'logging a note', () => appendLog($, { event: 'note', owner: noteKey(manager), text }))
-      return { result: `Noted in ${await notesPath($, manager)}.` }
-    }
+    case 'mcp__flow__note': return noteCase(flowToolsIoOf($, c, e), e)
 
-    case 'mcp__flow__clean': {
-      const apply = e.apply === true
-      if (apply && settings.cleanup === 'off') {
-        return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await sweep($, settings.base, false)}` }
-      }
-      return { result: await sweep($, settings.base, apply) }
-    }
+    case 'mcp__flow__clean': return cleanCase(flowToolsIoOf($, c, e), settings, e)
 
     case 'mcp__flow__settings': return settingsTool(initIoOf($), options, e, e.agentId)
 
@@ -2405,44 +2143,113 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
 
     case 'mcp__flow__size_ab_report': return ({ result: await sizeAbTool({ stateDir: () => stateDir($), readFile: path => $.fs.read(path).then(String, () => undefined) }, e.agentId) })
 
-    case 'mcp__flow__demo': return demoTool($, e, e.agentId)
+    case 'mcp__flow__arms': return armsTool(armsIoOf($), e, e.agentId)
+
+    case 'mcp__flow__demo': return demoTool(demoIoOf($), e, e.agentId)
 
     case 'mcp__flow__migrations': return migrationsTool(migrationsIoOf($), settings, e)
 
-    case 'mcp__flow__session': {
-      const id = e.agentId
-      const caller: Caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await ownerNameOf($, id) }
-      return { result: await sessionTool($, e, caller, settings) }
-    }
+    case 'mcp__flow__session': return sessionCase(flowToolsIoOf($, c, e), e)
 
-    case 'mcp__flow__deploy': {
-      const isMain = e.agentId === undefined
-      const caller = isMain ? 'main' : await ownerNameOf($, e.agentId!)
-      const refused = deployToolAccess(await toolCallerOf($, e.agentId), e, await read($, handovers))
-      if (refused !== undefined) return { result: refused }
-      return { result: await deployTool($, options, e, isMain, caller) }
-    }
+    case 'mcp__flow__deploy': return deployCase(flowToolsIoOf($, c, e), e)
 
-    case 'mcp__flow__push': {
-      const input = e
-      if (e.agentId !== undefined) return { result: 'Refused: only main releases a ready batch, on the user\'s word (or the user, with /flow push). Managers, workers and the reviewer cannot push it.' }
-      const action = String(input.action ?? 'list')
-      if (action === 'list') {
-        const lines = pushLines(await read($, pushState))
-        return { result: lines.length === 0 ? 'Nothing ready to push.' : lines.join('\n') }
-      }
-      if (action === 'push') return { result: await pushAct($, { kind: 'push' }, 'main') }
-      if (action === 'drop') return { result: await pushAct($, { kind: 'drop' }, 'main') }
-      if (action === 'send-back') {
-        const pr = Number(input.pr)
-        if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: send-back needs pr, a PR number of the batch.' }
-        return { result: await pushAct($, { kind: 'back', pr }, 'main') }
-      }
-      return { result: 'Unknown action: use list, push, send-back or drop.' }
-    }
+    case 'mcp__flow__push': return pushCase(flowToolsIoOf($, c, e), e)
 
     case 'mcp__flow__status': return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
     default: return undefined
+  }
+}
+
+type PaneLets = Pick<PaneIo, 'settings' | 'installed' | 'mainModel' | 'mainWindow' | 'setMainWindow' | 'paneFollow' | 'setPaneFollow'>
+
+// What the pane (pane-run.tsx) draws and acts with, built from one event's `$`: a read closure per atom, the
+// setters, the engine calls and the `$`-taking helpers of this file. The lets of register() come in as `lets`.
+function paneIoOf($: EngineInterface, e: PaneEvent, lets: PaneLets, options: Record<string, unknown>): PaneIo {
+  return {
+    read: {
+      roster: () => read($, roster),
+      activity: () => read($, activity),
+      selected: () => read($, selected),
+      cursor: () => read($, cursor),
+      folded: () => read($, folded),
+      overrideView: () => read($, overrideView),
+      hinted: () => read($, hinted),
+      now: () => read($, now),
+      handovers: () => read($, handovers),
+      inbox: () => read($, inbox),
+      checks: () => read($, checks),
+      ledger: () => read($, ledger),
+      leftovers: () => read($, leftovers),
+      sessions: () => read($, sessions),
+      harnessLimits: () => read($, harnessLimits),
+      armed: () => read($, armed),
+      deploys: () => read($, deploys),
+      behind: () => read($, behind),
+      pushState: () => read($, pushState),
+      reviewerBreaker: () => read($, reviewerBreaker),
+      plan: () => read($, plan),
+      viewMode: () => read($, viewMode),
+      prShown: () => read($, prShown),
+      prBack: () => read($, prBack),
+      batchPick: () => read($, batchPick),
+      prDetails: () => read($, prDetails),
+      inboxCursor: () => read($, inboxCursor),
+      cardBack: () => read($, cardBack),
+      inboxFolds: () => read($, inboxFolds),
+      inboxOpen: () => read($, inboxOpen),
+      inboxDraft: () => read($, inboxDraft),
+      inboxNote: () => read($, inboxNote),
+      graphFocus: () => read($, graphFocus),
+      demo: () => read($, demo),
+    },
+    set: {
+      selected: fn => update($, selected, fn),
+      cursor: fn => update($, cursor, fn),
+      folded: fn => update($, folded, fn),
+      overrideView: fn => update($, overrideView, fn),
+      hinted: fn => update($, hinted, fn),
+      armed: fn => update($, armed, fn),
+      viewMode: fn => update($, viewMode, fn),
+      prShown: fn => update($, prShown, fn),
+      prBack: fn => update($, prBack, fn),
+      batchPick: fn => update($, batchPick, fn),
+      prDetails: fn => update($, prDetails, fn),
+      inboxCursor: fn => update($, inboxCursor, fn),
+      cardBack: fn => update($, cardBack, fn),
+      inboxFolds: fn => update($, inboxFolds, fn),
+      inboxOpen: fn => update($, inboxOpen, fn),
+      inboxDraft: fn => update($, inboxDraft, fn),
+      inboxNote: fn => update($, inboxNote, fn),
+      graphFocus: fn => update($, graphFocus, fn),
+      demo: fn => update($, demo, fn),
+    },
+    resolve: () => $.ui.resolve(e as never),
+    now: () => $.clock.now(),
+    usage: () => $.session.usage().then(u => u, () => undefined),
+    toast: text => { void $.ui.toast(text) },
+    invalidate: () => { try { $.ui.invalidate('ui.render') } catch { /* pane closed */ } },
+    after: (ms, fn) => { $.clock.after(ms, fn) },
+    focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
+    fill: text => $.prompt.fill({ text, mode: 'replace' }),
+    runProcess: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
+    serial: paneSerial,
+    ...lets,
+    paneView: () => paneView,
+    setPaneView: v => { paneView = v },
+    unhanded: () => currentUnhanded($),
+    endedOwners: () => endedOwnersOf($),
+    demoArm: s => demoArm(demoIoOf($), s),
+    demoMove: fn => demoMove(demoIoOf($), fn),
+    demoStop: () => demoStop(demoIoOf($)),
+    pushAct: (act, by) => pushAct($, act, by),
+    approve: n => approvePr(commandIoOf($), n),
+    reject: (n, why) => rejectPr(commandIoOf($), n, why),
+    platform: () => platformOf($),
+    paneInboxRows: () => paneInboxRows($),
+    suggestions: () => paneSuggestions(standingIoOf($), options),
+    dismiss: async ids => { await dismissSuggestionIds(standingIoOf($), options, ids) },
+    answer: (id, choice) => answerQuestion($, id, choice, 'main', {}, true),
+    sessionTool: input => sessionTool($, input, { id: 'main', name: 'main' }, lets.settings()),
   }
 }
 
@@ -2500,200 +2307,15 @@ export const register: Register = (on, options) => {
   let installed: string | undefined
 
   on('session.start', async ($, e, next) => {
-    // First of all, what this process is: a terminal-started worker is passive (no tools, no state, no
-    // timers: its copy must not wipe main's test-slot grants), a manager or the reviewer relays to main.
-    relay = await relayModeOf($)
-    if (relay?.role === 'worker') return next(e)
-    if (relay !== undefined) {
-      // A manager's or the reviewer's own claude in a terminal: this copy holds no state and runs no timers.
-      // It reads the settings for its local guards, shows the tools and the /flow stub, and forwards every
-      // flow tool call to main (tool.call). A worker's copy never gets here: it stays passive.
-      try {
-        const local = await $.process.run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-        if (local.exitCode === 0 && local.stdout.trim() !== '') detected = local.stdout.trim().replace(/^origin\//, '')
-      } catch {
-        // Not a git repo, or no remote: keep "main".
-      }
-      paths = await locate($)
-      try {
-        apply((await loadSettings($, options, paths, detected)).settings)
-      } catch {
-        // Keep the settings from /config alone.
-      }
-      await $.command.register({
-        name: 'flow',
-        description: 'The flow pane and commands live in the main Claude Code session: run /flow there. This session\'s mcp__flow__* tools are forwarded to it.',
-      })
-      await $.command.register({
-        name: 'flow-tasks',
-        description: 'Runs in the main Claude Code session: run /flow-tasks there.',
-      })
-      await registerTools($)
-      return next(e)
-    }
-    resetDelivery(text => toMain($, text))
-    // Handovers a restart would lose: merge what is on disk under this session's own records.
-    let queueDue = false
-    await best($, 'loading handovers', async () => {
-      resetStateDir()
-      const disk = await loadHandovers($)
-      if (Object.keys(disk).length === 0) return
-      await update($, handovers, hs => ({ ...disk, ...hs }))
-      queueDue = Object.values(disk).some(ho => ho.status === 'pending')
-    })
-    // Reviewer worktrees left over from before a restart or reload.
-    autoSweep($)
-    await best($, 'loading the inbox', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeInbox(await readJson($, `${dir}/inbox.json`))
-      await update($, inbox, () => disk)
-    })
-    // A fresh session is a fresh attempt: the halt and the wait end, the failure history stays.
-    await best($, 'loading the reviewer breaker', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeBreaker(await readJson($, `${dir}/reviewer-breaker.json`))
-      await update($, reviewerBreaker, () => disk)
-      await releaseHaltTo(breakerIoOf($), 'flow')
-    })
-    await best($, 'loading checks', async () => {
-      installed = await installedVersion($)
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeChecks(await readJson($, `${dir}/checks.json`))
-      await update($, checks, () => disk)
-      // Done handovers from before checks existed (or a session that died first) get theirs once.
-      for (const ho of Object.values(await read($, handovers))) {
-        // A PR that already has a check (any state) runs no git calls on a normal restart.
-        if (ho.status === 'done' && !(await read($, checks)).items.some(c => c.pr === ho.pr)) await captureChecks($, ho, settings.verifyPaths, false)
-      }
-      // Once per installed version: a toast names the checks it now covers. Not a prompt: an update
-      // must not start a turn in main; the checks stay in /flow checks, the inbox and the pane.
-      const due = dueForPrompt(await read($, checks), installed)
-      if (due.length === 0) return
-      await withChecks($, cur => ({ checks: { ...cur, promptedVersion: installed }, out: undefined }))
-      void $.ui.toast(`flow ${installed}: ${due.length} after-deploy check${due.length === 1 ? '' : 's'} can be done now. /flow checks lists them.`)
-    })
-    await best($, 'loading deploy gates', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeDeploys(await readJson($, `${dir}/deploys.json`))
-      await update($, deploys, () => disk)
-      queueDue = queueDue || Object.entries(disk.targets).some(([name, t]) => t.due === true && mirror.deployInfos.some(i => i.name === name))
-      void refreshBehind($)
-    })
-    await best($, 'loading the push gate', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizePush(await readJson($, `${dir}/push.json`))
-      await update($, pushState, () => disk)
-      // A released or rebuilding batch left by a session that ended gets its reviewer.
-      queueDue = queueDue || (disk.batch !== undefined && disk.batch.state !== 'ready')
-    })
-    await best($, 'loading lite managers', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeLite(await readJson($, `${dir}/lite.json`))
-      await update($, lite, () => disk)
-    })
-    // Terminal sessions from before a restart: their relay directories are pumped again.
-    await best($, 'loading sessions', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizeSessions(await readJson($, `${dir}/sessions.json`), await $.clock.now())
-      await update($, sessions, cur => ({ ...disk, ...cur }))
-      sessionsSaved = JSON.stringify(durableSessions(await read($, sessions)))
-    })
-    await best($, 'loading pre-flight', async () => {
-      const dir = await stateDir($)
-      if (dir === undefined) return
-      const disk = normalizePreflight(await readJson($, `${dir}/preflight.json`))
-      await update($, preflight, () => disk)
-      // A round left undelivered by a session that ended is not sent now.
-      const live = (await agentsOf($)).filter(a => a.type === MANAGER && !ENDED.has(a.status) && a.name !== undefined).map(a => a.name!)
-      const t = await $.clock.now()
-      await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } })
-    })
-    // The base branch: the option, else the remote's default branch, else main.
-    // A fresh clone may have no origin/HEAD, so ask the remote when the local ref is missing.
-    try {
-      const local = await $.process.run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-      let base = local.exitCode === 0 ? local.stdout.trim().replace(/^origin\//, '') : ''
-      if (base === '') {
-        const remote = await $.process.run(['git', 'ls-remote', '--symref', 'origin', 'HEAD'], { timeoutMs: 10_000 })
-        base = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(remote.stdout)?.[1] ?? ''
-      }
-      if (base !== '') detected = base
-    } catch {
-      // Not a git repo, or no remote: keep "main".
-    }
-    paths = await locate($)
-    try {
-      const merged = await loadSettings($, options, paths, detected)
-      seen = merged.seen
-      apply(merged.settings)
-    } catch {
-      // Keep the settings from /config alone.
-    }
-
-    // Grant files of a previous session would read as grants; start from an empty directory.
-    try {
-      const r = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
-      if (r.exitCode === 0 && r.stdout.trim() !== '') {
-        slotDir = `${r.stdout.trim()}/flow/test-slots`
-        await sh($, 'rm -rf "$1" && mkdir -p "$1"', slotDir)
-      }
-    } catch {
-      slotDir = undefined
-    }
-
-    await $.command.register({
-      name: 'flow',
-      description: 'Show the flow in a pane: managers, their workers, the reviewer and handed-over PRs. /flow inbox lists the open questions and the decisions agents made (/flow inbox decisions lists them all, /flow inbox <id> shows one in full), /flow ok keeps every open decision (/flow ok <id|owner|topic> takes those, or the default of a question), /flow no <id> [what instead] undoes a decision, /flow answer <id> <choice> answers any question addressed to main, /flow status shows what the agents cost (estimates at API list prices), /flow checks lists the after-deploy checks that need a person (pass or fail them), /flow preflight shows the current pre-flight round, /flow close closes it, /flow lite <task> runs one task as just a manager and its workers (no pre-flight, no reviewer agent) to save tokens, /flow resume picks up unfinished flow work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (alias /flow drop) turns down a handover that awaits approval or is pending, /flow push starts the push of the batch the reviewer checked and saved (push_mode confirm; /flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (--yes removes them)',
-      argumentHint: '[inbox [all|archive [all]|<id>]|ok [<id|owner|topic>...]|no <id> [what instead]|answer <id> <choice>|checks|status|preflight|close|lite <task>|resume|approve <pr>|reject <pr> [reason]|push [back <pr>|drop]|clean]',
-    })
-    await $.command.register({
-      name: 'flow-tasks',
-      description: 'Pick tasks from a task source (.claude/flow/sources/<name>.md) and start a manager for each',
-      argumentHint: '[source] [ids or filter]',
-    })
-    await registerAgents($, settings)
-
-    await registerTools($)
-
-    // Calls the terminal managers and the reviewer left in their relay directories (see pumpOnce). The fast
-    // timer exists only while a role session does: armed here for sessions a restart brought back, and by the
-    // roster poll below for ones started since. It never goes away; pumpOnce does nothing without a live one.
-    let pumpArmed = false
-    const armPump = async () => {
-      if (pumpArmed || !Object.values(await read($, sessions)).some(x => x.role !== undefined && sessionLive(x))) return
-      pumpArmed = true
-      $.clock.every(500, () => void pumpOnce($, { settings, options, installed }))
-    }
-    await armPump()
-    $.clock.every(POLL_MS, () => {
-      void armPump().catch(() => undefined)
-      void refresh($)
-      void watchSessions($)
-      if (checking) return
-      checking = true
-      void recheck($, options, paths, detected, seen).then(m => {
-        if (m !== undefined) { seen = m.seen; apply(m.settings) }
-      }).finally(() => { checking = false })
-    })
-    // gh is not free: a slow timer, one look shortly after the start, and status when the list is stale.
-    $.clock.every(PR_POLL_MS, () => { void fetchPrs($); void refreshBehind($); refreshLeftovers($) })
-    void fetchPrs($)
-    refreshLeftovers($)
-    // One shared tick for every running time on the pane: the render reads `now`, no card has a timer.
-    $.clock.every(1000, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
-    // The reviewer agent type exists only now, and a spawn needs the session bound: start it after the hook.
-    if (queueDue) $.clock.after(0, () => void best($, 'starting the reviewer', async () => void (await ensureQueue($))))
-    // A replay left over from before a reload is gone with the atom's memory; this clears it explicitly.
-    await update($, demo, () => null)
-    // A new repo: one line pointing at /flow init, after the session has drawn.
-    $.clock.after(3000, () => void best($, 'first-run hint', async () => { if (await firstRun(initIoOf($))) void $.ui.toast(INIT_HINT) }))
+    await startSession(startupIoOf($, options, {
+      settings: () => settings,
+      applySettings: apply,
+      paths: () => paths, setPaths: p => { paths = p },
+      detected: () => detected, setDetected: d => { detected = d },
+      seen: () => seen, setSeen: x => { seen = x },
+      checking: () => checking, setChecking: busy => { checking = busy },
+      installed: () => installed, setInstalled: v => { installed = v },
+    }))
     return next(e)
   })
 
@@ -2717,178 +2339,19 @@ export const register: Register = (on, options) => {
   // then replays the refusal to a second next), so the type stays offered; a model's own spawn of it is denied below.
   on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: true }))
 
-  on('agent.spawn', async ($, input, next) => {
-    // A terminal session's own subagents (Explore and the like) are plain. Its workers are sessions.
-    if (relay !== undefined) {
-      if (relay.role !== 'worker' && String(input.subagentType ?? '').startsWith('flow:')) {
-        return { deny: 'flow: start workers with mcp__flow__session action start (this session runs in a terminal and has no flow:* agent types).' }
-      }
-      return next(input)
-    }
-    let e = input
-    // Only the plugin's own rewrite below starts flow:continue: it needs the old worktree as cwd.
-    if (e.subagentType === CONTINUE) return { deny: 'flow: flow:continue is started by the plugin only; spawn a flow:worker with "Continue on branch: <branch>" in the brief.' }
-    // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
-    const plans = await read($, plan)
-    if (Object.keys(plans).length > 0 && e.name !== undefined) {
-      const parent = e.parentAgentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.parentAgentId)
-      const graph = plans[planOwner(plans, parent?.name)] ?? {}
-      const node = Object.values(graph).find(n => n.state === 'waiting' && isManagerOf(n.id, e.name))
-      if (node) {
-        const deps = node.after.filter(d => graph[d]?.state !== 'done').map(d => `${d} (${graph[d]?.state ?? '?'})`)
-        return { deny: `flow plan: ${node.id} waits on ${deps.join(', ')}. Start it when the plugin says it is ready.` }
-      }
-    }
-    // A manager may not start workers before its pre-flight is filed (and its blocking questions answered).
-    if (e.subagentType === WORKER) {
-      const gated = await preflightGate($, e.parentAgentId)
-      if (gated !== undefined) return { deny: gated }
-    }
-    // Attachments: every listed file must exist, and a relative path becomes absolute here, since the
-    // worker runs in another worktree. Before the continue rewrite and the retries, which carry this prompt.
-    if (e.subagentType === WORKER || e.subagentType === CONTINUE || e.subagentType === MANAGER) {
-      const checked = await checkAttachments(spawnIoOf($), e.prompt)
-      if ('deny' in checked) return { deny: checked.deny }
-      if (checked.prompt !== e.prompt) e = { ...e, prompt: checked.prompt }
-    }
-    // Lite mode: a `Mode: lite` line (or an earlier spawn of this manager's task) puts the LITE rules in front of the prompt.
-    let liteMode = false
-    if (e.subagentType === MANAGER) {
-      liteMode = isLite(e.prompt) || isLiteName(await read($, lite), (e as { name?: string }).name ?? e.description)
-      if (liteMode) e = { ...e, prompt: withLiteRules(e.prompt, fill(LITE_RULES, settings), LITE_MARK) }
-    }
-    if (await fableDenied(spawnIoOf($), e)) return { deny: FABLE_DENY }
-    // Model routing: the brief's Size line (or a successor's escalation) picks the worker's model, over a model param.
-    let routed: Routed | undefined
-    let effortRole: EffortRole | undefined
-    let sizeFed = false
-    // size_ab daily: the day's arm (only with decision_api jev); the off arm asks the decision API nothing.
-    let sizeArm: SizeArm | undefined
-    if (e.subagentType === WORKER || e.subagentType === MANAGER) sizeArm = sizeArmOf(settings.sizeAb, settings.decisionApi, await $.clock.now())
-    const sizer = sizerFor(sizeArm, () => jevOf($, settings))
-    if (e.subagentType === WORKER) {
-      const r = await routeWorker(spawnIoOf($), e, { small: settings.workerModelSmall ?? 'haiku', normal: settings.workerModelNormal ?? 'sonnet', large: settings.workerModel }, sizer)
-      e = r.e
-      routed = r.routed
-      effortRole = 'worker'
-    } else if (e.subagentType === MANAGER) {
-      const r = await routeManager(spawnIoOf($), e, settings.managerModelSmall ?? 'sonnet', settings.managerModelNormal ?? settings.managerModel, settings.managerModel, sizer)
-      e = r.e
-      routed = r.routed
-      effortRole = 'manager'
-      if (settings.sizeFeedback) { const f = await withSizeFeedback(spawnIoOf($), e); e = f.e; sizeFed = f.fed }
-    } else if (e.subagentType === 'Explore' && e.model === undefined && e.parentAgentId !== undefined) {
-      // Read-only exploring by a flow agent runs on the cheap model; main's own and an explicit model stay as they are.
-      const parent = (await $.agent.list()).find(a => a.id === e.parentAgentId)
-      if (parent !== undefined && FLOW_TYPES.has(parent.type)) {
-        e = { ...e, model: settings.exploreModel ?? 'haiku' }
-        effortRole = 'explore'
-      }
-    } else if (isReviewer(e.subagentType)) {
-      effortRole = 'reviewer'
-    }
-    const explicit = explicitEffort.delete(e.tool_use_id)
-    // The env is read only when there is an effort to apply; a failed read counts as unset.
-    const wantEffort = effortRole === undefined || explicit ? undefined : effortFor(effortRole, routed?.size, settings, undefined)
-    const targetEffort = wantEffort === undefined ? undefined : effortFor(effortRole!, routed?.size, settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
-    // manager_harness: main's manager runs as a claude in a terminal. The Agent tool is answered with a refusal that
-    // says it started; on a start failure the normal spawn below goes on.
-    if (e.subagentType === MANAGER && e.parentAgentId === undefined) {
-      const started = await startManagerSession($, options, e, { routed, liteMode })
-      if (started !== undefined) return started
-    }
-    // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
-    // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
-    const spawn = e.subagentType === WORKER ? await prepareContinue(spawnIoOf($), e, !noContinue) : e
-    const role = ROLE[spawn.subagentType]
-    const wanted = role === undefined ? undefined : (spawn.model ?? (settings as Record<string, unknown>)[`${role}Model`])
-    const long = typeof wanted === 'string' && wanted.includes('[1m]') ? wanted : undefined
-    // One try, with the [1m] retry; a fallback try below goes through it too.
-    const go = async (t: AgentSpawnInput) => {
-      let ev = long !== undefined && noLong ? { ...t, model: withoutLong(long) } : t
-      let started: Awaited<ReturnType<typeof next>> | { deny: string }
-      try {
-        started = await dispatch(next, ev)
-      } catch (err) {
-        if (long === undefined || noLong || !refusedLong(err)) throw err
-        started = { deny: String((err as Error).message) }
-      }
-      if (long !== undefined && !noLong && refusedLong(started)) {
-        noLong = true
-        ev = { ...t, model: withoutLong(long) }
-        void $.ui.toast(`flow: ${long} was refused for sub-agents; using ${ev.model}`)
-        started = await dispatch(next, ev)
-      }
-      return { ev, started }
-    }
-    let { ev, started } = await go(spawn)
-    // The host refused our flow:continue rewrite: never fail the spawn for it. Start a plain worker in a
-    // new worktree and give the claimed worktree back.
-    if (spawn.subagentType === CONTINUE && !('agentId' in started && started.agentId !== undefined)) {
-      const name = (e as { name?: string }).name ?? e.description
-      const branch = CONTINUE_LINE.exec(e.prompt)?.[1]
-      await best($, 'releasing a continuation claim', async () => { await update($, handoffs, hs => {
-        const r = branch === undefined ? undefined : hs[branch]
-        if (branch === undefined || r === undefined || r.takenBy !== name) return hs
-        const { takenBy: _t, ...rest } = r
-        return { ...hs, [branch]: rest }
-      }) })
-      // The host replays its refusal to a second next of this spawn, so no retry in this call: later
-      // continuations skip the in-place rewrite, and the manager is told to spawn the brief again.
-      noContinue = true
-      await best($, 'logging a continuation fallback', async () => appendLog($, { event: 'continue', agent: name, owner: await ownerNameOf($, e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
-      return { deny: `flow: the host refused the in-place continuation (flow:continue); spawn the same brief again and it starts as a plain flow:worker in a new worktree on ${branch}.` }
-    }
-    if ('agentId' in started && started.agentId !== undefined) {
-      const t = await $.clock.now()
-      const id = started.agentId
-      // Recorded only for a `[1m]` model finally used (after the refused-[1m] fallback). A plain
-      // model leaves it unset: its window may be the main session's, which windowOf borrows.
-      const used = ev.model ?? wanted
-      const spawnWindow = typeof used === 'string' && used.includes('[1m]') ? LARGE_WINDOW : undefined
-      await update($, activity, acts => ({
-        ...acts, [id]: { startedAt: t, lastAt: t, log: [`started: ${e.description}`], ...(spawnWindow !== undefined && { spawnWindow }), ...(targetEffort !== undefined && { effort: targetEffort }) },
-      }))
-      if (targetEffort !== undefined) agentEffort.set(id, targetEffort)
-      await refresh($)
-      void openPane($)
-      await best($, 'recording an agent in the cost ledger', async () => {
-        const name = (e as { name?: string }).name ?? e.description
-        const role = (ROLE[e.subagentType] ?? 'other') as Role
-        const parent = e.parentAgentId === undefined ? undefined : (await $.agent.list()).find(a => a.id === e.parentAgentId)
-        await changeLedger($, (l, now) => setIdentity(l, id, {
-          role, name,
-          ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }),
-          ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
-          ...(typeof used === 'string' && { spawnModel: used }),
-          ...(routed !== undefined && { size: routed.size }),
-          ...(sizeFed && { sizeFeedback: true }),
-          ...(sizeArm !== undefined && { sizeArm }),
-          ...(targetEffort !== undefined && { effort: targetEffort }),
-        }, now))
-      })
-      if (liteMode) await best($, 'recording a lite manager', async () => { const at = await $.clock.now(); await withLite($, cur => ({ state: recordLite(cur, (e as { name?: string }).name ?? e.description, at), out: undefined })) })
-      // A lite task files no size decisions: not for its manager, not for its workers. The routing itself still happens.
-      const liteOwner = e.subagentType === WORKER && routed !== undefined && isLiteName(await read($, lite), (await $.agent.list()).find(a => a.id === e.parentAgentId)?.name)
-      if (routed !== undefined && !liteMode && !liteOwner) {
-        const r = routed
-        if (e.subagentType === MANAGER) await best($, 'filing a manager-size decision', () => fileManagerSizeFyi(spawnIoOf($), options, (e as { name?: string }).name ?? e.description, id, r))
-        else await best($, 'filing a worker-size decision', () => fileSizeFyi(spawnIoOf($), options, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
-      }
-      if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
-        await best($, 'recording a pre-flight', () => recordManager($, (e as { name?: string }).name ?? e.description, e.prompt, liteMode))
-      }
-      if (FLOW_TYPES.has(e.subagentType)) {
-        await best($, 'logging a spawn', async () => {
-          await appendLog($, {
-            event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await ownerNameOf($, e.parentAgentId),
-            ...(routed !== undefined && { text: `size ${routed.size} -> ${ev.model ?? routed.model}${routed.escalated ? ' (escalated)' : ''}` }),
-          })
-        })
-      }
-    }
-    return started
-  }).catch(($, e, next) => next(e))
+  // The state the agent.spawn hook (spawn-run.ts) reads and writes; it stays single here and is handed through the io.
+  const spawnState: SpawnState = {
+    relay: () => relay,
+    settings: () => settings,
+    options: () => options,
+    noLong: () => noLong,
+    setNoLong: () => { noLong = true },
+    noContinue: () => noContinue,
+    setNoContinue: () => { noContinue = true },
+    takeExplicit: id => explicitEffort.delete(id),
+    setEffort: (id, effort) => { agentEffort.set(id, effort) },
+  }
+  on('agent.spawn', ($, input, next) => onSpawn(spawnHookIoOf($, spawnState), input, next)).catch(($, e, next) => next(e))
 
   // Every tool call, the main session's too: refuse broad process kills and writes to the main
   // checkout. Then, for a subagent: refuse code edits from managers (a change goes into a
@@ -2896,81 +2359,13 @@ export const register: Register = (on, options) => {
   // before `next`, so the catch passes the call on only when the hook failed before it ran: a
   // broken guard must not block every call. A failure beneath `next` (a flow tool's own hook throwing)
   // reaches this catch, not the tool hook's own, so a flow tool that did not finish is answered here too.
+  const toolCallHeld = { settings: () => settings, explicitEffort, mainModel: () => mainModel, mainWindow: () => mainWindow }
   on('tool.call', async ($, e, next) => {
-    if (relay !== undefined) return (await relayToolCall($, settings, e)) ?? next(e)
-    const id = e.agentId
-    if (e.tool === 'Agent' && e.effort !== undefined && e.effort !== null) explicitEffort.add(e.tool_use_id)
-    if (e.tool === 'Bash') {
-      const why = killRefusal(e.command)
-      if (why !== undefined) return { deny: why }
-      // A whole-suite run needs a held test slot. Slot state is read only when the command matches.
-      const suite = suiteRun(e.command, settings.testSlotCommands ?? [])
-      if (suite !== undefined) {
-        const refused = slotRefusal(await read($, testSlots), await refresh($), id ?? 'main', settings.testSlots, await $.clock.now(), suite)
-        if (refused !== undefined) return { deny: refused }
-      }
-      // Merged branches are deleted by the plugin on the reviewer's "done"; a subagent never deletes a remote ref.
-      const del = id === undefined ? undefined : remoteDeleteRefusal(e.command)
-      if (del !== undefined) return { deny: del }
-    }
-    let me: AgentInfo | undefined
-    const whoAmI = async () => (me ??= (await $.agent.list()).find(a => a.id === id))
-    if (id !== undefined && WRITE_TOOLS.includes(e.tool) && (await whoAmI())?.type === MANAGER) {
-      return { deny: 'flow: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
-    }
-    if (settings.mainGuard) {
-      const cwd = async () => (id === undefined || (await whoAmI())?.type === MANAGER ? $.session.cwd() : undefined)
-      const flowCaller = async () => {
-        const type = id === undefined ? undefined : (await whoAmI())?.type
-        return type !== undefined && (type === MANAGER || WORKERS.has(type) || isReviewer(type))
-      }
-      const why = await mainCheckoutGuard($, e as unknown as Record<string, unknown>, cwd, settings.mainAllow, flowCaller)
-      if (why !== undefined) return { deny: why }
-    }
-    if (e.tool === 'SendMessage') {
-      const input = e as unknown as Record<string, unknown>
-      const to = String(input.to ?? '')
-      const text = String(input.message ?? input.text ?? '')
-      // A worker session is not on the roster (a role session is, through agentsOf, so the guard below sees it).
-      const named = (await read($, sessions))[to.replace(/^session:/, '')]
-      const inRoster = async () => (await $.agent.list()).some(a => a.name === to)
-      if (named !== undefined && sessionLive(named) && named.role === undefined && !(await inRoster())) {
-        return { deny: await deliverToSession($, id, named, text) }
-      }
-      if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) {
-        let handled: string | undefined
-        await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard(routeIoOf($), id, to, text) })
-        // A built-in tool's output must be an object; a string result is refused by the host as
-        // "SendMessage output is not an object". deny carries the same "Not sent" text to the reviewer.
-        if (handled !== undefined) return { deny: handled }
-        // Lines the guard already sent main need no second copy; anything new goes through.
-        if (to === 'main' && await alreadyForwarded($, id, text)) {
-          return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
-        }
-      }
-      if (named !== undefined && sessionLive(named) && !(await inRoster())) return { deny: await deliverToSession($, id, named, text) }
-      await best($, 'marking a wake-up', async () => {
-        const listed = (await $.agent.list()).find(a => a.id === to || a.name === to)
-        // A manager the host dropped from the roster is held by the id last seen for it.
-        const seenId = listed === undefined ? (await read($, seenAgents))[to]?.id : undefined
-        const target = listed ?? (seenId === undefined ? undefined : { id: seenId, type: MANAGER, status: 'completed' })
-        if (target === undefined || target.type !== MANAGER) return
-        // The reviewer's message starts the manager's turn: what waited for it rides that turn (turn.step
-        // flushes it) instead of waking the manager a second time just before. A timer covers a message that never lands.
-        if (id !== undefined && isReviewer((await whoAmI())?.type ?? '')) holdForReviewer($, target.id)
-        if (id === undefined) wokenByOthers.delete(target.id)
-        else if (target.status !== 'running') wokenByOthers.add(target.id)
-      })
-    }
-    if (id !== undefined) {
-      const t = await $.clock.now()
-      const line = describeCall(e as unknown as Record<string, unknown>)
-      await update($, activity, acts => {
-        const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
-        return { ...acts, [id]: { ...a, lastAt: t, doing: summarizeCall(e as unknown as Record<string, unknown>), log: [...a.log, line].slice(-LOG_MAX) } }
-      })
-    }
-    return wrapUpReminder($, e, await next(e), settings, mainModel, mainWindow)
+    if (relay !== undefined) return (await relayToolCallTo(relayRunIoOf($), settings, e)) ?? next(e)
+    const io = toolCallIoOf($, toolCallHeld)
+    const refused = await beforeToolCall(io, e)
+    if (refused !== undefined) return refused
+    return afterToolCall(io, e, await next(e))
   }).catch((_$, e, next) => flowCatch(e, next))
 
   // In a relay copy nothing here may run: the generic hook above answers every flow tool through main,
@@ -2997,21 +2392,7 @@ export const register: Register = (on, options) => {
   }
   on('turn.step', async function* ($, e, next) {
     if (relay !== undefined) return yield* next(e)
-    // The agent is running now: texts held for it ride along.
-    if (e.agentId !== undefined) await flushAgent($, e.agentId).catch(() => undefined)
-    // flow's effort for this agent, only on a model that takes one (e.effort set) and never on main (no agentId).
-    let step = e
-    if (e.agentId !== undefined && e.effort !== undefined) {
-      if (!effortSeen.has(e.agentId)) {
-        effortSeen.add(e.agentId)
-        if (!agentEffort.has(e.agentId)) {
-          const saved = (await read($, activity).catch(() => ({} as Record<string, { effort?: string }>)))[e.agentId]?.effort
-          if (saved !== undefined) agentEffort.set(e.agentId, saved)
-        }
-      }
-      const target = agentEffort.get(e.agentId)
-      if (target !== undefined) step = { ...e, effort: target as typeof e.effort }
-    }
+    const step = await beforeStep(turnIoOf($, settings, { agentEffort, effortSeen }), e)
     const r = yield* next(step)
     await meterStep(usageIoOf($, settings, mainWarn, mainHeld), settings, e, r)
     await countStep(usageIoOf($, settings, mainWarn, mainHeld), e, r)
@@ -3022,50 +2403,8 @@ export const register: Register = (on, options) => {
   const countedTurns = new Set<string>()
   on('turn.complete', async ($, e, next) => {
     if (relay !== undefined) return next(e)
-    const id = e.agentId
-    await countTurn(costIoOf($), countedTurns, id, (e as { turnId?: string }).turnId)
-    if (id !== undefined) {
-      const t = await $.clock.now()
-      await update($, activity, acts => {
-        const a = acts[id] ?? { startedAt: t, lastAt: t, log: [] }
-        return { ...acts, [id]: { ...a, lastAt: t, answer: e.answer } }
-      })
-      // A queue that ended while PRs were still pending: start a fresh one for them.
-      const rows = await refresh($)
-      const me = rows.find(a => a.id === id)
-      const runWork = me !== undefined && isReviewer(me.type) ? (await read($, reviewerWork))[id] : undefined
-      if (me !== undefined && FLOW_TYPES.has(me.type)) {
-        await best($, 'logging a report', async () => {
-          const last = e.answer.trim().split('\n').pop() ?? ''
-          const full = isReviewer(me.type) ? reviewerReport(e.answer, runWork) : undefined
-          await appendLog($, { event: 'report', agent: me.name, owner: rows.find(a => a.id === me.parentId)?.name ?? 'main', text: full ?? last }, full === undefined ? TEXT_MAX : 4000)
-        })
-      }
-      // No host notification reaches main for a reviewer the plugin spawned: relay its whole report,
-      // only for runs that did batch work.
-      if (me !== undefined && isReviewer(me.type)) {
-        await relayReviewerReport($, id, me.name ?? '', e.answer)
-      }
-      // A manager someone other than main woke: the host returned its answer to that agent, so main
-      // gets it here (once; main's own wake-ups never set the mark).
-      if (me?.type === MANAGER && wokenByOthers.delete(id) && e.answer.trim() !== '') {
-        const answer = e.answer.trim()
-        // The host may deliver the answer to main itself (a task notification): give it a moment to land,
-        // then relay only when main's transcript lacks it.
-        $.clock.after(RELAY_DELAY_MS, () => void (async () => {
-          if (!(await mainHasAnswer($, answer))) toMain($, `Report from manager ${me.name}:\n${answer}${mirror.askCards && lastLineAsks(answer) ? `\n${REPORT_HINT}` : ''}`)
-        })().catch(() => undefined))
-      }
-      // `HANDOFF: manager <name>` is a manager's own note, not a worker's branch.
-      const handedOff = /^HANDOFF:\s*(?!manager\b)(\S+)\s*$/.exec(e.answer.trim().split('\n').pop() ?? '')
-      if (me && WORKERS.has(me.type) && handedOff?.[1] !== undefined) {
-        const owner = rows.find(a => a.id === me.parentId)?.name ?? 'main'
-        await best($, 'recording a handoff', () => recordHandoff($, me, handedOff[1] as string, owner, settings.maxContinues, settings))
-      }
-      // A reviewer that ends at once (no answer, an API error) must not be replaced at once: the breaker records
-      // the end and decides when, or whether, the next one starts.
-      if (me && isReviewer(me.type)) await reviewerEnded($, me.name ?? '', { answer: e.answer, reason: e.reason, status: me.status })
-    }
+    await countTurn(costIoOf($), countedTurns, e.agentId, (e as { turnId?: string }).turnId)
+    await completeTurn(turnIoOf($, settings, { agentEffort, effortSeen }), e)
     return next(e)
   })
 
@@ -3076,19 +2415,19 @@ export const register: Register = (on, options) => {
     return r
   })
 
-  // Arrows and Tab move the focus ring over the cards; the highlight follows it.
+  const paneLets: PaneLets = {
+    settings: () => settings,
+    installed: () => installed,
+    mainModel: () => mainModel,
+    mainWindow: () => mainWindow,
+    setMainWindow: w => { mainWindow = w },
+    paneFollow: () => paneFollow,
+    setPaneFollow: f => { paneFollow = f },
+  }
+  // Arrows and Tab move the focus ring over the cards; the highlight follows it (pane-run.tsx).
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const r = await next(e)
-    if (e.element !== undefined && (await read($, roster)).some(a => a.id === e.element)) {
-      // Acting while following keeps what was shown, then the person's move applies on top.
-      if (paneFollow !== null) {
-        const f = paneFollow
-        await update($, selected, () => f.pick)
-        await update($, cursor, () => f.cur)
-      }
-      await update($, overrideView, () => paneView)
-      await update($, cursor, () => e.element!)
-    }
+    await paneFocus(paneIoOf($, {}, paneLets, options), e.element)
     return r
   })
 
@@ -3101,319 +2440,6 @@ export const register: Register = (on, options) => {
     return { value: undefined }
   })
 
-  // The body's rows, not the terminal's: viewport.rows counts the whole screen, so a tree that tall
-  // would push its bottom rows (the hotkey row) under the prompt.
-  const bodyRowsOf = (e: { props: unknown; viewport?: { rows: number } }) =>
-    (e.props as { scroll?: { bodyRows?: number } }).scroll?.bodyRows ?? e.viewport?.rows ?? 24
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    // A throw while building the tree would leave the pane blank with no hint why; draw one line instead.
-    // The body below is wrapped as is (not re-indented) to keep the diff to this fix.
-    try {
-    return await (async () => {
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const dm = await read($, demo)
-    if (dm !== null) {
-      const Input = ($.ui.resolve(e) as unknown as { Input?: Parameters<typeof demoView>[0]['Input'] }).Input
-      return demoView({
-        els: { Box, Text, Button }, Input, rows: bodyRowsOf(e), state: dm, now: await read($, now), draft: await read($, inboxDraft), note: await read($, inboxNote),
-        io: {
-          setDraft: v => update($, inboxDraft, () => v),
-          setNote: v => update($, inboxNote, () => v),
-          answer: (id, choice) => paneSerial(async () => {
-            const cur = await read($, demo)
-            if (cur === null) return 'The demo has ended.'
-            const r = demoAnswer(cur, id, choice, await $.clock.now())
-            await update($, demo, () => r.state)
-            await update($, inboxDraft, () => '')
-            if (r.state.step !== cur.step) { if (demoIsLast(r.state)) void $.ui.toast(DEMO_DONE); demoArm($, r.state) }
-            return r.text
-          }),
-          toast: text => { void $.ui.toast(text) },
-          focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
-          advance: () => demoMove($, (s, t) => (canAdvance(s) ? demoAdvance(s, t) : s)),
-          stop: async () => { void $.ui.toast(await demoStop($)) },
-        },
-      })
-    }
-    let [list, acts, pick, t, hs, cur, fold, unhanded, leftCounts] = await Promise.all([
-      read($, roster), read($, activity), read($, selected), read($, now), read($, handovers),
-      read($, cursor), read($, folded), currentUnhanded($), read($, leftovers),
-    ])
-    const leftover = leftoverLine(leftCounts)
-    // The push item is drawn as the banner on top, not as a question.
-    const boxNow = await read($, inbox)
-    const openQs = openAll(boxNow).filter(q => !isFyi(q) && q.kind !== PUSH_KIND && !hiddenByLink(boxNow, q)).sort((a, b) => Number(b.blocking) - Number(a.blocking))
-    const gate = (await read($, pushState)).batch
-    const breakerNote = breakerLine(await read($, reviewerBreaker), t)
-    const askers = askingNames(await read($, inbox))
-    const fyiCount = openAll(await read($, inbox)).filter(isFyi).length
-    // Rows in the tree: questions and approvals, not decisions; those fold into the one Inbox line.
-    const openItems = [...openQs, ...foldedOf(await read($, inbox), await endedOwnersOf($)).shown.filter(q => q.kind !== PUSH_KIND && !isFyi(q)).reverse()]
-    // The key row is drawn when any key in it works: the agents' keys, the reviewer's, or the inbox's.
-    // The inbox key also opens the archive, so answered items keep it drawn.
-    const anyOpen = (await read($, inbox)).items.length > 0
-    const checksLine = paneChecksLine(await read($, checks), installed)
-    // The questions block's rows depend on the pane height and its fold; the tree counts them itself (questionsBlock).
-    const inboxRows = (checksLine === undefined ? 0 : 1) + (gate === undefined ? 0 : gate.state === 'ready' ? 2 : 1)
-    const deployLines = behindLines(mirror.deployInfos, await read($, deploys), await read($, behind)).slice(0, 3)
-    const shown = await read($, hinted)
-    const override = await read($, overrideView)
-    const [mode, gfocus, plans] = await Promise.all([read($, viewMode), read($, graphFocus), read($, plan)])
-    const [sessionMap, hLimits, arm] = await Promise.all([read($, sessions), read($, harnessLimits), read($, armed)])
-
-    // The pane follows the transcript in view, derived here without writing: the viewed agent wins
-    // until the person acts in the pane under that view. An id not in the roster is ignored.
-    const viewId = (e.props as { view?: { agentId?: string } }).view?.agentId ?? null
-    const following = viewId !== null && list.some(a => a.id === viewId) && viewId !== override
-    if (following) {
-      pick = viewId
-      cur = viewId
-    }
-    paneFollow = following ? { pick: viewId!, cur: viewId! } : null
-    // Handlers record which view they acted in, so a later view change follows again.
-    paneView = viewId
-    const acted = async () => {
-      // Acting while following adopts what was shown, so the stored state does not jump back.
-      if (following) {
-        await update($, selected, () => viewId)
-        await update($, cursor, () => viewId)
-      }
-      await update($, overrideView, () => viewId)
-    }
-    const rows = bodyRowsOf(e)
-    const warnOf = (window: number) => warnPercent(settings, window)
-    // Free: no breakdown asked. Main's figures also size a subagent on the same model.
-    const usage = await $.session.usage().then(u => u, () => undefined)
-    const main = usage?.context
-    if (main !== undefined) mainWindow = main.window
-
-    const usageOf = (a: AgentRow): Usage | undefined => {
-      const u = acts[a.id]?.usage
-      if (u === undefined) return undefined
-      const window = u.window ?? windowOf(u.model, mainModel, mainWindow, u.tokens)
-      return { percent: Math.round(u.tokens / window * 100), tokens: u.tokens, window }
-    }
-    const meter = (u: Usage | undefined, dim: boolean, time: string) => meterTo({ Box, Text, Button }, settings, warnOf, u, dim, time)
-    // Running time: to now while live, frozen at the end once it ended (the moment the roster saw
-    // it end, else its last activity). No start on record, no time.
-    const runTime = (act: Activity | undefined, isEnded: boolean): string =>
-      act?.startedAt === undefined ? '' : elapsed((isEnded ? act.endedAt ?? act.lastAt : t) - act.startedAt)
-
-    // Quota left per window, for Claude (this session's account) and the harnesses flow can read:
-    // the share left as a bar that turns at 40% and 20%, the reset, and when the pace runs it out.
-    const limits = [...claudeLimits(usage?.rateLimits ?? []), ...hLimits]
-
-    // A control on a session worker, run here without a model turn. Restart and stop take a second
-    // press within ARM_MS, so a stray key never kills a worker.
-    const control = (name: string, input: Record<string, unknown>, confirm?: string) => async () => {
-      await acted()
-      if (confirm !== undefined) {
-        const key = `${name}:${String(input.action)}`
-        const now2 = await $.clock.now()
-        const was = await read($, armed)
-        if (was?.key !== key || now2 - was.at > ARM_MS) {
-          await update($, armed, () => ({ key, at: now2 }))
-          return
-        }
-        await update($, armed, () => null)
-      }
-      const result = await sessionTool($, { name, ...input }, { id: 'main', name: 'main' }, settings)
-      void $.ui.toast(result.length > 200 ? `${result.slice(0, 199)}…` : result)
-    }
-
-    // One agent: a card (name, what it does, meter), or one compact row when the pane is short.
-    // Only a top-level card has a border; deeper ones read as a tree by their indent.
-    const open = async (id: string) => {
-      await acted()
-      await update($, cursor, () => id)
-      await update($, selected, () => id)
-      // No API switches the transcript, so say once how to get to it.
-      if (!shown) {
-        await update($, hinted, () => true)
-        const a = list.find(x => x.id === id)
-        void $.ui.toast(`To see its chat: ← then pick ${a === undefined ? 'it' : labelOf(a)}`)
-      }
-    }
-    // Flips a card from what is drawn now; the choice is read fresh so rapid presses each count once.
-    const toggleFold = async (a: AgentRow, shown: boolean) => {
-      await acted()
-      await update($, folded, f => ({ ...f, [a.id]: !(f[a.id] ?? foldDefault(a) ?? shown) }))
-    }
-    const spent = await read($, ledger)
-    const modelOf = (a: AgentRow) => a.type === SESSION ? sessionMap[a.name ?? '']?.harness : shortModel(spent[a.id]?.spawnModel)
-    const columns = e.viewport?.columns ?? 80
-    const card = (a: AgentRow, depth: number, full: boolean, bordered: boolean, hot = false, collapsed?: boolean) => cardTo({
-      els: { Box, Text, Button }, list, acts, askers, decisionPhrases: settings.decisionPhrases, t, usageOf, warnOf, meter, runTime, toggleFold, open, columns, modelOf,
-    }, a, depth, full, bordered, hot, collapsed)
-    const agent = list.find(a => a.id === pick)
-
-    const toggle = <Button key="toggle-view" plain dimColor hotkey="g" onPress={async () => {
-      await acted()
-      await update($, viewMode, m => (m === 'graph' ? 'tree' : 'graph'))
-    }}>g {mode === 'graph' ? 'tree' : 'graph'}</Button>
-
-    const toggleQueue = async () => {
-      await acted()
-      await update($, folded, f => ({ ...f, [MERGE_QUEUE_KEY]: f[MERGE_QUEUE_KEY] === false }))
-    }
-    const toggleQuestions = async () => {
-      await acted()
-      await update($, folded, f => ({ ...f, [QUESTIONS_KEY]: f[QUESTIONS_KEY] === false }))
-    }
-    const ctx: PaneCtx = {
-      els: { Box, Text, Button }, list, acts, plans, rows, columns, modelOf, t, gfocus, shown, sessionMap, arm, armMs: ARM_MS,
-      askers, decisionPhrases: settings.decisionPhrases, toggle, card, runTime, control, acted, open,
-      back: async parentId => { await acted(); await update($, selected, () => parentId) },
-      fill: text => $.prompt.fill({ text, mode: 'replace' }),
-      toast: text => { void $.ui.toast(text) },
-      readFocus: () => read($, graphFocus),
-      setFocus: id => update($, graphFocus, () => id),
-    }
-
-    if (agent !== undefined && agent.type === MANAGER && mode === 'graph') return managerGraphView(ctx, agent, planOwner(plans, agent.name))
-    if (agent !== undefined) return agentView(ctx, agent)
-
-    if (mode === 'pr' || mode === 'batch') {
-      const [shownPr, back, pickPr, note, draft, cache, sstate] = await Promise.all([read($, prShown), read($, prBack), read($, batchPick), read($, inboxNote), read($, inboxDraft), read($, prDetails), read($, pushState)])
-      const leave = async () => {
-        await update($, inboxNote, () => '')
-        await update($, inboxDraft, () => '')
-        await update($, batchPick, () => null)
-        await update($, viewMode, () => mode === 'pr' ? back : 'tree')
-      }
-      const openPr = async (n: number, from: 'tree' | 'batch') => {
-        fetchPrDetails($, n)
-        await update($, prShown, () => n)
-        await update($, prBack, () => from)
-        await update($, inboxNote, () => '')
-        await update($, inboxDraft, () => '')
-        await update($, viewMode, () => 'pr')
-      }
-      const common = { acted, serial: paneSerial, toast: (text: string) => { void $.ui.toast(text) }, setNote: (v: string) => update($, inboxNote, () => v) }
-      if (mode === 'batch') {
-        return batchCardView({
-          els: { Box, Text, Button }, rows, batch: sstate.batch, hs, note, pick: pickPr, now: t,
-          io: { ...common, act: a => pushAct($, a, 'user'), openPr: n => openPr(n, 'batch'), setPick: n => update($, batchPick, () => n), leave },
-        })
-      }
-      const ho = shownPr === null ? undefined : hs[String(shownPr)]
-      const key = ho === undefined ? undefined : detailsKey(ho)
-      const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
-      return prCardView({
-        els: { Box, Text, Button }, Input, rows, columns, pr: shownPr, ho, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note,
-        io: {
-          ...common, leave,
-          approve: n => approvePr(commandIoOf($), n),
-          reject: (n, why) => rejectPr(commandIoOf($), n, why),
-          readDraft: () => read($, inboxDraft),
-          setDraft: v => update($, inboxDraft, () => v),
-          openUrl: async n => {
-            const url = (await read($, prDetails))[detailsKey((await read($, handovers))[String(n)] ?? { pr: n, head: '' })]?.details?.url
-            if (url === undefined) return 'No URL yet: the details have not loaded.'
-            const opener = openerFor(await platformOf($))
-            if (opener === undefined) return urlNote(url)
-            const r = await $.process.run([opener, url], { timeoutMs: 5_000 }).catch(() => undefined)
-            return r !== undefined && r.exitCode === 0 ? `Opened ${url}` : urlNote(url)
-          },
-        },
-      })
-    }
-    if (mode === 'inbox' || mode === 'card' || mode === 'archive') {
-      // Only some surfaces have an Input; without one the keys still answer.
-      const Input = ($.ui.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
-      const [ibox, icur, draft, note, from, iopen] = await Promise.all([read($, inbox), read($, inboxCursor), read($, inboxDraft), read($, inboxNote), read($, cardBack), read($, inboxOpen)])
-      // The same rows a press reads, so what is drawn and what is pressed fold alike.
-      const irows = (await paneInboxRows($)).rows
-      const ictx: InboxCtx = {
-        els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, iopen, list, now: t, from,
-        io: {
-          acted,
-          rows: async () => (await paneInboxRows($)).rows,
-          readInbox: () => read($, inbox),
-          readCursor: () => read($, inboxCursor),
-          setCursor: key => update($, inboxCursor, () => key),
-          readDraft: () => read($, inboxDraft),
-          setDraft: v => update($, inboxDraft, () => v),
-          setNote: v => update($, inboxNote, () => v),
-          answer: (id, choice) => answerQuestion($, id, choice, 'main', {}, true),
-          serial: paneSerial,
-          toast: text => { void $.ui.toast(text) },
-          focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
-          back: async () => {
-            await acted()
-            await update($, viewMode, () => 'tree')
-          },
-          open: async (id, origin) => {
-            await update($, inboxCursor, () => id)
-            await update($, cardBack, () => origin)
-            await update($, inboxNote, () => '')
-            await update($, viewMode, () => 'card')
-          },
-          leave: async to => {
-            await update($, inboxNote, () => '')
-            await update($, viewMode, () => to === 'tree' ? 'tree' : to)
-          },
-          toggleFold: async (key, firstKey) => {
-            // Read fresh, so rapid presses each flip once.
-            const was = groupExpanded(await read($, inboxFolds), key)
-            await update($, inboxFolds, f => ({ ...f, [key]: !was }))
-            // A folded-away highlight would move on the next press; park it on the card's row, and on opening go to its first item.
-            await update($, inboxCursor, () => was ? key : firstKey)
-          },
-          // Expands or collapses one item's card; the highlight goes to it.
-          toggleItem: async id => {
-            await update($, inboxOpen, o => ({ ...o, [id]: !o[id] }))
-            await update($, inboxCursor, () => id)
-          },
-        },
-      }
-      if (mode === 'card') return cardView({ ...ictx, id: icur })
-      if (mode === 'archive') return archiveView(ictx)
-      return inboxView(ictx)
-    }
-    if (mode === 'graph') return graphModeView(ctx)
-    const mainTime = usage?.startedAt === undefined ? '' : elapsed(t - usage.startedAt)
-    const mainU = main?.tokens === undefined ? undefined
-      : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
-
-    return treeView({
-      ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, openItems, fyiCount, anyOpen, checksLine, gate, breakerNote, inboxRows, deployLines, mainU, mainModel: shortModel(mainModel), mainTime,
-      mergeQueueKey: MERGE_QUEUE_KEY, questionsKey: QUESTIONS_KEY, warnOf, meter, toggleFold, toggleQueue, toggleQuestions,
-      readCursor: () => read($, cursor),
-      setCursor: id => update($, cursor, () => id),
-      focusRow: id => $.ui.focus({ requestId: PANE, key: id }).catch(() => undefined),
-      openInbox: async () => {
-        await acted()
-        await update($, inboxCursor, () => null)
-        await update($, viewMode, () => 'inbox')
-      },
-      openCard: async id => {
-        await acted()
-        await update($, inboxCursor, () => id)
-        await update($, cardBack, () => 'tree')
-        await update($, viewMode, () => 'card')
-      },
-      openPr: async n => {
-        fetchPrDetails($, n)
-        await acted()
-        await update($, prShown, () => n)
-        await update($, prBack, () => 'tree')
-        await update($, inboxNote, () => '')
-        await update($, inboxDraft, () => '')
-        await update($, viewMode, () => 'pr')
-      },
-      openBatch: async () => {
-        await acted()
-        await update($, batchPick, () => null)
-        await update($, inboxNote, () => '')
-        await update($, viewMode, () => 'batch')
-      },
-    })
-    })()
-    } catch (err) {
-      const { Text } = $.ui.resolve(e)
-      return <Text>flow: pane failed to draw: {err instanceof Error ? err.message : String(err)}</Text>
-    }
-  })
+  // The pane draws in pane-run.tsx.
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => paneDraw(paneIoOf($, e, paneLets, options), e))
 }

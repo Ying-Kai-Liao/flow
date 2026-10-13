@@ -45,6 +45,8 @@ export type RosterIo = {
   decisionPhrases: () => string[]
   maxManagers: () => number
   slotLimit: () => number
+  typecheckSlots?: () => Promise<TestSlots>
+  typecheckLimit?: () => number
 }
 
 // Managers whose end already freed a slot (and woke main), so a poll does not wake it twice.
@@ -182,7 +184,9 @@ export async function refreshTo(io: RosterIo): Promise<AgentRow[]> {
   const unhanded = await io.unhanded()
   if (unhanded) parts.push(`${unhanded} unhanded`)
   const slots = await io.testSlots()
-  const slotPart = slots.holders.length || slots.waiters.length ? ` · tests ${slots.holders.length}/${io.slotLimit()}` : ''
+  const tc = io.typecheckSlots ? await io.typecheckSlots() : undefined
+  const slotPart = (slots.holders.length || slots.waiters.length ? ` · tests ${slots.holders.length}/${io.slotLimit()}` : '')
+    + (tc && (tc.holders.length || tc.waiters.length) ? ` · tsc ${tc.holders.length}/${io.typecheckLimit?.() ?? 1}` : '')
   io.status(rows.length === 0 && hs.length === 0 && !unhanded ? undefined
     : `flow: ${parts.length ? parts.join(' · ') : `${live.length} live`}${slotPart} · /flow`)
   await syncPlansTo(io, rows).catch(() => undefined)

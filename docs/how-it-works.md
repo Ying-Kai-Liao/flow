@@ -183,7 +183,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   and a live manager is told the question is closed. A deploy, push, env or guard item is never answered by `/flow ok`; only `/flow answer` does. All of
   them go through the same path as `mcp__flow__answer`, so delivery, notes and standing-answer suggestions
   are unchanged. Main (the agent) answers with `mcp__flow__answer`: `answers: [{id, choice}]` where choice is the option text, its
-  letter or number, or free text; or `defaults: true` (optionally `ids`) to accept the defaults.
+  letter or number, or free text; or `defaults: true` to accept the defaults of decisions and non-blocking questions; a blocking question is skipped unless its id is in `ids`.
   **In the pane**: with anything open, the key row at the bottom shows `i inbox`. The inbox view lists every
   open question (blocking first; `for <manager>` marks those not addressed to you) and decision (newest first, one row each) with one highlighted row, its options
   and `why:`. Keys: `j`/`k` move, `1`-`9` or `a`-`h` pick that option of the highlighted item, `y` takes a
@@ -207,7 +207,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   choice, free text included, undoes it: the owner is messaged what it decided and what to do instead,
   or, if it is no longer running, its manager (naming the owner); the undo is noted as a decision.
   The addressee may answer a decision, and so may main (the user overrides what a manager has not looked at).
-  Standing answers never answer a decision.
+  A decision is kept by a standing answer only through a rule that names `"kinds": ["fyi"]` (see Standing answers); it stays undoable.
 - A report whose last line ends in `?` still counts as a question, for agents that don't use the
   tool. `decision_phrases` is deprecated.
 
@@ -222,12 +222,29 @@ and the asker's `ask` result says so; nobody is messaged or toasted, and the dec
 and `log.jsonl` (`auto-answer`). `/flow inbox` lists the last 24 h under "Auto-answered" with the rule
 id to revoke.
 
-- A rule is `{id?, topic?, match?, answer, blocking?, from?, note?}` (or, see below, `{..., escalate: true}`) in the `standing_answers` list of a
+- A rule is `{id?, topic?, match?, answer, blocking?, from?, kinds?, options?, note?}` (or, see below, `{..., escalate: true}`) in the `standing_answers` list of a
   settings file. `topic` equals the question's topic (any case); `match` is a case-insensitive regular
   expression on the question text; with both, both must match. No fuzzy matching. `answer` must be one
   of the new question's options (text, letter or number), else the rule does not apply and the question
   goes to the inbox. `from` limits it to one asker (`foo-2` counts as `foo`). A blocking question is
   answered only by a rule with `blocking: true`. A bad rule is dropped with a settings warning.
+- Pushed suggestions. When main has answered a topic (or, with no topic, one exact question text) the
+  same way 3 or more times and no rule covers it, the `mcp__flow__answer` result gets one line offering
+  the rule with its exact `mcp__flow__standing` add call, and the Flow pane's inbox shows it as a `+ rule?`
+  line (`s` hides it). Each (topic, answer) is offered once (`suggest-offered.json` in the state dir);
+  `mcp__flow__standing {"action":"dismiss","id":...}` (or `"all"`) drops it for good. Nothing is added
+  until you call the add. Kept decisions count too: three kept `worker-size` decisions suggest
+  `{"topic":"worker-size","answer":"Keep","kinds":["fyi"]}`. A group holding a deploy, env, push, reviewer,
+  guard, escalated or linked item is never suggested.
+- Decision rules. A rule with `kinds: ["fyi"]` (answer `Keep` only) keeps a fresh routine decision the
+  moment an agent records it (`answeredBy: "standing answer"`, the rule id on it, an `auto-answer` log
+  line); the agent's result is unchanged. It runs before `decide_inbox`, which then skips the item. An
+  ordinary rule (no kinds) does not keep a decision an agent records, an fyi rule never answers a question, and escalate rules still
+  win. Undo it like any kept decision (`/flow no <id>`); the owner is messaged.
+- Matching. Topics compare ignoring case, `_`, `-` and spaces and one trailing "s". A rule made from a
+  topic-less question also records its `options`; such a question matches only with the same option set and
+  its text matching `match`. No fuzzy matching. Deploy and env items still need a rule naming the kind;
+  push and reviewer items are never answered by a rule.
 - Two more forms. `escalate: true` with no `answer` holds a matching question for you: no rule ever
   auto-answers it (whatever the order), it is recorded `blocking: true` and flagged
   `escalated: <rule id>`, and `mcp__flow__answer` refuses an answer from anyone but main; a worker's
@@ -438,6 +455,8 @@ Beyond merging, checking and deploying, the reviewer handles five things on its 
 
 - **Migration clashes** (when `migrations_dir` is set). After taking a PR and checking its head, the reviewer calls `mcp__flow__migrations` with the PR and the earlier PRs of the batch. If a migration of the PR has the same number as one on the base branch, at HEAD or in an earlier PR of the batch, or is at or below the highest on the base branch, the reviewer renumbers it in a temporary worktree on the PR's head: `git mv` to the next free number the tool reports (highest + 1, no gaps), updates the PR's own mechanical references to the old number (the paired down migration, a journal or index entry, a file name in a list), commits "Renumber migration <old> to <new> (reviewer)" and pushes to the PR's branch (never forced), then merges the new head. The batch's full check covers it. The done line and the report to the manager say so. When the number is referenced in a way it cannot update safely (code constants, generated checksums or snapshots, data that records the version) or the branch moved meanwhile, the PR goes back with the reason. Two packages that both add migrations can therefore run in parallel.
 - **Infrastructure flakes.** A push that fails with a server or network error (5xx, timeout, connection reset; a rejection keeps the fetch, merge, check rule) is retried with backoff (30s, 1m, 2m, 4m, then every 4m) for at most 20 minutes, as is any `gh` call of the batch; the retry count goes in the done line. After that the batch's PRs go back with "push to <base> failed for 20 minutes (infrastructure); PR unchanged, hand it over again" and main is told. Health checks get 30 seconds before the first fetch and 10 minutes of retries.
+- **Bigger batches.** One reviewer, one push path, but each batch carries many PRs: right before the full check the reviewer lists once more and merges PRs that arrived meanwhile (also after the rework of a failed check), up to `batch_max` (default 10; 1 = one PR per batch). A push run or rebuild run takes no late joiners. The sha that is pushed is always one whose exact tree passed the full check; there is one release cut per batch, after the final check; the push gate, deploy gates and the re-check after a rejected push are unchanged. A terminal reviewer told "new handover" mid-batch never starts a second batch: the PR joins before the full check or waits.
+- **Failures in a big batch.** When failures do not clearly belong to one PR and the batch has more than 2 PRs, the reviewer bisects the first-parent merges (each step is a full check under the test slot) to the first PR whose merge breaks the check, sends it back, rebuilds the batch without it and checks the final HEAD again. A passing bisect step is never pushed on its own. When every failing test timed out, the full check is rerun once before the failure counts (the first run is released as "fail", the rerun as "pass", so the plugin records the flake).
 - **Flaky tests.** With `flaky_tests` set, a full check whose failing tests are all in those files is rerun once for those files (through `test_command` with `{files}` if it has that slot, else the full check once more). If they pass, the batch passes and the report says "flaky rerun: <file> failed, passed on rerun". Any other failure, or a second one, is real.
 - **Both-sides additions.** A merge conflict where both sides added lines at the same place (imports, list entries, registry entries, README table rows, CHANGELOG entries) keeps both, drops exact duplicates and keeps sorted lists sorted; the full check covers it and the report says "kept both sides in <files>". The same line changed differently, or a deletion against an edit, goes back to the worker.
 - **Respawn circuit breaker.** A reviewer that ends with no answer, on an API error or within 30 seconds counts as a failed start, and the plugin does not replace it at once: the next start waits 30s, then 1m, 2m and 5m (the cap), and a start in between waits for the same timer. After 3 failed starts in a row, or 20 starts in a rolling hour whatever their outcome, the queue halts: no reviewer starts, handovers stay pending, `/flow status` and the pane show the last error (the answer text when the run failed, else "ended with no answer"; the host gives no error field), and one inbox item (kind `reviewer`, options retry / not now) asks main. Standing answers and defaults never answer it, and "not now" asks again. Answering `retry`, `/flow resume` or a new session clears the halt and starts a reviewer if work is pending; the failure count and the start times are kept, so one more immediate failure halts again and the hourly cap still holds. A run that lasts 30 seconds and ends with an answer resets the count. The state is in `reviewer-breaker.json`.
@@ -496,8 +515,14 @@ Not verified:
 - `note`: a manager's notes (`manager`, optional `text`, `kind` decision or progress). Without
   `text` it returns the notes.
 - `clean`: leftover worktrees and branches (see Cleanup); dry unless `apply` is true.
-- `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`). See below.
+- `test_slot`: a lock on heavy test runs (`acquire`, `release`, `status`; `kind: "typecheck"` for the separate typecheck pool). See below.
 - `guard_tests`: the guard tests the worker's diff requires (see Guard tests).
+
+## Best of N
+
+Off by default (`best_of_n`). With `brief` or `auto` a manager may start 2-3 competing workers (`best_of_n_arms`) on one hard package: the same brief, named `<pkg>-a`, `<pkg>-b`, `<pkg>-c`, plus a line `Arm: <letter> of <N>`. The arms are agent workers (never terminal sessions; a manager that runs in a terminal via `manager_harness` has no arms and its prompt omits them), each in its own worktree and branch, and each counts against `max_workers`. The plugin refuses an arm spawn when the setting is off, when N is above `best_of_n_arms`, when the letter does not match the name or the manager's workers would exceed `max_workers`. A letter can be used once per package slug (a new set of arms needs a new slug), and a successor manager (`mgr-2`) can pick its predecessor's groups. Arms only count against `max_workers` while working (an idle arm after a handoff does not). An arm that hands off continues as `<pkg>-a-2` and stays in its arm.
+
+The oracle is the evidence first (arm PRs whose `## Verification` shows passing tests), then the manager's review. The manager calls `mcp__flow__arms` with `pick` (group, the winner's PR, a reason): the other arms' PRs are closed with a comment, the log records `arm-pick` and `arm-lost`, and an arm that still runs is named so the manager stops it with TaskStop. Only the picked arm's PR can be handed over; until then the arms are not listed as PRs nobody handed over, and after it the cleanup removes a loser's worktree and local branch once it is pushed and its PR is closed (unpushed or dirty work is still kept). `mcp__flow__arms` `report` shows each arm's cost, whether the winner merged and the overhead of the group over the winner; arms are one package, not reruns, in the size reports.
 
 ## Workers in other harnesses
 
@@ -613,7 +638,13 @@ environment passes none.
 - **The reviewer in confirm mode** reviews one batch and ends like the agent: after its report (merge_mode is
   read then, so a change while it worked counts) the plugin stops the terminal, removes its worktree if clean,
   and the next handover starts reviewer-N+1. The same happens in auto mode when a batch awaits `/flow push`.
-- **Known limits.** Two main sessions in one repo share the relay and the sessions file and can both pump
-  a call. The subagents of a terminal manager (Explore and the like) run their flow calls as the manager. A
-  restart of main keeps terminal sessions (they are saved in `sessions.json`), and an agent reviewer running
-  when the setting changes finishes as it is.
+- **Owners and subagents.** A role session records the main that started it (`mainOwner`: session id and
+  claude pid). A main pumps, watches and delivers only for its own; one whose owner pid is dead, or that has
+  no owner, is taken over by the next main that sees it (the relay claim is an atomic rename, so a race on
+  that never runs a call twice). A subagent of a terminal manager (Explore and the like) reaches main as the
+  manager, so it may only read: status, guard_tests, migrations, test_slot, `list` actions, note without
+  text; everything else is refused with a note to report to the manager. The reviewer's subagents are not
+  restricted.
+- **Known limits.** A restart of main keeps terminal sessions (they are saved in `sessions.json`), and an agent reviewer running
+  when the setting changes finishes as it is. With two mains, the one that saves last keeps only its own records in
+  `sessions.json`, so the other's terminals are not restored after its restart.

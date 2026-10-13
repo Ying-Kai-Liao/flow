@@ -68,7 +68,9 @@ The ones most repos set. Everything else is under Advanced settings.
 | `max_managers` | 20 | `/config`, file | managers the main session runs at a time |
 | `max_continues` | 2 | `/config`, file | how many times a branch may hand off before its manager is told to split the package (a warning only) |
 | `test_slots` | 1 | `/config`, file | how many heavy test runs may run at once across all agents (minimum 1) |
-| `test_slot_commands` | `claude plugin test`, `npm run check`, `npm test`, `npm run test` | `/config`, file | Bash commands that run a whole suite; refused unless the caller holds a test slot. Empty list: not enforced |
+| `test_slot_commands` | `claude plugin test`, `npm run check`, `npm test`, `npm run test`, `sh scripts/test-files.sh`, `bash scripts/test-files.sh`, `test-files.sh` | `/config`, file | Bash commands that run a whole suite; refused unless the caller holds a test slot. Empty list: not enforced |
+| `typecheck_slots` | 1 | `/config`, file | how many typechecks may run at once across all agents (minimum 1); a separate, lighter pool than `test_slots` |
+| `typecheck_commands` | `npm run typecheck`, `tsc`, `npx tsc` | `/config`, file | Bash commands that run a typecheck; refused unless the caller holds a typecheck slot (or a test slot). `--help` and `--version` run freely. Empty list: not enforced |
 | `language` | `English` | `/config`, file | the language agents write reports and PR text in |
 | `context_warn_percent` | 40 | `/config`, file | the context limit as a percent of the window (1 to 100) |
 | `context_warn_percent_1m` | 35 | `/config`, file | the same as `context_warn_percent`, for agents on a 1M window (1 to 100); the 200k percent never applies to them |
@@ -85,17 +87,20 @@ The ones most repos set. Everything else is under Advanced settings.
 | `worker_checks` | none | file only | commands every worker must pass before opening a PR (a list) |
 | `always_tests` | none | file only | tests every worker runs on top of the ones for the files it changed (a list) |
 | `flaky_tests` | none | file only | test files known to fail now and then: when they are the only failures of the full check, the reviewer reruns them once (a list) |
+| `batch_max` | 10 | file only | most PRs one reviewer batch carries (minimum 1); PRs that arrive before the full check join the batch up to this number, the rest wait for the next. 1 restores one-PR batches |
 | `verify_paths` | none | file only | path globs (a list): a handover's `verify_command` runs only when the PR changes a matching file, e.g. only PRs touching migrations or code with outbound effects; otherwise the check stays open for a person. Unset: the command always runs (see Person checks) |
 | `big_files` | none | file only | files workers grep and never read whole (a list) |
 | `big_file_lines` | 1500 | file only | the line count from which a file counts as big |
 | `migrations_dir` | none | file only | the directory of migrations: workers number new ones after the highest on the base branch, and the reviewer renumbers a clash (see Reviewer rules) |
 | `size_ab` | off | `/config`, file | `daily`, with `decision_api` `jev`: spawns alternate by local epoch day (even: Jev sizes, odd: the `Size:` line alone, no decision API call); each worker and manager ledger row gets `sizeArm`. Read the outcome with `size_ab_report` or `scripts/size-ab.mjs` (packages are attributed to the arm of their first spawn; under 20 packages an arm is too small to conclude) |
+| `best_of_n` | off | `/config`, file | `brief`: a manager may start 2-3 competing workers (arms) on one package when its task or the user asks; `auto`: also for large packages and bug hunts with an unknown root cause. Arms are agent workers (never terminal sessions), named `<pkg>-a`, `<pkg>-b`, `<pkg>-c`, with an `Arm: <letter> of <N>` line in the brief; each counts against `max_workers`. The manager picks the winner with `mcp__flow__arms` (`pick`, then `report` for $ per arm); only the winner can be handed over, the other arms' PRs are closed |
+| `best_of_n_arms` | 2 | `/config`, file | most arms per package, clamped to 2..3 |
 | `size_feedback` | on | `/config`, file | each `flow:manager` spawn prompt gets, once, a short digest of how this repo's earlier workers' `Size:` lines turned out (see Model routing). `off`: no digest |
 | `main_checkout_guard` | on | `/config`, file | flow's agents always, the main session only while flow has a worktree or live agent in the repo: writes to the main checkout (the repo's folder, not the main branch) are refused (see Guards) |
 | `main_checkout_allow` | `.claude/` | `/config`, file | paths still writable in the main checkout, comma-separated, relative to the repo root; one ending in `/` covers a directory. Replaces the default |
 | `guard_tests` | none | file only | path globs mapped to repo-wide tests a worker must run when its diff touches a matching path, e.g. `{"src/routes/**": ["test/admin.test.ts"]}` (see Guard tests) |
 | `decision_phrases` | none | file only | **deprecated**, use `mcp__flow__ask`: extra phrases that mark a report as a question for the user (a list; see below) |
-| `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
+| `standing_answers` | none | file only | rules that answer recurring inbox questions at once: a list of `{id?, topic?, match?, answer, blocking?, from?, kinds?, options?, note?}` (see Standing answers). The personal file's rules come before the repo file's and both apply |
 
 
 `decision_phrases` (deprecated in favour of `mcp__flow__ask`, still honoured; the settings loader warns): a report counts as asking when its last line ends in `?` or `？`, or its last paragraph contains one of the phrases (case-insensitive), unless the phrase directly follows a negation (`不`, `不用`, `不必`, `無需`, `毋需`, `不需要`, `no `, `not `, `don't `, `no need to `): "不需要你決定" does not match `需要你決定`. The pane, the toasts and the task graph all use it.
@@ -221,10 +226,35 @@ as a suite when a segment of a `&&`, `||`, `;`, `|` or newline chain (behind `cd
 (`tests/*.test.ts`), a directory (an argument without a file extension: `.`, `tests/`,
 `/tmp/copy`), or more than 5 files. Flags are ignored; 1 to 5
 explicit files run freely. An empty `test_slot_commands` turns it off; other stacks list their own
-(`pytest`, `go test ./...`). Workers started in other harnesses (`mcp__flow__session`) do not pass
-through the hook. One `claude plugin test` run already starts one child process per test file, and
-the runner has no jobs or concurrency flag or environment variable, which is why `test_slots`
-defaults to 1.
+(`pytest`, `go test ./...`). `--help`, `-h` and `--version` only print text and are never a suite run.
+Workers started in other harnesses (`mcp__flow__session`) do not pass through the hook, so only the
+worker prompt applies to them.
+
+A worker never runs the whole suite, even holding a slot: the hook refuses a suite run from a
+worker (a `flow:worker` or `flow:continue` agent) with advice to run the files it touched. The
+reviewer's full check and the main session are unaffected. `claude plugin test` takes a folder, not
+files, so `sh scripts/test-files.sh tests/a.test.ts tests/b.test.ts` runs only the named files
+(it copies the plugin and those tests to a scratch folder and runs that; the plugin's own tests
+need no slot).
+
+Typechecks take a lock of their own: `test_slot` with `kind: "typecheck"` (acquire, release,
+status work as above), at most `typecheck_slots` at once, a 10 minute lease, grant files under
+`<git-common-dir>/flow/test-slots/typecheck/`. A typecheck never waits behind a suite. Holding a test
+slot does not grant a typecheck slot, but the hook lets a test-slot holder typecheck, so the
+reviewer's full check never deadlocks on the typecheck inside it (`npm run check` itself is judged as
+a suite run only). The Flow status line shows `tsc 1/1` beside `tests 1/1`.
+
+What the runner does with processes (checked against `claude plugin test --help` and the runner,
+version 2.1.296): the parent starts a pool of `min(number of files, CPU cores)` child processes,
+each running one file with `--file`, and starts the next file as one finishes. There is no jobs or
+concurrency flag and no environment variable, so a run on a 10 core machine has about 10 children at
+once, each 250 to 300 MB and busy, whatever the number of agents. Two mitigations: a worker's
+file-only runs start one child per file (at most a handful); and
+`sh scripts/test-files.sh --jobs N --all` runs the whole suite in chunks of N files one after the
+other, which caps the children at N and still runs every file. A chunk waits for its slowest file: on a 10 core machine the suite took 121 s in chunks of 4 against 37 s in the pool, so
+it is for small machines only; `npm run check` keeps the full pool. On a small machine, keep
+`test_slots` at 1 (each suite run already uses every core), or point `full_check_command` at the
+chunked script.
 
 ## Guard tests
 
@@ -262,6 +292,7 @@ The `Size:` line wins over an explicit `model` parameter. Without one nothing ch
 - **Managers:** a manager is routed the same way by the `Size:` line on its prompt: `small` -> `manager_model_small` (`sonnet`), `normal` -> `manager_model_normal` (unset: follows `manager_model`, so `opus` by default), `large` or no `Size:` line -> `manager_model`. A successor `<name>-2` of a normal manager runs on `manager_model`.
 - **Lite mode:** a manager started with `Mode: lite` is routed like any manager (`manager_model`, or its `Size:` line). It and its workers file no downgrade records; the models are still routed.
 - **Downgrade record:** a worker started below large makes the plugin file a non-blocking decision from the manager to the user, topic `worker-size`, e.g. "csv-docs runs small -> haiku: docs only". It is never a blocking ask and never silent. Undo it in `/flow inbox`: the manager is told and restarts the package at the size you chose. Standing answers (`mcp__flow__standing`, topic `worker-size`) can acknowledge recurring cases (see Standing answers).
+- **Duplicate questions:** open questions for main from different managers with the same topic and option set (or, with no topic, the same text and option set) show once in `/flow inbox`, the pane and `mcp__flow__status`, marked `x3`, with the askers' names. Answering that row, or any member's id, answers every open member with the same choice; each asker gets its answer and its notes line as if answered alone, and the result names the ids answered together. A default answer fans out only when all members share the default. Deploy, env, push and reviewer items, guard suggestions, escalated questions and escalation links are never grouped. A question asked after the group was answered is a new item; only a standing rule answers those.
 - **Jev (optional):** with `decision_api` set to `jev`, TypeSafe's Jev classifier picks the size for `flow:worker` and `flow:manager` spawns, even when the brief has no `Size:` line. The successor floor still applies on top. One call per spawn, with a 5 second wait. **The brief text (minus its `Size:` line, capped at 8000 characters) is sent to api.typesafe.ai: data leaves the machine.** The key is the `/config` option `typesafe_api_key` (sensitive, kept in secure storage); `jev_base_url` (default `https://api.typesafe.ai`) points it elsewhere. Neither the environment nor a file is read for it. Jev can also be reached through OpenRouter: with no `typesafe_api_key` and an `openrouter_api_key`, the same request goes to `openrouter_base_url` (default `https://openrouter.ai/api`, path `/v1/systemone`) with that key and the model `openrouter_jev_model`; the decision text then reads "jev via openrouter" and the host is openrouter.ai. `typesafe_api_key` (or the deprecated `jev_api_key`) wins when both are set. Jev's answer counts only when it is small, normal or large with confidence of at least `size_min_confidence` (default 0, so any). Anything else (no key, timeout, an HTTP error, a bad answer, low confidence) falls back silently to the `Size:` line and adds a short note to the downgrade record, e.g. "csv-docs runs small -> haiku (jev 0.98; brief said normal): docs only" or "(jev unavailable: HTTP 401)". The key and response bodies never appear in notes or logs. Off, the plugin makes no network call.
 - **OpenAI (optional):** with `decision_api` set to `openai`, an OpenAI chat model (`openai_model`) picks the size the same way, with the same criteria, through Chat Completions strict structured output at temperature 0. The key is the `/config` option `openai_api_key` (sensitive, kept in secure storage; the `OPENAI_API_KEY` environment variable is not read); `openai_base_url` (default `https://api.openai.com/v1`) points it at a compatible endpoint. **The brief text (minus its `Size:` line, capped at 8000 characters) is sent to api.openai.com, or the `openai_base_url` host: data leaves the machine.** Both providers' requests go through the engine's `$.http.fetch`. Confidence is the probability of the answer's tokens from the response logprobs and must be at least `size_min_confidence` (default 0). If the endpoint returns no usable logprobs, the answer is accepted without the threshold and the decision text shows no number, e.g. "(openai gpt-4.1-mini)". Failures fall back silently to the `Size:` line with a note like "(openai unavailable: HTTP 401)"; the key and response bodies never appear in notes or logs.
 - **Routine decisions and handoff advice (optional, both off):** two more uses of the same provider, each behind its own toggle and active only while `decision_api` is `jev` or `openai`. `decide_inbox`: right after a decision is recorded (`mcp__flow__fyi`, the agent's result is unchanged), the provider is asked keep, undo or ask_main. Only `keep` with confidence of at least `decide_min_confidence` (default 0.8; no confidence counts as under) keeps it, so main is not woken for it; anything else, a timeout or a failure leaves it open as before. Only plain decisions are ever asked about: never a question (blocking or not), an env change, a deploy approval, a push or reviewer item, a guard suggestion, a person check or a pre-flight question, and a standing answer that applies wins. A kept decision is answered `Keep` by the provider and shows as "kept by jev (0.93)" in `/flow inbox`, the archive and `mcp__flow__status` ("Inbox: 2 decisions kept by jev (undo with mcp__flow__answer)"); it never counts as work for main. It stays undoable: `mcp__flow__answer` or `/flow no` with anything but Keep messages the owner exactly like a normal undo. `decide_handoff`: at a worker's handoff the provider reads the handoff digest. Below `max_continues` a confident `split` adds a line to the manager ("jev advises splitting flow/x (0.88)"); a confident `continue` adds nothing. Past `max_continues` the usual split message is sent and a confident answer is appended to it, e.g. "(jev: continue 0.91)". It never changes the `max_continues` rule. **The decision text or the handoff note (capped at 8000 characters) is sent to the provider: data leaves the machine, only with the toggle on.** Each call appends a `decide` event to `log.jsonl` (feature, id, answer, confidence, applied or a failure note); the key and response bodies are never logged. `decide_eval` measures how often the provider agrees with main before you turn either on; its `size` feature replays spawn sizing and compares Jev with the brief's `Size:` line and with always-normal, and adds a per-role split and a "normal managers on sonnet" cost counterfactual; its `route` feature measures whether Jev can tell a task that needs a manager with several workers (`manager+n`), a manager with one worker (`manager+1`) and a direct worker (`direct`), labelled from what each manager family actually did (workers, merged PRs, blocking questions, send-backs, plan nodes, successor managers; risky tasks excluded), against main's choice, simple rules and the always-baselines, with a dollar column. It measures only; nothing routes on it.
@@ -358,7 +389,24 @@ npm run validate                 # claude plugin validate . (must pass)
 npm run check                    # typecheck + validate + claude plugin test .
 ```
 
-Where code goes: `hooks/register.tsx` is the wiring only (atoms, `on(...)` hooks, `$.tool.register` calls, and small io builders that spell out each `$.noun.event(...)` call). Put new logic in a module under `hooks/`. The engine refuses `$` across an import and wants atoms declared in `register.tsx`, so a module is either pure (`pushgate.ts`, `clean.ts`, `table.ts`) or takes an io object of plain closures that `register.tsx` builds (`deliver.ts` is the example).
+Where code goes: `hooks/register.tsx` is the wiring only (atoms, `on(...)` hooks, `$.tool.register` calls, and small io builders that spell out each `$.noun.event(...)` call). Put new logic in a module under `hooks/`. The engine's rules: `$` never crosses an import (no imported function taking `$`, no `$`-taking closure passed through an argument), so a module is either pure (`pushgate.ts`, `clean.ts`, `table.ts`) or takes an io object of plain closures that `register.tsx` builds (`deliver.ts` is the example; `pane-run.tsx` holds the pane's hook bodies the same way, behind a `PaneIo`). A module may register its own hooks through an exported `registerX(on, ctx)` when everything those hooks call with `$` is in that same file. Atoms are declared with a literal ref (`atom({ plugin: 'flow', key: '...' } as const, init)`) in each file that reads or writes them; the same key is the same state, but importing an atom is refused.
+
+Module map: which file holds the body of each `register.tsx` hook.
+
+| Hook or feature | Body lives in |
+| --- | --- |
+| `session.start` | `startup-run.ts` |
+| `agent.spawn` | `spawn-run.ts` |
+| `tool.call` (the guards and activity log) | `toolcall-run.ts` |
+| each flow tool call | `runFlowTool` in `register.tsx`, which hands over to the `*-run.ts` module of that tool (`handover-run.ts`, `deploy-run.ts`, `inbox-run.ts`, ...) |
+| `turn.step`, `turn.complete` | `turn-run.ts` |
+| `ui.render`, `ui.focus` | `pane-run.tsx` |
+| relay (a copy forwarding its flow tools to main) | `relay-run.ts` |
+| terminal sessions (other harnesses) | `role-session-run.ts` |
+| the demo (`/flow init demo`, `mcp__flow__demo`) | `demo-run.ts` |
+| `/flow` | `command.ts` |
+
+Still in `register.tsx`: the atoms, the shared core (roster refresh, delivery, the inbox, preflight and checks chains, the storage helpers), the io builders (`paneIoOf`, `commandIoOf`, `demoIoOf`, ...) and the hook registrations.
 
 `npm run typecheck` works in a fresh worktree: it runs `npm ci` when `node_modules` is missing and,
 when `.claude-plugin/types` is missing, symlinks it to the main checkout's copy. Claude Code writes

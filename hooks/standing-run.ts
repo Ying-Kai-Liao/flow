@@ -12,6 +12,7 @@ import type { Inbox, Question } from './inbox'
 import { noteKey } from './state'
 import { ENV_KIND } from './deploy'
 import { PUSH_KIND } from './pushgate'
+import { dismissSuggestions, paneText, pendingSuggestions } from './standing-suggest'
 
 export type StandingIo = {
   locate: () => Promise<string[]>
@@ -207,6 +208,17 @@ export async function offerSeedsOnce(io: StandingIo, options: Record<string, unk
   return renderSeeds(offer)
 }
 
+// The Flow pane's suggestion rows: pending ones, each as id and one line of text.
+export async function paneSuggestions(io: StandingIo, options: Record<string, unknown>): Promise<Array<{ id: string; text: string }>> {
+  const { rules } = await loadRules(io, options)
+  return (await pendingSuggestions(io, rules)).map(s => ({ id: s.id, text: paneText(s) }))
+}
+
+export async function dismissSuggestionIds(io: StandingIo, options: Record<string, unknown>, ids: string[]): Promise<void> {
+  const { rules } = await loadRules(io, options)
+  for (const id of ids) await dismissSuggestions(io, rules, id)
+}
+
 // An `always` answer: after answering, the answer becomes a rule in the personal file. Only main makes rules.
 export async function alwaysRule(
   io: StandingIo, options: Record<string, unknown>, id: string, choice: string, isMain: boolean, before: Question | undefined,
@@ -255,7 +267,7 @@ export async function standingTool(io: StandingIo, options: Record<string, unkno
   }
   if (action === 'add') {
     const v = validateRule({
-      topic: input.topic, match: input.match, answer: input.answer, escalate: input.escalate, blocking: input.blocking, from: input.from,
+      topic: input.topic, match: input.match, answer: input.answer, escalate: input.escalate, blocking: input.blocking, from: input.from, kinds: input.kinds, options: input.options,
       note: `added ${await io.today()} by hand`,
     })
     if ('error' in v) return { result: `Refused: ${v.error}.` }
@@ -264,10 +276,17 @@ export async function standingTool(io: StandingIo, options: Record<string, unkno
     if (r.kind === 'exists') return { result: `Rule ${r.id} already says that; nothing added.` }
     return { result: `Rule ${r.id} added to the personal file. Revoke with mcp__flow__standing {"action":"remove","id":"${r.id}"}.` }
   }
+  if (action === 'dismiss') {
+    const id = String(input.id ?? '').trim()
+    if (id === '') return { result: 'Refused: dismiss needs the suggestion id (or "all"); it is in the suggestion line.' }
+    const { rules } = await loadRules(io, options)
+    const done = await dismissSuggestions(io, rules, id)
+    return { result: done.length === 0 ? `${id}: no such open suggestion; nothing changed.` : `Dismissed ${done.length} suggestion${done.length === 1 ? '' : 's'}; no rule was added and they are not offered again.` }
+  }
   if (action === 'remove') {
     const id = String(input.id ?? '').trim()
     if (id === '') return { result: 'Refused: remove needs the rule id (see action "list").' }
     return { result: await dropRule(io, options, id) }
   }
-  return { result: 'Unknown action: use list, add or remove.' }
+  return { result: 'Unknown action: use list, add, remove or dismiss.' }
 }

@@ -108,12 +108,19 @@ test('a manager session\'s copy shows the tools and /flow stub, relays flow tool
   expect(w.runs.some(a => a.join(' ').includes('rm -rf'))).toBe(false)
 
   w.wait.answer = () => ({ result: 'Noted in /r/notes.md.' })
-  const r = await $.tool.call({ tool: 'mcp__flow__note', manager: 'm1', text: 'hello', agentId: 'sub1' } as never)
+  const r = await $.tool.call({ tool: 'mcp__flow__note', manager: 'm1', text: 'hello' } as never)
   expect(r.result).toBe('Noted in /r/notes.md.')
   // The call carries the tool's own input only, and who it is from.
   const [sent] = calls(w)
-  expect(sent).toMatchObject({ tool: 'mcp__flow__note', input: { manager: 'm1', text: 'hello' }, from: 'session:m1', role: 'manager', by: 'sub1' })
+  expect(sent).toMatchObject({ tool: 'mcp__flow__note', input: { manager: 'm1', text: 'hello' }, from: 'session:m1', role: 'manager', by: 'm1' })
   expect(Object.keys(sent!.input as object)).toEqual(['manager', 'text'])
+
+  // A subagent of the manager may read but not write; nothing is left for main.
+  const before = calls(w).length
+  expect(JSON.stringify(await $.tool.call({ tool: 'mcp__flow__handover', pr: 1, agentId: 'sub1' } as never))).toContain('subagent of terminal manager m1')
+  expect(calls(w).length).toBe(before)
+  w.wait.answer = () => ({ result: 'status' })
+  expect((await $.tool.call({ tool: 'mcp__flow__status', agentId: 'sub1' } as never)).result).toBe('status')
 
   // Main's refusal reaches the model as a refusal.
   w.wait.answer = () => ({ deny: 'Refused: nope' })
@@ -265,4 +272,42 @@ test('sessions persist to sessions.json and come back after a restart', async ($
   // Volatile fields stay off the disk, and writes happen only on a real change.
   await $.tool.call({ tool: 'mcp__flow__session', action: 'send', name: 'm1', text: 'again' } as never)
   expect(JSON.parse(w.files.get(`${DIR}/sessions.json`) ?? '{}').m1.screenText).toBeUndefined()
+})
+
+test('a terminal manager may write its own report file and nothing else', async ($, on) => {
+  world(on, { FLOW_ROLE: 'manager', FLOW_NAME: 'm1', FLOW_RELAY: RELAY })
+  on('tool.call', () => ({ result: 'ran' }))
+  await start($)
+  const report = `${DIR}/sessions/m1/report.md`
+  expect((await $.tool.call({ tool: 'Write', file_path: report, content: 'done' } as never)).result).toBe('ran')
+  expect((await $.tool.call({ tool: 'Edit', file_path: report, old_string: 'a', new_string: 'b' } as never)).result).toBe('ran')
+  // Another session's report, a sibling file and a subagent's write stay refused.
+  for (const e of [
+    { tool: 'Write', file_path: `${DIR}/sessions/m2/report.md`, content: 'x' },
+    { tool: 'Write', file_path: `${DIR}/sessions/m1/prompt.md`, content: 'x' },
+    { tool: 'Write', file_path: `${report}/../prompt.md`, content: 'x' },
+    { tool: 'Write', file_path: '/r/a.ts', content: 'x' },
+    { tool: 'Write', file_path: report, content: 'x', agentId: 'sub1' },
+  ]) expect(JSON.stringify(await $.tool.call(e as never))).toContain("managers don't edit code")
+})
+
+test('a blocking ask from a terminal manager waits open in main\'s inbox, whoever calls answer for it', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER }))
+  await start($)
+  const ask = { from: 'm1', questions: [{ question: 'Which way?', options: ['a', 'b'], default: 'b', blocking: true, topic: 'which-way' }] }
+  leave(w, 'k1', 'mcp__flow__ask', ask)
+  await w.clock.advance(1200)
+  expect(answerOf(w, 'k1')?.result).toContain('end your turn')
+  const items = () => (JSON.parse(w.files.get(`${DIR}/inbox.json`) ?? '{"items":[]}') as { items: { id: string; state: string; addressee: string; answeredBy?: string }[] }).items
+  expect(items()[0]).toMatchObject({ state: 'open', addressee: 'main' })
+  // The relay retrying the same call after a timeout does not make a second question.
+  leave(w, 'k2', 'mcp__flow__ask', ask)
+  // The manager answering for main (its own question, or all of main's with defaults) is refused: only main answers.
+  leave(w, 'k3', 'mcp__flow__answer', { answers: [{ id: items()[0]!.id, choice: 'b' }] })
+  leave(w, 'k4', 'mcp__flow__answer', { defaults: true })
+  await w.clock.advance(1200)
+  expect(items().length).toBe(1)
+  expect(items()[0]).toMatchObject({ state: 'open' })
+  expect(answerOf(w, 'k3')?.result).toContain('refused')
 })

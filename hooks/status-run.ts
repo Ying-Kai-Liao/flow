@@ -18,6 +18,7 @@ import { handoffOf, handoffText, ROLE } from './pane'
 import { labelOf } from './meter'
 import { ownerFor } from './state'
 import { slotLine } from './slots'
+import { typecheckLine } from './typecheck-slots'
 import { MANAGER, mirror, WORKERS } from './core'
 
 // The status tool, scoped by caller. The engine refuses `$` across an import, so register.tsx builds a
@@ -41,6 +42,7 @@ export type StatusIo = {
   inbox: () => Promise<Inbox>
   plans: () => Promise<Plan>
   slots: () => Promise<TestSlots>
+  typecheckSlots?: () => Promise<TestSlots>
   offerSeeds: () => Promise<string[]>
   pushState: () => Promise<PushState>
   breaker: () => Promise<Breaker>
@@ -129,7 +131,7 @@ export async function statusTool(io: StatusIo, settings: Settings, input: Record
     const list = Object.values(hs).sort((a, b) => a.at - b.at)
     const { shown, hidden } = cappedHandovers(list)
     const plans = scope === 'worker' ? [] : Object.entries(await io.plans()).filter(([who, g]) => Object.keys(g).length > 0 && (scope === 'all' || baseName(who) === myBase))
-    const slots = scope === 'worker' ? '' : slotLine(await io.slots(), settings.testSlots, await io.now())
+    const slots = scope === 'worker' ? '' : [slotLine(await io.slots(), settings.testSlots, await io.now()), io.typecheckSlots ? typecheckLine(await io.typecheckSlots(), (settings.typecheckSlots ?? 1), await io.now()) : ''].filter(Boolean).join('\n')
     const seeds = agentId === undefined ? await io.offerSeeds() : []
     const gate = scope === 'all' ? (await io.pushState()).batch : undefined
     const breaker = scope === 'worker' ? undefined : breakerLine(await io.breaker(), await io.now())

@@ -2,7 +2,7 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 
-import { reapSlots } from '../hooks/slots'
+import { enqueueWaiter, reapSlots } from '../hooks/slots'
 
 const agents = (...ids: string[]): AgentInfo[] =>
   ids.map(id => ({ id, name: id, description: id, type: 'flow:worker', status: 'running' }) as AgentInfo)
@@ -158,4 +158,36 @@ test('the queued answer names the grant file and the until-loop', async ($, on) 
   expect(runs.some(a => a.includes('/repo/.git/flow/test-slots/b.granted') && a.join(' ').includes(': >'))).toBe(true)
   await call($, 'release', 'b')
   expect(runs.some(a => a.join(' ').includes('rm -f'))).toBe(true)
+})
+
+const rev = (id: string): AgentInfo => ({ id, name: id, description: id, type: 'flow:reviewer', status: 'running' }) as AgentInfo
+
+test('a reviewer queues ahead of worker waiters, FIFO among reviewers, never preempting the holder', async ($, on) => {
+  world(on, [...agents('a', 'b', 'c'), rev('r1'), rev('r2')])
+  expect(await call($, 'acquire', 'a')).toContain('granted')
+  expect(await call($, 'acquire', 'b')).toContain('position 1')
+  expect(await call($, 'acquire', 'c')).toContain('position 2')
+  expect(await call($, 'acquire', 'r1')).toContain('position 1')
+  expect(await call($, 'acquire', 'r2')).toContain('position 2')
+  // Repeat acquire keeps the place; the holder a is untouched.
+  expect(await call($, 'acquire', 'r1')).toContain('position 1')
+  expect(await call($, 'status', 'a')).toContain('held by a')
+  expect(await call($, 'release', 'a')).toContain('Released')
+  expect(await call($, 'acquire', 'r1')).toContain('granted')
+})
+
+test('a reviewer does not take an offered, unclaimed grant', async ($, on) => {
+  world(on, [...agents('a', 'b'), rev('r')])
+  await call($, 'acquire', 'a')
+  await call($, 'acquire', 'b')
+  await call($, 'release', 'a')
+  // b was offered the slot; r waits behind it.
+  expect(await call($, 'acquire', 'r')).toContain('position 1')
+  expect(await call($, 'acquire', 'b')).toContain('granted')
+})
+
+test('enqueueWaiter: priority waiters go ahead of plain ones, FIFO among themselves', () => {
+  const e = (key: string, priority?: boolean) => ({ key, name: key, label: 'x', since: 0, ...(priority && { priority }) })
+  const q = enqueueWaiter(enqueueWaiter([e('a'), e('b')], e('r', true)), e('s', true))
+  expect(q.map(w => w.key)).toEqual(['r', 's', 'a', 'b'])
 })
