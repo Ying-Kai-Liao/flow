@@ -1,0 +1,486 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "flow architecture",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Ying-Kai-Liao/flow",
+      "provider": "github",
+      "revision": "3a26cb7d3ec4f9be84a82499c4ab96b946b4d440"
+    },
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "external": {
+          "label": "Outside flow"
+        },
+        "frontend": {
+          "label": "Main session"
+        },
+        "backend": {
+          "label": "Agent or module"
+        },
+        "messagebus": {
+          "label": "Messaging"
+        },
+        "security": {
+          "label": "Tools"
+        },
+        "database": {
+          "label": "State on disk"
+        }
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "you",
+      "type": "external",
+      "label": "You",
+      "sublabel": "one request",
+      "pos": [
+        30,
+        90
+      ],
+      "size": [
+        120,
+        64
+      ]
+    },
+    {
+      "id": "main",
+      "type": "frontend",
+      "label": "Main session",
+      "sublabel": "super manager",
+      "tag": "dispatch skill",
+      "pos": [
+        230,
+        90
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "skills/dispatch/SKILL.md",
+          "label": "dispatch skill"
+        }
+      ]
+    },
+    {
+      "id": "manager",
+      "type": "backend",
+      "label": "flow:manager",
+      "sublabel": "one per task",
+      "pos": [
+        480,
+        90
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "hooks/startup-run.ts",
+          "line": 131,
+          "label": "registered agents"
+        }
+      ]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "flow:worker",
+      "sublabel": "own worktree",
+      "pos": [
+        690,
+        90
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "hooks/spawn-run.ts",
+          "label": "spawn rules"
+        }
+      ],
+      "tag": "flow/<name>"
+    },
+    {
+      "id": "prs",
+      "type": "external",
+      "label": "Pull requests",
+      "sublabel": "## Verification",
+      "pos": [
+        930,
+        90
+      ],
+      "size": [
+        130,
+        64
+      ],
+      "sources": [
+        {
+          "path": "hooks/evidence.ts",
+          "label": "verification section"
+        }
+      ]
+    },
+    {
+      "id": "reviewer",
+      "type": "backend",
+      "label": "flow:reviewer",
+      "sublabel": "merges in batches",
+      "tag": "check, release, push",
+      "pos": [
+        1130,
+        90
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "hooks/prompts.ts",
+          "label": "reviewer rules"
+        }
+      ]
+    },
+    {
+      "id": "relay",
+      "type": "messagebus",
+      "label": "Terminal sessions",
+      "sublabel": "relay-run.ts",
+      "tag": "mode: orca | tmux",
+      "pos": [
+        465,
+        510
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "hooks/relay-run.ts"
+        },
+        {
+          "path": "hooks/role-session-run.ts"
+        },
+        {
+          "path": "hooks/session-run.ts"
+        }
+      ]
+    },
+    {
+      "id": "tools",
+      "type": "security",
+      "label": "mcp__flow__* tools",
+      "sublabel": "ask, fyi, handover",
+      "pos": [
+        465,
+        310
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "hooks/tools.ts",
+          "label": "tool schemas"
+        }
+      ],
+      "tag": "test_slot, deploy \u2026"
+    },
+    {
+      "id": "register",
+      "type": "backend",
+      "label": "hooks/register.tsx",
+      "sublabel": "wiring only",
+      "pos": [
+        685,
+        310
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "hooks/register.tsx"
+        }
+      ]
+    },
+    {
+      "id": "inbox",
+      "type": "messagebus",
+      "label": "Inbox + delivery",
+      "sublabel": "inbox-run, deliver",
+      "pos": [
+        220,
+        310
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "hooks/inbox-run.ts"
+        },
+        {
+          "path": "hooks/deliver.ts"
+        },
+        {
+          "path": "hooks/inbox.ts"
+        }
+      ],
+      "tag": "asks, decisions"
+    },
+    {
+      "id": "reviewrun",
+      "type": "backend",
+      "label": "Reviewer start",
+      "sublabel": "reviewer-run, mainff",
+      "tag": "reviewer_delay",
+      "pos": [
+        1130,
+        310
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "hooks/reviewer-run.ts"
+        },
+        {
+          "path": "hooks/mainff.ts"
+        }
+      ]
+    },
+    {
+      "id": "modules",
+      "type": "backend",
+      "label": "Hook modules",
+      "sublabel": "startup, spawn, toolcall",
+      "pos": [
+        670,
+        510
+      ],
+      "size": [
+        200,
+        72
+      ],
+      "sources": [
+        {
+          "path": "hooks/startup-run.ts"
+        },
+        {
+          "path": "hooks/spawn-run.ts"
+        },
+        {
+          "path": "hooks/pane-run.tsx"
+        }
+      ],
+      "tag": "turn, pane-run"
+    },
+    {
+      "id": "state",
+      "type": "database",
+      "label": ".git/flow state",
+      "sublabel": "inbox, handovers/",
+      "tag": "ledger, push, log",
+      "pos": [
+        960,
+        510
+      ],
+      "size": [
+        200,
+        72
+      ],
+      "sources": [
+        {
+          "path": "hooks/startup-run.ts",
+          "line": 243,
+          "label": "state loads"
+        },
+        {
+          "path": "hooks/register.tsx",
+          "line": 1155,
+          "label": "handovers/<pr>.json"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Agents (mode: agent | orca | tmux)",
+      "wraps": [
+        "manager",
+        "worker",
+        "reviewer"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "flow plugin: hooks/",
+      "wraps": [
+        "relay",
+        "tools",
+        "register",
+        "inbox",
+        "reviewrun",
+        "modules",
+        "state"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "request",
+      "from": "you",
+      "to": "main",
+      "label": "request",
+      "variant": "emphasis"
+    },
+    {
+      "id": "start-manager",
+      "from": "main",
+      "to": "manager",
+      "label": "per task",
+      "variant": "emphasis"
+    },
+    {
+      "id": "brief",
+      "from": "manager",
+      "to": "worker",
+      "label": "brief",
+      "variant": "emphasis"
+    },
+    {
+      "id": "open-pr",
+      "from": "worker",
+      "to": "prs",
+      "label": "push, PR",
+      "variant": "emphasis"
+    },
+    {
+      "id": "merge-batch",
+      "from": "prs",
+      "to": "reviewer",
+      "label": "batch",
+      "variant": "emphasis"
+    },
+    {
+      "id": "agent-tools",
+      "from": "manager",
+      "to": "tools",
+      "label": "tool calls",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        550,
+        237
+      ]
+    },
+    {
+      "id": "ask-inbox",
+      "from": "tools",
+      "to": "inbox",
+      "label": "ask, fyi"
+    },
+    {
+      "id": "inbox-main",
+      "from": "inbox",
+      "to": "main",
+      "label": "one inbox",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [
+        305,
+        237
+      ]
+    },
+    {
+      "id": "relayed",
+      "from": "relay",
+      "to": "tools",
+      "label": "relayed",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "run-tool",
+      "from": "tools",
+      "to": "register"
+    },
+    {
+      "id": "to-modules",
+      "from": "register",
+      "to": "modules",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "persist",
+      "from": "modules",
+      "to": "state",
+      "label": "persist"
+    },
+    {
+      "id": "handover",
+      "from": "register",
+      "to": "reviewrun",
+      "label": "handover"
+    },
+    {
+      "id": "start-reviewer",
+      "from": "reviewrun",
+      "to": "reviewer",
+      "label": "starts",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Roles",
+      "items": [
+        "Main splits a request into tasks, one manager each",
+        "Managers write briefs and review PRs; they never edit code",
+        "Workers build in their own worktree and open a PR",
+        "The plugin starts the reviewer; it merges in batches"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Tools, grouped",
+      "items": [
+        "Talk: ask, fyi, answer, standing, preflight, note",
+        "Plan + checks: plan, test_slot, guard_tests, status",
+        "Ship: handover, reviewer, release, push, deploy, check"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "State on disk",
+      "items": [
+        "inbox.json, handovers/<pr>.json, push.json",
+        "ledger.json, deploys.json, checks.json",
+        "log.jsonl, sessions/<name>/relay"
+      ]
+    }
+  ]
+}
