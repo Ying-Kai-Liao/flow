@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Move the disk relay and terminal role-session code out of hooks/register.tsx into hooks/relay-run.ts and hooks/role-session-run.ts (no behaviour change)
+
 ## [0.6.100] - 2026-10-13
 
 ### Changed
