@@ -16,6 +16,15 @@
 //    function of the file taking `$`, names both. The directory reports such a function at each call passing it `$`
 //    (0.6.103 and 0.6.108: flowToolsIoOf($, c, e) in runFlowTool, whose closures held `$` and the relayed call `e`;
 //    it lists at most three lines). Pass the event, or the fields needed, to the closure as an argument instead.
+// 7. Under hooks/, in a file that registers hooks, $ is followed from each hook into the file's top-level functions
+//    it is passed to, transitively, as the directory does (`claude plugin validate` lists `$.agent.list (via agentsOf,
+//    ..., flowToolsIoOf, ...)`). In every function reached, a $ use is not wrapped: no `$.noun.method(...)` spread
+//    (`[...await $.agent.list()]`), no cast or `!` in its arguments (`$.ui.resolve(ev as never)`), and no call passing
+//    $ spread (`...guardIoOf($)`) or read for a member straight off (`sessionIoOf($).updateSessions(...)`; `.then`,
+//    `.catch` and `.finally` are fine). Bind the call to a const first. Each such use is reported, and so is each call
+//    passing $ to a function that reaches one: the directory reported 0.6.109 at three flowToolsIoOf($, ...) calls,
+//    though the shapes sat in agentsOf and paneIoOf. These shapes are the ones the file gained after 0.6.84, the last
+//    release the directory passed; that release has none, and it had the other wrapped shapes checks 1-6 allow.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -105,6 +114,7 @@ for (const file of files) {
   }
   visit(sf)
   if (registers) bundled(sf, say)
+  if (registers) wrapped(sf, say)
 }
 
 // Check 6. Top-level functions by name, the parameters that receive a hook's event, then each closure naming both.
@@ -203,6 +213,75 @@ function bundled(sf, say) {
     const why = `${name} holds $ and a hook's event (${[...held.get(fn)].join(', ')}) in one closure: pass the event to that closure as an argument`
     const at = sites.get(name) ?? []
     for (const n of at.length > 0 ? at : hit) say(n, why)
+  }
+}
+
+// Check 7. The functions $ reaches from the hooks, the wrapped $ uses in each, then the calls that lead to one.
+function wrapped(sf, say) {
+  const isFn = n => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)
+  const pname = p => ts.isIdentifier(p.name) ? p.name.text : undefined
+  const top = new Map()
+  for (const s of sf.statements) {
+    if (ts.isFunctionDeclaration(s) && s.name && s.body) top.set(s.name.text, s)
+    if (ts.isVariableStatement(s)) {
+      for (const d of s.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) top.set(d.name.text, d.initializer)
+      }
+    }
+  }
+  // A function and the name its $ has there: a hook's first parameter, or the parameter a call passed $ into.
+  const holds = new Map()
+  const queue = []
+  const reach = (fn, name) => { if (name !== undefined && !holds.has(fn)) { holds.set(fn, name); queue.push(fn) } }
+  const findHooks = n => { if (isFn(n) && isHook(n) && n.parameters[0]) reach(n, pname(n.parameters[0])); ts.forEachChild(n, findHooks) }
+  findHooks(sf)
+  const own = new Map()   // function -> wrapped $ uses in it
+  const calls = new Map() // function -> calls in it passing $ to a top-level function
+  const unwrapUp = n => { let p = n.parent; if (ts.isAwaitExpression(p)) { n = p; p = p.parent } return { n, p } }
+  while (queue.length > 0) {
+    const fn = queue.shift()
+    const name = holds.get(fn)
+    const uses = [], out = []
+    const visit = k => {
+      // A nested top-level-like function declaring its own $ is not this one's.
+      if (k !== fn && isFn(k) && k.parameters.some(p => pname(p) === name)) return
+      if (ts.isIdentifier(k) && k.text === name && !ts.isParameter(k.parent)) {
+        const p = k.parent
+        if (ts.isPropertyAccessExpression(p) && p.expression === k && ts.isPropertyAccessExpression(p.parent) && ts.isCallExpression(p.parent.parent) && p.parent.parent.expression === p.parent) {
+          const call = p.parent.parent
+          if (ts.isSpreadElement(unwrapUp(call).p)) uses.push([call, 'a $ call is spread'])
+          for (const a of call.arguments) {
+            if (ts.isAsExpression(a) || ts.isTypeAssertionExpression(a) || ts.isSatisfiesExpression(a) || ts.isNonNullExpression(a)) uses.push([a, 'a $ call has a cast or ! in its arguments'])
+          }
+        }
+        if (ts.isCallExpression(p) && p.arguments.includes(k) && ts.isIdentifier(p.expression)) {
+          const { p: up } = unwrapUp(p)
+          if (ts.isSpreadElement(up) || ts.isSpreadAssignment(up)) uses.push([p, 'a call passing $ is spread'])
+          if ((ts.isPropertyAccessExpression(up) || ts.isElementAccessExpression(up)) && up.expression === p &&
+              !(ts.isPropertyAccessExpression(up) && ['then', 'catch', 'finally'].includes(up.name.text))) uses.push([p, 'a member is read straight off a call passing $'])
+          const callee = top.get(p.expression.text)
+          if (callee !== undefined) {
+            out.push([p, callee])
+            reach(callee, pname(callee.parameters[p.arguments.indexOf(k)] ?? {}))
+          }
+        }
+      }
+      ts.forEachChild(k, visit)
+    }
+    ts.forEachChild(fn.body, visit)
+    own.set(fn, uses)
+    calls.set(fn, out)
+  }
+  // The functions with a wrapped use, or passing $ to one that has or reaches one.
+  const bad = new Set([...own].filter(([, uses]) => uses.length > 0).map(([fn]) => fn))
+  for (let grew = true; grew;) {
+    grew = false
+    for (const [fn, out] of calls) if (!bad.has(fn) && out.some(([, c]) => bad.has(c))) { bad.add(fn); grew = true }
+  }
+  const nameOf = new Map([...top].map(([k, v]) => [v, k]))
+  for (const uses of own.values()) for (const [n, why] of uses) say(n, `${why}: bind it to a const first (check 7)`)
+  for (const out of calls.values()) {
+    for (const [n, callee] of out) if (bad.has(callee)) say(n, `$ is passed to ${nameOf.get(callee)}, which reaches a wrapped $ use (check 7)`)
   }
 }
 
