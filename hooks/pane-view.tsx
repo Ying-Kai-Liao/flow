@@ -6,7 +6,7 @@ import { asksQuestion } from './dag'
 import type { Plan } from './dag'
 import { ENDED } from './deliver'
 import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELLS, tokensDown } from './meter'
-import { askBright, COLOR, GLYPH, handoffOf, ICON, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
+import { askBright, COLOR, FINISHED_KEY, GLYPH, handoffOf, ICON, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
 import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, groupTitle, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
@@ -208,11 +208,14 @@ export type TreeCtx = PaneCtx & {
   mainTime: string
   mergeQueueKey: string
   questionsKey: string
+  // The top-level agents folded into the one finished row (finishedIds in hooks/pane.ts).
+  finished: Set<string>
   warnOf: (window: number) => number
   meter: (u: Usage | undefined, dim: boolean, time: string) => ReturnType<typeof meter>
   toggleFold: (a: AgentRow, shown: boolean) => Promise<void>
   toggleQueue: () => Promise<void>
   toggleQuestions: () => Promise<void>
+  toggleFinished: () => Promise<void>
   readCursor: () => Promise<string | null>
   setCursor: (id: string) => Promise<unknown>
   focusRow: (id: string) => Promise<unknown>
@@ -792,9 +795,9 @@ export function questionsBlock(count: number, open: boolean, rows: number) {
 export function treeView(c: TreeCtx) {
   const { Box, Text, Button } = c.els
   const { list, fold, acts, hs, rows, limits, anyOpen, unhanded, leftover, inboxRows, deployLines, cur, gate, openQs, fyiCount, checksLine, breakerNote, mainU, mainTime, toggle, card } = c
-  const { toggleFold, toggleQueue, toggleQuestions, open } = c
+  const { toggleFold, toggleQueue, toggleQuestions, toggleFinished, open, finished } = c
   // The tree: each agent under the one that started it, what needs a person first.
-  const first = treeItems(list, fold, undefined, false, acts).items[0]?.a.id
+  const first = treeItems(list, fold, undefined, false, acts, finished).items[0]?.a.id
   const prs = Object.values(hs).sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
   const live = list.filter(a => !ENDED.has(a.status)).length
   // Header, the PR lines and the hint row are fixed; the root and the agents share what is left.
@@ -809,9 +812,10 @@ export function treeView(c: TreeCtx) {
   const qBlock = questionsBlock(c.openItems.length, qOpen, rows)
   const qRows = canFold ? qBlock.rows : openQs.length > 0 || fyiCount > 0 ? 1 : 0
   const avail = rows - 1 - prRows - usageRows - (list.length === 0 ? 1 : 0) - (list.length > 0 || anyOpen || Object.keys(hs).length > 0 ? 1 : 0) - (unhanded.length > 0 ? 1 : 0) - (leftover ? 1 : 0) - inboxRows - qRows - deployLines.length
-  const wide = treeItems(list, fold, cur ?? first, false, acts)
-  const fullTree = CARD_ROWS + wide.items.reduce((n, i) => n + (i.collapsed ? 1 : CARD_ROWS), 0) <= avail
-  const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts)
+  const wide = treeItems(list, fold, cur ?? first, false, acts, finished)
+  // The finished row is one line, open or not.
+  const fullTree = CARD_ROWS + wide.items.reduce((n, i) => n + (i.collapsed || i.finished ? 1 : CARD_ROWS), 0) <= avail
+  const { items, at } = fullTree ? wide : treeItems(list, fold, cur ?? first, true, acts, finished)
   const rootFull = fullTree || avail >= CARD_ROWS + items.length
   const left = avail - (rootFull ? CARD_ROWS : 1)
   const cut = !fullTree && items.length > left
@@ -829,7 +833,9 @@ export function treeView(c: TreeCtx) {
     if (items.length === 0) return
     await c.acted()
     const curId = (await c.readCursor()) ?? hotId
-    const i = Math.min(items.length - 1, Math.max(0, items.findIndex(x => x.a.id === curId) + d))
+    // A cursor on a row that is not drawn (folded into the finished row) steps from the highlight.
+    const was = items.findIndex(x => x.a.id === curId)
+    const i = Math.min(items.length - 1, Math.max(0, (was === -1 ? hotIdx : was) + d))
     const id = items[i]!.a.id
     await c.setCursor(id)
     // Moves the focus ring too; it waits for the next drawing, so it is not awaited.
@@ -893,7 +899,11 @@ export function treeView(c: TreeCtx) {
       {!rootFull && limits.slice(0, usageRows).map(l => limitLine(c.els, c.t, l))}
       {list.length === 0 && <Text dimColor>  Nothing running. Ask Claude to start managers or a worker, e.g. "start a manager for X".</Text>}
       {view.top > 0 && <Text dimColor>  ↑ {view.top} above</Text>}
-      {view.rows.map(({ a, depth, kids, collapsed }) => card(
+      {view.rows.map(({ a, depth, collapsed, finished: f }) => f !== undefined ? (
+        <Button key={a.id} plain onPress={toggleFinished}>
+          <Text dimColor={a.id !== hotId} inverse={a.id === hotId} wrap="truncate-end">  {collapsed ? '▸' : '▾'} {f.managers} finished{f.workers > 0 && <Text dimColor> · {f.workers} worker{f.workers === 1 ? '' : 's'}</Text>}</Text>
+        </Button>
+      ) : card(
         a, depth + 1, fullTree, depth === 0, a.id === hotId, collapsed,
       ))}
       {below > 0 && <Text dimColor>  +{below} more</Text>}
@@ -924,11 +934,17 @@ export function treeView(c: TreeCtx) {
         <Box flexDirection="row" gap={1} flexShrink={0}>
           {list.length > 0 && <Button key="nav-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
           {list.length > 0 && <Button key="nav-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
-          {list.length > 0 && <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => { const i = await hotItem(); if (i) await open(i.a.id) }}>o open</Button>}
+          {list.length > 0 && <Button key="nav-open" plain dimColor hotkey="o" onPress={async () => {
+            const i = await hotItem()
+            if (i?.finished) await toggleFinished()
+            else if (i) await open(i.a.id)
+          }}>o open</Button>}
           {list.length > 0 && <Button key="nav-fold" plain dimColor hotkey="c" onPress={async () => {
             const i = await hotItem()
-            if (i) await toggleFold(i.a, i.collapsed)
+            if (i?.finished) await toggleFinished()
+            else if (i) await toggleFold(i.a, i.collapsed)
           }}>{items[hotIdx]?.collapsed ? 'c expand' : 'c collapse'}</Button>}
+          {finished.size > 0 && <Button key="nav-finished" plain dimColor hotkey="f" onPress={toggleFinished}>{fold[FINISHED_KEY] === false ? 'f fold' : 'f finished'}</Button>}
           {prs.length > 0 && <Button key="nav-queue" plain dimColor hotkey="q" onPress={toggleQueue}>q reviewer</Button>}
           {canFold && <Button key="nav-questions" plain dimColor hotkey="a" onPress={toggleQuestions}>{qOpen ? 'a fold' : 'a questions'}</Button>}
           {anyOpen && <Button key="nav-inbox" plain dimColor hotkey="i" onPress={c.openInbox}>i inbox</Button>}
