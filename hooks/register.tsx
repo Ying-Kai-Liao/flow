@@ -71,7 +71,7 @@ import { demoArm, demoMove, demoStart, demoStop, demoTool } from './demo-run'
 import type { DemoIo } from './demo-run'
 import type { DemoState } from './demo-replay'
 import { paneDraw, paneFocus } from './pane-run'
-import type { PaneEvent, PaneIo } from './pane-run'
+import type { PaneIo } from './pane-run'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
 import { ROLE } from './pane'
@@ -2076,9 +2076,10 @@ const FLOW_TOOLS = [
   'mcp__flow__status',
 ] as const
 
-// The io of the multi-line flow tool cases (bodies in toolcall-run.ts), over one call's context.
-function flowToolsIoOf($: EngineInterface, c: FlowCtx, e: FlowCall): FlowToolsIo {
-  const { settings, options } = c
+// The io of the multi-line flow tool cases (bodies in toolcall-run.ts). It never takes the call: a closure here
+// that held `$` and the hook's event together is what the plugin directory flagged (MOD_CAPABILITY_USE_NOT_PLAIN)
+// at each flowToolsIoOf($, c, e) call, so the cases pass the call to the methods that need it.
+function flowToolsIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, options: Record<string, unknown>): FlowToolsIo {
   return {
     agents: () => $.agent.list(),
     exec: argv => $.process.run(argv),
@@ -2091,8 +2092,8 @@ function flowToolsIoOf($: EngineInterface, c: FlowCtx, e: FlowCall): FlowToolsIo
     toolCaller: agentId => toolCallerOf($, agentId),
     handovers: () => read($, handovers),
     ownerName: id => ownerNameOf($, id),
-    release: async () => releaseTool(releaseIoOf($), settings, e),
-    reviewer: async () => reviewerToolRun(reviewerIoOf($, settings.base), settings, e, e.agentId),
+    release: async call => releaseTool(releaseIoOf($), settings, call),
+    reviewer: async call => reviewerToolRun(reviewerIoOf($, settings.base), settings, call, call.agentId),
     readNotes: manager => readNotes($, manager),
     appendNote: (manager, line) => appendNote($, manager, line),
     notesPath: manager => notesPath($, manager),
@@ -2100,8 +2101,8 @@ function flowToolsIoOf($: EngineInterface, c: FlowCtx, e: FlowCall): FlowToolsIo
     sweep: (base, apply) => sweep($, base, apply),
     pushState: () => read($, pushState),
     pushAct: act => pushAct($, act, 'main'),
-    sessionTool: caller => sessionTool($, e, caller, settings),
-    deployTool: (isMain, caller) => deployTool($, options, e, isMain, caller),
+    sessionTool: (call, caller) => sessionTool($, call, caller, settings),
+    deployTool: (call, isMain, caller) => deployTool($, options, call, isMain, caller),
   }
 }
 
@@ -2138,16 +2139,16 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__handover': return handoverTool(handoverIoOf($, options), settings, e, e.agentId)
 
     // The reviewer's tools: main, the reviewer, and a lite manager for its own PRs. A manager or worker otherwise is refused.
-    case 'mcp__flow__release': return releaseCase(flowToolsIoOf($, c, e), e)
+    case 'mcp__flow__release': return releaseCase(flowToolsIoOf($, settings, options), e)
 
     case 'mcp__flow__reviewer':
-    case 'mcp__flow__queue': return reviewerCase(flowToolsIoOf($, c, e), e)
+    case 'mcp__flow__queue': return reviewerCase(flowToolsIoOf($, settings, options), e)
 
     case 'mcp__flow__plan': return planTool(planIoOf($), settings, e, e.agentId)
 
     case 'mcp__flow__test_slot': return testSlotTool(slotsIoOf($), settings, e)
 
-    case 'mcp__flow__guard_tests': return guardTestsCase(flowToolsIoOf($, c, e), settings.base, settings.guardTests, e)
+    case 'mcp__flow__guard_tests': return guardTestsCase(flowToolsIoOf($, settings, options), settings.base, settings.guardTests, e)
 
     case 'mcp__flow__ask': return askTool(inboxIoOf($), options, e, e.agentId)
     case 'mcp__flow__fyi': return fyiTool(inboxIoOf($), e, e.agentId, settings, options)
@@ -2156,9 +2157,9 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__standing': return standingTool(standingIoOf($), options, e, e.agentId)
     case 'mcp__flow__check': return checkTool(checksIoOf($), installed, e, e.agentId)
 
-    case 'mcp__flow__note': return noteCase(flowToolsIoOf($, c, e), e)
+    case 'mcp__flow__note': return noteCase(flowToolsIoOf($, settings, options), e)
 
-    case 'mcp__flow__clean': return cleanCase(flowToolsIoOf($, c, e), settings, e)
+    case 'mcp__flow__clean': return cleanCase(flowToolsIoOf($, settings, options), settings, e)
 
     case 'mcp__flow__settings': return settingsTool(initIoOf($), options, e, e.agentId)
 
@@ -2172,11 +2173,11 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
 
     case 'mcp__flow__migrations': return migrationsTool(migrationsIoOf($), settings, e)
 
-    case 'mcp__flow__session': return sessionCase(flowToolsIoOf($, c, e), e)
+    case 'mcp__flow__session': return sessionCase(flowToolsIoOf($, settings, options), e)
 
-    case 'mcp__flow__deploy': return deployCase(flowToolsIoOf($, c, e), e)
+    case 'mcp__flow__deploy': return deployCase(flowToolsIoOf($, settings, options), e)
 
-    case 'mcp__flow__push': return pushCase(flowToolsIoOf($, c, e), e)
+    case 'mcp__flow__push': return pushCase(flowToolsIoOf($, settings, options), e)
 
     case 'mcp__flow__status': return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
     default: return undefined
@@ -2187,7 +2188,7 @@ type PaneLets = Pick<PaneIo, 'settings' | 'installed' | 'mainModel' | 'mainWindo
 
 // What the pane (pane-run.tsx) draws and acts with, built from one event's `$`: a read closure per atom, the
 // setters, the engine calls and the `$`-taking helpers of this file. The lets of register() come in as `lets`.
-function paneIoOf($: EngineInterface, e: PaneEvent, lets: PaneLets, options: Record<string, unknown>): PaneIo {
+function paneIoOf($: EngineInterface, lets: PaneLets, options: Record<string, unknown>): PaneIo {
   return {
     read: {
       roster: () => read($, roster),
@@ -2246,7 +2247,7 @@ function paneIoOf($: EngineInterface, e: PaneEvent, lets: PaneLets, options: Rec
       graphFocus: fn => update($, graphFocus, fn),
       demo: fn => update($, demo, fn),
     },
-    resolve: () => $.ui.resolve(e as never),
+    resolve: ev => $.ui.resolve(ev as never),
     now: () => $.clock.now(),
     usage: () => $.session.usage().then(u => u, () => undefined),
     toast: text => { void $.ui.toast(text) },
@@ -2450,7 +2451,7 @@ export const register: Register = (on, options) => {
   // Arrows and Tab move the focus ring over the cards; the highlight follows it (pane-run.tsx).
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const r = await next(e)
-    await paneFocus(paneIoOf($, {}, paneLets, options), e.element)
+    await paneFocus(paneIoOf($, paneLets, options), e.element)
     return r
   })
 
@@ -2464,5 +2465,5 @@ export const register: Register = (on, options) => {
   })
 
   // The pane draws in pane-run.tsx.
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => paneDraw(paneIoOf($, e, paneLets, options), e))
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => paneDraw(paneIoOf($, paneLets, options), e))
 }
