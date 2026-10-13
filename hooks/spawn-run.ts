@@ -1,7 +1,7 @@
 // The agent.spawn hook's body, moved out of register.tsx: the checks (plan, pre-flight, attachments, Fable, arm),
 // the model and effort routing, the [1m] retry, the continue fallback and the bookkeeping after a started agent.
 // The routing pieces live in spawn.ts; this is the hook-side code. It reaches the engine only through SpawnHookIo,
-// built by spawnHookIoOf in register.tsx (the engine refuses `$` across an import); the mutable state
+// built in the agent.spawn hook in register.tsx (the engine refuses `$` across an import); the mutable state
 // (noLong, noContinue, the effort maps) stays single in register.tsx behind these getters and setters.
 import type { AgentInfo, AgentSpawnInput } from 'claude-code'
 import type { Activity, Ledger, Role, Session } from '../types'

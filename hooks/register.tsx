@@ -48,7 +48,7 @@ import {
   closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, markDelivered, normalizePreflight, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
-import { EMPTY_LITE, isLiteName, normalizeLite } from './lite'
+import { EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
   addChecks, anyMatch, EMPTY_CHECKS, normalizeChecks, parseNeeds,
@@ -112,8 +112,8 @@ import { flowCommand } from './command'
 import type { CommandIo } from './command'
 import { elapsed, tokensDown, labelOf, thresholdOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
-import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, releaseCase, reviewerCase, sessionCase } from './toolcall-run'
-import type { CleanCaseIo, DeployCaseIo, GuardIo, GuardTestsCaseIo, NoteCaseIo, PushCaseIo, ReleaseCaseIo, ReviewerCaseIo, SessionCaseIo, ToolCallIo } from './toolcall-run'
+import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, reviewerCase, sessionCase } from './toolcall-run'
+import type { CleanCaseIo, DeployCaseIo, GuardIo, GuardTestsCaseIo, NoteCaseIo, PushCaseIo, ReviewerCaseIo, SessionCaseIo, ToolCallIo } from './toolcall-run'
 import { flowCatch, toolCatch } from './toolguard'
 import {
   ago, harnessesOf, roleAgents, runsOutIn, sessionLive, sessionRow,
@@ -282,6 +282,10 @@ const typecheckSlots = atom({ plugin: 'flow', key: 'typecheckSlots' } as const, 
 
 // <git-common-dir>/flow/test-slots, set at session start; undefined when not in a git repo.
 let slotDir: string | undefined
+// A declared function, not a closure in the startup io: no io hands out a closure assigning an outer variable (plain-names check 10).
+function setSlotDir(dir: string | undefined): void {
+  slotDir = dir
+}
 
 // Applies `pre`, reaps, grants, and signals: a grant file and a message per new holder, the files
 // of everyone who left the line removed. Every slot change goes through here, inside one update().
@@ -407,8 +411,9 @@ async function readQuietly($: EngineInterface, path: string): Promise<string | u
   }
 }
 
-// The last batch the release tool cut, so a retried push does not release twice.
-let lastRelease: { key: string; version: string } | undefined
+// The last batch the release tool cut, so a retried push does not release twice. Held by property: releaseIoOf's
+// setLast writes it there and assigns no outer variable (plain-names check 10).
+const releaseMemo: { last: { key: string; version: string } | undefined } = { last: undefined }
 
 function releaseIoOf($: EngineInterface): ReleaseIo {
   return {
@@ -421,8 +426,8 @@ function releaseIoOf($: EngineInterface): ReleaseIo {
     stateDir: () => stateDir($),
     readJson: path => readJson($, path),
     writeJsonAtomic: (path, obj) => writeJsonAtomic($, path, obj),
-    getLast: () => lastRelease,
-    setLast: last => { lastRelease = last },
+    getLast: () => releaseMemo.last,
+    setLast: last => { releaseMemo.last = last },
     handovers: () => read($, handovers),
     batch: async () => (await read($, pushState)).batch,
   }
@@ -1112,8 +1117,8 @@ function pushIoOf($: EngineInterface): PushIo {
     sizeBackNote: branch => sizeBackNote($, branch),
     tellManager: (name, text) => tellManager($, name, text),
     dropRelease: async key => {
-      if (lastRelease?.key === key) {
-        lastRelease = undefined
+      if (releaseMemo.last?.key === key) {
+        releaseMemo.last = undefined
         const dir = await stateDir($)
         if (dir !== undefined) await writeJsonAtomic($, `${dir}/release.json`, {})
       }
@@ -1420,34 +1425,6 @@ function spawnIoOf($: EngineInterface): SpawnIo {
   }
 }
 
-// What the agent.spawn hook (spawn-run.ts) needs from the engine and the plugin's atoms; the rest of its io is register()'s state.
-type SpawnState = Pick<SpawnHookIo, 'relay' | 'settings' | 'options' | 'noLong' | 'setNoLong' | 'noContinue' | 'setNoContinue' | 'takeExplicit' | 'setEffort'>
-function spawnHookIoOf($: EngineInterface, state: SpawnState): SpawnHookIo {
-  return {
-    ...state,
-    spawn: spawnIoOf($),
-    now: () => $.clock.now(),
-    agentList: () => $.agent.list(),
-    plans: () => read($, plan),
-    lite: () => read($, lite),
-    gate: agentId => preflightGate($, agentId),
-    jev: () => jevOf($, state.settings()),
-    effortEnv: () => envOf($, 'CLAUDE_CODE_EFFORT_LEVEL'),
-    toast: text => $.ui.toast(text),
-    best: (what, fn) => best($, what, fn),
-    refresh: () => refresh($),
-    openPane: () => openPane($),
-    updateActivity: fn => update($, activity, fn),
-    changeLedger: fn => changeLedger($, fn),
-    withLite: fn => withLite($, fn),
-    withPreflight: fn => withPreflight($, fn),
-    after: (ms, fn) => $.clock.after(ms, fn),
-    sessions: () => read($, sessions),
-    terminalSettings,
-    startRoleSession: (p, s) => startRoleSession(sessionIoOf($), p, s),
-  }
-}
-
 // The decision API for sizing (decision_api jev or openai); undefined when off, so nothing touches the network.
 function jevOf($: EngineInterface, settings: DecideSettings): SizeJev | undefined {
   if (settings.decisionApi === undefined || settings.decisionApi === 'off') return undefined
@@ -1636,7 +1613,7 @@ async function reviewerRan($: EngineInterface, id: string, name: string, end: { 
 }
 
 // The settings as last loaded, for the module-level code that starts terminal sessions (register()'s own copy
-// is a closure variable).
+// is in its `kept`).
 let heldSettings: ReturnType<typeof settingsOf> | undefined
 
 // The settings when flow runs in a terminal mode (orca or tmux); undefined in agent mode.
@@ -1893,84 +1870,6 @@ async function readText($: EngineInterface, path: string): Promise<string | unde
   }
 }
 
-// The session.start hook (startup-run.ts): what it reads and writes of register()'s state comes in `held`,
-// everything else is closures over `$`, the atoms and the module state here.
-type StartupHeld = Pick<StartupIo, 'settings' | 'applySettings' | 'paths' | 'setPaths' | 'detected' | 'setDetected' | 'seen' | 'setSeen' | 'checking' | 'setChecking' | 'installed' | 'setInstalled'>
-function startupIoOf($: EngineInterface, options: Record<string, unknown>, held: StartupHeld): StartupIo {
-  return {
-    ...held,
-    options,
-    pollMs: POLL_MS,
-    prPollMs: PR_POLL_MS,
-    initHint: INIT_HINT,
-    best: (what, fn) => best($, what, fn),
-    run: (argv, opts) => $.process.run(argv, opts),
-    toast: text => { $.ui.toast(text) },
-    every: (ms, fn) => { $.clock.every(ms, fn) },
-    after: (ms, fn) => { $.clock.after(ms, fn) },
-    now: () => $.clock.now(),
-    relayMode: () => relayModeOf($),
-    setRelay: r => { relay = r },
-    locate: () => locate($),
-    readText: path => readText($, path),
-    mtime: path => mtimeOf($, path),
-    // Written out field by field: the plugin directory confirms an agent leaves permissions with the user only
-    // from an object literal in the call. These are the fields registerAgents (startup-run.ts) sets.
-    registerAgent: spec => $.agent.register({ name: spec.name, description: spec.description, prompt: spec.prompt, model: spec.model, isolation: spec.isolation, background: spec.background }),
-    registerCommand: spec => $.command.register(spec),
-    registerTools: () => registerTools($),
-    resetDelivery: () => resetDelivery(text => toMain($, text)),
-    resetStateDir,
-    readState: async file => {
-      const dir = await stateDir($)
-      if (dir === undefined) return undefined
-      return { disk: await readJson($, `${dir}/${file}`) }
-    },
-    loadHandovers: () => loadHandovers($),
-    mergeHandovers: async disk => { await update($, handovers, hs => ({ ...disk, ...hs })) },
-    autoSweep: () => autoSweep($),
-    setInbox: async disk => { await update($, inbox, () => disk) },
-    setBreaker: async disk => { await update($, reviewerBreaker, () => disk) },
-    releaseHalt: async () => { await releaseHaltTo(breakerIoOf($), 'flow') },
-    installedVersion: () => installedVersion($),
-    handovers: () => read($, handovers),
-    checks: () => read($, checks),
-    setChecks: async disk => { await update($, checks, () => disk) },
-    captureChecks: (ho, verifyPaths) => captureChecks($, ho, verifyPaths, false),
-    markPrompted: async version => { await withChecks($, cur => ({ checks: { ...cur, promptedVersion: version }, out: undefined })) },
-    setDeploys: async disk => { await update($, deploys, () => disk) },
-    deployKnown: name => mirror.deployInfos.some(i => i.name === name),
-    refreshBehind: () => void refreshBehind($),
-    setPush: async disk => { await update($, pushState, () => disk) },
-    setLite: async disk => { await update($, lite, () => disk) },
-    mergeSessions: async raw => {
-      const t = await $.clock.now()
-      const disk = normalizeSessions(raw, t)
-      await update($, sessions, cur => ({ ...disk, ...cur }))
-    },
-    snapshotSessions: async () => { roleState.saved = JSON.stringify(durableSessions(await read($, sessions))) },
-    adoptSessions: () => adoptSessions($),
-    setPreflight: async disk => { await update($, preflight, () => disk) },
-    agents: () => agentsOf($),
-    closePreflight: async (live, t) => { await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } }) },
-    setSlotDir: dir => { slotDir = dir },
-    sh: (script, arg) => sh($, script, arg),
-    roleSessionCount: async () => (await myRoleSessions($)).length,
-    pump: () => void pumpOnce($, { settings: held.settings(), options, installed: held.installed() }),
-    refresh: () => void refresh($),
-    watchSessions: () => void watchSessions($),
-    fetchPrs: () => void fetchPrs($),
-    refreshLeftovers: () => refreshLeftovers($),
-    tickNow: async () => {
-      const t = await $.clock.now()
-      await update($, now, () => t)
-    },
-    startReviewer: async () => void (await ensureQueue($)),
-    clearDemo: async () => { await update($, demo, () => null) },
-    firstRun: () => firstRun(initIoOf($)),
-  }
-}
-
 // Workers in other harnesses (sessions.ts, session-run.ts): started in an Orca terminal or a tmux
 // session, watched through the report file they write. A command that can't start is an exit code
 // here, never a throw.
@@ -2071,6 +1970,10 @@ function roleIoOf($: EngineInterface): RoleIo {
 // A terminal-started claude loads its own copy of this plugin; FLOW_ROLE / FLOW_NAME / FLOW_RELAY tell
 // that copy what it is (RelayMode, relay-run.ts). Set at session.start; undefined in a normal session (main, or an Agent-tool subagent).
 let relay: RelayMode | undefined
+// A declared function, not a closure in the startup io (plain-names check 10).
+function setRelay(r: RelayMode | undefined): void {
+  relay = r
+}
 
 // The files and processes the relay needs, both for the client in the terminal's copy and for main's pump.
 function relayIoOf($: EngineInterface): RelayIo {
@@ -2250,14 +2153,6 @@ const FLOW_TOOLS = [
 // to a function declared below. None takes the call or the settings: a case passes them to the member that needs
 // them. One io shared by all eight cases (flowToolsIoOf) was reported MOD_CAPABILITY_USE_NOT_PLAIN at its calls on
 // 0.6.103 to 0.6.111 whatever its members looked like (see plain-names check 8).
-function releaseCaseIoOf($: EngineInterface): ReleaseCaseIo {
-  return {
-    toolCaller: agentId => toolCallerOf($, agentId),
-    handovers: () => read($, handovers),
-    release: (settings, call) => releaseRun($, settings, call),
-  }
-}
-
 function reviewerCaseIoOf($: EngineInterface): ReviewerCaseIo {
   return {
     toolCaller: agentId => toolCallerOf($, agentId),
@@ -2319,11 +2214,6 @@ async function sessionWorktreeOf($: EngineInterface, id: string): Promise<string
   return s?.worktree
 }
 
-async function releaseRun($: EngineInterface, settings: ReturnType<typeof settingsOf>, call: FlowCall): Promise<FlowOut | undefined> {
-  const io = releaseIoOf($)
-  return releaseTool(io, settings, call)
-}
-
 async function reviewerRun($: EngineInterface, settings: ReturnType<typeof settingsOf>, call: FlowCall): Promise<FlowOut | undefined> {
   const io = reviewerIoOf($, settings.base)
   return reviewerToolRun(io, settings, call, call.agentId)
@@ -2368,7 +2258,13 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__handover': return handoverTool(handoverIoOf($, options), settings, e, e.agentId)
 
     // The reviewer's tools: main, the reviewer, and a lite manager for its own PRs. A manager or worker otherwise is refused.
-    case 'mcp__flow__release': return releaseCase(releaseCaseIoOf($), settings, e)
+    // Release reaches here only relayed (`session:<name>`): its own hook in register() answers everyone else. Both build
+    // releaseIoOf($) in place, as 0.6.84 did, with no case io in between (plain-names check 10).
+    case 'mcp__flow__release': {
+      const refused = releaseToolAccess(await toolCallerOf($, e.agentId), e, await read($, handovers))
+      if (refused !== undefined) return { result: refused }
+      return releaseTool(releaseIoOf($), settings, e)
+    }
 
     case 'mcp__flow__reviewer':
     case 'mcp__flow__queue': return reviewerCase(reviewerCaseIoOf($), settings, e)
@@ -2579,75 +2475,147 @@ function paneSessionTool($: EngineInterface, input: Record<string, unknown>, set
   return sessionTool($, input, { id: 'main', name: 'main' }, settings)
 }
 
+// Everything that mirrors the settings in a module-level variable, refreshed together. A declared function, so
+// register()'s apply, which the startup io hands out, assigns no outer variable itself (plain-names check 10).
+function mirrorSettings(s: ReturnType<typeof settingsOf>): void {
+  heldSettings = s
+  mirror.queueOn = s.useReviewer
+  mirror.cleanupMode = s.cleanup
+  mirror.cleanupBase = s.base
+  mirror.deployInfos = infosOf(s)
+  mirror.maxManagers = s.maxManagers
+  mirror.slotLimit = s.testSlots
+  mirror.decisionPhrases = s.decisionPhrases
+  mirror.preflightOn = s.preflight
+  mirror.preflightWaitMs = s.preflightWait * 60_000
+  mirror.askCards = s.askCards
+}
+
 export const register: Register = (on, options) => {
-  let settings = settingsOf(renameOptions(options), 'main')
-  heldSettings = settings
-  mirror.queueOn = settings.useReviewer
-  mirror.cleanupMode = settings.cleanup
-  mirror.cleanupBase = settings.base
-  mirror.deployInfos = infosOf(settings)
-  mirror.maxManagers = settings.maxManagers
-  mirror.slotLimit = settings.testSlots
-  mirror.decisionPhrases = settings.decisionPhrases
-  mirror.preflightOn = settings.preflight
-  mirror.preflightWaitMs = settings.preflightWait * 60_000
-  mirror.askCards = settings.askCards
-  // Settings reloads: the files' paths and mtimes, the detected base branch, whether a check runs.
-  let paths: string[] = []
-  let seen = ''
-  let detected = 'main'
-  let checking = false
-  // Everything that mirrors the settings in a module-level variable is refreshed together.
-  const apply = (s: typeof settings) => {
-    settings = s
-    heldSettings = s
-    mirror.queueOn = s.useReviewer
-    mirror.cleanupMode = s.cleanup
-    mirror.cleanupBase = s.base
-    mirror.deployInfos = infosOf(s)
-    mirror.maxManagers = s.maxManagers
-    mirror.slotLimit = s.testSlots
-    mirror.decisionPhrases = s.decisionPhrases
-    mirror.preflightOn = s.preflight
-    mirror.preflightWaitMs = s.preflightWait * 60_000
-    mirror.askCards = s.askCards
+  // register()'s state, held by property: the hooks' ios read and write it here, so none hands out a closure
+  // assigning an outer variable (plain-names check 10).
+  const kept = {
+    settings: settingsOf(renameOptions(options), 'main'),
+    // Settings reloads: the files' paths and mtimes, the detected base branch, whether a check runs.
+    paths: [] as string[],
+    seen: '',
+    detected: 'main',
+    checking: false,
+    // Set once a `[1m]` model was refused for a sub-agent: later spawns go straight to the plain one.
+    noLong: false,
+    // Set once the host refused a flow:continue rewrite: later continuations start in a new worktree.
+    noContinue: false,
+    // Main's model and window, to size a subagent that runs the same model.
+    mainModel: undefined as string | undefined,
+    mainWindow: undefined as number | undefined,
+    // What the last drawing showed in place of the stored state while following, else null.
+    paneFollow: null as { pick: string; cur: string } | null,
+    // The version this plugin was installed as, read at session.start.
+    installed: undefined as string | undefined,
   }
-  // Set once a `[1m]` model was refused for a sub-agent: later spawns go straight to the plain one.
-  let noLong = false
-  // Set once the host refused a flow:continue rewrite: later continuations start in a new worktree.
-  let noContinue = false
+  mirrorSettings(kept.settings)
+  // Reloaded settings: register()'s copy and the module-level mirror, together.
+  const apply = (s: typeof kept.settings) => {
+    kept.settings = s
+    mirrorSettings(s)
+  }
   // Reasoning effort per flow-started agent (agent.spawn decides, turn.step applies: the spawn input has no effort
   // field). The activity row keeps it across a plugin reload; effortSeen marks agents already looked up there.
   const agentEffort = new Map<string, string>()
   const effortSeen = new Set<string>()
   // Agent tool calls that named an `effort` themselves (by tool_use_id): an explicit effort wins over flow's.
   const explicitEffort = new Set<string>()
-  // Main's model and window, to size a subagent that runs the same model.
-  let mainModel: string | undefined
-  let mainWindow: number | undefined
-  // What the last drawing showed in place of the stored state while following, else null.
-  let paneFollow: { pick: string; cur: string } | null = null
   // What /flow resume already handed to managers in this session.
   const resumed = new Set<string>()
-  // The version this plugin was installed as, read at session.start.
-  let installed: string | undefined
 
+  // The io (startup-run.ts) is written here in the hook, as 0.6.84 wrote the hook's body: no builder in between
+  // (plain-names check 10).
   on('session.start', async ($, e, next) => {
-    await startSession(startupIoOf($, options, {
-      settings: () => settings,
+    const io: StartupIo = {
+      settings: () => kept.settings,
       applySettings: apply,
-      paths: () => paths, setPaths: p => { paths = p },
-      detected: () => detected, setDetected: d => { detected = d },
-      seen: () => seen, setSeen: x => { seen = x },
-      checking: () => checking, setChecking: busy => { checking = busy },
-      installed: () => installed, setInstalled: v => { installed = v },
-    }))
+      paths: () => kept.paths, setPaths: p => { kept.paths = p },
+      detected: () => kept.detected, setDetected: d => { kept.detected = d },
+      seen: () => kept.seen, setSeen: x => { kept.seen = x },
+      checking: () => kept.checking, setChecking: busy => { kept.checking = busy },
+      installed: () => kept.installed, setInstalled: v => { kept.installed = v },
+      options,
+      pollMs: POLL_MS,
+      prPollMs: PR_POLL_MS,
+      initHint: INIT_HINT,
+      best: (what, fn) => best($, what, fn),
+      run: (argv, opts) => $.process.run(argv, opts),
+      toast: text => { $.ui.toast(text) },
+      every: (ms, fn) => { $.clock.every(ms, fn) },
+      after: (ms, fn) => { $.clock.after(ms, fn) },
+      now: () => $.clock.now(),
+      relayMode: () => relayModeOf($),
+      setRelay,
+      locate: () => locate($),
+      readText: path => readText($, path),
+      mtime: path => mtimeOf($, path),
+      // Written out field by field: the plugin directory confirms an agent leaves permissions with the user only
+      // from an object literal in the call. These are the fields registerAgents (startup-run.ts) sets.
+      registerAgent: spec => $.agent.register({ name: spec.name, description: spec.description, prompt: spec.prompt, model: spec.model, isolation: spec.isolation, background: spec.background }),
+      registerCommand: spec => $.command.register(spec),
+      registerTools: () => registerTools($),
+      resetDelivery: () => resetDelivery(text => toMain($, text)),
+      resetStateDir,
+      readState: async file => {
+        const dir = await stateDir($)
+        if (dir === undefined) return undefined
+        return { disk: await readJson($, `${dir}/${file}`) }
+      },
+      loadHandovers: () => loadHandovers($),
+      mergeHandovers: async disk => { await update($, handovers, hs => ({ ...disk, ...hs })) },
+      autoSweep: () => autoSweep($),
+      setInbox: async disk => { await update($, inbox, () => disk) },
+      setBreaker: async disk => { await update($, reviewerBreaker, () => disk) },
+      releaseHalt: async () => { await releaseHaltTo(breakerIoOf($), 'flow') },
+      installedVersion: () => installedVersion($),
+      handovers: () => read($, handovers),
+      checks: () => read($, checks),
+      setChecks: async disk => { await update($, checks, () => disk) },
+      captureChecks: (ho, verifyPaths) => captureChecks($, ho, verifyPaths, false),
+      markPrompted: async version => { await withChecks($, cur => ({ checks: { ...cur, promptedVersion: version }, out: undefined })) },
+      setDeploys: async disk => { await update($, deploys, () => disk) },
+      deployKnown: name => mirror.deployInfos.some(i => i.name === name),
+      refreshBehind: () => void refreshBehind($),
+      setPush: async disk => { await update($, pushState, () => disk) },
+      setLite: async disk => { await update($, lite, () => disk) },
+      mergeSessions: async raw => {
+        const t = await $.clock.now()
+        const disk = normalizeSessions(raw, t)
+        await update($, sessions, cur => ({ ...disk, ...cur }))
+      },
+      snapshotSessions: async () => { roleState.saved = JSON.stringify(durableSessions(await read($, sessions))) },
+      adoptSessions: () => adoptSessions($),
+      setPreflight: async disk => { await update($, preflight, () => disk) },
+      agents: () => agentsOf($),
+      closePreflight: async (live, t) => { await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } }) },
+      setSlotDir,
+      sh: (script, arg) => sh($, script, arg),
+      roleSessionCount: async () => (await myRoleSessions($)).length,
+      pump: () => void pumpOnce($, { settings: kept.settings, options, installed: kept.installed }),
+      refresh: () => void refresh($),
+      watchSessions: () => void watchSessions($),
+      fetchPrs: () => void fetchPrs($),
+      refreshLeftovers: () => refreshLeftovers($),
+      tickNow: async () => {
+        const t = await $.clock.now()
+        await update($, now, () => t)
+      },
+      startReviewer: async () => void (await ensureQueue($)),
+      clearDemo: async () => { await update($, demo, () => null) },
+      firstRun: () => firstRun(initIoOf($)),
+    }
+    await startSession(io)
     return next(e)
   })
 
   // A closed pane stays closed: only this command and a newly started agent (openPane) open it,
   // never the roster poll, so `/flow close` holds while agents keep running.
-  on('command.run', { command: 'flow' }, ($, e) => relay !== undefined ? { text: 'Run /flow in the main Claude Code session; this one only forwards its flow tools.' } : flowCommand(commandIoOf($), settings, installed, resumed, options, e.args, e.presentation?.columns))
+  on('command.run', { command: 'flow' }, ($, e) => relay !== undefined ? { text: 'Run /flow in the main Claude Code session; this one only forwards its flow tools.' } : flowCommand(commandIoOf($), kept.settings, kept.installed, resumed, options, e.args, e.presentation?.columns))
 
   // Hands the request to the main session's model, which runs it with the dispatch skill. A
   // command can't submit a prompt itself (it would wait on its own turn), so a timer queues it
@@ -2665,19 +2633,41 @@ export const register: Register = (on, options) => {
   // then replays the refusal to a second next), so the type stays offered; a model's own spawn of it is denied below.
   on('agent.offer', { agent: CONTINUE }, () => ({ isOffered: true }))
 
-  // The state the agent.spawn hook (spawn-run.ts) reads and writes; it stays single here and is handed through the io.
-  const spawnState: SpawnState = {
-    relay: () => relay,
-    settings: () => settings,
-    options: () => options,
-    noLong: () => noLong,
-    setNoLong: () => { noLong = true },
-    noContinue: () => noContinue,
-    setNoContinue: () => { noContinue = true },
-    takeExplicit: id => explicitEffort.delete(id),
-    setEffort: (id, effort) => { agentEffort.set(id, effort) },
-  }
-  on('agent.spawn', ($, input, next) => onSpawn(spawnHookIoOf($, spawnState), input, next)).catch(($, e, next) => next(e))
+  // The io (spawn-run.ts) is written here in the hook, as 0.6.84 wrote the hook's body (plain-names check 10).
+  on('agent.spawn', ($, input, next) => {
+    const io: SpawnHookIo = {
+      relay: () => relay,
+      settings: () => kept.settings,
+      options: () => options,
+      noLong: () => kept.noLong,
+      setNoLong: () => { kept.noLong = true },
+      noContinue: () => kept.noContinue,
+      setNoContinue: () => { kept.noContinue = true },
+      takeExplicit: id => explicitEffort.delete(id),
+      setEffort: (id, effort) => { agentEffort.set(id, effort) },
+      spawn: spawnIoOf($),
+      now: () => $.clock.now(),
+      agentList: () => $.agent.list(),
+      plans: () => read($, plan),
+      lite: () => read($, lite),
+      gate: agentId => preflightGate($, agentId),
+      jev: () => jevOf($, kept.settings),
+      effortEnv: () => envOf($, 'CLAUDE_CODE_EFFORT_LEVEL'),
+      toast: text => $.ui.toast(text),
+      best: (what, fn) => best($, what, fn),
+      refresh: () => refresh($),
+      openPane: () => openPane($),
+      updateActivity: fn => update($, activity, fn),
+      changeLedger: fn => changeLedger($, fn),
+      withLite: fn => withLite($, fn),
+      withPreflight: fn => withPreflight($, fn),
+      after: (ms, fn) => $.clock.after(ms, fn),
+      sessions: () => read($, sessions),
+      terminalSettings,
+      startRoleSession: (p, s) => startRoleSession(sessionIoOf($), p, s),
+    }
+    return onSpawn(io, input, next)
+  }).catch(($, e, next) => next(e))
 
   // Every tool call, the main session's too: refuse broad process kills and writes to the main
   // checkout. Then, for a subagent: refuse code edits from managers (a change goes into a
@@ -2685,9 +2675,9 @@ export const register: Register = (on, options) => {
   // before `next`, so the catch passes the call on only when the hook failed before it ran: a
   // broken guard must not block every call. A failure beneath `next` (a flow tool's own hook throwing)
   // reaches this catch, not the tool hook's own, so a flow tool that did not finish is answered here too.
-  const toolCallHeld = { settings: () => settings, explicitEffort, mainModel: () => mainModel, mainWindow: () => mainWindow }
+  const toolCallHeld = { settings: () => kept.settings, explicitEffort, mainModel: () => kept.mainModel, mainWindow: () => kept.mainWindow }
   on('tool.call', async ($, e, next) => {
-    if (relay !== undefined) return (await relayToolCallTo(relayRunIoOf($), settings, e)) ?? next(e)
+    if (relay !== undefined) return (await relayToolCallTo(relayRunIoOf($), kept.settings, e)) ?? next(e)
     const io = toolCallIoOf($, toolCallHeld)
     const refused = await beforeToolCall(io, e)
     if (refused !== undefined) return refused
@@ -2696,10 +2686,22 @@ export const register: Register = (on, options) => {
 
   // In a relay copy nothing here may run: the generic hook above answers every flow tool through main,
   // and a call that got this far must not touch the copy's (empty) state.
-  for (const tool of FLOW_TOOLS) {
+  // The reviewer's tools: main, the reviewer, and a lite manager for its own PRs. A manager or worker otherwise is refused.
+  // Release has its own hook building releaseIoOf($) in place, as 0.6.84 had it (plain-names check 10); a relayed call
+  // reaches the same through runFlowTool. It answers a relay copy and a failure as the loop below does.
+  on('tool.call', { tool: 'mcp__flow__release' }, async ($, e) => {
+    if (relay !== undefined) return { result: 'flow relay: release did not reach the main session; try again.' }
+    const input = e as unknown as FlowCall
+    const refused = releaseToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
+    if (refused !== undefined) return { result: refused }
+    const out = await releaseTool(releaseIoOf($), kept.settings, input)
+    return out!
+  }).catch(toolCatch)
+
+  for (const tool of FLOW_TOOLS.filter(t => t !== 'mcp__flow__release')) {
     on('tool.call', { tool: tool as never }, async ($, e) => {
       if (relay !== undefined) return { result: `flow relay: ${tool.replace('mcp__flow__', '')} did not reach the main session; try again.` }
-      const out = await runFlowTool($, tool, e as unknown as FlowCall, { settings, options, installed })
+      const out = await runFlowTool($, tool, e as unknown as FlowCall, { settings: kept.settings, options, installed: kept.installed })
       return out!
     }).catch(toolCatch)
   }
@@ -2711,17 +2713,17 @@ export const register: Register = (on, options) => {
   // Context used by a subagent: the input side of its latest step. Observe only; the step passes untouched.
   // Main's model and window live in this closure; the usage module reads and sets them through these.
   const mainHeld = {
-    mainModel: () => mainModel,
-    setMainModel: (m: string | undefined) => { mainModel = m },
-    mainWindow: () => mainWindow,
-    setMainWindow: (w: number) => { mainWindow = w },
+    mainModel: () => kept.mainModel,
+    setMainModel: (m: string | undefined) => { kept.mainModel = m },
+    mainWindow: () => kept.mainWindow,
+    setMainWindow: (w: number) => { kept.mainWindow = w },
   }
   on('turn.step', async function* ($, e, next) {
     if (relay !== undefined) return yield* next(e)
-    const step = await beforeStep(turnIoOf($, settings, { agentEffort, effortSeen }), e)
+    const step = await beforeStep(turnIoOf($, kept.settings, { agentEffort, effortSeen }), e)
     const r = yield* next(step)
-    await meterStep(usageIoOf($, settings, mainWarn, mainHeld), settings, e, r)
-    await countStep(usageIoOf($, settings, mainWarn, mainHeld), e, r)
+    await meterStep(usageIoOf($, kept.settings, mainWarn, mainHeld), kept.settings, e, r)
+    await countStep(usageIoOf($, kept.settings, mainWarn, mainHeld), e, r)
     return r
   })
 
@@ -2730,7 +2732,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (relay !== undefined) return next(e)
     await countTurn(costIoOf($), countedTurns, e.agentId, (e as { turnId?: string }).turnId)
-    await completeTurn(turnIoOf($, settings, { agentEffort, effortSeen }), e)
+    await completeTurn(turnIoOf($, kept.settings, { agentEffort, effortSeen }), e)
     return next(e)
   })
 
@@ -2742,13 +2744,13 @@ export const register: Register = (on, options) => {
   })
 
   const paneLets: PaneLets = {
-    settings: () => settings,
-    installed: () => installed,
-    mainModel: () => mainModel,
-    mainWindow: () => mainWindow,
-    setMainWindow: w => { mainWindow = w },
-    paneFollow: () => paneFollow,
-    setPaneFollow: f => { paneFollow = f },
+    settings: () => kept.settings,
+    installed: () => kept.installed,
+    mainModel: () => kept.mainModel,
+    mainWindow: () => kept.mainWindow,
+    setMainWindow: w => { kept.mainWindow = w },
+    paneFollow: () => kept.paneFollow,
+    setPaneFollow: f => { kept.paneFollow = f },
   }
   // Arrows and Tab move the focus ring over the cards; the highlight follows it (pane-run.tsx).
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
