@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Plugin directory checks: `$.agent.register` takes its spec as an object literal written in the call (MOD_PERMISSION_ANSWER_UNREAD), and the `(await f($, x))?.y` / `[...]` reads in hooks/register.tsx go through a const (MOD_CAPABILITY_USE_NOT_PLAIN); `scripts/plain-names.mjs` now guards both.
+
 ## [0.6.103] - 2026-10-13
 
 ### Fixed
