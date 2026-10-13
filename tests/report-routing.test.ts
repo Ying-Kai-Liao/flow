@@ -21,6 +21,8 @@ function world(on: On) {
   const prompts: string[] = []
   const mainMsgs: { role: string; text: string }[] = []
   const gitCalls: string[][] = []
+  // Every git argv, in call order, across the fast-forward and the background sweep.
+  const gitOrder: string[][] = []
   const logs: string[] = []
   on('agent.list', () => ({ value: agents }))
   on('agent.spawn', () => ({ model: 'sonnet', agentId: 'q1' }))
@@ -39,6 +41,7 @@ function world(on: On) {
     return { value: t }
   })
   on('process.run', (_, e) => {
+    if (e.argv[0] === 'git') gitOrder.push([...e.argv])
     if (e.argv[0] === 'git' && e.argv[1] === 'rev-parse') return ok('/r/.git\n')
     if (e.argv[0] === 'git' && e.argv[1] === 'worktree') return ok('worktree /main\nHEAD abc\nbranch refs/heads/main\n')
     if (e.argv[0] === 'git' && e.argv[1] === '-C') {
@@ -51,7 +54,7 @@ function world(on: On) {
     if (e.argv[0] === 'gh') return ok(JSON.stringify(PR))
     return ok()
   })
-  return { agents, files, prompts, mainMsgs, gitCalls, logs, flush: async () => { await clock.advance(1); await clock.settle() }, flushLong: async () => { await clock.advance(5000); await clock.settle() } }
+  return { agents, files, prompts, mainMsgs, gitCalls, gitOrder, logs, flush: async () => { await clock.advance(1); await clock.settle() }, flushLong: async () => { await clock.advance(5000); await clock.settle() } }
 }
 
 const handover = ($: Dollar, agentId: string | undefined, extra: Record<string, unknown> = {}) =>
@@ -303,6 +306,18 @@ test('"done" fast-forwards the main checkout, returns the line and logs a main-f
   expect(w.gitCalls.some(c => c.includes('merge') && c.includes('--ff-only'))).toBe(true)
   const log = w.logs.join('\n')
   expect(log).toContain('"event":"main-ff"')
+})
+
+test('"done" starts the cleanup sweep only after the fast-forward, so its fetch --prune cannot race ours', async ($, on) => {
+  const w = world(on)
+  await handover($, 'm1')
+  await queue($, { action: 'take', pr: 7 })
+  await queue($, { action: 'done', pr: 7, sha: 'abc1234', report: 'merged' })
+  await w.flushLong()
+  const merge = w.gitOrder.findIndex(c => c.includes('merge') && c.includes('--ff-only'))
+  const sweepFetch = w.gitOrder.findIndex(c => c[1] === 'fetch' && c.includes('--prune'))
+  expect(merge).toBeGreaterThan(-1)
+  expect(sweepFetch).toBeGreaterThan(merge)
 })
 
 test('a reviewer that did batch work has its whole final report relayed to main once, with the line', async ($, on) => {

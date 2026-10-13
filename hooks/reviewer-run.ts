@@ -109,11 +109,12 @@ export async function reviewerToolRun(io: ReviewerIo, settings: Settings, input:
   if (action === 'back') await io.closeReturnedEnv(next)
   if (action === 'done' || action === 'back') await io.settleBatch()
   if (action !== 'take') io.toast(`PR #${key} ${next.status === 'done' ? `merged ${next.sha ?? ''}` : `returned: ${next.reason ?? ''}`}`)
-  if (action === 'done') io.autoSweep()
   let verify = ''
   if (action === 'done') {
     // The push already happened; the isolated reviewer cannot touch the main checkout, so the plugin does.
     const line = await serialFastForward(io.run, settings.base)
+    // Only now: the sweep's `git fetch --prune` racing our fetch for origin/<base> failed the fast-forward.
+    io.autoSweep()
     if (agentId !== undefined) await io.noteRunWork(agentId, w => ({ ...(w ?? { touched: true, ready: false }), touched: true, line }))
     await io.best('logging the main checkout', () => io.appendLog({ event: 'main-ff', owner: next.reportTo, pr: next.pr, branch: next.branch, text: line }))
     verify = ` ${line}: copy this exact line into your final report; never run git against the main checkout yourself.`

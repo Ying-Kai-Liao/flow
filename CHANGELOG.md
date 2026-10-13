@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The plugin's fast-forward of the main checkout no longer fails at random with "ff failed: From https://...". Its `git pull` raced the auto cleanup sweep's `git fetch origin --prune`, which starts on the same reviewer "done": both update `refs/remotes/origin/<base>` in the shared `.git`, and the loser gets "cannot lock ref". It now fetches (retrying up to three times on a lock error) and merges `--ff-only` separately, and a failure reports git's last `error:`/`fatal:` line instead of the fetch's "From <url>" line.
+- The plugin's fast-forward of the main checkout no longer fails at random with "ff failed: From https://...". Its `git pull` raced the auto cleanup sweep's `git fetch origin --prune`, which starts on the same reviewer "done": both update `refs/remotes/origin/<base>` in the shared `.git`, and the loser gets "cannot lock ref". The sweep now starts only after the fast-forward, and the fast-forward fetches (retrying up to three times on a lock error, for other concurrent fetches such as the reviewer's own) and merges `--ff-only` separately, and a failure reports git's last `error:`/`fatal:` line instead of the fetch's "From <url>" line.
 
 ## [0.6.105] - 2026-10-13
 
