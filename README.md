@@ -34,6 +34,26 @@ you ── main session
 - **Checks only a person can do are tracked.** After a deploy, anything an agent can't verify goes
   on a list instead of getting lost.
 
+## How it works at a glance
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.svg">
+    <img src="docs/diagrams/architecture-light.svg" alt="flow architecture: you talk to the main session, which starts one manager per task; managers brief workers in their own worktrees, workers open PRs, and the reviewer merges them in batches. Below, the plugin's hooks: the mcp__flow__* tools, hooks/register.tsx, the inbox, the reviewer start, terminal sessions for mode orca or tmux, and the state in .git/flow.">
+  </picture>
+</p>
+
+The parts: agents on top, the plugin's hooks and the state it keeps in `.git/flow` below. [Interactive version](docs/diagrams/architecture.html) (open the file in a browser for search, focus and the code links).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/task-lifecycle-dark.svg">
+    <img src="docs/diagrams/task-lifecycle-light.svg" alt="Life of a flow task: your request, a manager's pre-flight round, a worker's PR with a verification section, review and handover, the reviewer_delay wait, the reviewer batch (merge, full check, release, push), deploy gates and the report back; questions go to the inbox, and cleanup runs after each merged PR.">
+  </picture>
+</p>
+
+One task, from your request to the report, with the inbox on the side. [Interactive version](docs/diagrams/task-lifecycle.html); the steps and their code are in [Life of a task](docs/task-lifecycle.md).
+
 ## Install
 
 In a Claude Code session:
@@ -120,6 +140,7 @@ with defaults, is in the [reference](docs/reference.md).
 ## Learn more
 
 - [Life of a task](docs/task-lifecycle.md): one task's path from request to cleanup, and the code behind each step.
+- [Diagrams](docs/diagrams/): the architecture and the life of a task as interactive pages, with their JSON sources.
 - [How flow works](docs/how-it-works.md): roles, pre-flight, the inbox and standing answers,
   merge modes, releases, deploying, cleanup and the rules the reviewer follows.
 - [Reference](docs/reference.md): every setting, the tools agents use, and the files flow keeps.

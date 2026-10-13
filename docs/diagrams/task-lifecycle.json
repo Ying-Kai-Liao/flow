@@ -1,0 +1,264 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Life of a flow task",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "external": {
+          "label": "You"
+        },
+        "frontend": {
+          "label": "Main session"
+        },
+        "backend": {
+          "label": "Agent or plugin step"
+        },
+        "messagebus": {
+          "label": "Inbox or wait"
+        },
+        "security": {
+          "label": "Gate"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "inbox",
+      "label": "Inbox",
+      "variant": "exception"
+    },
+    {
+      "id": "main",
+      "label": "Main session"
+    },
+    {
+      "id": "manager",
+      "label": "Manager"
+    },
+    {
+      "id": "worker",
+      "label": "Worker"
+    },
+    {
+      "id": "plugin",
+      "label": "Plugin"
+    },
+    {
+      "id": "reviewer",
+      "label": "Reviewer"
+    }
+  ],
+  "phases": [
+    {
+      "id": "plan",
+      "label": "Plan",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "build",
+      "label": "Build + review",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "ship",
+      "label": "Ship",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "request",
+    "preflight",
+    "build",
+    "handover",
+    "delay",
+    "batch",
+    "deploy",
+    "report"
+  ],
+  "nodes": [
+    {
+      "id": "ask",
+      "lane": "inbox",
+      "col": 1,
+      "type": "messagebus",
+      "label": "Asks + FYI",
+      "sublabel": "ask, decisions",
+      "width": 156
+    },
+    {
+      "id": "standing",
+      "lane": "inbox",
+      "col": 2,
+      "type": "messagebus",
+      "label": "Standing answers",
+      "sublabel": "recurring topics",
+      "width": 156
+    },
+    {
+      "id": "request",
+      "lane": "main",
+      "col": 0,
+      "type": "external",
+      "label": "Your request",
+      "sublabel": "main starts managers",
+      "width": 156
+    },
+    {
+      "id": "report",
+      "lane": "main",
+      "col": 5,
+      "type": "frontend",
+      "label": "Report back",
+      "sublabel": "to manager, then main",
+      "width": 156
+    },
+    {
+      "id": "preflight",
+      "lane": "manager",
+      "col": 1,
+      "type": "backend",
+      "label": "Pre-flight",
+      "sublabel": "one question round",
+      "width": 156
+    },
+    {
+      "id": "handover",
+      "lane": "manager",
+      "col": 3,
+      "type": "backend",
+      "label": "Review + handover",
+      "sublabel": "mcp__flow__handover",
+      "width": 156
+    },
+    {
+      "id": "build",
+      "lane": "worker",
+      "col": 2,
+      "type": "backend",
+      "label": "Worker PR",
+      "sublabel": "own worktree",
+      "tag": "## Verification",
+      "width": 156
+    },
+    {
+      "id": "delay",
+      "lane": "plugin",
+      "col": 3,
+      "type": "messagebus",
+      "label": "reviewer_delay",
+      "sublabel": "close handovers wait",
+      "width": 156
+    },
+    {
+      "id": "cleanup",
+      "lane": "plugin",
+      "col": 4,
+      "type": "backend",
+      "label": "Cleanup",
+      "sublabel": "worktrees, main ff",
+      "width": 156
+    },
+    {
+      "id": "batch",
+      "lane": "reviewer",
+      "col": 4,
+      "type": "backend",
+      "label": "Reviewer batch",
+      "sublabel": "merge, full check",
+      "tag": "release cut, push",
+      "width": 156
+    },
+    {
+      "id": "deploy",
+      "lane": "reviewer",
+      "col": 5,
+      "type": "security",
+      "label": "Deploy gates",
+      "sublabel": "after-deploy checks",
+      "width": 156
+    }
+  ],
+  "edges": [
+    {
+      "id": "start-manager",
+      "from": "request",
+      "to": "preflight",
+      "label": "one per task",
+      "variant": "emphasis"
+    },
+    {
+      "id": "brief",
+      "from": "preflight",
+      "to": "build",
+      "label": "brief",
+      "variant": "emphasis"
+    },
+    {
+      "id": "open-pr",
+      "from": "build",
+      "to": "handover",
+      "label": "PR",
+      "variant": "emphasis",
+      "toSide": "left"
+    },
+    {
+      "id": "hand-over",
+      "from": "handover",
+      "to": "delay",
+      "variant": "emphasis"
+    },
+    {
+      "id": "start-batch",
+      "from": "delay",
+      "to": "batch",
+      "label": "starts",
+      "variant": "emphasis"
+    },
+    {
+      "id": "to-deploy",
+      "from": "batch",
+      "to": "deploy",
+      "variant": "emphasis"
+    },
+    {
+      "id": "to-report",
+      "from": "deploy",
+      "to": "report",
+      "label": "report",
+      "variant": "emphasis"
+    },
+    {
+      "id": "questions",
+      "from": "preflight",
+      "to": "ask",
+      "label": "questions",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "auto-answer",
+      "from": "ask",
+      "to": "standing",
+      "label": "repeat topic",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "after-done",
+      "from": "batch",
+      "to": "cleanup",
+      "label": "each done",
+      "variant": "dashed",
+      "role": "branch"
+    }
+  ]
+}
