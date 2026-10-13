@@ -83,7 +83,7 @@ Code: `handover-run.ts`, `evidence.ts` (the section), `mergemode.ts`. Detail: [V
 
 ## 10. The reviewer batch
 
-The plugin starts one `flow:reviewer` when handovers are pending (`reviewer-run.ts`, `reviewer-route.ts`). It takes PRs with `mcp__flow__reviewer` (`list`, `take`, `done`, `back`) and merges them. Right before the full check it lists once more, and PRs that arrived meanwhile join the batch, up to `batch_max` (default 10). Then:
+The plugin starts one `flow:reviewer` when handovers are pending (`reviewer-run.ts`, `reviewer-route.ts`), `reviewer_delay` minutes (default 3) after a handover on an idle queue so close handovers share a batch. It takes PRs with `mcp__flow__reviewer` (`list`, `take`, `done`, `back`) and merges them. Right before the full check it lists once more, and PRs that arrived meanwhile join the batch, up to `batch_max` (default 10). Then:
 
 - It runs `full_check_command` once for the batch under a test slot. If failures do not clearly belong to one PR and the batch has more than two, it bisects the merges to the first PR that breaks the check, sends it back and rebuilds without it. If every failing test timed out it reruns the check once. With `flaky_tests` set, when every failing test is in a listed file it reruns once: only those files if `test_command` has a `{files}` slot, otherwise the whole check.
 - With `release` on, it cuts the release once per batch (`release-run.ts`, `release.ts`): the Unreleased changelog lines become a version section and the version is bumped.

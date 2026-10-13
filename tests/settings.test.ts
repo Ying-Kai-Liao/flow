@@ -371,3 +371,10 @@ test("batch_max defaults to 10, has a floor of 1", () => {
   expect(settingsOf({ batch_max: 4 }, "main").batchMax).toBe(4)
   expect(settingsOf({ batch_max: 0 }, "main").batchMax).toBe(1)
 })
+
+test("reviewer_delay defaults to 3 minutes; negatives clamp to 0", () => {
+  expect(settingsOf({}, "main").reviewerDelay).toBe(3)
+  expect(settingsOf({ reviewer_delay: 0 }, "main").reviewerDelay).toBe(0)
+  expect(settingsOf({ reviewer_delay: 5 }, "main").reviewerDelay).toBe(5)
+  expect(settingsOf({ reviewer_delay: -2 }, "main").reviewerDelay).toBe(0)
+})

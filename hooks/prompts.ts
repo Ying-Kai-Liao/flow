@@ -74,6 +74,8 @@ export type Settings = {
   flakyTests?: string[]
   // Most PRs one reviewer batch carries (default 10); late joiners count too.
   batchMax?: number
+  // Minutes a fresh handover on an idle queue waits before the reviewer starts (reviewer_delay).
+  reviewerDelay?: number
   // Release at merge: off (or absent) leaves every release slot empty.
   release?: boolean
   // Tag and GitHub Release after the release push; only acts with release on.

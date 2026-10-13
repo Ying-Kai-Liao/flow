@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `reviewer_delay` setting (minutes, default 3; 0 = start at once): a handover on an idle queue starts the reviewer only after the wait, and handovers during it join, so PRs handed over close together land in one batch (one reviewer start, one full check, one release). An approval starts at once unless a wait is running, then joins it; push and rebuild runs, due deploys, leftover work and a session start never wait.
+
 ## [0.6.105] - 2026-10-13
 
 ### Changed

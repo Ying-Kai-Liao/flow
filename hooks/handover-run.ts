@@ -10,6 +10,7 @@ import { parseEnvInput } from './deploy'
 import type { Draft } from './deploy'
 import { mirror } from './core'
 import { liteSteps } from './prompts'
+import type { QueueWhy } from './reviewer-run'
 
 type Settings = ReturnType<typeof settingsOf>
 
@@ -27,7 +28,7 @@ export type HandoverIo = {
   appendLog: (event: Omit<LogEvent, 'ts'>) => Promise<void>
   toast: (text: string) => void
   refresh: () => Promise<unknown>
-  ensureQueue: () => Promise<string>
+  ensureQueue: (why?: QueueWhy) => Promise<string>
   // The cost ledger and log, for the best-of-N gate (an arm's PR is handed over only once picked).
   arms: () => Promise<{ ledger: Ledger; log: LogEvent[] }>
   // The name of the lite manager (lite.ts) this agent is, else undefined.
@@ -113,7 +114,7 @@ export async function handoverTool(io: HandoverIo, settings: Settings, input: Re
       await io.refresh()
       return { result: `Lite mode: PR #${pr} (${info.headRefOid.slice(0, 8)}) is recorded and no reviewer was started. Merge it yourself, in this order:\n${liteSteps(settings)}\nIf the PR is risky or you are unsure, hand it over again with mode "confirm" instead of merging it.${labelNote}${envNote}` }
     }
-    const queue = await io.ensureQueue()
+    const queue = await io.ensureQueue('handover')
     await io.refresh()
     return { result: `Handed over PR #${pr} at ${info.headRefOid.slice(0, 8)}. ${queue} The reviewer reports back to ${h.reportTo} by message.${dest.note ?? ''}${labelNote}${envNote}` }
 }

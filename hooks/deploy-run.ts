@@ -14,6 +14,7 @@ import { openOf, sendCards } from './askcards'
 import type { CardsIo } from './askcards'
 import { markAnswered, notesOwner } from './inbox'
 import type { Inbox, Question } from './inbox'
+import type { QueueWhy } from './reviewer-run'
 
 export type DeployIo = {
   stateDir: () => Promise<string | undefined>
@@ -34,7 +35,7 @@ export type DeployIo = {
   saveHandover: (h: Handover) => Promise<void>
   inbox: () => Promise<Inbox>
   withInbox: <T>(fn: (cur: Inbox) => { inbox: Inbox; out: T }) => Promise<T>
-  ensureQueue: () => Promise<string>
+  ensureQueue: (why?: QueueWhy) => Promise<string>
   loadRules: (options: Record<string, unknown>) => Promise<{ rules: Resolved[] }>
   appendNote: (name: string, line: string) => Promise<boolean>
   appendLog: (event: Omit<LogEvent, 'ts'>) => Promise<void>
@@ -110,7 +111,7 @@ export async function onDeployAnswer(io: DeployIo, q: Question, answer: string):
   })
   if (name === undefined) return ''
   if (!isApprove(answer)) return ` ${name} stays behind; the next batch asks again.`
-  return ` ${name} approved. ${await io.ensureQueue()}`
+  return ` ${name} approved. ${await io.ensureQueue('approval')}`
 }
 
 // The user's answer to an env item. An applied `apply` item records the change as done by the user. A
@@ -136,7 +137,7 @@ export async function onEnvAnswer(io: DeployIo, q: Question, answer: string): Pr
   const stillOpen = ib.items.some(x => x.state === 'open' && x.kind === ENV_KIND && x.env?.target === e.target)
   if (!waiting || stillOpen || info === undefined || info.mode !== 'auto') return ''
   await withDeploys(io, cur => ({ deploys: setTarget(cur, e.target, { ...(cur.targets[e.target] ?? {}), due: true }), out: undefined }))
-  return ` ${e.target} has its env answers. ${await io.ensureQueue()}`
+  return ` ${e.target} has its env answers. ${await io.ensureQueue('approval')}`
 }
 
 // A person's (or main's) hold on a target.

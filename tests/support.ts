@@ -7,7 +7,9 @@ import type { TestRest } from 'claude-code/testing'
 // its own `timeoutMs`.
 export const TEST_TIMEOUT_MS = 60_000
 
+// reviewer_delay defaults to 0 here, so a handover starts the reviewer at once as the tests were written for; a
+// test of the delay sets it in its own options.
 export const test = (name: string, ...rest: TestRest): void => {
   const [options, body] = rest.length === 1 ? [{}, rest[0]] : rest
-  kitTest(name, { timeoutMs: TEST_TIMEOUT_MS, ...options }, body)
+  kitTest(name, { timeoutMs: TEST_TIMEOUT_MS, ...options, options: { reviewer_delay: 0, ...(options as { options?: Record<string, unknown> }).options } }, body)
 }
