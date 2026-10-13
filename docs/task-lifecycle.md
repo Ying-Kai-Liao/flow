@@ -35,7 +35,7 @@ Code: the `agent.spawn` hook, `spawn-run.ts` (checks plans, the pre-flight gate 
 
 The `Size: small | normal | large` line on the manager's prompt picks its model at spawn: `small` runs on `manager_model_small`, `normal` on `manager_model_normal` (unset: it follows `manager_model`), `large` or no line on `manager_model`. A worker's brief carries the same line and maps to `worker_model_small`, `worker_model_normal` or `worker_model`. `decision_api` can decide the size instead of the line. Below `large` the plugin files a `worker-size` or `manager-size` decision you can undo, and a successor (`-2`) runs at least one size up.
 
-Reasoning effort follows the same routing: `worker_effort_small`, `worker_effort_normal`, `worker_effort`, `manager_effort`, `reviewer_effort`, `explore_effort`. The spawn decides the level; the `turn.step` hook applies it on each model request, only where the model takes an effort. A new manager also gets a short digest of how earlier `Size:` lines turned out (`size_feedback`).
+Reasoning effort follows the same routing: `worker_effort_small`, `worker_effort_normal`, `worker_effort`, `manager_effort`, `reviewer_effort`, `explore_effort`. The spawn decides the level; the `turn.step` hook applies it on each model request, only where the model takes an effort; an explicit effort on the Agent call, or `CLAUDE_CODE_EFFORT_LEVEL` in the environment, overrides it. A new manager also gets a short digest of how earlier workers' `Size:` lines turned out (`size_feedback`), once at least 5 workers are recorded.
 
 Code: `routing.ts` (pure size-to-model rules), `spawn-run.ts` (applies them), `turn-run.ts` (`turn.step`), `sizefeedback.ts`. Detail: [Model routing](reference.md#model-routing).
 
@@ -51,9 +51,9 @@ Agents talk to you through one inbox (`inbox.ts`, `inbox-run.ts`, `askcards.ts`)
 
 - An **ask** (`mcp__flow__ask`) has options, a recommended default and a `blocking` flag. Non-blocking: the agent carries on with the default and says so in its report. Blocking: it ends its turn and the answer wakes it. A worker's question goes to its manager, a manager's to main; only main asks you.
 - A **decision** (`mcp__flow__fyi`) records a reversible choice the agent took itself. It is not a question; you keep it or undo it later (`/flow ok`, `/flow no <id>`), and an undo messages the owner.
-- A **standing answer** (`mcp__flow__standing`; `standing.ts`, `standing-run.ts`) answers a recurring question by `topic` or `match` without asking again. You create one by answering with `always`, or from a suggestion: once main has answered the same topic the same way three times, the answer result and the pane offer a rule, and nothing is added until you call `add` (`standing-suggest.ts`). Deploy, env, push and reviewer items are never answered by a rule that does not name their kind.
+- A **standing answer** (`mcp__flow__standing`; `standing.ts`, `standing-run.ts`) answers a recurring question by `topic` or `match` without asking again. You create one by answering with `always`, or from a suggestion: once main has answered the same topic (or, without one, the same question text) the same way three times, the answer result and the pane offer a rule, and nothing is added until you call `add` (`standing-suggest.ts`). Deploy and env items are answered only by a rule that names their kind; push and reviewer items are never answered by a rule.
 
-When several managers ask the same question (same topic and options, or same text and options), the inbox shows it once with the askers' names, and one answer fills every open member (`inbox-dups.ts`). Deploy, env, push, reviewer and escalated items are never grouped. Detail: [Questions and the inbox](how-it-works.md#questions-and-the-inbox), [Standing answers](how-it-works.md#standing-answers).
+When several managers ask main the same question (same topic and options, or same text and options), the inbox shows it once with the askers' names, and one answer fills every open member (`inbox-dups.ts`). Only questions addressed to main are grouped; decisions, guard suggestions, deploy, env, push, reviewer and escalated items are not. Detail: [Questions and the inbox](how-it-works.md#questions-and-the-inbox), [Standing answers](how-it-works.md#standing-answers).
 
 ## 5. Plan dependencies
 
@@ -77,7 +77,7 @@ Code: `testguard.ts` (is this command a suite run), `toolcall-run.ts` (the hook)
 
 ## 9. Verification and handover
 
-A worker's PR description ends in a `## Verification` section: `Ran` (each command and result), `Exercised` (how the change was run for real) and `Not verified`. A bare "n/a" or "nothing" is refused. The manager reviews the PR and calls `mcp__flow__handover`, which refuses a PR without that section, or whose `Ran` lacks a test that `guard_tests` requires. A handover can ask for `mode: "confirm"` (the PR waits for your `/flow approve`), declare `env` changes for a deploy target, and give a `verify_command` for the after-deploy check.
+A worker's PR description ends in a `## Verification` section: `Ran` (each command and result), `Exercised` (how the change was run for real) and `Not verified`. A bare "n/a" or "nothing" is refused. The manager reviews the PR and calls `mcp__flow__handover`, which refuses a PR without that section, or whose `Ran` lacks a `worker_checks` or `always_tests` command or a test that `guard_tests` requires. A handover can ask for `mode: "confirm"` (the PR waits for your `/flow approve`), declare `env` changes for a deploy target, and give a `verify_command` for the after-deploy check.
 
 Code: `handover-run.ts`, `evidence.ts` (the section), `mergemode.ts`. Detail: [Verification](how-it-works.md#verification), [Merge mode](how-it-works.md#merge-mode).
 
@@ -85,15 +85,15 @@ Code: `handover-run.ts`, `evidence.ts` (the section), `mergemode.ts`. Detail: [V
 
 The plugin starts one `flow:reviewer` when handovers are pending (`reviewer-run.ts`, `reviewer-route.ts`). It takes PRs with `mcp__flow__reviewer` (`list`, `take`, `done`, `back`) and merges them. Right before the full check it lists once more, and PRs that arrived meanwhile join the batch, up to `batch_max` (default 10). Then:
 
-- It runs `full_check_command` once for the batch under a test slot. If failures do not clearly belong to one PR and the batch has more than two, it bisects the merges to the first PR that breaks the check, sends it back and rebuilds without it. If every failing test timed out it reruns the check once; with `flaky_tests` set it reruns just those files.
+- It runs `full_check_command` once for the batch under a test slot. If failures do not clearly belong to one PR and the batch has more than two, it bisects the merges to the first PR that breaks the check, sends it back and rebuilds without it. If every failing test timed out it reruns the check once. With `flaky_tests` set, when every failing test is in a listed file it reruns once: only those files if `test_command` has a `{files}` slot, otherwise the whole check.
 - With `release` on, it cuts the release once per batch (`release-run.ts`, `release.ts`): the Unreleased changelog lines become a version section and the version is bumped.
 - It pushes. With `push_mode: confirm` it stops before the push and saves the batch (`pushgate.ts`, `pushgate-run.ts`); you run `/flow push`, send one PR back, or drop the batch. If the base moved meanwhile, it rebuilds and asks again.
 
-A PR sent back returns to its manager, who continues with a fresh worker. After each "done" the plugin fast-forwards the main checkout (`mainff.ts`). A reviewer that keeps dying is throttled by `reviewer-breaker.ts`. Detail: [Reviewer rules](how-it-works.md#reviewer-rules), [Push gate](how-it-works.md#push-gate), [Releases](how-it-works.md#releases).
+A PR sent back returns to its manager, who continues with a fresh worker. After each "done" the plugin fast-forwards the main checkout (`mainff.ts`). After 3 quick deaths in a row or 20 starts in an hour, `reviewer-breaker.ts` stops restarting the reviewer and asks main (retry / not now). Detail: [Reviewer rules](how-it-works.md#reviewer-rules), [Push gate](how-it-works.md#push-gate), [Releases](how-it-works.md#releases).
 
 ## 11. Deploy gates
 
-For each target in `deploy_targets`, the reviewer calls `mcp__flow__deploy` `gate` with the target and the pushed sha, and gets `Go`, `Held: <why>` or `Awaits approval: <qid>`. A held or waiting target is skipped for the batch; a failed one stops the targets after it. A `confirm` target needs your answer to a blocking inbox item. Env or secret changes a PR declared are inbox items too, and the gate waits for them before it asks for the deploy approval. `/flow hold` keeps a target back. Code: `deploy.ts` (pure rules), `deploy-run.ts` (state in `deploys.json`). Detail: [Deploying](how-it-works.md#deploying).
+For each target in `deploy_targets`, the reviewer calls `mcp__flow__deploy` `gate` with the target and the pushed sha, and gets `Go`, `Held: <why>`, `Awaits approval: <qid>` or `Awaits env: <qids>`; `Go, first apply env:` comes with commands the reviewer runs, then it calls `env-applied` and deploys. A held or waiting target is skipped for the batch; a failed one stops the targets after it. A `confirm` target needs your answer to a blocking inbox item. Env or secret changes a PR declared are inbox items too, and the gate waits for them before it asks for the deploy approval. `/flow hold` keeps a target back. Code: `deploy.ts` (pure rules), `deploy-run.ts` (state in `deploys.json`). Detail: [Deploying](how-it-works.md#deploying).
 
 ## 12. Person checks
 
@@ -105,7 +105,7 @@ After each PR the reviewer marks done, and when the reviewer ends, the plugin sw
 
 ## 14. Resume after a restart
 
-A restart empties the roster but not the disk. Managers keep notes (`mcp__flow__note`, in the state dir) of progress and your decisions, and the inbox, plans, handovers and push batch are files. A worker or manager near its context limit is told to hand off: a worker commits `WIP handoff: ...`, pushes, writes `## Handoff` in the PR description and ends with `HANDOFF: <branch>`; its manager starts `<name>-2` with `Continue on branch: flow/<x>`. After a restart, `/flow resume` lists open `flow/*` PRs, pushed branches without a PR and worktrees with unpushed work, and main starts a `resume-<slug>` manager for each. Code: `resume.ts`, `command.ts`, `startup-run.ts`. Detail: [Continuing work](how-it-works.md#continuing-work).
+A restart empties the roster but not the disk. Managers keep notes (`mcp__flow__note`, in the state dir) of progress and your decisions, and the inbox, plans, handovers and push batch are files. A worker or manager near its context limit is told to hand off: a worker commits `WIP handoff: ...`, pushes, writes `## Handoff` in the PR description and ends with `HANDOFF: <branch>`; its manager starts `<name>-2` with `Continue on branch: flow/<x>`. After a restart, `/flow resume` lists open `flow/*` PRs, pushed branches without a PR and worktrees with unpushed work, also unfinished handovers saved on disk, and main starts a `resume-<slug>` manager per task; branches sharing a manager prefix count as one task. Code: `resume.ts`, `command.ts`, `startup-run.ts`. Detail: [Continuing work](how-it-works.md#continuing-work).
 
 ## 15. Terminals and the relay
 
