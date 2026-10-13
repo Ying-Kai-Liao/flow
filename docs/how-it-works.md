@@ -2,6 +2,8 @@
 
 The details behind the [README](../README.md): roles, what the pane shows, pre-flight, the inbox, merging, releasing and deploying. Settings, tools and files on disk are in the [reference](reference.md).
 
+For one task's path from request to cleanup, read [Life of a task](task-lifecycle.md) first.
+
 Sections, in order: roles, dependencies, what you see, pre-flight, questions and the inbox, person checks, attachments, continuing work, merge mode, releases, cleanup, guards, reviewer rules, deploying, verification, workers in other harnesses.
 
 ## Roles
