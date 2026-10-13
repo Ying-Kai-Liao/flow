@@ -8,7 +8,6 @@
 import { atom, read, update } from 'claude-code'
 import { startSession } from './startup-run'
 import type { StartupIo } from './startup-run'
-import { lastLineAsks, REPORT_HINT } from './askcards'
 import { parseMode } from './mergemode'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
@@ -18,7 +17,6 @@ import { grantTypecheck, reapTypecheck, typecheckDir } from './typecheck-slots'
 import type { Evidence } from './evidence'
 import type { RunWork } from './mainff'
 import { NO_FAILS, type TestFails } from './testfail'
-import { ancestorPids } from './clean'
 import { sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
 import { gatherLeftovers as gatherLeftoversTo } from './resume'
@@ -75,7 +73,7 @@ import type { PaneEvent, PaneIo } from './pane-run'
 import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
-import { describeCall, ROLE } from './pane'
+import { ROLE } from './pane'
 import {
   fill, REVIEWER_PROMPT, REVIEWER_SESSION_RULES_AUTO,
   REVIEWER_SESSION_RULES_CONFIRM,
@@ -85,7 +83,7 @@ import { deployTargetsOf, stateFileOf, targetsOf } from './prompts'
 import { renameOptions, settingsOf } from './settings'
 import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
-import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, needLines, normText, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
+import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
 import type { Forwarded, RouteIo } from './reviewer-route'
 import { noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue } from './reviewer-run'
 import { reconcileStale } from './stale-handovers'
@@ -113,20 +111,21 @@ import { flowCommand } from './command'
 import type { CommandIo } from './command'
 import { elapsed, tokensDown, labelOf, thresholdOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
-import {
-  allowList, killRefusal, remoteDeleteRefusal,
-} from './guards'
-import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun } from './testguard'
-import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, releaseCase, reviewerCase, sessionCase, WRITE_TOOLS } from './toolcall-run'
+import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, releaseCase, reviewerCase, sessionCase } from './toolcall-run'
 import type { FlowToolsIo, GuardIo, ToolCallIo } from './toolcall-run'
-import { flowCatch, isFlowTool, toolCatch } from './toolguard'
+import { flowCatch, toolCatch } from './toolguard'
 import {
-  ago, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, sessionKey, sessionLive, sessionRow,
+  ago, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, sessionLive, sessionRow,
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
 import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSessions as watchSessionsTo } from './session-run'
-import { ownerVerdict, pumpRelay, relayCall, stripEngineFields, subagentRefusal } from './relay'
-import type { MainIdentity, PumpIo, RelayAnswer, RelayCall, RelayIo } from './relay'
+import { relayCall } from './relay'
+import type { MainIdentity, PumpIo, RelayIo } from './relay'
+import { alreadyForwardedTo, deliverToSessionTo, pumpOnceTo, relayToolCallTo } from './relay-run'
+import type { RelayExecIo, RelayMode, RelayRunIo } from './relay-run'
+import { adoptSessionsTo, durableSessions, identityTo, myRoleSessionsTo, normalizeSessions, onRoleGoneTo, onRoleReportTo, ownsSessionTo, persistSessionsTo, roleState } from './role-session-run'
+import type { RoleIo } from './role-session-run'
+
 import type { Caller, Ran, SessionIo } from './session-run'
 import { branchOwners, noteKey } from './state'
 import { ADD_OPTION } from './guardtests'
@@ -1839,7 +1838,7 @@ function startupIoOf($: EngineInterface, options: Record<string, unknown>, held:
       const disk = normalizeSessions(raw, await $.clock.now())
       await update($, sessions, cur => ({ ...disk, ...cur }))
     },
-    snapshotSessions: async () => { sessionsSaved = JSON.stringify(durableSessions(await read($, sessions))) },
+    snapshotSessions: async () => { roleState.saved = JSON.stringify(durableSessions(await read($, sessions))) },
     adoptSessions: () => adoptSessions($),
     setPreflight: async disk => { await update($, preflight, () => disk) },
     agents: () => agentsOf($),
@@ -1910,174 +1909,48 @@ function sessionIoOf($: EngineInterface): SessionIo {
   }
 }
 
-// A manager's or the reviewer's terminal wrote its report. A manager's goes to main the way an in-process manager's
-// final answer does; it is not an end (a terminal manager reports, then waits for the reviewer's messages), so
-// nothing is marked finished here.
-async function onRoleReport($: EngineInterface, s: Session, report: string): Promise<void> {
-  if (s.role === 'manager') {
-    toMain($, `Report from manager ${s.name}:\n${report}${mirror.askCards && lastLineAsks(report) ? `\n${REPORT_HINT}` : ''}`)
-    return
-  }
-  const id = sessionKey(s.name)
-  const batch = (await read($, pushState)).batch
-  // Read now, not at the start: merge_mode may have changed while it worked. A batch waiting for /flow push also
-  // ends the session; the push run is a fresh reviewer's.
-  const oneBatch = parseMode(heldSettings?.mergeMode) === 'confirm' || batch?.state === 'ready'
-  if (!oneBatch || heldSettings === undefined) {
-    await reviewerRan($, id, s.name, { answer: report }, false)
-    return
-  }
-  await best($, 'stopping the reviewer terminal', async () => void await sessionToolTo(sessionIoOf($), { action: 'stop', name: s.name, remove_worktree: true }, { id: 'main', name: 'main' }, heldSettings!))
-  await reviewerRan($, id, s.name, { answer: report }, true)
-}
-
-// A manager's or the reviewer's terminal went away. The session is 'exited', so the roster no longer lists it.
-async function onRoleGone($: EngineInterface, s: Session, tail: string): Promise<void> {
-  if (s.role === 'manager') {
-    toMain($, `flow session: manager "${s.name}" (${s.host}) ended its terminal. Its session is over; start a new manager if its task is not done.${tail.trim() ? `\nLast terminal lines:\n${tail.trim()}` : ''}`)
-    await refresh($)
-    return
-  }
-  // Work done since its last report would otherwise be lost: main gets the run's summary line.
-  await best($, 'relaying the reviewer end', () => relayReviewerReport($, sessionKey(s.name), s.name, 'The reviewer terminal ended without a final report.'))
-  await reviewerEnded($, s.name, { answer: tail.trim() === '' ? 'the terminal ended' : tail })
-}
-// The sessions record on disk (<state dir>/sessions.json): a main that restarts keeps its terminal
-// sessions, so their relay directories are pumped again and their reports still reach their owner.
-// Written only when it changed; the file is the last one saved, so a reload re-reads it.
-let sessionsSaved = ''
-async function persistSessions($: EngineInterface): Promise<void> {
-  await best($, 'saving sessions', async () => {
-    const dir = await stateDir($)
-    if (dir === undefined) return
-    const durable = durableSessions(await read($, sessions))
-    const text = JSON.stringify(durable)
-    if (text === sessionsSaved) return
-    sessionsSaved = text
-    await $.process.run(['mkdir', '-p', dir])
-    await writeJsonAtomic($, `${dir}/sessions.json`, durable)
-  })
-}
-
-// What the file keeps of a session: the live ones, without what changes on every watch tick (screen,
-// look times, the digest). The watcher rebuilds those; the file only changes on a real change (start,
-// status, report, nudge, stop). An ended session leaves the file, so its name is free again.
-const VOLATILE = ['screenText', 'screen', 'screenAt', 'lookedAt', 'checkedAt', 'digest', 'digestSeen'] as const
-function durableSessions(all: Record<string, Session>): Record<string, Session> {
-  return Object.fromEntries(Object.entries(all).filter(([, v]) => sessionLive(v)).map(([k, v]) =>
-    [k, Object.fromEntries(Object.entries(v).filter(([f]) => !(VOLATILE as readonly string[]).includes(f))) as Session]))
-}
-
-const SESSION_KEEP_MS = 24 * 60 * 60_000
-
-// Records of an older or hand-edited file that cannot be a session are dropped, not trusted, and so are
-// ended ones and reported workers nobody has touched for a day (their terminal is long gone).
-function normalizeSessions(raw: unknown, now: number): Record<string, Session> {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
-  return Object.fromEntries(Object.entries(raw).filter(([k, v]) => {
-    if (typeof v !== 'object' || v === null || (v as { name?: unknown }).name !== k) return false
-    const x = v as Session
-    if (typeof x.status !== 'string' || !sessionLive(x)) return false
-    return !(x.role === undefined && x.status === 'reported' && now - (x.reportAt ?? x.startedAt ?? 0) > SESSION_KEEP_MS)
-  })) as Record<string, Session>
-}
+function onRoleReport($: EngineInterface, s: Session, report: string): Promise<void> { return onRoleReportTo(roleIoOf($), s, report) }
+function onRoleGone($: EngineInterface, s: Session, tail: string): Promise<void> { return onRoleGoneTo(roleIoOf($), s, tail) }
+function persistSessions($: EngineInterface): Promise<void> { return persistSessionsTo(roleIoOf($)) }
 
 const watchSessions = ($: EngineInterface) => watchSessionsTo(sessionIoOf($))
 
-// --- Who owns a role session (relay.ts, ownerVerdict) ---
-// This main: its session id and the pid of its claude process (the nearest one up from the plugin runner's shell).
-// undefined when either cannot be read; a main without an identity behaves as before and owns every session.
-let identity: Promise<MainIdentity | undefined> | undefined
-function identityOf($: EngineInterface): Promise<MainIdentity | undefined> {
-  identity ??= (async () => {
-    const session = await $.session.id().catch(() => undefined)
-    const ppid = Number((await runCmd($, ['sh', '-c', 'echo $PPID'], 5_000)).stdout.trim())
-    if (session === undefined || session === '' || !Number.isInteger(ppid) || ppid <= 1) return undefined
-    const chain = await ancestorPids(ppid, async pid => {
-      const r = await runCmd($, ['ps', '-o', 'ppid=,comm=', '-p', String(pid)], 5_000)
-      const m = /^\s*(\d+)\s+(.*)$/.exec(r.stdout.trim())
-      return r.exitCode === 0 && m ? { ppid: Number(m[1]), comm: m[2]! } : undefined
-    })
-    // Insertion order runs from the shell up to the claude process, which is the last.
-    return { session, pid: [...chain].pop() ?? ppid }
-  })()
-  return identity
-}
+// --- Who owns a role session (role-session-run.ts) ---
+function identityOf($: EngineInterface): Promise<MainIdentity | undefined> { return identityTo(roleIoOf($)) }
+function ownsSession($: EngineInterface, s: Session): Promise<boolean> { return ownsSessionTo(roleIoOf($), s) }
+function adoptSessions($: EngineInterface): Promise<void> { return adoptSessionsTo(roleIoOf($)) }
+function myRoleSessions($: EngineInterface, ended = false): Promise<Session[]> { return myRoleSessionsTo(roleIoOf($), ended) }
 
-// Whether a pid is a live process, looked up at most every few seconds per pid (the pump ticks twice a second).
-const ALIVE_TTL_MS = 5_000
-const aliveAt = new Map<number, { at: number; ok: boolean }>()
-async function pidAlive($: EngineInterface, pid: number): Promise<boolean> {
-  if (!Number.isInteger(pid) || pid <= 1) return false
-  const t = await $.clock.now()
-  const hit = aliveAt.get(pid)
-  if (hit !== undefined && t - hit.at < ALIVE_TTL_MS) return hit.ok
-  const ok = (await runCmd($, ['kill', '-0', String(pid)], 5_000)).exitCode === 0
-  aliveAt.set(pid, { at: t, ok })
-  return ok
-}
-
-// A role session this main owns; a worker's record has no owner and is nobody's concern here.
-async function ownsSession($: EngineInterface, s: Session): Promise<boolean> {
-  if (s.role === undefined) return true
-  const me = await identityOf($)
-  return me === undefined || s.mainOwner?.session === me.session
-}
-
-// Settles every role session on record, in memory and on disk, against this main: one whose owner is gone
-// (or never recorded) is taken over and saved; one a live main owns stays untouched (ownsSession filters it
-// out of pumping and watching). Run at load and on the roster poll, so a restarted main takes its terminals back and a
-// running one picks up an orphan.
-let adopting = false
-async function adoptSessions($: EngineInterface): Promise<void> {
-  if (adopting) return
-  adopting = true
-  try {
-    const me = await identityOf($)
-    const dir = await stateDir($)
-    if (me === undefined || dir === undefined) return
-    const disk = normalizeSessions(await readJson($, `${dir}/sessions.json`), await $.clock.now())
-    const mem = await read($, sessions)
-    const judged = new Map<string, Session>()
-    for (const name of new Set([...Object.keys(mem), ...Object.keys(disk)])) {
-      const rec = mem[name] ?? disk[name]
-      if (rec?.role === undefined || !sessionLive(rec)) continue
-      // The file is the later word on the owner: another main may have taken it over since this one loaded it.
-      const owner = disk[name]?.mainOwner ?? mem[name]?.mainOwner
-      judged.set(name, { ...rec, ...(owner !== undefined && { mainOwner: owner }) })
-    }
-    const alive = new Map<number, boolean>()
-    for (const r of judged.values()) {
-      const pid = r.mainOwner?.pid
-      if (pid !== undefined && r.mainOwner?.session !== me.session) alive.set(pid, await pidAlive($, pid))
-    }
-    const verdicts = [...judged].map(([name, r]) => [name, r, ownerVerdict(r.mainOwner, me, pid => alive.get(pid) === true)] as const)
-    const take = verdicts.filter(([, , v]) => v === 'adopt')
-    if (take.length === 0) return
-    await update($, sessions, all => {
-      const out = { ...all }
-      for (const [name, r] of take) out[name] = { ...r, mainOwner: me }
-      return out
-    })
-    await persistSessions($)
-  } catch (err) {
-    await warn($, 'adopting sessions', err)
-  } finally {
-    adopting = false
+// The io of the terminal role sessions' ownership, sessions file and reports (bodies in role-session-run.ts).
+function roleIoOf($: EngineInterface): RoleIo {
+  return {
+    run: (argv, timeoutMs) => runCmd($, argv, timeoutMs),
+    now: () => $.clock.now(),
+    sessionId: () => $.session.id(),
+    sessions: () => read($, sessions),
+    updateSessions: fn => update($, sessions, fn),
+    stateDir: () => stateDir($),
+    readJson: path => readJson($, path),
+    writeJson: (path, obj) => writeJsonAtomic($, path, obj),
+    mkdirp: dir => $.process.run(['mkdir', '-p', dir]),
+    best: (what, fn) => best($, what, fn),
+    warn: (what, err) => warn($, what, err),
+    toMain: text => toMain($, text),
+    refresh: () => refresh($),
+    askCards: () => mirror.askCards,
+    heldMergeMode: () => heldSettings?.mergeMode,
+    heldSettings: () => heldSettings !== undefined,
+    batchReady: async () => (await read($, pushState)).batch?.state === 'ready',
+    stopTerminal: async name => void await sessionToolTo(sessionIoOf($), { action: 'stop', name, remove_worktree: true }, { id: 'main', name: 'main' }, heldSettings!),
+    reviewerRan: (id, name, end, ended) => reviewerRan($, id, name, end, ended),
+    relayReviewerReport: (id, name, answer) => relayReviewerReport($, id, name, answer),
+    reviewerEnded: (name, end) => reviewerEnded($, name, end),
   }
-}
-
-// The role sessions this main owns: the live ones, or with `ended` the ended ones too (their relay still answers).
-async function myRoleSessions($: EngineInterface, ended = false): Promise<Session[]> {
-  const mine: Session[] = []
-  for (const s of Object.values(await read($, sessions))) if (s.role !== undefined && (ended || sessionLive(s)) && await ownsSession($, s)) mine.push(s)
-  return mine
 }
 
 // --- The disk relay (relay.ts) ---
 // A terminal-started claude loads its own copy of this plugin; FLOW_ROLE / FLOW_NAME / FLOW_RELAY tell
-// that copy what it is. Set at session.start; undefined in a normal session (main, or an Agent-tool subagent).
-type RelayMode = { role: 'worker' | 'manager' | 'reviewer'; name: string; dir: string | undefined }
+// that copy what it is (RelayMode, relay-run.ts). Set at session.start; undefined in a normal session (main, or an Agent-tool subagent).
 let relay: RelayMode | undefined
 
 // The files and processes the relay needs, both for the client in the terminal's copy and for main's pump.
@@ -2126,17 +1999,7 @@ async function relayModeOf($: EngineInterface): Promise<RelayMode | undefined> {
 type FlowCall = { agentId?: string } & Record<string, unknown>
 type FlowOut = { result: unknown } | { deny: string }
 
-// What a terminal sees of a message: SendMessage's own envelope names the sender, a typed line cannot.
-const messageFrom = (from: string, text: string): string => `Message from ${from}: ${text}`
-
-// SendMessage to a terminal session, answered as the tool's refusal text: the message went by typing it
-// in, which the model must not retry through the host.
-async function deliverToSession($: EngineInterface, fromId: string | undefined, target: Session, text: string): Promise<string> {
-  const from = fromId === undefined ? 'main' : await ownerNameOf($, fromId)
-  if (!sessionLive(target)) return `Not delivered: session ${target.name} has ${target.status}.`
-  const ok = await deliverTo(ioOf($, from), sessionKey(target.name), messageFrom(from, text))
-  return ok ? `Delivered to ${target.name} by flow (terminal session).` : `Not delivered: session ${target.name} could not be reached.`
-}
+function deliverToSession($: EngineInterface, fromId: string | undefined, target: Session, text: string): Promise<string> { return deliverToSessionTo(relayRunIoOf($), fromId, target, text) }
 const sessionTool = ($: EngineInterface, input: Record<string, unknown>, caller: Caller, s: ReturnType<typeof settingsOf>) =>
   sessionToolTo(sessionIoOf($), input, caller, s)
 
@@ -2177,160 +2040,45 @@ async function registerTools($: EngineInterface): Promise<void> {
 }
 
 
-// A terminal manager's report is a file it writes itself: <state dir>/sessions/<name>/report.md, next to its relay dir.
-// Exactly that path, by the manager's own thread (not a subagent); nothing else.
-function ownReport(r: RelayMode, agentId: string | undefined, e: { tool: string }): boolean {
-  if (agentId !== undefined || r.dir === undefined || (e.tool !== 'Write' && e.tool !== 'Edit')) return false
-  const file = (e as { file_path?: unknown }).file_path
-  return typeof file === 'string' && file === `${r.dir.replace(/\/relay\/?$/, '')}/report.md`
-}
+function alreadyForwarded($: EngineInterface, rid: string, text: string): Promise<boolean> { return alreadyForwardedTo(relayRunIoOf($), rid, text) }
+function pumpOnce($: EngineInterface, c: FlowCtx): Promise<void> { return pumpOnceTo(relayExecIoOf($, c)) }
 
-// The generic hook in a relay copy. A worker's passes straight through. A manager's or the reviewer's keeps
-// the guards that need no state (kills, remote deletes, code edits by a manager, the main checkout), asks
-// main for the ones that do (test slots), and answers every flow tool, and a SendMessage to anyone this
-// session cannot see, through the relay. Activity and the ledger are main's business.
-async function relayToolCall($: EngineInterface, settings: ReturnType<typeof settingsOf>, e: { tool: string; agentId?: string; command?: string }): Promise<FlowOut | undefined> {
-  const r = relay!
-  if (r.role === 'worker') return undefined
-  const id = e.agentId
-  const from = sessionKey(r.name)
-  const ask = (tool: string, input: Record<string, unknown>) => r.dir === undefined
-    ? Promise.resolve<RelayAnswer>({ result: 'flow relay: FLOW_RELAY is not set, so this session cannot reach the main session.' })
-    : relayCall(relayIoOf($), r.dir, { tool, input, from, role: r.role, by: id ?? r.name })
-  if (e.tool === 'Bash') {
-    const command = String(e.command ?? '')
-    const why = killRefusal(command)
-    if (why !== undefined) return { deny: why }
-    const suite = suiteRun(command, settings.testSlotCommands ?? [])
-    if (suite !== undefined) {
-      const a = await ask('slot-check', { suite })
-      if (a.deny !== undefined) return { deny: a.deny }
-      // Anything but "ok" is the relay failing to reach main: the run waits, as a refusal would.
-      if (a.result !== 'ok') return { deny: String(a.result) }
-    }
-    const typecheck = typecheckRun(command, settings.typecheckCommands ?? [])
-    if (typecheck !== undefined) {
-      const a = await ask('slot-check', { typecheck })
-      if (a.deny !== undefined) return { deny: a.deny }
-      if (a.result !== 'ok') return { deny: String(a.result) }
-    }
-    const del = remoteDeleteRefusal(command)
-    if (del !== undefined) return { deny: del }
-  }
-  if (WRITE_TOOLS.includes(e.tool) && r.role === 'manager' && !ownReport(r, id, e)) {
-    return { deny: 'flow: managers don\'t edit code. Put the change in a worker\'s brief, or send it to the worker that owns the file.' }
-  }
-  if (settings.mainGuard) {
-    const cwd = async () => (id === undefined || r.role === 'manager' ? $.session.cwd() : undefined)
-    const why = await mainCheckoutGuard($, e as unknown as Record<string, unknown>, cwd, settings.mainAllow, async () => true)
-    if (why !== undefined) return { deny: why }
-  }
-  if (isFlowTool(e.tool)) {
-    // A subagent's call reaches main as the manager's; it may look, not write (relay.ts, subagentRefusal).
-    // The reviewer's subagents keep the manager-less behaviour they had: its tools are not the ones that decide work.
-    if (id !== undefined && r.role === 'manager') {
-      const why = subagentRefusal(e.tool, stripEngineFields(e as unknown as Record<string, unknown>), r.name)
-      if (why !== undefined) return { deny: why }
-    }
-    const a = await ask(e.tool, stripEngineFields(e as unknown as Record<string, unknown>))
-    return a.deny !== undefined ? { deny: a.deny } : { result: a.result }
-  }
-  if (e.tool === 'SendMessage') {
-    const input = e as unknown as Record<string, unknown>
-    const to = String(input.to ?? '')
-    if (!(await $.agent.list()).some(a => a.id === to || a.name === to)) {
-      const a = await ask('send', { to, text: String(input.message ?? input.text ?? '') })
-      // Whatever main answered is the reason nothing went through the host: "Sent to X by flow." or why not.
-      return { deny: a.deny ?? String(a.result) }
-    }
-  }
-  return undefined
-}
-
-
-// A SendMessage from a terminal session to someone: as the sender, to a session, an agent or main.
-// Whether every line of a reviewer's text to main was already forwarded to main for that reviewer.
-async function alreadyForwarded($: EngineInterface, rid: string, text: string): Promise<boolean> {
-  const lines = text.split('\n').map(normText).filter(l => l !== '')
-  const sent = (await read($, forwarded)).lines[rid] ?? []
-  return lines.length > 0 && lines.every(l => sent.includes(l) || (needLines(l).length > 0 && needLines(l).every(n => sent.includes(n))))
-}
-
-async function sendFrom($: EngineInterface, key: string, name: string, to: string, text: string): Promise<RelayAnswer> {
-  if (to === '' || to === '*') return { deny: 'Not sent: name one agent or session to send to.' }
-  const all = await read($, sessions)
-  if (all[name]?.role === 'reviewer') {
-    let handled: string | undefined
-    await best($, 'routing a reviewer message', async () => { handled = await reviewerSendGuard(routeIoOf($), key, to, text) })
-    if (handled !== undefined) return { deny: handled }
-  }
-  const body = messageFrom(name, text)
-  if (to === 'main') {
-    if (all[name]?.role === 'reviewer' && await alreadyForwarded($, key, text)) {
-      return { deny: 'Not sent: main already has this report (the plugin forwarded it). Do not repeat it.' }
-    }
-    toMain($, body)
-    return { result: 'Sent to main by flow.' }
-  }
-  const target = all[to] ?? all[to.replace(/^session:/, '')]
-  const onRoster = (await $.agent.list()).some(a => a.id === to || a.name === to)
-  if (target !== undefined && (sessionLive(target) || !onRoster)) {
-    if (!sessionLive(target)) return { deny: `Not sent: session ${target.name} has ${target.status}.` }
-    return (await deliverTo(ioOf($, name), sessionKey(target.name), body))
-      ? { result: `Sent to ${target.name} by flow.` } : { deny: `Not sent: ${target.name} could not be reached.` }
-  }
-  const listed = (await $.agent.list()).find(a => a.id === to || a.name === to)
-  // A manager the host dropped from the roster is held by the id last seen for it.
-  const seenId = listed === undefined ? (await read($, seenAgents))[to]?.id : undefined
-  const targetId = listed?.id ?? seenId
-  if (targetId === undefined) return { deny: `Not sent: no agent or session named "${to}".` }
-  return (await deliver($, targetId, body)) ? { result: `Sent to ${to} by flow.` } : { deny: `Not sent: ${to} has ended.` }
-}
-
-
-// One relayed call, run in main as the session that left it (`session:<name>`): the flow tools above, and
-// two pseudo-tools for the guards the copy cannot judge itself (it has no slots, and no roster).
-async function relayExec($: EngineInterface, c: FlowCtx, call: RelayCall, name: string): Promise<RelayAnswer> {
-  const key = sessionKey(name)
-  const input = call.input
-  await best($, 'logging a relayed call', async () => {
-    const t = await $.clock.now()
-    const line = describeCall({ ...input, tool: call.tool })
-    await update($, activity, acts => {
-      const a = acts[key] ?? { startedAt: t, lastAt: t, log: [] }
-      return { ...acts, [key]: { ...a, lastAt: t, log: [...a.log, line].slice(-LOG_MAX) } }
-    })
-  })
-  if (call.tool === 'slot-check' && typeof input.typecheck === 'string') {
-    const refused = typecheckRefusal(await read($, typecheckSlots), await read($, testSlots), await refresh($), key, (c.settings.typecheckSlots ?? 1), await $.clock.now(), input.typecheck)
-    return refused === undefined ? { result: 'ok' } : { deny: refused }
-  }
-  if (call.tool === 'slot-check') {
-    const refused = slotRefusal(await read($, testSlots), await refresh($), key, c.settings.testSlots, await $.clock.now(), String(input.suite ?? ''))
-    return refused === undefined ? { result: 'ok' } : { deny: refused }
-  }
-  if (call.tool === 'send') return sendFrom($, key, name, String(input.to ?? ''), String(input.text ?? ''))
-  if (!(FLOW_TOOLS as readonly string[]).includes(call.tool)) return { deny: `flow relay: ${call.tool} is not a flow tool` }
-  return (await runFlowTool($, call.tool, { ...input, agentId: key }, c))!
-}
-
-
-let pumping = false
-// One tick of main's pump: runs the calls the role sessions left. Does nothing until one is live, and
-// a tick that overlaps the one before it (a slow listing) returns at once.
-async function pumpOnce($: EngineInterface, c: FlowCtx): Promise<void> {
-  if (pumping) return
-  pumping = true
-  try {
-    if ((await myRoleSessions($)).length === 0) return
-    await pumpRelay(pumpIoOf($), (call, name) => relayExec($, c, call, name))
-  } catch (err) {
-    await warn($, 'relay pump', err)
-  } finally {
-    pumping = false
+// The io of the relay's client and of main's pump (bodies in relay-run.ts).
+function relayRunIoOf($: EngineInterface): RelayRunIo {
+  return {
+    relay: () => relay!,
+    call: (dir, req) => relayCall(relayIoOf($), dir, req),
+    agents: () => $.agent.list(),
+    sessionCwd: () => $.session.cwd(),
+    mainGuard: (e, cwd, allow) => mainCheckoutGuard($, e, cwd, allow, async () => true),
+    now: () => $.clock.now(),
+    best: (what, fn) => best($, what, fn),
+    sessions: () => read($, sessions),
+    seenAgents: () => read($, seenAgents),
+    forwarded: () => read($, forwarded),
+    toMain: text => toMain($, text),
+    ownerName: id => ownerNameOf($, id),
+    routeGuard: (key, to, text) => reviewerSendGuard(routeIoOf($), key, to, text),
+    deliverTerminal: (from, key, text) => deliverTo(ioOf($, from), key, text),
+    deliver: (id, text) => deliver($, id, text),
+    warn: (what, err) => warn($, what, err),
+    myRoleSessions: () => myRoleSessions($),
+    pumpIo: pumpIoOf($),
   }
 }
 
+function relayExecIoOf($: EngineInterface, c: FlowCtx): RelayExecIo {
+  return {
+    ...relayRunIoOf($),
+    updateActivity: fn => update($, activity, fn),
+    testSlots: () => read($, testSlots),
+    typecheckSlots: () => read($, typecheckSlots),
+    refresh: () => refresh($),
+    slotLimits: () => ({ test: c.settings.testSlots, typecheck: c.settings.typecheckSlots ?? 1 }),
+    flowTools: FLOW_TOOLS,
+    runFlow: async (tool, input) => (await runFlowTool($, tool, input, c))!,
+  }
+}
 
 
 type FlowCtx = { settings: ReturnType<typeof settingsOf>; options: Record<string, unknown>; installed: string | undefined }
@@ -2667,7 +2415,7 @@ export const register: Register = (on, options) => {
   // reaches this catch, not the tool hook's own, so a flow tool that did not finish is answered here too.
   const toolCallHeld = { settings: () => settings, explicitEffort, mainModel: () => mainModel, mainWindow: () => mainWindow }
   on('tool.call', async ($, e, next) => {
-    if (relay !== undefined) return (await relayToolCall($, settings, e)) ?? next(e)
+    if (relay !== undefined) return (await relayToolCallTo(relayRunIoOf($), settings, e)) ?? next(e)
     const io = toolCallIoOf($, toolCallHeld)
     const refused = await beforeToolCall(io, e)
     if (refused !== undefined) return refused
