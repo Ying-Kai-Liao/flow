@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.113] - 2026-10-14
+
 ### Fixed
 
 - The plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN finding at the release, session.start and agent.spawn calls (0.6.112 lines 2220, 2485, 2529), sixth round: every `$.noun.method(...)` in register.tsx is now a whole statement, return value, arrow body or `const` initializer. No `.then`/`.catch` chained on a `$` call or on a call passing `$` (fallbacks are try/catch helpers with the same value: envOf, usageOf, readQuietly, existsQuietly), no `$` call in a ternary (releaseIoOf's exec is the declared execIn), as an argument of another call (`JSON.parse(await $.fs.read(p))`) or under `void`; the const-arrow helpers taking `$` (sh, today, deliver, toMain and eight more) are function declarations. ReleaseIo, SessionIo and RelayIo name their file reads `readFile` (and ReleaseIo `fileExists`/`writeFile`), so no io member that calls `$` shadows the imported `read`. scripts/plain-names.mjs check 9 guards these shapes in every function a hook reaches; it is calibrated, not a known rule: 0.6.84, which passed, has the same shapes.
