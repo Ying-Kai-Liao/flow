@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.105] - 2026-10-13
+
+### Changed
+
+- Fix agent.register and $-plain directory findings in register.tsx; guard both (#207)
+
 ## [0.6.104] - 2026-10-13
 
 ### Changed
