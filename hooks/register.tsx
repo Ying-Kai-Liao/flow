@@ -89,7 +89,7 @@ import type { Forwarded, RouteIo } from './reviewer-route'
 import { noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue } from './reviewer-run'
 import { reconcileStale } from './stale-handovers'
 import type { StaleIo } from './stale-handovers'
-import type { BreakerIo, QueueIo, ReviewerIo } from './reviewer-run'
+import type { BreakerIo, QueueIo, QueueWhy, ReviewerIo } from './reviewer-run'
 import { EMPTY_BREAKER, REVIEWER_KIND } from './reviewer-breaker'
 import { handoverTool } from './handover-run'
 import type { HandoverIo } from './handover-run'
@@ -379,7 +379,7 @@ function handoverIoOf($: EngineInterface, options: Record<string, unknown>): Han
     toast: text => { void $.ui.toast(text) },
     refresh: () => refresh($),
     arms: async () => { await loadLedger($); return { ledger: await read($, ledger), log: await readLog($) } },
-    ensureQueue: () => ensureQueue($),
+    ensureQueue: why => ensureQueue($, why),
     liteManager: agentId => liteManagerOf($, agentId),
   }
 }
@@ -511,7 +511,7 @@ function commandIoOf($: EngineInterface): CommandIo {
     saveHandover: ho => saveHandover($, ho),
     appendLog: event => appendLog($, event),
     toast: text => { void $.ui.toast(text) },
-    ensureQueue: () => ensureQueue($),
+    ensureQueue: why => ensureQueue($, why),
     releaseReviewerHalt: () => releaseHaltTo(breakerIoOf($), 'user'),
     refresh: () => refresh($),
     pushAct: (act, by) => pushAct($, act, by),
@@ -982,7 +982,7 @@ function deployIoOf($: EngineInterface): DeployIo {
     saveHandover: ho => saveHandover($, ho),
     inbox: () => read($, inbox),
     withInbox: fn => withInbox($, fn),
-    ensureQueue: () => ensureQueue($),
+    ensureQueue: why => ensureQueue($, why),
     loadRules: options => loadRules(standingIoOf($), options),
     appendNote: (name, line) => appendNote($, name, line),
     appendLog: event => appendLog($, event),
@@ -1359,8 +1359,8 @@ function decideEvalIoOf($: EngineInterface): DecideEvalIo {
 // the next handover, or a reviewer that ended with work left, starts a fresh one.
 // Calls run one after another: handovers arriving back to back must not each see "no queue yet".
 let queueChain: Promise<unknown> = Promise.resolve()
-function ensureQueue($: EngineInterface): Promise<string> {
-  const run = queueChain.then(() => startQueue(queueIoOf($)))
+function ensureQueue($: EngineInterface, why: QueueWhy = 'other'): Promise<string> {
+  const run = queueChain.then(() => startQueue(queueIoOf($), why))
   queueChain = run.catch(() => undefined)
   return run
 }
@@ -1465,10 +1465,26 @@ function queueIoOf($: EngineInterface): QueueIo {
         void best($, 'starting the reviewer', async () => void (await ensureQueue($)))
       })
     },
+    delay: {
+      ms: () => (heldSettings?.reviewerDelay ?? 3) * 60_000,
+      running: () => delayTimer,
+      start: ms => {
+        // One timer for the whole wait: handovers during it join, and its end starts the reviewer as any caller would.
+        if (delayTimer) return
+        delayTimer = true
+        $.clock.after(ms, () => {
+          delayTimer = false
+          void best($, 'starting the reviewer', async () => void (await ensureQueue($)))
+        })
+      },
+    },
   }
 }
 
 let breakerTimer = false
+// reviewer_delay's timer, apart from the breaker's: a backoff and a delay never swallow each other. Lost on a restart,
+// where the session start's ensureQueue starts the reviewer at once.
+let delayTimer = false
 
 // A reviewer's report to main: its whole answer, only for a run that did batch work, once main's transcript
 // lacks it (the host may have delivered it already). The run's work record goes with it.

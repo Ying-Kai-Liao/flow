@@ -85,6 +85,12 @@
       "description": "Advanced: How many heavy test runs (a whole suite, the full check) may run at once across all agents of the session. Minimum 1.",
       "default": 1
     },
+    "reviewer_delay": {
+      "type": "number",
+      "title": "Reviewer delay (minutes)",
+      "description": "Advanced: After a handover on an idle queue, wait this many minutes before starting the reviewer, so PRs handed over close together land in one batch. 0: start at once.",
+      "default": 3
+    },
     "typecheck_slots": {
       "type": "number",
       "title": "Typecheck slots",

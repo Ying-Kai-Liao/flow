@@ -7,6 +7,7 @@ import type { Handover, LogEvent } from '../types'
 import { age, clip } from './inbox'
 import { CONFIRM_LABEL, effectiveMode, parseMode } from './mergemode'
 import type { MergeMode } from './mergemode'
+import type { QueueWhy } from './reviewer-run'
 
 // ---- approve and reject: one code path for the command and the pane ----
 
@@ -17,7 +18,7 @@ export type ApproveIo = {
   saveHandover: (h: Handover) => Promise<void>
   appendLog: (event: Omit<LogEvent, 'ts'>) => Promise<void>
   toast: (text: string) => void
-  ensureQueue: () => Promise<string>
+  ensureQueue: (why?: QueueWhy) => Promise<string>
   refresh: () => Promise<unknown>
   closeReturnedEnv: (h: Handover) => Promise<void>
   settleBatch: () => Promise<void>
@@ -35,7 +36,7 @@ export async function approvePr(io: ApproveIo, n: number): Promise<string> {
     await io.appendLog({ event: 'approve', owner: next.reportTo, pr: n, branch: next.branch, text: next.title })
   })
   void io.toast(`PR #${n} approved at ${h.head.slice(0, 8)}`)
-  const queue = await io.ensureQueue()
+  const queue = await io.ensureQueue('approval')
   await io.refresh()
   return `Approved PR #${n} at ${h.head.slice(0, 8)}. ${queue}`
 }

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The plugin's fast-forward of the main checkout no longer fails at random with "ff failed: From https://...". Its `git pull` raced the auto cleanup sweep's `git fetch origin --prune`, which starts on the same reviewer "done": both update `refs/remotes/origin/<base>` in the shared `.git`, and the loser gets "cannot lock ref". The sweep now starts only after the fast-forward, and the fast-forward fetches (retrying up to three times on a lock error, for other concurrent fetches such as the reviewer's own) and merges `--ff-only` separately, and a failure reports git's last `error:`/`fatal:` line instead of the fetch's "From <url>" line.
+### Added
+
+- `reviewer_delay` setting (minutes, default 3; 0 = start at once): a handover on an idle queue starts the reviewer only after the wait, and handovers during it join, so PRs handed over close together land in one batch (one reviewer start, one full check, one release). An approval starts at once unless a wait is running, then joins it; push and rebuild runs, due deploys, leftover work and a session start never wait.
 
 ## [0.6.105] - 2026-10-13
 

@@ -13,6 +13,7 @@ import { pushLines } from './pushgate-run'
 import type { PushAct } from './pushgate-run'
 import type { PushState } from './pushgate'
 import type { Hold } from './deploy'
+import type { QueueWhy } from './reviewer-run'
 import { mirror, PANE } from './core'
 import { approvePr, rejectPr } from './prcard'
 import { LITE_USAGE, liteStartPrompt } from './lite'
@@ -54,7 +55,7 @@ export type CommandIo = {
   saveHandover: (h: Handover) => Promise<void>
   appendLog: (event: Omit<LogEvent, 'ts'>) => Promise<void>
   toast: (text: string) => void
-  ensureQueue: () => Promise<string>
+  ensureQueue: (why?: QueueWhy) => Promise<string>
   refresh: () => Promise<unknown>
   pushAct: (act: PushAct, by: string) => Promise<string>
   holdTarget: (name: string, until: Hold['until'], by: string, reason: string | undefined) => Promise<string>

@@ -75,6 +75,7 @@ export const KEYS: Record<string, Kind> = {
   always_tests: 'list',
   flaky_tests: 'list',
   batch_max: 'number',
+  reviewer_delay: 'number',
   guard_tests: 'globmap',
   verify_paths: 'list',
   deploy_targets: 'objects',
@@ -392,6 +393,8 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     alwaysTests: strs('always_tests'),
     flakyTests: strs('flaky_tests'),
     batchMax: Math.max(1, Math.floor(num('batch_max', 10))),
+    // Minutes a fresh handover on an idle queue waits before the reviewer starts; 0 starts it at once.
+    reviewerDelay: Math.max(0, num('reviewer_delay', 3)),
     release: str('release', 'off') === 'on',
     releaseGithub: str('release_github', 'off') === 'on',
     releaseFiles: strs('release_files'),

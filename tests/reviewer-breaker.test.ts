@@ -394,3 +394,17 @@ test('old state with no breaker file starts with an empty history', async ($, on
   expect(await handover($, 7)).toContain('Started reviewer reviewer-1')
   expect(stored(w, 'reviewer-breaker')).toMatchObject({ streak: 0, run: { name: 'reviewer-1' } })
 })
+
+test('reviewer_delay: handovers on an idle queue wait one timer, then one reviewer starts', { options: { reviewer_delay: 1 } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  expect(await handover($, 7)).toContain('The reviewer starts in 1m')
+  expect(await handover($, 8)).toContain('joins')
+  await w.clock.advance(30_000)
+  await w.clock.settle()
+  expect(w.spawns).toHaveLength(0)
+  await w.clock.advance(30_000)
+  await w.clock.settle()
+  expect(w.spawns).toHaveLength(1)
+  expect(w.spawns[0]!.prompt).toContain('#7, #8')
+})

@@ -1,5 +1,5 @@
 import type { AgentInfo } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { Handover } from '../types'
 import { EMPTY_INBOX, needsMessage, renderInbox } from '../hooks/inbox'
@@ -12,6 +12,7 @@ import { fill, REVIEWER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
 import { KEYS, mergeLayers } from '../hooks/settings'
 import { matchRule, parseRules, suggest } from '../hooks/standing'
+import { test } from './support'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]

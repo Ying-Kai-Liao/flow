@@ -157,7 +157,16 @@ export type QueueIo = {
   breaker: BreakerIo
   // Calls ensureQueue again after ms (one timer at a time; the caller dedupes).
   wait: (ms: number) => void
+  // reviewer_delay: how long a fresh handover on an idle queue waits so close handovers share a batch (0 = no wait),
+  // whether that wait is running, and the one timer that ends it with a normal ensureQueue. Separate from `wait`, so
+  // the breaker's backoff and the delay never swallow each other. Absent: no delay.
+  delay?: { ms: () => number; running: () => boolean; start: (ms: number) => void }
 }
+
+// Why startQueue runs: a fresh handover may wait for reviewer_delay; an approval joins a wait already running and
+// otherwise starts at once; anything else (a reviewer that ended with work left, resume, a session start, the timer
+// itself) starts as always.
+export type QueueWhy = 'handover' | 'approval' | 'other'
 
 // What the respawn circuit breaker (reviewer-breaker.ts) works through: its state file, the clock and the inbox.
 export type BreakerIo = {
@@ -245,14 +254,15 @@ export async function onReviewerAnswer(io: BreakerIo, ensureQueue: () => Promise
 }
 
 // Starts a reviewer unless one is live (register.tsx's ensureQueue serialises the calls).
-export async function startQueue(io: QueueIo): Promise<string> {
+export async function startQueue(io: QueueIo, why: QueueWhy = 'other'): Promise<string> {
   const list = await io.agents()
   if (list.some(a => isReviewer(a.type) && LIVE.has(a.status))) {
     return 'The running reviewer picks it up at its next list.'
   }
   // A batch (any state) holds the queue: pending handovers go in after the push run.
   const batch = await io.batch()
-  const pending = batch !== undefined ? [] : Object.values(await io.handovers()).filter(h => h.status === 'pending')
+  const all = batch !== undefined ? [] : Object.values(await io.handovers())
+  const pending = all.filter(h => h.status === 'pending')
   const pushDue = batch !== undefined && batch.state !== 'ready'
   const dueEntries = Object.entries((await io.deploys()).targets).filter(([name, t]) => t.due === true && mirror.deployInfos.some(i => i.name === name))
   const dueTargets = dueEntries.map(([name]) => name)
@@ -274,7 +284,12 @@ export async function startQueue(io: QueueIo): Promise<string> {
   if (pending.length === 0 && dueTargets.length === 0 && !pushDue) {
     return batch === undefined ? 'Nothing pending.' : `Batch ${batch.id} awaits the user's /flow push; new handovers wait behind it.`
   }
-  if (session !== undefined && io.nudge !== undefined) return nudgeReviewer(io, session, pending, dueTargets, dueSig, pushDue ? batch : undefined)
+  const otherWork = dueTargets.length > 0 || pushDue
+  if (session !== undefined && io.nudge !== undefined) {
+    const held = delayStart(io, why, all, otherWork, session)
+    if (held !== undefined) return held
+    return nudgeReviewer(io, session, pending, dueTargets, dueSig, pushDue ? batch : undefined)
+  }
   // The respawn circuit breaker: a halted queue waits for main, and a start soon after a failed one waits its turn.
   const now = await io.breaker.now()
   const d = decide(await currentBreaker(io.breaker), now)
@@ -288,6 +303,9 @@ export async function startQueue(io: QueueIo): Promise<string> {
     io.wait(d.ms)
     return `Backing off: the next reviewer starts in ${Math.ceil(d.ms / 1000)}s.`
   }
+  // After the breaker's halt and backoff: a halted queue arms no delay, and a backoff already spaces the start.
+  const held = delayStart(io, why, all, otherWork, undefined)
+  if (held !== undefined) return held
   const n = (await io.runs()) + 1
   await io.setRuns(n)
   // Recorded before the spawn: a reviewer that dies at once ends before spawn() resolves, and that end must find its run.
@@ -305,6 +323,23 @@ export async function startQueue(io: QueueIo): Promise<string> {
   }
   return `Started reviewer reviewer-${n}.`
 }
+
+// reviewer_delay: the line to return when this start waits, or undefined to start now. A push or rebuild run and
+// due deploys never wait; a terminal reviewer that was told work, or holds a taken or ready PR, is working and is
+// told now. The breaker still decides after the wait: the timer runs ensureQueue as any other caller.
+function delayStart(io: QueueIo, why: QueueWhy, all: Handover[], otherWork: boolean, session: Session | undefined): string | undefined {
+  if (io.delay === undefined || why === 'other') return undefined
+  const joins = 'The reviewer starts when the reviewer_delay wait ends; this joins that batch.'
+  if (io.delay.running()) return joins
+  if (why !== 'handover' || otherWork) return undefined
+  const ms = io.delay.ms()
+  if (ms <= 0) return undefined
+  if (session !== undefined && ((session.nudged ?? []).length > 0 || all.some(h => h.status === 'taken' || h.status === 'ready'))) return undefined
+  io.delay.start(ms)
+  return `The reviewer starts in ${formatDelay(ms)} so close handovers share a batch.`
+}
+
+const formatDelay = (ms: number): string => (ms % 60_000 === 0 ? `${ms / 60_000}m` : `${Math.ceil(ms / 1000)}s`)
 
 // One handover as it stands: a new hand-over or an approval of the same PR is a new instance, typed again.
 export const toldKey = (h: Handover): string => `${h.pr}:${h.at}:${h.approvedHead ?? ''}`
