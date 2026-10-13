@@ -191,6 +191,15 @@ test('main pumps a role session\'s calls and runs them as that session: a note, 
   expect([...w.files.keys()].some(k => k.includes('/taken-'))).toBe(false)
 })
 
+test('a relayed release runs the inline case in runFlowTool: a manager session that is not lite is refused by its access check', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER }))
+  await start($)
+  leave(w, 'r1', 'mcp__flow__release', { prs: [7] })
+  await w.clock.advance(1200)
+  expect(answerOf(w, 'r1')?.result).toContain('Refused: mcp__flow__release is not for you; it belongs to the reviewer.')
+})
+
 test('a relayed session start by a manager that has not filed its pre-flight is refused before anything starts', async ($, on) => {
   const w = world(on)
   w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER }))

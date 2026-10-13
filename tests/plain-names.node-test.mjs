@@ -112,3 +112,68 @@ async function use($: any, t: string) {
 }`))
   assert.equal(r.status, 0, r.out)
 })
+
+// A hooks file whose hook calls bigIoOf($, held) in place; bigIoOf has `members` members using $ and `extra` written in.
+function setterFile(members, extra, held = '{}') {
+  const body = Array.from({ length: members }, (_, i) => `    m${i}: () => help${i}($),`).join('\n')
+  const helpers = Array.from({ length: members }, (_, i) => `function help${i}($: any) { return $.clock.now() }`).join('\n')
+  return `${helpers}
+let last: number | undefined
+const memo = { last: undefined as number | undefined }
+function setLast(x: number) { last = x }
+function bigIoOf($: any, held: any) {
+  return {
+    ...held,
+${body}
+    ${extra}
+  }
+}
+export default (on: any) => {
+  let flag = false
+  const state = { flag: () => flag, setFlag: () => { flag = true } }
+  on('session.start', async ($: any, e: any) => bigIoOf($, ${held}))
+}
+`
+}
+
+test('check 10 flags a large io builder handing out a setter, written in it or spread in from an argument', () => {
+  const own = run(setterFile(13, 'setLast: (x: number) => { last = x },'))
+  assert.equal(own.status, 1)
+  assert.match(own.out, /bigIoOf hands out a setter and has 13 members using \$ \(over 12\).*\(check 10\)/)
+  const spread = run(setterFile(13, '', 'state'))
+  assert.match(spread.out, /bigIoOf hands out a setter and has 13 members using \$.*\(check 10\)/)
+})
+
+test('check 10 passes a property write, a top-level function, and a small builder with a setter', () => {
+  assert.equal(run(setterFile(13, 'setLast: (x: number) => { memo.last = x },')).status, 0)
+  assert.equal(run(setterFile(13, 'setLast,')).status, 0)
+  assert.equal(run(setterFile(12, 'setLast: (x: number) => { last = x },')).status, 0)
+})
+
+test('check 10 flags a builder reaching a setter builder through another function, and not the inner call', () => {
+  const src = `let last: number | undefined
+function releaseIoOf($: any) {
+  return { now: () => $.clock.now(), setLast: (x: number) => { last = x } }
+}
+async function releaseRun($: any) {
+  const io = releaseIoOf($)
+  return io
+}
+function releaseCaseIoOf($: any) {
+  return { release: () => releaseRun($) }
+}
+function runFlowTool($: any, tool: string) {
+  switch (tool) {
+    case 'release': return releaseCaseIoOf($)
+    default: return releaseIoOf($)
+  }
+}
+export default (on: any) => {
+  on('tool.call', async ($: any, e: any) => runFlowTool($, e.tool))
+}
+`
+  const r = run(src)
+  assert.equal(r.status, 1)
+  assert.equal((r.out.match(/\(check 10\)/g) ?? []).length, 1, r.out)
+  assert.match(r.out, /register\.ts:14: releaseCaseIoOf reaches a builder that hands out a setter through another function/)
+})

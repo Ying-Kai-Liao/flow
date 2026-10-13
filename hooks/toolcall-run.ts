@@ -227,7 +227,6 @@ type CaseMembers = {
   toolCaller: (agentId: string | undefined) => Promise<ToolCaller>
   handovers: () => Promise<Parameters<typeof releaseToolAccess>[2]>
   ownerName: (id: string | undefined) => Promise<string>
-  release: (settings: Settings, e: Call) => Promise<Out | undefined>
   reviewer: (settings: Settings, e: Call) => Promise<Out | undefined>
   readNotes: (manager: string) => Promise<string>
   appendNote: (manager: string, line: string) => Promise<boolean>
@@ -239,7 +238,6 @@ type CaseMembers = {
   sessionTool: (settings: Settings, e: Call, caller: { id: string; name: string }) => Promise<string>
   deployTool: (e: Call, isMain: boolean, caller: string) => Promise<string>
 }
-export type ReleaseCaseIo = Pick<CaseMembers, 'toolCaller' | 'handovers' | 'release'>
 export type ReviewerCaseIo = Pick<CaseMembers, 'toolCaller' | 'handovers' | 'reviewer'>
 export type GuardTestsCaseIo = Pick<CaseMembers, 'sessionWorktree' | 'agents' | 'exec' | 'cwd'>
 export type NoteCaseIo = Pick<CaseMembers, 'readNotes' | 'now' | 'appendNote' | 'logNote' | 'notesPath'>
@@ -247,11 +245,6 @@ export type CleanCaseIo = Pick<CaseMembers, 'sweep'>
 export type SessionCaseIo = Pick<CaseMembers, 'ownerName' | 'sessionTool'>
 export type DeployCaseIo = Pick<CaseMembers, 'ownerName' | 'toolCaller' | 'handovers' | 'deployTool'>
 export type PushCaseIo = Pick<CaseMembers, 'pushState' | 'pushAct'>
-
-export async function releaseCase(io: ReleaseCaseIo, settings: Settings, e: Call): Promise<Out | undefined> {
-  const refused = releaseToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())
-  return refused !== undefined ? { result: refused } : io.release(settings, e)
-}
 
 export async function reviewerCase(io: ReviewerCaseIo, settings: Settings, e: Call): Promise<Out | undefined> {
   const refused = reviewerToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())

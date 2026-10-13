@@ -44,6 +44,16 @@
 //    of $ calls), startupIoOf (`$.clock.now().then(...)`) and spawnHookIoOf (`$.env.get(...).catch(...)`), while
 //    reviewerIoOf, built the same way without those shapes, was not. 0.6.84, which passed, had chained shapes too
 //    (`.catch` on `$.env.get` and `$.fs.read`), so this check does not hold it to 0.
+// 10. Under hooks/, in a file that registers hooks, an io builder (a top-level function taking $ and returning an
+//    object literal) hands out no setter: a closure whose whole body assigns a variable declared outside it (`setLast:
+//    last => { lastRelease = last }`), written in its object, spread in from an argument (`...held`, `...spawnState`)
+//    or named there by a const, when the builder has more than 12 members using $ or reaches, through a member passing
+//    $ on to functions that are not builders, a builder that hands one out. Each call passing $ to such a builder is
+//    reported, and so is an io written in a hook with more than 12 members using $ and a setter. A property write (`memo.last = last`) and a top-level function doing the assignment are not
+//    setters. A guess calibrated to evidence, not a known rule: 0.6.113 was reported at releaseCaseIoOf($) (reaching
+//    releaseIoOf's setLast through releaseRun), startupIoOf($, ...) (setRelay, setSlotDir, the held setters) and
+//    spawnHookIoOf($, spawnState) (setNoLong, setNoContinue), while 0.6.84, which passed, built releaseIoOf($), with
+//    setLast, in the release tool's own hook and handed mainHeld's setters only to the small usageIoOf.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -136,6 +146,7 @@ for (const file of files) {
   if (registers) wrapped(sf, say)
   if (registers) shared(sf, say)
   if (registers) plain(sf, say)
+  if (registers) setters(sf, say)
 }
 
 // Check 6. Top-level functions by name, the parameters that receive a hook's event, then each closure naming both.
@@ -404,6 +415,110 @@ function plain(sf, say) {
     ts.forEachChild(n, helper)
   }
   helper(sf)
+}
+
+// Check 10. The io builders, which of them hand out a setter, then each call passing $ to one that is large or layered.
+function setters(sf, say) {
+  const isFn = n => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)
+  const pname = p => ts.isIdentifier(p.name) ? p.name.text : undefined
+  const MAX = 12
+  const top = new Map()
+  const builders = new Map() // name -> [declaration, returned object literal]
+  for (const s of sf.statements) {
+    if (!ts.isFunctionDeclaration(s) || !s.name || !s.body) continue
+    top.set(s.name.text, s)
+    const ret = s.body.statements.find(ts.isReturnStatement)
+    if (s.parameters.some(p => pname(p) === '$') && ret?.expression && ts.isObjectLiteralExpression(ret.expression)) builders.set(s.name.text, [s, ret.expression])
+  }
+  // Every const in the file with an object or a function as its value, by name (register()'s included).
+  const consts = new Map()
+  const collect = n => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) consts.set(n.name.text, n.initializer)
+    ts.forEachChild(n, collect)
+  }
+  collect(sf)
+  // A setter: a closure whose whole body assigns a name it does not declare (`x => { y = x }`, `() => { y = true }`).
+  const assigns = fn => {
+    const body = fn.body
+    if (body === undefined) return false
+    const stmts = ts.isBlock(body) ? body.statements : [body]
+    if (stmts.length !== 1) return false
+    const e = ts.isExpressionStatement(stmts[0]) ? stmts[0].expression : stmts[0]
+    const own = new Set(fn.parameters.map(pname))
+    return ts.isBinaryExpression(e) && e.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && e.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      ts.isIdentifier(e.left) && !own.has(e.left.text)
+  }
+  const isSetter = v => {
+    if (v === undefined) return false
+    if (ts.isArrowFunction(v) || ts.isFunctionExpression(v) || ts.isMethodDeclaration(v)) return assigns(v)
+    if (ts.isIdentifier(v)) { const c = consts.get(v.text); return c !== undefined && (ts.isArrowFunction(c) || ts.isFunctionExpression(c)) && assigns(c) }
+    return false
+  }
+  // Whether an object hands out a setter; `args` maps the builder's parameters to this call's arguments for a spread.
+  const holds = (obj, args, seen = new Set()) => {
+    if (obj === undefined || seen.has(obj)) return false
+    seen.add(obj)
+    if (ts.isIdentifier(obj)) return holds(args?.get(obj.text) ?? consts.get(obj.text), undefined, seen)
+    if (!ts.isObjectLiteralExpression(obj)) return false
+    return obj.properties.some(p => {
+      if (ts.isSpreadAssignment(p)) return holds(p.expression, args, seen)
+      if (ts.isShorthandPropertyAssignment(p)) return isSetter(p.name)
+      if (ts.isMethodDeclaration(p)) return isSetter(p)
+      if (ts.isPropertyAssignment(p)) return isSetter(p.initializer) || (ts.isObjectLiteralExpression(p.initializer) && holds(p.initializer, args, seen))
+      return false
+    })
+  }
+  const argsOf = (decl, call) => new Map(decl.parameters.map((p, i) => [pname(p), call?.arguments[i]]))
+  const dollarAt = (call, name) => call.arguments.findIndex(a => ts.isIdentifier(a) && a.text === name)
+  // Whether a builder's io, through its members passing $ on to functions that are not builders, reaches a call to
+  // a builder that hands out a setter. Builders on the way stop the walk: they answer for themselves.
+  const layered = name => {
+    const [decl, obj] = builders.get(name)
+    const seen = new Set()
+    const queue = [[obj, pname(decl.parameters.find(p => pname(p) === '$'))]]
+    while (queue.length > 0) {
+      const [node, d] = queue.shift()
+      let hit = false
+      const visit = k => {
+        if (hit) return
+        if (ts.isCallExpression(k) && ts.isIdentifier(k.expression) && dollarAt(k, d) >= 0) {
+          const callee = k.expression.text
+          if (builders.has(callee)) {
+            const [bd, bo] = builders.get(callee)
+            if (holds(bo, argsOf(bd, k))) { hit = true; return }
+          } else if (top.has(callee) && !seen.has(callee)) {
+            seen.add(callee)
+            const f = top.get(callee)
+            queue.push([f.body, pname(f.parameters[dollarAt(k, d)])])
+          }
+        }
+        ts.forEachChild(k, visit)
+      }
+      visit(node)
+      if (hit) return true
+    }
+    return false
+  }
+  const usesDollar = n => (ts.isIdentifier(n) && n.text === '$') || (ts.forEachChild(n, usesDollar) ?? false)
+  const visit = n => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && builders.has(n.expression.text) && n.arguments.some(a => ts.isIdentifier(a) && a.text === '$')) {
+      const name = n.expression.text
+      const [decl, obj] = builders.get(name)
+      if (holds(obj, argsOf(decl, n))) {
+        const using = obj.properties.filter(p => usesDollar(p)).length
+        if (using > MAX) say(n, `${name} hands out a setter and has ${using} members using $ (over ${MAX}): write through a holder object's property or a top-level function (check 10)`)
+        else if (layered(name)) say(n, `${name} hands out a setter through another function (check 10)`)
+      } else if (layered(name)) say(n, `${name} reaches a builder that hands out a setter through another function: build that io in the hook (check 10)`)
+    }
+    if (ts.isObjectLiteralExpression(n) && !ts.isObjectLiteralExpression(n.parent) && holds(n)) {
+      let fn = n.parent
+      while (fn && !isFn(fn)) fn = fn.parent
+      const using = n.properties.filter(p => usesDollar(p)).length
+      if (fn && isHook(fn) && using > MAX) say(n, `an io written in a hook hands out a setter and has ${using} members using $ (over ${MAX}): write through a holder object's property (check 10)`)
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
 }
 
 if (findings.length > 0) {
