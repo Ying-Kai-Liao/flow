@@ -213,6 +213,8 @@ export async function afterToolCall(io: ToolCallIo, e: { agentId?: string }, r: 
 
 // --- The flow tools' multi-line cases (runFlowTool's switch stays in register.tsx) ---------------
 
+// The io is built per call without the call: the call comes in as an argument where a case needs it, so no
+// closure in register.tsx holds `$` together with the hook's event (the plugin directory flags that).
 export type FlowToolsIo = {
   agents: () => Promise<AgentInfo[]>
   exec: (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
@@ -223,8 +225,8 @@ export type FlowToolsIo = {
   toolCaller: (agentId: string | undefined) => Promise<ToolCaller>
   handovers: () => Promise<Parameters<typeof releaseToolAccess>[2]>
   ownerName: (id: string | undefined) => Promise<string>
-  release: () => Promise<Out | undefined>
-  reviewer: () => Promise<Out | undefined>
+  release: (e: Call) => Promise<Out | undefined>
+  reviewer: (e: Call) => Promise<Out | undefined>
   readNotes: (manager: string) => Promise<string>
   appendNote: (manager: string, line: string) => Promise<boolean>
   notesPath: (manager: string) => Promise<string | undefined>
@@ -232,18 +234,18 @@ export type FlowToolsIo = {
   sweep: (base: string, apply: boolean) => Promise<string>
   pushState: () => Promise<Parameters<typeof pushLines>[0]>
   pushAct: (act: { kind: 'push' } | { kind: 'drop' } | { kind: 'back'; pr: number }) => Promise<string>
-  sessionTool: (caller: { id: string; name: string }) => Promise<string>
-  deployTool: (isMain: boolean, caller: string) => Promise<string>
+  sessionTool: (e: Call, caller: { id: string; name: string }) => Promise<string>
+  deployTool: (e: Call, isMain: boolean, caller: string) => Promise<string>
 }
 
 export async function releaseCase(io: FlowToolsIo, e: Call): Promise<Out | undefined> {
   const refused = releaseToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())
-  return refused !== undefined ? { result: refused } : io.release()
+  return refused !== undefined ? { result: refused } : io.release(e)
 }
 
 export async function reviewerCase(io: FlowToolsIo, e: Call): Promise<Out | undefined> {
   const refused = reviewerToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())
-  return refused !== undefined ? { result: refused } : io.reviewer()
+  return refused !== undefined ? { result: refused } : io.reviewer(e)
 }
 
 export async function guardTestsCase(io: FlowToolsIo, base: string, map: Parameters<typeof guardTestsFor>[1], e: Call): Promise<Out> {
@@ -298,7 +300,7 @@ export async function cleanCase(io: FlowToolsIo, settings: Pick<Settings, 'base'
 export async function sessionCase(io: FlowToolsIo, e: Call): Promise<Out> {
   const id = e.agentId
   const caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await io.ownerName(id) }
-  return { result: await io.sessionTool(caller) }
+  return { result: await io.sessionTool(e, caller) }
 }
 
 export async function deployCase(io: FlowToolsIo, e: Call): Promise<Out> {
@@ -306,7 +308,7 @@ export async function deployCase(io: FlowToolsIo, e: Call): Promise<Out> {
   const caller = isMain ? 'main' : await io.ownerName(e.agentId!)
   const refused = deployToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())
   if (refused !== undefined) return { result: refused }
-  return { result: await io.deployTool(isMain, caller) }
+  return { result: await io.deployTool(e, isMain, caller) }
 }
 
 export async function pushCase(io: FlowToolsIo, e: Call): Promise<Out> {

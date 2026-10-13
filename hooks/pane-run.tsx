@@ -85,7 +85,8 @@ export type PaneIo = {
   set: {
     [K in 'selected' | 'cursor' | 'folded' | 'overrideView' | 'hinted' | 'armed' | 'viewMode' | 'prShown' | 'prBack' | 'batchPick' | 'prDetails' | 'inboxCursor' | 'cardBack' | 'inboxFolds' | 'inboxOpen' | 'inboxDraft' | 'inboxNote' | 'graphFocus' | 'demo']: (fn: (v: PaneState[K]) => PaneState[K]) => Promise<unknown>
   }
-  resolve: () => ReturnType<EngineInterface['ui']['resolve']>
+  // Takes the render event: register.tsx keeps no closure holding `$` and the hook's event together.
+  resolve: (e: PaneEvent) => ReturnType<EngineInterface['ui']['resolve']>
   now: () => Promise<number>
   usage: () => Promise<Awaited<ReturnType<EngineInterface['session']['usage']>> | undefined>
   toast: (text: string) => void
@@ -163,10 +164,10 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
   // The body below is wrapped as is (not re-indented) to keep the diff to this fix.
   try {
   return await (async () => {
-  const { Box, Text, Button } = io.resolve()
+  const { Box, Text, Button } = io.resolve(e)
   const dm = await io.read.demo()
   if (dm !== null) {
-    const Input = (io.resolve() as unknown as { Input?: Parameters<typeof demoView>[0]['Input'] }).Input
+    const Input = (io.resolve(e) as unknown as { Input?: Parameters<typeof demoView>[0]['Input'] }).Input
     return demoView({
       els: { Box, Text, Button }, Input, rows: bodyRowsOf(e), state: dm, now: await io.read.now(), draft: await io.read.inboxDraft(), note: await io.read.inboxNote(),
       io: {
@@ -353,7 +354,7 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
     }
     const ho = shownPr === null ? undefined : hs[String(shownPr)]
     const key = ho === undefined ? undefined : detailsKey(ho)
-    const Input = (io.resolve() as unknown as { Input?: InboxCtx['Input'] }).Input
+    const Input = (io.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
     return prCardView({
       els: { Box, Text, Button }, Input, rows, columns, pr: shownPr, ho, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note,
       io: {
@@ -375,7 +376,7 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
   }
   if (mode === 'inbox' || mode === 'card' || mode === 'archive') {
     // Only some surfaces have an Input; without one the keys still answer.
-    const Input = (io.resolve() as unknown as { Input?: InboxCtx['Input'] }).Input
+    const Input = (io.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
     const [ibox, icur, draft, note, from, iopen] = await Promise.all([io.read.inbox(), io.read.inboxCursor(), io.read.inboxDraft(), io.read.inboxNote(), io.read.cardBack(), io.read.inboxOpen()])
     // The same rows a press reads, so what is drawn and what is pressed fold alike.
     const irows = (await io.paneInboxRows()).rows
@@ -468,7 +469,7 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
   })
   })()
   } catch (err) {
-    const { Text } = io.resolve()
+    const { Text } = io.resolve(e)
     return <Text>flow: pane failed to draw: {err instanceof Error ? err.message : String(err)}</Text>
   }
 }

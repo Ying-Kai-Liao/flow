@@ -11,6 +11,11 @@
 //    or `as`: `(await f($, x))?.y`. Assign it to a const first.
 // 5. Under hooks/, `$.agent.register(...)` takes an object literal written in the call, with no spread: the directory
 //    (MOD_PERMISSION_ANSWER_UNREAD) can only confirm an agent leaves permission decisions with the user from that.
+// 6. Under hooks/, no function holds `$` together with a hook's event (its second parameter, followed through the
+//    file's functions it is passed to, casts included) in one closure: no closure in a hook, and no closure in a
+//    function of the file taking `$`, names both. The directory reports such a function at each call passing it `$`
+//    (0.6.103 and 0.6.108: flowToolsIoOf($, c, e) in runFlowTool, whose closures held `$` and the relayed call `e`;
+//    it lists at most three lines). Pass the event, or the fields needed, to the closure as an argument instead.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -99,6 +104,106 @@ for (const file of files) {
     ts.forEachChild(n, visit)
   }
   visit(sf)
+  if (registers) bundled(sf, say)
+}
+
+// Check 6. Top-level functions by name, the parameters that receive a hook's event, then each closure naming both.
+function bundled(sf, say) {
+  const isFn = n => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)
+  const pname = p => ts.isIdentifier(p.name) ? p.name.text : undefined
+  const top = new Map()
+  for (const s of sf.statements) {
+    if (ts.isFunctionDeclaration(s) && s.name && s.body) top.set(s.name.text, s)
+    if (ts.isVariableStatement(s)) {
+      for (const d of s.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) top.set(d.name.text, d.initializer)
+      }
+    }
+  }
+  // An event holder is a function and one of its parameter names; a hook's second parameter starts it.
+  const held = new Map()
+  const hold = (fn, name) => {
+    if (name === undefined) return false
+    const s = held.get(fn) ?? new Set()
+    if (s.has(name)) return false
+    held.set(fn, s.add(name))
+    return true
+  }
+  const hooks = []
+  const findHooks = n => {
+    if (isFn(n) && isHook(n)) { hooks.push(n); if (n.parameters[1]) hold(n, pname(n.parameters[1])) }
+    ts.forEachChild(n, findHooks)
+  }
+  findHooks(sf)
+  // The function whose parameter an identifier at n names, innermost first.
+  const ownerOf = (n, name) => {
+    for (let p = n.parent; p; p = p.parent) if (isFn(p) && p.parameters.some(q => pname(q) === name)) return p
+    return undefined
+  }
+  const unwrap = a => {
+    while (ts.isAsExpression(a) || ts.isParenthesizedExpression(a) || ts.isNonNullExpression(a) || ts.isTypeAssertionExpression(a) || ts.isSatisfiesExpression(a)) a = a.expression
+    return a
+  }
+  const isHeld = (n, a) => {
+    a = unwrap(a)
+    if (ts.isIdentifier(a)) { const o = ownerOf(n, a.text); return o !== undefined && (held.get(o)?.has(a.text) ?? false) }
+    // A copy of the event is the event: { ...e } or { e }.
+    if (ts.isObjectLiteralExpression(a)) return a.properties.some(p => (ts.isSpreadAssignment(p) && isHeld(n, p.expression)) || (ts.isShorthandPropertyAssignment(p) && isHeld(n, p.name)))
+    return false
+  }
+  for (let grew = true; grew;) {
+    grew = false
+    const flow = n => {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && top.has(n.expression.text)) {
+        const callee = top.get(n.expression.text)
+        n.arguments.forEach((a, i) => { if (callee.parameters[i] && isHeld(n, a) && hold(callee, pname(callee.parameters[i]))) grew = true })
+      }
+      ts.forEachChild(n, flow)
+    }
+    flow(sf)
+  }
+  // Names a nested function reads from outside itself.
+  const names = fn => {
+    const own = new Set(fn.parameters.map(pname))
+    const out = new Set()
+    const z = k => {
+      if (ts.isIdentifier(k) && !own.has(k.text) && !(ts.isPropertyAccessExpression(k.parent) && k.parent.name === k) &&
+          !(ts.isPropertyAssignment(k.parent) && k.parent.name === k)) out.add(k.text)
+      ts.forEachChild(k, z)
+    }
+    z(fn.body)
+    return out
+  }
+  const bundles = (fn, events) => {
+    const hit = []
+    const w = m => {
+      if (isFn(m)) { const r = names(m); if (r.has('$') && events.some(e => r.has(e))) hit.push(m) }
+      ts.forEachChild(m, w)
+    }
+    ts.forEachChild(fn.body, w)
+    return hit
+  }
+  const sites = new Map()
+  const findSites = n => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.arguments.some(a => ts.isIdentifier(a) && a.text === '$')) {
+      const l = sites.get(n.expression.text) ?? []
+      sites.set(n.expression.text, [...l, n])
+    }
+    ts.forEachChild(n, findSites)
+  }
+  findSites(sf)
+  for (const h of hooks) {
+    if (!h.parameters.some(p => pname(p) === '$')) continue
+    for (const m of bundles(h, [...(held.get(h) ?? [])])) say(m, "a closure in a hook holds $ and the hook's event: pass the event to it as an argument")
+  }
+  for (const [name, fn] of top) {
+    if (!fn.parameters.some(p => pname(p) === '$') || !held.has(fn)) continue
+    const hit = bundles(fn, [...held.get(fn)])
+    if (hit.length === 0) continue
+    const why = `${name} holds $ and a hook's event (${[...held.get(fn)].join(', ')}) in one closure: pass the event to that closure as an argument`
+    const at = sites.get(name) ?? []
+    for (const n of at.length > 0 ? at : hit) say(n, why)
+  }
 }
 
 if (findings.length > 0) {
