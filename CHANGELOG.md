@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.108] - 2026-10-13
+
 ### Added
 
 - README: a "How it works at a glance" section with two diagrams, the architecture and the life of a task, in light and dark SVG with interactive HTML versions and their sources under `docs/diagrams/`.
