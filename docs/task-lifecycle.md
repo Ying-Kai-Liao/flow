@@ -61,7 +61,7 @@ When one task needs another's merged code, the owner declares it with `mcp__flow
 
 ## 6. Worker briefs and worktrees
 
-The manager writes the brief: first line `Your name: <slug>`, a `Size:` line, goal, acceptance criteria, scope, attachments. It starts a `flow:worker` with the Agent tool; the host gives it a worktree, and the worker renames its branch to `flow/<name>`. A continuation (`Continue on branch: flow/<x>`) is rewritten to run in the old worktree when that is clean and at the pushed branch; otherwise it gets a new one. Up to `max_workers` workers run per manager. Managers cannot edit code: the `tool.call` hook refuses it, so every change goes into a brief.
+The manager writes the brief: first line `Your name: <slug>`, a `Size:` line, goal, acceptance criteria, scope, attachments. It starts a `flow:worker` with the Agent tool (in mode `orca` or `tmux`, a terminal worker with `mcp__flow__session`); the host gives it a worktree, and the worker renames its branch to `flow/<name>`. A continuation (`Continue on branch: flow/<x>`) is rewritten to run in the old worktree when that is clean and at the pushed branch; otherwise it gets a new one. Up to `max_workers` workers run per manager. Managers cannot edit code: the `tool.call` hook refuses it, so every change goes into a brief.
 
 Code: `spawn.ts` and `spawn-run.ts` (spawn rules, continuation routing), `guards.ts` and `toolcall-run.ts` (the `tool.call` guards), `prompts.ts` (the role rules the plugin adds). A worker can also run in another harness such as Codex: [Workers in other harnesses](how-it-works.md#workers-in-other-harnesses).
 
@@ -109,7 +109,7 @@ A restart empties the roster but not the disk. Managers keep notes (`mcp__flow__
 
 ## 15. Terminals and the relay
 
-Workers normally run as agents in your session. With `worker_harness` set, or when a manager asks for it, a worker runs in a terminal (Orca or tmux, by `session_host`) in another harness. `manager_harness` and `reviewer_harness` do the same for managers and the reviewer, but only for a `claude`. Code: `sessions.ts` and `session-run.ts` for session workers, `role-session-run.ts` for terminal managers and the reviewer (who owns which session, the start line, the reviewer's long-lived terminal).
+The `mode` setting picks one host for the whole run. In `agent` (the default) managers, workers and the reviewer are agents in your session. In `orca` or `tmux` every manager, worker and the reviewer runs in a terminal in that host, with no per-role mixing: managers and the reviewer are always claude, and workers run the CLI `worker_harness` names (`claude` by default, or one a manager picks per worker). Code: `sessions.ts` and `session-run.ts` for session workers, `role-session-run.ts` for terminal managers and the reviewer (who owns which session, the start line, the reviewer's long-lived terminal).
 
 A terminal claude loads its own copy of the plugin, so its `mcp__flow__*` tools do not run there. Each call is written as a file in the session's relay directory, main's pump runs it as that session and writes the answer back: `relay-run.ts` holds both ends, `relay.ts` the pure parts. Reports travel the other way: the terminal writes `report.md` and main delivers it as a message. Detail: [Managers and the reviewer in a terminal](how-it-works.md#managers-and-the-reviewer-in-a-terminal).
 
