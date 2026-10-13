@@ -11,9 +11,9 @@ export type ReleaseIo = {
   exec: (argv: string[], cwd?: string) => Promise<{ exitCode: number; stdout: string; stderr: string }>
   sleep: (ms: number) => Promise<void>
   now: () => Promise<number>
-  exists: (path: string) => Promise<boolean>
-  read: (path: string) => Promise<string>
-  write: (path: string, text: string) => Promise<void>
+  fileExists: (path: string) => Promise<boolean>
+  readFile: (path: string) => Promise<string>
+  writeFile: (path: string, text: string) => Promise<void>
   stateDir: () => Promise<string | undefined>
   readJson: (path: string) => Promise<unknown>
   writeJsonAtomic: (path: string, obj: unknown) => Promise<boolean>
@@ -81,10 +81,10 @@ export async function publishRelease(io: ReleaseIo, settings: Settings, dir: str
     const view = await io.exec(['gh', 'release', 'view', tag], dir)
     if (view.exitCode === 0) return `Published ${tag}: tag pushed, GitHub Release already existed.`
     const logName = settings.changelogFile || 'CHANGELOG.md'
-    const section = await io.exists(`${dir}/${logName}`) ? changelogSection(await io.read(`${dir}/${logName}`), version) : undefined
+    const section = await io.fileExists(`${dir}/${logName}`) ? changelogSection(await io.readFile(`${dir}/${logName}`), version) : undefined
     const stateD = await io.stateDir()
     const notes = `${stateD ?? '/tmp'}/release-notes-${tag}.md`
-    await io.write(notes, section !== undefined && section !== '' ? section + '\n' : `Release ${version}\n`)
+    await io.writeFile(notes, section !== undefined && section !== '' ? section + '\n' : `Release ${version}\n`)
     const made = await run('gh release create', ['gh', 'release', 'create', tag, '--title', tag, '--notes-file', notes, '--verify-tag'])
     if (!made.ok) return made.line
     const url = await io.exec(['gh', 'release', 'view', tag, '--json', 'url', '--jq', '.url'], dir)
@@ -114,10 +114,10 @@ export async function releaseTool(io: ReleaseIo, settings: Settings, input: Reco
   const recut = input.recut === true && open !== undefined && open.state !== 'ready'
   if (last?.key === key && !recut) return { result: `Refused: already released ${last.version} for PRs ${key.replaceAll(',', ', ')}. The release commit is in your worktree; go on to the push.` }
   let files = settings.releaseFiles ?? []
-  if (files.length === 0 && await io.exists(`${dir}/package.json`)) files = ['package.json']
+  if (files.length === 0 && await io.fileExists(`${dir}/package.json`)) files = ['package.json']
   if (files.length === 0) return { result: 'Refused: no version file. Set release_files (repo-relative JSON or TOML files) in .claude/flow.json, or add a package.json at the repo root; a release without a version is meaningless.' }
   const logName = settings.changelogFile || 'CHANGELOG.md'
-  if (!(await io.exists(`${dir}/${logName}`))) return { result: `Refused: the changelog ${logName} does not exist in ${dir}; create it or set changelog_file.` }
+  if (!(await io.fileExists(`${dir}/${logName}`))) return { result: `Refused: the changelog ${logName} does not exist in ${dir}; create it or set changelog_file.` }
   const all = await io.handovers()
   const asked: (Bump | undefined)[] = []
   const titles: string[] = []
@@ -136,13 +136,13 @@ export async function releaseTool(io: ReleaseIo, settings: Settings, input: Reco
   }
   const kind = highestBump(asked)
   try {
-    const texts = await Promise.all(files.map(f => io.read(`${dir}/${f}`)))
+    const texts = await Promise.all(files.map(f => io.readFile(`${dir}/${f}`)))
     const next = bumpVersion(readVersion(texts[0]!, files[0]!), kind)
     const date = localDate(await io.now())
-    const log = cutChangelog(await io.read(`${dir}/${logName}`), next, date, titles)
+    const log = cutChangelog(await io.readFile(`${dir}/${logName}`), next, date, titles)
     const updated = files.map((f, i) => setVersion(texts[i]!, f, next))
-    for (const [i, f] of files.entries()) await io.write(`${dir}/${f}`, updated[i]!)
-    await io.write(`${dir}/${logName}`, log)
+    for (const [i, f] of files.entries()) await io.writeFile(`${dir}/${f}`, updated[i]!)
+    await io.writeFile(`${dir}/${logName}`, log)
     const cut = { key, version: next }
     io.setLast(cut)
     if (stateD !== undefined) await io.writeJsonAtomic(`${stateD}/release.json`, cut)

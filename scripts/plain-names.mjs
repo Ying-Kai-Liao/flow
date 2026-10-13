@@ -34,6 +34,16 @@
 //    members looked like, while handoverIoOf, planIoOf and slotsIoOf (one case each) and inboxIoOf (4 cases, 11
 //    members) in the same switch were never reported, and 0.6.84, the last release it passed, built each tool's io
 //    in its own hook. Give each case its own small io builder holding only what it uses.
+// 9. Under hooks/, in a file that registers hooks, in every function $ reaches (followed as in check 7), each
+//    `$.noun.method(...)` is a whole statement, a whole `return` value, a whole arrow body or the whole initializer
+//    of a `const x =`, awaited or not: never chained (`.then`, `.catch`, `.finally`), in a ternary, `??`, `||`,
+//    `&&` or template, an argument of another call (`JSON.parse(await $.fs.read(p))`), under `void`, or assigned to
+//    a `let`. A call passing $ is never chained either, and no `const f = ($) => ...` helper takes $: declare it
+//    with `function`. Put a fallback in a try/catch and a branch in an `if` in a declared helper. A guess
+//    calibrated to evidence, not a known rule: 0.6.112 was reported at the calls reaching releaseIoOf (a ternary
+//    of $ calls), startupIoOf (`$.clock.now().then(...)`) and spawnHookIoOf (`$.env.get(...).catch(...)`), while
+//    reviewerIoOf, built the same way without those shapes, was not. 0.6.84, which passed, had chained shapes too
+//    (`.catch` on `$.env.get` and `$.fs.read`), so this check does not hold it to 0.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -125,6 +135,7 @@ for (const file of files) {
   if (registers) bundled(sf, say)
   if (registers) wrapped(sf, say)
   if (registers) shared(sf, say)
+  if (registers) plain(sf, say)
 }
 
 // Check 6. Top-level functions by name, the parameters that receive a hook's event, then each closure naming both.
@@ -326,6 +337,73 @@ function shared(sf, say) {
     if (using <= MAX) continue
     for (const [n] of at) say(n, `${name} is one io shared by ${clauses.size} switch cases with ${using} members using $ (over ${MAX}): give each case its own small io builder (check 8)`)
   }
+}
+
+// Check 9. The functions $ reaches from the hooks, then each $ call in them that is not a whole statement or value.
+function plain(sf, say) {
+  const isFn = n => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)
+  const pname = p => ts.isIdentifier(p.name) ? p.name.text : undefined
+  const top = new Map()
+  for (const s of sf.statements) {
+    if (ts.isFunctionDeclaration(s) && s.name && s.body) top.set(s.name.text, s)
+    if (ts.isVariableStatement(s)) {
+      for (const d of s.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) top.set(d.name.text, d.initializer)
+      }
+    }
+  }
+  const holds = new Map()
+  const queue = []
+  const reach = (fn, name) => { if (name !== undefined && !holds.has(fn)) { holds.set(fn, name); queue.push(fn) } }
+  const findHooks = n => { if (isFn(n) && isHook(n) && n.parameters[0]) reach(n, pname(n.parameters[0])); ts.forEachChild(n, findHooks) }
+  findHooks(sf)
+  const chain = p => ts.isPropertyAccessExpression(p) && ['then', 'catch', 'finally'].includes(p.name.text)
+  // Why a $ call at `call` is not plain, or undefined when it is a whole statement or value.
+  const where = call => {
+    let n = call, p = call.parent
+    if (ts.isAwaitExpression(p)) { n = p; p = p.parent }
+    if (ts.isExpressionStatement(p) || ts.isReturnStatement(p)) return undefined
+    if (ts.isArrowFunction(p) && p.body === n) return undefined
+    if (ts.isVariableDeclaration(p) && p.initializer === n && ts.isIdentifier(p.name) && ts.isVariableDeclarationList(p.parent) &&
+        (p.parent.flags & ts.NodeFlags.Const) !== 0) return undefined
+    if (chain(p)) return `is chained with .${p.name.text}`
+    if (ts.isConditionalExpression(p)) return 'is in a ternary'
+    if (ts.isBinaryExpression(p)) return `is an operand of ${ts.tokenToString(p.operatorToken.kind)}`
+    if (ts.isTemplateSpan(p)) return 'is in a template'
+    if (ts.isVoidExpression(p)) return 'is under void'
+    if (ts.isCallExpression(p) || ts.isNewExpression(p)) return 'is an argument of another call'
+    if (ts.isParenthesizedExpression(p)) return 'is parenthesized'
+    if (ts.isVariableDeclaration(p)) return 'initializes something other than a const name'
+    return 'is not a whole statement or value'
+  }
+  while (queue.length > 0) {
+    const fn = queue.shift()
+    const name = holds.get(fn)
+    const visit = k => {
+      if (k !== fn && isFn(k) && k.parameters.some(p => pname(p) === name)) return
+      if (ts.isIdentifier(k) && k.text === name && !ts.isParameter(k.parent)) {
+        const p = k.parent
+        if (ts.isPropertyAccessExpression(p) && p.expression === k && ts.isPropertyAccessExpression(p.parent) && ts.isCallExpression(p.parent.parent) && p.parent.parent.expression === p.parent) {
+          const why = where(p.parent.parent)
+          if (why !== undefined) say(p.parent.parent, `a $ call ${why}: make it a whole statement, return value or const (check 9)`)
+        }
+        if (ts.isCallExpression(p) && p.arguments.includes(k)) {
+          const up = ts.isAwaitExpression(p.parent) ? p.parent.parent : p.parent
+          if (chain(up) && up.expression === p) say(p, `a call passing $ is chained with .${up.name.text}: use try/catch or a declared helper (check 9)`)
+          const callee = ts.isIdentifier(p.expression) ? top.get(p.expression.text) : undefined
+          if (callee !== undefined) reach(callee, pname(callee.parameters[p.arguments.indexOf(k)] ?? {}))
+        }
+      }
+      ts.forEachChild(k, visit)
+    }
+    ts.forEachChild(fn.body, visit)
+  }
+  const helper = n => {
+    if (ts.isVariableDeclaration(n) && n.initializer && (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer)) &&
+        n.initializer.parameters.some(p => pname(p) === '$')) say(n, 'a const helper takes $: declare it with function (check 9)')
+    ts.forEachChild(n, helper)
+  }
+  helper(sf)
 }
 
 if (findings.length > 0) {

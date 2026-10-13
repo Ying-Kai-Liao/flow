@@ -13,7 +13,7 @@ function world(o: { live?: boolean; exit?: number; stdout?: string } = {}) {
   const ran: string[][] = []
   const io: PumpIo = {
     list: async dir => [...files.keys()].filter(k => k.startsWith(`${dir}/`)).map(k => k.slice(dir.length + 1)),
-    read: async p => {
+    readFile: async p => {
       const t = files.get(p)
       if (t === undefined) throw new Error('ENOENT')
       return t

@@ -19,7 +19,7 @@ export type SessionIo = {
   now: () => Promise<number>
   after: (ms: number, fn: () => void) => void
   stat: (path: string) => Promise<{ mtimeMs: number }>
-  read: (path: string) => Promise<unknown>
+  readFile: (path: string) => Promise<unknown>
   write: (path: string, text: string) => Promise<unknown>
   sessions: () => Promise<Record<string, Session>>
   updateSessions: (fn: (all: Record<string, Session>) => Record<string, Session>) => Promise<unknown>
@@ -463,7 +463,7 @@ export async function watchSessions(io: SessionIo): Promise<void> {
       if (s.role !== undefined && io.owns !== undefined && !await io.owns(s)) continue
       const st = await io.stat(s.reportFile).catch(() => undefined)
       if (st !== undefined && st.mtimeMs > (s.reportAt ?? 0) && t - st.mtimeMs >= SETTLE_MS) {
-        const report = String(await io.read(s.reportFile).catch(() => '')).trim()
+        const report = String(await io.readFile(s.reportFile).catch(() => '')).trim()
         if (report !== '') {
           await io.updateSessions(all => ({ ...all, [s.name]: { ...all[s.name]!, status: 'reported' as const, reportAt: st.mtimeMs } }))
           await noteSession(io, s.name, t, 'reported', report)

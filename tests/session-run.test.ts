@@ -43,7 +43,7 @@ function world(o: { orca?: boolean; orcaTerminalInMain?: boolean; screen?: strin
       if (!files.has(p)) throw new Error('ENOENT')
       return { mtimeMs: mtimes.get(p) ?? 1 }
     },
-    read: async p => files.get(p) ?? '',
+    readFile: async p => files.get(p) ?? '',
     write: async (p, t) => { files.set(p, t) },
     sessions: async () => sessions,
     updateSessions: async fn => { sessions = fn(sessions) },

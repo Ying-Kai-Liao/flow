@@ -16,7 +16,7 @@ export type Ran = { exitCode: number; stdout: string; stderr: string }
 export type RelayIo = {
   // File names in a directory; [] when it is missing or unreadable.
   list: (dir: string) => Promise<string[]>
-  read: (path: string) => Promise<string>
+  readFile: (path: string) => Promise<string>
   write: (path: string, text: string) => Promise<unknown>
   // Atomic move; false when `from` is gone (someone else took it) or the move failed.
   rename: (from: string, to: string) => Promise<boolean>
@@ -153,7 +153,7 @@ async function runClaimed(io: RelayIo, d: RelayDir, id: string, exec: RelayExec)
   const key = callFile(d.dir, id)
   try {
     let answer: RelayAnswer
-    const call = parseCall(await io.read(takenFile(d.dir, id)).catch(() => ''), id)
+    const call = parseCall(await io.readFile(takenFile(d.dir, id)).catch(() => ''), id)
     if (call === undefined) answer = { deny: 'flow relay: the call file is not valid JSON with a tool name' }
     else if (!d.live) answer = { deny: `flow relay: session "${d.name}" is not running here; its flow tools are closed` }
     else {
