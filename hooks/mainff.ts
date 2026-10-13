@@ -7,7 +7,18 @@ export type Run = { exitCode: number; stdout: string; stderr: string }
 // Runs one argv, git first.
 export type GitRunner = (argv: string[]) => Promise<Run>
 
-const reason = (r: Run): string => (r.stderr.trim() || r.stdout.trim()).split('\n')[0]?.slice(0, 160) || `exit ${r.exitCode}`
+// The line that says what went wrong: git's last error:/fatal: line, else the first line. A fetch's first
+// stderr line is "From <url>" chatter, which used to hide the real error.
+const reason = (r: Run): string => {
+  const lines = (r.stderr.trim() || r.stdout.trim()).split('\n').map(l => l.trim()).filter(l => l !== '')
+  const meaningful = lines.filter(l => /^(error|fatal):/.test(l)).pop() ?? lines[0]
+  return meaningful?.slice(0, 160) || `exit ${r.exitCode}`
+}
+// Another git process in the shared .git holds or just moved a ref: the auto cleanup sweep runs
+// `git fetch origin --prune` right as the reviewer reports "done", and both update origin/<base>.
+const LOCKED = /cannot lock ref|unable to update local ref|\.lock'?: File exists|Unable to create '.*\.lock'/i
+// Fetch attempts in all. Each retry is one more fetch, by which time the other fetch has finished.
+const FETCH_TRIES = 3
 const notUpdated = (why: string): string => `main checkout not updated: ${why}`
 
 // One line: "main checkout fast-forwarded to <sha>" or "main checkout not updated: <reason>".
@@ -17,7 +28,7 @@ export async function fastForwardMain(git: GitRunner, base: string): Promise<str
     if (wl.exitCode !== 0) return notUpdated(`worktree list failed: ${reason(wl)}`)
     const main = parsePorcelain(wl.stdout)[0]?.path
     if (main === undefined) return notUpdated('no main checkout found')
-    // Untracked files do not count as dirty; an incoming file that would overwrite one fails the pull.
+    // Untracked files do not count as dirty; an incoming file that would overwrite one fails the merge.
     const st = await git(['git', '-C', main, 'status', '--porcelain', '--untracked-files=no'])
     if (st.exitCode !== 0) return notUpdated(`status failed: ${reason(st)}`)
     if (st.stdout.trim() !== '') return notUpdated('dirty')
@@ -26,8 +37,15 @@ export async function fastForwardMain(git: GitRunner, base: string): Promise<str
     const on = br.stdout.trim()
     if (on === '') return notUpdated('on a detached HEAD')
     if (on !== base) return notUpdated(`on branch ${on}`)
-    const pull = await git(['git', '-C', main, 'pull', '--ff-only', 'origin', base])
-    if (pull.exitCode !== 0) return notUpdated(`ff failed: ${reason(pull)}`)
+    // Fetch and merge apart, not `git pull`: a fetch that lost the ref race to a concurrent fetch is
+    // retried; the merge then reads the remote-tracking ref, which is current either way.
+    let fetched = await git(['git', '-C', main, 'fetch', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`])
+    for (let i = 1; i < FETCH_TRIES && fetched.exitCode !== 0 && LOCKED.test(fetched.stderr); i++) {
+      fetched = await git(['git', '-C', main, 'fetch', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`])
+    }
+    if (fetched.exitCode !== 0) return notUpdated(`ff failed: ${reason(fetched)}`)
+    const merged = await git(['git', '-C', main, 'merge', '--ff-only', `refs/remotes/origin/${base}`])
+    if (merged.exitCode !== 0) return notUpdated(`ff failed: ${reason(merged)}`)
     const sha = await git(['git', '-C', main, 'rev-parse', '--short', 'HEAD'])
     return `main checkout fast-forwarded to ${sha.exitCode === 0 ? sha.stdout.trim() : 'origin/' + base}`
   } catch (err) {
@@ -36,7 +54,7 @@ export async function fastForwardMain(git: GitRunner, base: string): Promise<str
 }
 
 // One fast-forward at a time; several "done" calls in a batch queue behind each other. A repeat is
-// harmless: the second pull finds nothing to do and answers fast-forwarded to the same sha.
+// harmless: the second fetch and merge find nothing to do and answers fast-forwarded to the same sha.
 let chain: Promise<unknown> = Promise.resolve()
 export function serialFastForward(git: GitRunner, base: string): Promise<string> {
   const next = chain.then(() => fastForwardMain(git, base), () => fastForwardMain(git, base))

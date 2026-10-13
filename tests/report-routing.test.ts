@@ -300,7 +300,7 @@ test('"done" fast-forwards the main checkout, returns the line and logs a main-f
   await queue($, { action: 'take', pr: 7 })
   const r = await queue($, { action: 'done', pr: 7, sha: 'abc1234', report: 'merged' })
   expect(r).toContain('main checkout fast-forwarded to abc1234')
-  expect(w.gitCalls.some(c => c.includes('pull') && c.includes('--ff-only'))).toBe(true)
+  expect(w.gitCalls.some(c => c.includes('merge') && c.includes('--ff-only'))).toBe(true)
   const log = w.logs.join('\n')
   expect(log).toContain('"event":"main-ff"')
 })
