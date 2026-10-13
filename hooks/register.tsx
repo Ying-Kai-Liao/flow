@@ -71,7 +71,7 @@ import { demoArm, demoMove, demoStart, demoStop, demoTool } from './demo-run'
 import type { DemoIo } from './demo-run'
 import type { DemoState } from './demo-replay'
 import { paneDraw, paneFocus } from './pane-run'
-import type { PaneIo } from './pane-run'
+import type { PaneEvent, PaneIo } from './pane-run'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
 import { ROLE } from './pane'
@@ -1209,8 +1209,13 @@ const resumable = new Set<string>()
 // The roster the host knows plus the role sessions (a manager or the reviewer running in a terminal):
 // anything that resolves who a caller is, or whether an owner is alive, asks this. Session rows of
 // every kind are added to the board separately (roster-run), which is why that one keeps the raw list.
+// Each $ call is bound to a const before the list is built: the plugin directory flags a $ call spread
+// inside square brackets (MOD_CAPABILITY_USE_NOT_PLAIN).
 async function agentsOf($: EngineInterface): Promise<AgentInfo[]> {
-  return [...await $.agent.list(), ...roleAgents(await read($, sessions)) as AgentInfo[]]
+  const listed = await $.agent.list()
+  const known = await read($, sessions)
+  const roles = roleAgents(known) as AgentInfo[]
+  return [...listed, ...roles]
 }
 
 // The session an id names (`session:<name>`), if there is one on record.
@@ -1448,11 +1453,11 @@ function queueIoOf($: EngineInterface): QueueIo {
     setRuns: n => update($, queueRuns, () => n),
     spawn: input => spawnReviewer($, input),
     reviewerSession: async () => Object.values(await read($, sessions)).find(x => x.role === 'reviewer' && sessionLive(x)),
-    setTold: (s, told) => sessionIoOf($).updateSessions(all => all[s.name] === undefined ? all : { ...all, [s.name]: { ...all[s.name]!, nudged: told } }),
+    setTold: (s, told) => markNudged($, s.name, told),
     nudge: async (s, text, told) => {
       const r = await sendToSession(sessionIoOf($), s, text)
       if (r.exitCode !== 0) return r.stderr.trim() || `could not type into ${s.name}`
-      await sessionIoOf($).updateSessions(all => all[s.name] === undefined ? all : { ...all, [s.name]: { ...all[s.name]!, nudged: told } })
+      await markNudged($, s.name, told)
       return undefined
     },
     breaker: breakerIoOf($),
@@ -1543,8 +1548,15 @@ async function spawnReviewer($: EngineInterface, input: { subagentType: string; 
     return { deny: r.text }
   }
   const told = pending ?? []
-  if (told.length > 0) await sessionIoOf($).updateSessions(all => all[input.name] === undefined ? all : { ...all, [input.name]: { ...all[input.name]!, nudged: told } })
+  if (told.length > 0) await markNudged($, input.name, told)
   return {}
+}
+
+// Records who a role session was told about. The io is bound to a const first: the plugin directory
+// flags a member read straight off a call passing $ (sessionIoOf($).updateSessions).
+function markNudged($: EngineInterface, name: string, told: string[]): Promise<unknown> {
+  const io = sessionIoOf($)
+  return io.updateSessions(all => all[name] === undefined ? all : { ...all, [name]: { ...all[name]!, nudged: told } })
 }
 
 function breakerIoOf($: EngineInterface): BreakerIo {
@@ -1942,8 +1954,10 @@ function relayIoOf($: EngineInterface): RelayIo {
 // Main's pump io: the relay directories of the role sessions it knows; an ended one is listed dead,
 // so a call it left behind is refused instead of waiting for a pickup.
 function pumpIoOf($: EngineInterface): PumpIo {
+  // Bound first, then spread: the plugin directory flags a call passing $ spread into an object.
+  const relay = relayIoOf($)
   return {
-    ...relayIoOf($),
+    ...relay,
     dirs: async () => (await myRoleSessions($, true))
       .filter(s => s.relayDir !== undefined)
       .map(s => ({ name: s.name, dir: s.relayDir!, live: sessionLive(s) })),
@@ -1963,8 +1977,10 @@ type FlowCall = { agentId?: string } & Record<string, unknown>
 type FlowOut = { result: unknown } | { deny: string }
 
 function deliverToSession($: EngineInterface, fromId: string | undefined, target: Session, text: string): Promise<string> { return deliverToSessionTo(relayRunIoOf($), fromId, target, text) }
-const sessionTool = ($: EngineInterface, input: Record<string, unknown>, caller: Caller, s: ReturnType<typeof settingsOf>) =>
-  sessionToolTo(sessionIoOf($), input, caller, s)
+function sessionTool($: EngineInterface, input: Record<string, unknown>, caller: Caller, s: ReturnType<typeof settingsOf>): Promise<string> {
+  const io = sessionIoOf($)
+  return sessionToolTo(io, input, caller, s)
+}
 
 
 // The tools the model sees. A relay copy registers the same specs: the calls go to main (tool.call below).
@@ -2031,8 +2047,10 @@ function relayRunIoOf($: EngineInterface): RelayRunIo {
 }
 
 function relayExecIoOf($: EngineInterface, c: FlowCtx): RelayExecIo {
+  // Bound first, then spread: the plugin directory flags a call passing $ spread into an object.
+  const run = relayRunIoOf($)
   return {
-    ...relayRunIoOf($),
+    ...run,
     updateActivity: fn => update($, activity, fn),
     testSlots: () => read($, testSlots),
     typecheckSlots: () => read($, typecheckSlots),
@@ -2076,28 +2094,26 @@ const FLOW_TOOLS = [
   'mcp__flow__status',
 ] as const
 
-// The io of the multi-line flow tool cases (bodies in toolcall-run.ts). It never takes the call: a closure here
-// that held `$` and the hook's event together is what the plugin directory flagged (MOD_CAPABILITY_USE_NOT_PLAIN)
-// at each flowToolsIoOf($, c, e) call, so the cases pass the call to the methods that need it.
+// The io of the multi-line flow tool cases (bodies in toolcall-run.ts). It never takes the call: the cases pass it
+// to the methods that need it. Each member is a plain $.noun.method(...) or one call passing $ to a function
+// declared below, with no $ call nested in an argument, a closure or an async block: the plugin directory
+// reported MOD_CAPABILITY_USE_NOT_PLAIN at the flowToolsIoOf($, ...) calls on 0.6.109 (see plain-names check 7).
 function flowToolsIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, options: Record<string, unknown>): FlowToolsIo {
   return {
     agents: () => $.agent.list(),
     exec: argv => $.process.run(argv),
     cwd: () => $.session.cwd(),
     now: () => $.clock.now(),
-    sessionWorktree: async id => {
-      const s = await sessionOfId($, id)
-      return s?.worktree
-    },
+    sessionWorktree: id => sessionWorktreeOf($, id),
     toolCaller: agentId => toolCallerOf($, agentId),
     handovers: () => read($, handovers),
     ownerName: id => ownerNameOf($, id),
-    release: async call => releaseTool(releaseIoOf($), settings, call),
-    reviewer: async call => reviewerToolRun(reviewerIoOf($, settings.base), settings, call, call.agentId),
+    release: call => releaseRun($, settings, call),
+    reviewer: call => reviewerRun($, settings, call),
     readNotes: manager => readNotes($, manager),
     appendNote: (manager, line) => appendNote($, manager, line),
     notesPath: manager => notesPath($, manager),
-    logNote: (owner, text) => best($, 'logging a note', () => appendLog($, { event: 'note', owner, text })),
+    logNote: (owner, text) => logNoteOf($, owner, text),
     sweep: (base, apply) => sweep($, base, apply),
     pushState: () => read($, pushState),
     pushAct: act => pushAct($, act, 'main'),
@@ -2106,12 +2122,33 @@ function flowToolsIoOf($: EngineInterface, settings: ReturnType<typeof settingsO
   }
 }
 
+async function sessionWorktreeOf($: EngineInterface, id: string): Promise<string | undefined> {
+  const s = await sessionOfId($, id)
+  return s?.worktree
+}
+
+async function releaseRun($: EngineInterface, settings: ReturnType<typeof settingsOf>, call: FlowCall): Promise<FlowOut | undefined> {
+  const io = releaseIoOf($)
+  return releaseTool(io, settings, call)
+}
+
+async function reviewerRun($: EngineInterface, settings: ReturnType<typeof settingsOf>, call: FlowCall): Promise<FlowOut | undefined> {
+  const io = reviewerIoOf($, settings.base)
+  return reviewerToolRun(io, settings, call, call.agentId)
+}
+
+function logNoteOf($: EngineInterface, owner: string, text: string): Promise<void> {
+  return best($, 'logging a note', () => appendLog($, { event: 'note', owner, text }))
+}
+
 // The generic tool.call hook's io (bodies in toolcall-run.ts). The settings and main's model are read live
 // through `held`: register() reassigns them.
 function toolCallIoOf($: EngineInterface, held: Pick<ToolCallIo, 'settings' | 'explicitEffort' | 'mainModel' | 'mainWindow'>): ToolCallIo {
+  // Bound first, then spread: the plugin directory flags a call passing $ spread into an object.
+  const guard = guardIoOf($)
   return {
     ...held,
-    ...guardIoOf($),
+    ...guard,
     now: () => $.clock.now(),
     sessionCwd: () => $.session.cwd(),
     agents: () => $.agent.list(),
@@ -2247,13 +2284,13 @@ function paneIoOf($: EngineInterface, lets: PaneLets, options: Record<string, un
       graphFocus: fn => update($, graphFocus, fn),
       demo: fn => update($, demo, fn),
     },
-    resolve: ev => $.ui.resolve(ev as never),
+    resolve: ev => paneResolve($, ev),
     now: () => $.clock.now(),
-    usage: () => $.session.usage().then(u => u, () => undefined),
+    usage: () => paneUsage($),
     toast: text => { void $.ui.toast(text) },
-    invalidate: () => { try { $.ui.invalidate('ui.render') } catch { /* pane closed */ } },
+    invalidate: () => paneInvalidate($),
     after: (ms, fn) => { $.clock.after(ms, fn) },
-    focus: key => $.ui.focus({ requestId: PANE, key }).catch(() => undefined),
+    focus: key => paneFocusKey($, key),
     fill: text => $.prompt.fill({ text, mode: 'replace' }),
     runProcess: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
     serial: paneSerial,
@@ -2262,19 +2299,86 @@ function paneIoOf($: EngineInterface, lets: PaneLets, options: Record<string, un
     setPaneView: v => { paneView = v },
     unhanded: () => currentUnhanded($),
     endedOwners: () => endedOwnersOf($),
-    demoArm: s => demoArm(demoIoOf($), s),
-    demoMove: fn => demoMove(demoIoOf($), fn),
-    demoStop: () => demoStop(demoIoOf($)),
+    demoArm: s => paneDemoArm($, s),
+    demoMove: fn => paneDemoMove($, fn),
+    demoStop: () => paneDemoStop($),
     pushAct: (act, by) => pushAct($, act, by),
-    approve: n => approvePr(commandIoOf($), n),
-    reject: (n, why) => rejectPr(commandIoOf($), n, why),
+    approve: n => paneApprove($, n),
+    reject: (n, why) => paneReject($, n, why),
     platform: () => platformOf($),
     paneInboxRows: () => paneInboxRows($),
-    suggestions: () => paneSuggestions(standingIoOf($), options),
-    dismiss: async ids => { await dismissSuggestionIds(standingIoOf($), options, ids) },
+    suggestions: () => paneSuggestionsOf($, options),
+    dismiss: ids => paneDismiss($, options, ids),
     answer: (id, choice) => answerQuestion($, id, choice, 'main', {}, true),
-    sessionTool: input => sessionTool($, input, { id: 'main', name: 'main' }, lets.settings()),
+    sessionTool: input => paneSessionTool($, input, lets.settings()),
   }
+}
+
+// paneIoOf's helpers: each binds an io or a value to a const before the call, so no $ call sits inside another
+// call's arguments, a cast, or a .then/.catch chain (the plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN).
+function paneResolve($: EngineInterface, ev: PaneEvent): ReturnType<EngineInterface['ui']['resolve']> {
+  const at = ev as Parameters<EngineInterface['ui']['resolve']>[0]
+  return $.ui.resolve(at)
+}
+
+async function paneUsage($: EngineInterface): Promise<Awaited<ReturnType<EngineInterface['session']['usage']>> | undefined> {
+  try {
+    return await $.session.usage()
+  } catch {
+    return undefined
+  }
+}
+
+function paneInvalidate($: EngineInterface): void {
+  try { $.ui.invalidate('ui.render') } catch { /* pane closed */ }
+}
+
+async function paneFocusKey($: EngineInterface, key: string): Promise<unknown> {
+  try {
+    return await $.ui.focus({ requestId: PANE, key })
+  } catch {
+    return undefined
+  }
+}
+
+function paneDemoArm($: EngineInterface, s: DemoState): void {
+  const io = demoIoOf($)
+  demoArm(io, s)
+}
+
+function paneDemoMove($: EngineInterface, fn: (s: DemoState, t: number) => DemoState): Promise<void> {
+  const io = demoIoOf($)
+  return demoMove(io, fn)
+}
+
+function paneDemoStop($: EngineInterface): Promise<string> {
+  const io = demoIoOf($)
+  return demoStop(io)
+}
+
+function paneApprove($: EngineInterface, n: number): Promise<string> {
+  const io = commandIoOf($)
+  return approvePr(io, n)
+}
+
+function paneReject($: EngineInterface, n: number, why: string): Promise<string> {
+  const io = commandIoOf($)
+  return rejectPr(io, n, why)
+}
+
+function paneSuggestionsOf($: EngineInterface, options: Record<string, unknown>): Promise<Array<{ id: string; text: string }>> {
+  const io = standingIoOf($)
+  return paneSuggestions(io, options)
+}
+
+function paneDismiss($: EngineInterface, options: Record<string, unknown>, ids: string[]): Promise<void> {
+  const io = standingIoOf($)
+  return dismissSuggestionIds(io, options, ids)
+}
+
+// The pane's session tool runs as main.
+function paneSessionTool($: EngineInterface, input: Record<string, unknown>, settings: ReturnType<typeof settingsOf>): Promise<string> {
+  return sessionTool($, input, { id: 'main', name: 'main' }, settings)
 }
 
 export const register: Register = (on, options) => {
