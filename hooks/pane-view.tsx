@@ -16,7 +16,7 @@ import { MANAGER } from './core'
 import type { PushState } from './pushgate'
 import type { PushAct } from './pushgate-run'
 import { prCardRows } from './prcard'
-import { clipLines, cutLines, inlineEl, linesEl, mdLines, mdPlain, rowLines, spansEl } from './markdown'
+import { clipLines, inlineEl, linesEl, mdLines, mdPlain, rowLines, spansEl, textRows } from './markdown'
 import type { Line } from './markdown'
 import type { CardRow, DetailsEntry } from './prcard'
 import type { Unhanded } from './status-run'
@@ -248,6 +248,8 @@ export type InboxCtx = {
   now: number
   // Where Back goes from a card.
   from: 'tree' | 'inbox' | 'archive'
+  // The large card's body offset; without it (the demo) the body shows from its top.
+  scroll?: CardScroll
   io: {
     acted: () => Promise<void>
     rows: () => Promise<PaneRow[]>
@@ -957,6 +959,38 @@ export function treeView(c: TreeCtx) {
 
 // --- The inbox's large card (one item) and the archive. ---
 
+// A card body taller than its room scrolls under a pinned header and pinned buttons. `at` is the stored
+// offset and the card it belongs to (another card starts at its top); `seen` tells the render hook which
+// body is drawn, its last offset and a page, so the wheel and PgUp/PgDn (ui.scroll) move it; `move` is u/m.
+export type CardScroll = {
+  at: { key: string; top: number }
+  seen: (key: string, max: number, page: number) => void
+  move: (by: number) => Promise<unknown>
+}
+
+// The body rows that show in `room` rows from the stored offset, clamped (the text or the pane may have
+// changed since), with a position line taking the last row when not all fit.
+export function scrollWindow<T>(all: T[], room: number, key: string, scroll: CardScroll | undefined) {
+  const fits = all.length <= room
+  const view = fits ? all.length : Math.max(1, room - 1)
+  const max = Math.max(0, all.length - view)
+  const top = Math.min(max, Math.max(0, scroll?.at.key === key ? scroll.at.top : 0))
+  const page = Math.max(1, view - 1)
+  scroll?.seen(key, max, page)
+  const shown = all.slice(top, top + view)
+  const pos = fits ? undefined : `${top > 0 ? `↑ ${top} above · ` : ''}lines ${top + 1}-${top + shown.length} of ${all.length}${top < max ? ` · ↓ ${all.length - top - shown.length} below` : ''}`
+  return { shown, pos, page, scrolls: max > 0, height: fits ? all.length : view + 1 }
+}
+
+// u and m page the body; free on all three cards (the question card's letters run a-h).
+function scrollKeys(Button: Els['Button'], prefix: string, w: ReturnType<typeof scrollWindow>, scroll: CardScroll | undefined) {
+  if (!w.scrolls || scroll === undefined) return []
+  return [
+    <Button key={`${prefix}-up`} plain dimColor hotkey="u" onPress={() => void scroll.move(-w.page)}>u up</Button>,
+    <Button key={`${prefix}-down`} plain dimColor hotkey="m" onPress={() => void scroll.move(w.page)}>m more</Button>,
+  ]
+}
+
 const kindOf = (q: Question): string =>
   isFyi(q) ? 'decision' : q.kind === 'deploy' ? 'deploy approval' : q.kind === 'push' ? 'push' : q.kind === 'reviewer' ? 'reviewer retry' : q.kind === 'env' ? `env change${envLabel(q)}` : q.guard !== undefined ? 'guard test suggestion' : 'question'
 
@@ -1022,60 +1056,68 @@ export function cardView(x: InboxCtx & { id: string | null }) {
   }
   const tags = tagsOf(q)
   const who = isAddressee(q, 'main') ? q.owner : `${q.owner}, for ${q.addressee}`
-  // The question, its context and the alternative as markdown. The rest of the card (header, options, footer)
-  // is fixed, so they share what is left of the pane, and a long text ends in "+N more lines" instead of
-  // pushing the options out of the box.
-  const parts = [
-    { key: 'q', lines: mdLines(q.question, x.columns) },
-    ...(q.context ? [{ key: 'why', lines: mdLines(q.context, x.columns, { lead: { t: 'why: ', dim: true }, hang: 0 }) }] : []),
-    ...(isFyi(q) && q.alternative ? [{ key: 'alt', lines: mdLines(q.alternative, x.columns, { lead: { t: 'instead could: ', dim: true }, hang: 0 }) }] : []),
+  // The question, its context and the alternative as markdown: the body, which scrolls between the pinned header
+  // above and the options, note, answer Input and keys below. Those count their own rows (each meta line is one,
+  // cut at the edge) so the body gets the rest, and a long text never pushes the options out of the box.
+  const lines = [
+    ...mdLines(q.question, x.columns),
+    ...(q.context ? mdLines(q.context, x.columns, { lead: { t: 'why: ', dim: true }, hang: 0 }) : []),
+    ...(isFyi(q) && q.alternative ? mdLines(q.alternative, x.columns, { lead: { t: 'instead could: ', dim: true }, hang: 0 }) : []),
   ]
-  const budget = Math.max(4, rows - 17 - (isFyi(q) ? 0 : q.options.length))
-  let left = budget
-  const body = parts.map((p, i) => {
-    // Each later part keeps a row of its own.
-    const lines = cutLines(p.lines, Math.max(1, left - (parts.length - 1 - i)))
-    left -= lines.length
-    return { key: p.key, lines }
-  })
+  const overrideText = open && overridesManager(q) ? `It is for ${q.addressee}: answering it overrides ${q.addressee}, who is told.` : undefined
+  const optText = (o: string, k: number) => `${k + 1}) ${o}${o === q.default ? ' (default)' : ''}`
+  const doneText = open ? undefined : isFyi(q) ? decisionOutcomeText(q, now) : `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). Nothing more to answer.`
+  const protectedText = open && x.id !== null && protectedWhy(q) !== undefined ? 'Needs an explicit choice: y never answers it.' : undefined
+  const inputLabel = isFyi(q) ? 'instead ' : 'answer '
+  const inputHint = isFyi(q) ? 'what instead (n, or Enter): undoes the decision' : 'your own words, then Enter'
+  const rowsOf = (t: string | undefined) => (t === undefined || t === '' ? 0 : textRows(t, x.columns))
+  const head = 5 + (tags !== '' ? 1 : 0) + (isFyi(q) && q.topic ? 1 : 0) + (isFyi(q) ? 0 : 1) + (linked !== undefined ? 1 : 0) + (q.env !== undefined ? 1 : 0) + rowsOf(overrideText)
+  const foot = 1 + (isFyi(q) ? 0 : q.options.reduce((n, o, k) => n + rowsOf(`${open ? '' : '  '}${optText(o, k)}`), 0)) + rowsOf(doneText) + rowsOf(protectedText)
+    + rowsOf(note) + (open && Input !== undefined ? rowsOf(`${inputLabel}${draft === '' ? inputHint : draft}`) : 0) + (open ? 1 : 0)
+  const w = scrollWindow(lines, Math.max(3, rows - head - foot), `q:${q.id}`, x.scroll)
   return (
     <Box flexDirection="column" height={rows}>
-      <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
-      <Box flexDirection="row" gap={1}>
+      <Box flexDirection="column" flexShrink={1} overflow="hidden">
+      <Box flexDirection="row" gap={1} flexShrink={0}>
         {backBtn}
         <Text dimColor>esc home</Text>
         {open && <Button key="card-prev" plain dimColor hotkey="k" onPress={step(-1)}>k prev</Button>}
         {open && <Button key="card-next" plain dimColor hotkey="j" onPress={step(1)}>j next</Button>}
+        {scrollKeys(Button, 'card', w, x.scroll)}
       </Box>
-      <Text><Text bold>{q.id}</Text><Text dimColor> · {q.owner || 'unknown'} · {age(now - q.askedAt)}</Text></Text>
-      <Text>{kindOf(q)}{q.alias === undefined ? '' : <Text dimColor> (earlier id {q.alias})</Text>}</Text>
-      {tags !== '' && <Text color={q.blocking ? 'warning' : undefined}>{tags}</Text>}
-      {isFyi(q) && q.topic && <Text dimColor>[{q.topic}]</Text>}
-      {!isFyi(q) && <Text dimColor>from {who} · {age(now - q.askedAt)} ago{q.escalated !== undefined ? ' · escalated to you' : ''}</Text>}
-      {agent !== undefined && <Text dimColor>{q.owner} is {agent.status}</Text>}
-      {agent === undefined && <Text dimColor>{q.owner} is not in the roster</Text>}
+      <Text wrap="truncate-end"><Text bold>{q.id}</Text><Text dimColor> · {q.owner || 'unknown'} · {age(now - q.askedAt)}</Text></Text>
+      <Text wrap="truncate-end">{kindOf(q)}{q.alias === undefined ? '' : <Text dimColor> (earlier id {q.alias})</Text>}</Text>
+      {tags !== '' && <Text color={q.blocking ? 'warning' : undefined} wrap="truncate-end">{tags}</Text>}
+      {isFyi(q) && q.topic && <Text dimColor wrap="truncate-end">[{q.topic}]</Text>}
+      {!isFyi(q) && <Text dimColor wrap="truncate-end">from {who} · {age(now - q.askedAt)} ago{q.escalated !== undefined ? ' · escalated to you' : ''}</Text>}
+      {agent !== undefined && <Text dimColor wrap="truncate-end">{q.owner} is {agent.status}</Text>}
+      {agent === undefined && <Text dimColor wrap="truncate-end">{q.owner} is not in the roster</Text>}
       {linked !== undefined && <Text wrap="truncate-end">escalated from {linked.owner}'s {linked.id}: {inlineEl(Text, linked.question, `esc-${linked.id}`)}</Text>}
-      {q.env !== undefined && <Text dimColor>PR #{q.env.pr}, target {q.env.target}</Text>}
-      {open && overridesManager(q) && <Text color="warning">It is for {q.addressee}: answering it overrides {q.addressee}, who is told.</Text>}
+      {q.env !== undefined && <Text dimColor wrap="truncate-end">PR #{q.env.pr}, target {q.env.target}</Text>}
+      {overrideText !== undefined && <Text color="warning">{overrideText}</Text>}
       <Text> </Text>
-      {body.map(l => linesEl(Text, l.lines, l.key)).flat()}
+      </Box>
+      <Box flexDirection="column" flexShrink={0} height={w.height} overflow="hidden">
+      {linesEl(Text, w.shown, 'card-body')}
+      {w.pos !== undefined && <Text dimColor wrap="truncate-end">{w.pos}</Text>}
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={0}>
       <Text dimColor>{'─'.repeat(Math.max(20, x.columns))}</Text>
       {!isFyi(q) && q.options.map((o, k) => {
         return open ? (
           <Button key={`card-opt-${k}`} hotkey={k < 9 ? String(k + 1) : undefined} onPress={pick(k)}>
-            {k + 1}) {o}{o === q.default ? ' (default)' : ''}
+            {optText(o, k)}
           </Button>
         ) : (
-          <Text key={`card-opt-${k}`} bold={o === q.answer}>{o === q.answer ? '> ' : '  '}{k + 1}) {o}{o === q.default ? ' (default)' : ''}</Text>
+          <Text key={`card-opt-${k}`} bold={o === q.answer}>{o === q.answer ? '> ' : '  '}{optText(o, k)}</Text>
         )
       })}
-      {!open && isFyi(q) && <Text color="success">{decisionOutcomeText(q, now)}</Text>}
-      {!open && !isFyi(q) && <Text color="success">Answered: {q.answer ?? ''} (by {archiveWho(q)}{q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). Nothing more to answer.</Text>}
-      {open && x.id !== null && protectedWhy(q) !== undefined && <Text dimColor>Needs an explicit choice: y never answers it.</Text>}
+      {doneText !== undefined && <Text color="success">{doneText}</Text>}
+      {protectedText !== undefined && <Text dimColor>{protectedText}</Text>}
       </Box>
       <Box flexDirection="column" flexShrink={0}>
       {note !== '' && <Text color="suggestion">{note}</Text>}
-      {open && Input !== undefined && <Input key="card-answer" label={isFyi(q) ? 'instead ' : 'answer '} placeholder={isFyi(q) ? 'what instead (n, or Enter): undoes the decision' : 'your own words, then Enter'} value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
+      {open && Input !== undefined && <Input key="card-answer" label={inputLabel} placeholder={inputHint} value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
       {open && (
         <Box flexDirection="row" gap={1}>
           <Button key="card-yes" plain dimColor hotkey="y" onPress={() => void answerWith(null)}>{isFyi(q) ? 'y Keep' : 'y default'}</Button>
@@ -1164,6 +1206,7 @@ export type PrCardCtx = {
   now: number
   draft: string
   note: string
+  scroll?: CardScroll
   io: PrIo
 }
 
@@ -1204,15 +1247,14 @@ export function prCardView(x: PrCardCtx) {
   // The rows after markdown: one entry per drawn row, so the room below counts what is really on screen.
   const body: { line: Line; row: CardRow }[] = prCardRows(ho, { entry: x.entry, mergeMode: x.mergeMode, now: x.now })
     .flatMap(r => { const ls = rowLines(r, Math.max(20, x.columns)); return (ls.length === 0 ? [[]] : ls).map(line => ({ line, row: r })) })
-  // The back row, the button row, the note and the input take what the body does not.
-  const room = Math.max(3, rows - 3 - (note === '' ? 0 : 1) - (awaiting && Input !== undefined ? 1 : 0))
-  const shown = body.length > room ? body.slice(0, room - 1) : body
+  // The back row, the button row, the note and the input take what the body does not; the body scrolls in the rest.
+  const w = scrollWindow(body, Math.max(3, rows - 2 - (note === '' ? 0 : 1) - (awaiting && Input !== undefined ? 1 : 0)), `pr:${ho.pr}`, x.scroll)
   return (
     <Box flexDirection="column" height={rows}>
+      <Box flexDirection="row" gap={1} flexShrink={0}>{backBtn}<Text dimColor>esc home</Text>{scrollKeys(Button, 'pr', w, x.scroll)}</Box>
 <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
-      <Box flexDirection="row" gap={1}>{backBtn}<Text dimColor>esc home</Text></Box>
-      {shown.map((r, i) => spansEl(Text, r.line, `pr-row-${i}`, { ...(r.row.bold ? { bold: true as const } : {}), ...(r.row.dim ? { dim: true as const } : {}), ...(toneOf(r.row) === undefined ? {} : { color: toneOf(r.row)! }) }, 'truncate-end'))}
-      {body.length > shown.length && <Text dimColor>+{body.length - shown.length} more lines</Text>}
+      {w.shown.map((r, i) => spansEl(Text, r.line, `pr-row-${i}`, { ...(r.row.bold ? { bold: true as const } : {}), ...(r.row.dim ? { dim: true as const } : {}), ...(toneOf(r.row) === undefined ? {} : { color: toneOf(r.row)! }) }, 'truncate-end'))}
+      {w.pos !== undefined && <Text dimColor wrap="truncate-end">{w.pos}</Text>}
       </Box>
       <Box flexDirection="column" flexShrink={0}>
       {note !== '' && <Text color="suggestion" wrap="truncate-end">{note}</Text>}
@@ -1236,6 +1278,8 @@ export type BatchCtx = {
   // The PR picked to be sent back (or 0, Drop of the whole batch), awaiting the confirming press.
   pick: number | null
   now: number
+  columns: number
+  scroll?: CardScroll
   io: {
     acted: () => Promise<void>
     serial: <T>(fn: () => Promise<T>) => Promise<T>
@@ -1276,15 +1320,22 @@ export function batchCardView(x: BatchCtx) {
     io.toast(clip(text, 120))
   })
   const titleOf = (n: number) => batch.items.find(i => i.pr === n)?.title ?? hs[String(n)]?.title ?? ''
+  // The PR rows scroll between the header (back row, title, check, state, blank) and the confirm prompt, note and keys.
+  const busyText = ready ? undefined : `Not waiting for you: ${batch.state === 'pushing' ? 'a reviewer is pushing it' : `it is being rebuilt${batch.reason === undefined ? '' : ` (${batch.reason})`}`}.`
+  const confirmText = !ready ? undefined : pick !== null && batch.prs.includes(pick) ? `Send #${pick} back to its manager? Yes, send back No` : pick === DROP_PICK ? 'Drop the whole batch (all PRs go back)? Yes, drop No' : undefined
+  const rowsOf = (t: string | undefined) => (t === undefined ? 0 : textRows(t, x.columns))
+  const w = scrollWindow(batch.prs, Math.max(3, rows - 4 - rowsOf(busyText) - rowsOf(confirmText) - (note === '' ? 0 : 1) - (ready ? 1 : 0)), `batch:${batch.id}`, x.scroll)
   return (
     <Box flexDirection="column" height={rows}>
-<Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
-      <Box flexDirection="row" gap={1}>{backBtn}<Text dimColor>esc home</Text></Box>
-      <Text bold color="warning">Batch {batch.id}{batch.version === undefined ? '' : ` (${batch.version})`} <Text dimColor>{ready ? 'ready to push' : batch.state}</Text></Text>
+<Box flexDirection="column" flexShrink={1} overflow="hidden">
+      <Box flexDirection="row" gap={1} flexShrink={0}>{backBtn}<Text dimColor>esc home</Text>{scrollKeys(Button, 'batch', w, x.scroll)}</Box>
+      <Text bold color="warning" wrap="truncate-end">Batch {batch.id}{batch.version === undefined ? '' : ` (${batch.version})`} <Text dimColor>{ready ? 'ready to push' : batch.state}</Text></Text>
       <Text dimColor wrap="truncate-end">checked {age(x.now - batch.createdAt)} ago · check: {batch.check === '' ? '(none recorded)' : inlineEl(Text, batch.check, 'batch-check')}</Text>
-      {!ready && <Text color="suggestion">Not waiting for you: {batch.state === 'pushing' ? 'a reviewer is pushing it' : `it is being rebuilt${batch.reason === undefined ? '' : ` (${batch.reason})`}`}.</Text>}
+      {busyText !== undefined && <Text color="suggestion">{busyText}</Text>}
       <Text> </Text>
-      {batch.prs.map(n => (
+      </Box>
+      <Box flexDirection="column" flexShrink={0} height={w.height} overflow="hidden">
+      {w.shown.map(n => (
         <Box key={`batch-row-${n}`} flexDirection="row" gap={1}>
           <Button key={`batch-pr-${n}`} plain onPress={() => void io.serial(async () => { await io.acted(); await io.openPr(n) })}>
             <Text wrap="truncate-end">#{n} {inlineEl(Text, titleOf(n), `batch-title-${n}`)}{hs[String(n)] === undefined ? '' : ` · ${hs[String(n)]!.status}`}</Text>
@@ -1292,6 +1343,9 @@ export function batchCardView(x: BatchCtx) {
           {ready && <Button key={`batch-pick-${n}`} plain dimColor onPress={() => void io.serial(async () => { await io.acted(); await io.setPick(n) })}>send back</Button>}
         </Box>
       ))}
+      {w.pos !== undefined && <Text dimColor wrap="truncate-end">{w.pos}</Text>}
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={0}>
       {ready && pick !== null && batch.prs.includes(pick) && (
         <Box flexDirection="row" gap={1}>
           <Text color="warning">Send #{pick} back to its manager?</Text>

@@ -14,7 +14,7 @@ import type { DetailsCache } from './prcard'
 import type { settingsOf } from './settings'
 import type { EngineInterface } from 'claude-code'
 import { agentView, archiveView, batchCardView, card as cardTo, cardView, graphModeView, inboxView, managerGraphView, meter as meterTo, prCardView, treeView } from './pane-view'
-import type { InboxCtx, PaneCtx, Usage } from './pane-view'
+import type { CardScroll, InboxCtx, PaneCtx, Usage } from './pane-view'
 import { demoView } from './demo-view'
 import { canAdvance, advance as demoAdvance, answer as demoAnswer, isLast as demoIsLast } from './demo-replay'
 import { detailsKey, detailsStale, fetchDetails, openerFor, urlNote } from './prcard'
@@ -75,6 +75,8 @@ export type PaneState = {
   inboxNote: string
   graphFocus: string | null
   demo: DemoState | null
+  // The scrolled offset of a card's body and the card it is for (q:<id>, pr:<n>, batch:<id>); another card starts at 0.
+  cardScroll: { key: string; top: number }
 }
 
 // The single seam for the pane's state reads: one closure per atom, called while the pane draws so the
@@ -83,7 +85,7 @@ export type PaneState = {
 export type PaneIo = {
   read: { [K in keyof PaneState]: () => Promise<PaneState[K]> }
   set: {
-    [K in 'selected' | 'cursor' | 'folded' | 'overrideView' | 'hinted' | 'armed' | 'viewMode' | 'prShown' | 'prBack' | 'batchPick' | 'prDetails' | 'inboxCursor' | 'cardBack' | 'inboxFolds' | 'inboxOpen' | 'inboxDraft' | 'inboxNote' | 'graphFocus' | 'demo']: (fn: (v: PaneState[K]) => PaneState[K]) => Promise<unknown>
+    [K in 'selected' | 'cursor' | 'folded' | 'overrideView' | 'hinted' | 'armed' | 'viewMode' | 'prShown' | 'prBack' | 'batchPick' | 'prDetails' | 'inboxCursor' | 'cardBack' | 'inboxFolds' | 'inboxOpen' | 'inboxDraft' | 'inboxNote' | 'graphFocus' | 'demo' | 'cardScroll']: (fn: (v: PaneState[K]) => PaneState[K]) => Promise<unknown>
   }
   // Takes the render event: register.tsx keeps no closure holding `$` and the hook's event together.
   resolve: (e: PaneEvent) => ReturnType<EngineInterface['ui']['resolve']>
@@ -159,6 +161,22 @@ export async function paneFocus(io: PaneIo, element: string | undefined): Promis
   await io.set.cursor(() => element)
 }
 
+// The card body drawn last that has more rows than room (its key, last offset and page), set by the draw:
+// null while no card body scrolls, so ui.scroll then leaves the pane's own scroll to the engine.
+let scrollable: { key: string; max: number; page: number } | null = null
+export const NO_SCROLL = { key: '', top: 0 }
+
+// Moves the drawn card's body by `by` rows, clamped at both ends; a page key (by a whole pane body, `bodyRows`)
+// moves the card's own page. False when no card body scrolls.
+export async function paneScroll(io: Pick<PaneIo, 'set' | 'invalidate'>, by: number, bodyRows?: number): Promise<boolean> {
+  const s = scrollable
+  if (s === null) return false
+  const step = bodyRows !== undefined && Math.abs(by) >= bodyRows ? Math.sign(by) * s.page : by
+  await io.set.cardScroll(c => ({ key: s.key, top: Math.min(s.max, Math.max(0, (c.key === s.key ? Math.min(c.top, s.max) : 0) + step)) }))
+  io.invalidate()
+  return true
+}
+
 // The body's rows, not the terminal's: viewport.rows counts the whole screen, so a tree that tall
 // would push its bottom rows (the hotkey row) under the prompt.
 const bodyRowsOf = (e: PaneEvent) =>
@@ -170,6 +188,13 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
   try {
   return await (async () => {
   const { Box, Text, Button } = io.resolve(e)
+  // Only a card drawn in this draw scrolls; its view says so through `seen`.
+  scrollable = null
+  const scroll: CardScroll = {
+    at: await io.read.cardScroll(),
+    seen: (key, max, page) => { scrollable = max > 0 ? { key, max, page } : null },
+    move: by => paneScroll(io, by),
+  }
   const dm = await io.read.demo()
   if (dm !== null) {
     const Input = (io.resolve(e) as unknown as { Input?: Parameters<typeof demoView>[0]['Input'] }).Input
@@ -344,6 +369,7 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
       await io.set.inboxNote(() => '')
       await io.set.inboxDraft(() => '')
       await io.set.batchPick(() => null)
+      await io.set.cardScroll(() => NO_SCROLL)
       await io.set.viewMode(() => mode === 'pr' ? back : 'tree')
     }
     const openPr = async (n: number, from: 'tree' | 'batch') => {
@@ -352,12 +378,13 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
       await io.set.prBack(() => from)
       await io.set.inboxNote(() => '')
       await io.set.inboxDraft(() => '')
+      await io.set.cardScroll(() => NO_SCROLL)
       await io.set.viewMode(() => 'pr')
     }
     const common = { acted, serial: io.serial, toast: (text: string) => { void io.toast(text) }, setNote: (v: string) => io.set.inboxNote(() => v) }
     if (mode === 'batch') {
       return batchCardView({
-        els: { Box, Text, Button }, rows, batch: sstate.batch, hs, note, pick: pickPr, now: t,
+        els: { Box, Text, Button }, rows, columns, batch: sstate.batch, hs, note, pick: pickPr, now: t, scroll,
         io: { ...common, act: a => io.pushAct(a, 'user'), openPr: n => openPr(n, 'batch'), setPick: n => io.set.batchPick(() => n), leave },
       })
     }
@@ -365,7 +392,7 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
     const key = ho === undefined ? undefined : detailsKey(ho)
     const Input = (io.resolve(e) as unknown as { Input?: InboxCtx['Input'] }).Input
     return prCardView({
-      els: { Box, Text, Button }, Input, rows, columns, pr: shownPr, ho, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note,
+      els: { Box, Text, Button }, Input, rows, columns, pr: shownPr, ho, entry: key === undefined ? undefined : cache[key], mergeMode: settings.mergeMode, now: t, draft, note, scroll,
       io: {
         ...common, leave,
         approve: n => io.approve(n),
@@ -391,7 +418,7 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
     const irows = (await io.paneInboxRows()).rows
     const sugg = mode === 'inbox' ? await io.suggestions() : []
     const ictx: InboxCtx = {
-      els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, sugg, iopen, list, now: t, from,
+      els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, sugg, iopen, list, now: t, from, scroll,
       io: {
         acted,
         rows: async () => (await io.paneInboxRows()).rows,
@@ -414,10 +441,12 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
           await io.set.inboxCursor(() => id)
           await io.set.cardBack(() => origin)
           await io.set.inboxNote(() => '')
+          await io.set.cardScroll(() => NO_SCROLL)
           await io.set.viewMode(() => 'card')
         },
         leave: async to => {
           await io.set.inboxNote(() => '')
+          await io.set.cardScroll(() => NO_SCROLL)
           await io.set.viewMode(() => to === 'tree' ? 'tree' : to)
         },
         toggleFold: async (key, firstKey) => {
@@ -464,6 +493,7 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
       await acted()
       await io.set.inboxCursor(() => id)
       await io.set.cardBack(() => 'tree')
+      await io.set.cardScroll(() => NO_SCROLL)
       await io.set.viewMode(() => 'card')
     },
     openPr: async n => {
@@ -473,12 +503,14 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
       await io.set.prBack(() => 'tree')
       await io.set.inboxNote(() => '')
       await io.set.inboxDraft(() => '')
+      await io.set.cardScroll(() => NO_SCROLL)
       await io.set.viewMode(() => 'pr')
     },
     openBatch: async () => {
       await acted()
       await io.set.batchPick(() => null)
       await io.set.inboxNote(() => '')
+      await io.set.cardScroll(() => NO_SCROLL)
       await io.set.viewMode(() => 'batch')
     },
   })
@@ -494,7 +526,7 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
 // paces them (pane-throttle.ts).
 const USER_STATE = [
   'selected', 'cursor', 'folded', 'overrideView', 'hinted', 'armed', 'viewMode', 'prShown', 'prBack', 'batchPick', 'prDetails', 'inboxCursor', 'cardBack',
-  'inboxFolds', 'inboxOpen', 'inboxDraft', 'inboxNote', 'graphFocus', 'demo', 'inbox', 'handovers', 'pushState',
+  'inboxFolds', 'inboxOpen', 'inboxDraft', 'inboxNote', 'graphFocus', 'demo', 'cardScroll', 'inbox', 'handovers', 'pushState',
 ] as const satisfies ReadonlyArray<keyof PaneState>
 const BG_STATE = ['roster', 'now', 'checks', 'ledger', 'leftovers', 'sessions', 'harnessLimits', 'deploys', 'behind', 'reviewerBreaker', 'plan'] as const satisfies ReadonlyArray<keyof PaneState>
 

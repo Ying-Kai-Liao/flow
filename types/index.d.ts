@@ -493,6 +493,7 @@ declare module 'claude-code' {
       inboxDraft: string
       inboxNote: string
       graphFocus: string | null
+      cardScroll: { key: string; top: number }
       overrideView: string | null | undefined
       hinted: boolean
       handoffs: Record<string, HandoffRecord>

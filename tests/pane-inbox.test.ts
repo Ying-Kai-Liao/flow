@@ -2,6 +2,7 @@ import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import { askBright } from '../hooks/pane'
+import { strWidth } from '../hooks/markdown'
 import type { TestBody } from 'claude-code/testing'
 
 type Dollar = Parameters<TestBody>[0]
@@ -261,6 +262,21 @@ const visible = (root: El, rows: number): { lines: string[]; footer: string[]; c
   return { lines: [...content.slice(0, Math.max(0, rows - footer.length)), ...footer], footer, content }
 }
 const longText = 'word '.repeat(30)
+// A large card as the terminal shows it: the header box (first) gives up rows when the pane is short, the body box
+// keeps its set height, the options and the footer their lines.
+const cardScreen = (root: El, rows: number): string[] => {
+  const [head, ...rest] = boxesOf(root)
+  const tail = rest.flatMap(b => (b.props?.height === undefined ? linesOf(b) : linesOf(b).slice(0, b.props.height)))
+  return [...linesOf(head).slice(0, Math.max(0, rows - tail.length)), ...tail]
+}
+// The body rows of the large card now drawn (the box with a set height), its position line left out.
+const cardBody = async (ui: Ui) => {
+  const box = boxesOf((await ui.drawn()) as El).find(b => b.props?.height !== undefined)!
+  return linesOf(box).filter(l => !/lines \d+-\d+ of \d+/.test(l))
+}
+const position = async (ui: Ui) => linesOf((await ui.drawn()) as El).find(l => /lines \d+-\d+ of \d+/.test(l))
+// A wheel move or a page key over the pane, as the engine raises ui.scroll for it.
+const wheel = ($: Dollar, by: number, bodyRows = 24) => ($.ui as unknown as { scroll: (e: object) => Promise<unknown> }).scroll({ component: 'Pane', requestId: 'flow', offset: 0, by, bodyRows, contentRows: bodyRows, origin: { kind: 'person' } })
 
 test('the inbox and a question card pin the answer input and hotkeys to the pane bottom, whatever the content length', async ($, on) => {
   world(on)
@@ -272,10 +288,11 @@ test('the inbox and a question card pin the answer input and hotkeys to the pane
   expect(v.lines.length).toBeLessThanOrEqual(12)
   expect(v.lines.slice(-v.footer.length)).toEqual(v.footer)
   await openCard(ui, 'q1')
-  v = visible((await ui.drawn()) as El, 12)
-  expect(v.content.length).toBeGreaterThan(12)
-  expect(v.footer.some(l => /answer /.test(l)) && v.footer.some(l => /y default/.test(l)) && v.footer.some(l => /r reply/.test(l))).toBe(true)
-  expect(v.lines.length).toBeLessThanOrEqual(12)
+  // The card's body scrolls in what the header and the footer leave: the footer is whole and the body says where it is.
+  const lines = cardScreen((await ui.drawn()) as El, 12)
+  expect(lines.length).toBeLessThanOrEqual(12)
+  expect(lines.some(l => /answer /.test(l)) && lines.some(l => /y default/.test(l)) && lines.some(l => /r reply/.test(l))).toBe(true)
+  expect(lines.some(l => /^lines 1-\d+ of 5\d · ↓ \d+ below$/.test(l))).toBe(true)
   await ui.unmount()
 })
 
@@ -288,10 +305,14 @@ test('a short card keeps its footer in a box at the bottom, not right after the 
   const root = (await ui.drawn()) as { props?: { height?: number } }
   expect(root.props?.height).toBe(40)
   const boxes = boxesOf(root as El)
-  // Content grows and clips; the footer is last and never shrinks.
-  expect(boxes[0]!.props).toMatchObject({ flexGrow: 1, flexShrink: 1, overflow: 'hidden' })
+  // The header clips when the pane is short; the body, the options and the footer never shrink, the footer last.
+  expect(boxes[0]!.props).toMatchObject({ flexShrink: 1, overflow: 'hidden' })
+  expect(boxes[1]!.props).toMatchObject({ flexShrink: 0, overflow: 'hidden' })
   expect(boxes[boxes.length - 1]!.props).toMatchObject({ flexShrink: 0 })
   expect(plain(boxes[boxes.length - 1]!)).toMatch(/y default/)
+  // A body that fits neither scrolls nor says where it is.
+  expect(await ui.find({ type: 'Button', key: 'card-down' })).toBeUndefined()
+  expect(await has(ui, /lines \d+-\d+ of/)).toBe(false)
   await ui.unmount()
 })
 
@@ -555,7 +576,7 @@ test('a highlight answered meanwhile answers nothing: the highlight moves and th
 
 // What the pane draws, as lines of text: a column stacks its children, a row sets them side by side with its gap
 // (a child of several lines beside the next one), a border adds its two columns and rows.
-type El = string | { type?: string; props?: { flexDirection?: string; flexGrow?: number; flexShrink?: number; overflow?: string; gap?: number; label?: string; borderStyle?: string; paddingX?: number; width?: number; wrap?: string }; children?: El[] } | null | undefined | false
+type El = string | { type?: string; props?: { flexDirection?: string; flexGrow?: number; flexShrink?: number; overflow?: string; gap?: number; label?: string; borderStyle?: string; paddingX?: number; width?: number; height?: number; wrap?: string }; children?: El[] } | null | undefined | false
 const plain = (e: El): string => (typeof e === 'string' ? e : e ? (e.children === undefined && e.props?.label !== undefined ? e.props.label : (e.children ?? []).map(plain).join('')) : '')
 const padCols = (l: string, w: number) => l + ' '.repeat(Math.max(0, w - cols(l)))
 const linesOf = (e: El): string[] => {
@@ -937,21 +958,131 @@ test('a decision with markdown in its text, why and alternative reads cleanly in
   await ui.unmount()
 })
 
-test('a long markdown question in a short pane ends in a marker and keeps the options and the footer', async ($, on) => {
+test('a long markdown question in a short pane scrolls its body with m and u, clamped at both ends; the options and the footer stay', async ($, on) => {
   world(on)
   await ask($, 'w1', [{ ...Q, question: Array.from({ length: 30 }, (_, i) => `- point ${i} of a long **list**`).join('\n') }])
   const ui = await mount($, 24, 60)
   await open(ui)
   await openCard(ui, 'q1')
-  const lines = await rendered(ui)
-  // (the render helper splits each option button into pieces, so it cannot count the height itself)
-  expect(lines.filter(l => /^• point/.test(l)).length).toBeLessThanOrEqual(5)
-  expect(lines.some(l => /\+\d+ more lines/.test(l))).toBe(true)
-  expect(await ui.find({ type: 'Button', key: 'card-opt-0' })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: 'card-opt-2' })).toBeDefined()
-  expect(lines.some(l => /^y default/.test(l))).toBe(true)
+  const pinned = async () => {
+    expect(await ui.find({ type: 'Button', key: 'card-opt-0' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'card-opt-2' })).toBeDefined()
+    expect(await has(ui, /^y default/)).toBe(true)
+    expect(await has(ui, /^Back esc home k prev j next u up m more$/)).toBe(true)
+    expect(await has(ui, /more lines/)).toBe(false)
+    expect(cardScreen((await ui.drawn()) as El, 24).length).toBeLessThanOrEqual(24)
+  }
+  expect((await cardBody(ui))[0]).toBe('• point 0 of a long list')
+  expect(await position(ui)).toMatch(/^lines 1-\d+ of 31 · ↓ \d+ below$/)
+  await pinned()
+  // u at the top does nothing.
+  await ui.press({ key: 'card-up' })
+  expect((await cardBody(ui))[0]).toBe('• point 0 of a long list')
+  const seen = new Set<string>()
+  for (let i = 0; i < 10; i++) {
+    for (const l of await cardBody(ui)) seen.add(l)
+    await ui.press({ key: 'card-down' })
+    await pinned()
+  }
+  for (let i = 0; i < 30; i++) expect(seen.has(`• point ${i} of a long list`)).toBe(true)
+  // Clamped at the end: the last line is the last body row and another m changes nothing.
+  const end = await position(ui)
+  expect(end).toMatch(/^↑ \d+ above · lines \d+-31 of 31$/)
+  expect((await cardBody(ui)).slice(-2)).toEqual(['• point 29 of a long list', 'why: the export needs one'])
+  await ui.press({ key: 'card-down' })
+  expect(await position(ui)).toBe(end)
+  // A taller pane (the same card drawn again at 34 rows) clamps the offset: the end stays at the end, more of the body above it.
+  await ui.unmount()
+  const tall = await mount($, 34, 60)
+  expect(await position(tall)).toMatch(/^↑ \d+ above · lines \d+-31 of 31$/)
+  expect(Number(/↑ (\d+)/.exec((await position(tall))!)![1])).toBeLessThan(Number(/↑ (\d+)/.exec(end!)![1]))
+  expect((await cardBody(tall)).at(-1)).toBe('why: the export needs one')
+  for (let i = 0; i < 10; i++) await tall.press({ key: 'card-up' })
+  expect((await cardBody(tall))[0]).toBe('• point 0 of a long list')
+  await tall.unmount()
+})
+
+test('the wheel and the page keys (ui.scroll) move an open card body by e.by, a page key by the card page; elsewhere the engine scrolls', async ($, on) => {
+  world(on)
+  const engine: number[] = []
+  on('ui.scroll', (_, e) => { engine.push((e as { by: number }).by); return {} })
+  await ask($, 'w1', [{ ...Q, question: Array.from({ length: 30 }, (_, i) => `- point ${i}`).join('\n') }])
+  const ui = await mount($, 24, 60)
+  // The tree: the pane's own scroll, untouched.
+  await wheel($, 2)
+  expect(engine).toEqual([2])
+  await open(ui)
+  await openCard(ui, 'q1')
+  expect(await wheel($, 3)).toEqual({})
+  expect((await cardBody(ui))[0]).toBe('• point 3')
+  // Ticks summed in flight move as far; past the top clamps.
+  await wheel($, -10)
+  expect((await cardBody(ui))[0]).toBe('• point 0')
+  // A page key moves by the body's own rows less one, not the pane's.
+  const rows = (await cardBody(ui)).length
+  await wheel($, 24)
+  expect((await cardBody(ui))[0]).toBe(`• point ${rows - 1}`)
+  for (let i = 0; i < 8; i++) await wheel($, 5)
+  expect((await cardBody(ui)).at(-1)).toBe('why: the export needs one')
+  expect(engine).toEqual([2])
+  // The draft in the answer Input keeps its text while the body moves.
+  await ui.input({ key: 'card-answer', text: 'half typed', kind: 'change' })
+  await wheel($, -3)
+  expect((await ui.find({ key: 'card-answer' }) as { props?: { value?: string } } | undefined)?.props?.value).toBe('half typed')
   await ui.unmount()
 })
+
+test('the scroll offset starts at the top on the next card (j), back on the first (k) and after Esc home', async ($, on) => {
+  world(on)
+  const long = (tag: string) => Array.from({ length: 30 }, (_, i) => `- ${tag} ${i}`).join('\n')
+  await ask($, 'w1', [{ ...Q, question: long('first') }, { ...SOFT, question: long('second') }])
+  const ui = await mount($, 24, 60)
+  await open(ui)
+  await openCard(ui, 'q1')
+  await ui.press({ key: 'card-down' })
+  expect((await cardBody(ui))[0]).not.toBe('• first 0')
+  await ui.press({ key: 'card-next' })
+  expect((await cardBody(ui))[0]).toBe('• second 0')
+  await ui.press({ key: 'card-down' })
+  await ui.press({ key: 'card-prev' })
+  expect((await cardBody(ui))[0]).toBe('• first 0')
+  await ui.press({ key: 'card-down' })
+  await cmd($, 'home')
+  await open(ui)
+  await openCard(ui, 'q1')
+  expect((await cardBody(ui))[0]).toBe('• first 0')
+  await ui.unmount()
+})
+
+for (const rows of [12, 13, 14]) {
+  test(`at ${rows} rows a long CJK question with a why is readable to its last line by scrolling, the buttons always shown`, async ($, on) => {
+    world(on)
+    const question = Array.from({ length: 12 }, (_, i) => `第${i}段 ${'这是一个很长的测试问题文本'.repeat(3)} テスト end${i}`).join('\n\n')
+    const context = '```\n┌──────┐\n│ 框图 │\n└──────┘\n```\nwhy ends here 结束'
+    await ask($, 'w1', [{ ...Q, question, context, options: ['选项 A', 'option B', 'option C'], default: 'option B' }])
+    const ui = await mount($, rows, 60)
+    await open(ui)
+    await openCard(ui, 'q1')
+    const seen: string[] = []
+    for (let i = 0; i < 80; i++) {
+      const screen = cardScreen((await ui.drawn()) as El, rows)
+      expect(screen.length).toBeLessThanOrEqual(rows)
+      expect(screen.some(l => /^Back esc home/.test(l))).toBe(true)
+      for (const k of [0, 1, 2]) expect(await ui.find({ type: 'Button', key: `card-opt-${k}` })).toBeDefined()
+      expect(await ui.find({ type: 'Button', key: 'card-yes' })).toBeDefined()
+      const body = await cardBody(ui)
+      for (const l of body) expect(strWidth(l)).toBeLessThanOrEqual(60)
+      seen.push(...body)
+      if (!/below/.test((await position(ui)) ?? '')) break
+      await ui.press({ key: 'card-down' })
+    }
+    const all = seen.join('\n')
+    for (let i = 0; i < 12; i++) expect(all).toContain(`end${i}`)
+    expect(all).toContain('┌──────┐')
+    expect(all).toContain('why ends here 结束')
+    await ui.unmount()
+  })
+}
 
 test('three decisions kept the same way show a rule hint row in the inbox; s hides it for good and no rule is written', async ($, on) => {
   const w = world(on)

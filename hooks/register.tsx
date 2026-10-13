@@ -70,7 +70,7 @@ import type { InitIo } from './init'
 import { demoArm, demoMove, demoStart, demoStop, demoTool } from './demo-run'
 import type { DemoIo } from './demo-run'
 import type { DemoState } from './demo-replay'
-import { paneDraw, paneFocus } from './pane-run'
+import { NO_SCROLL, paneDraw, paneFocus, paneScroll } from './pane-run'
 import type { PaneActs, PaneEvent, PaneIo } from './pane-run'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
@@ -276,6 +276,8 @@ const inboxOpen = atom({ plugin: 'flow', key: 'inboxOpen' } as const, {} as Reco
 const inboxDraft = atom({ plugin: 'flow', key: 'inboxDraft' } as const, '')
 const inboxNote = atom({ plugin: 'flow', key: 'inboxNote' } as const, '')
 const graphFocus = atom({ plugin: 'flow', key: 'graphFocus' } as const, null as string | null)
+// The scrolled offset of a large card's body, by card (pane-run.tsx paneScroll).
+const cardScroll = atom({ plugin: 'flow', key: 'cardScroll' } as const, NO_SCROLL as { key: string; top: number })
 const testSlots = atom({ plugin: 'flow', key: 'testSlots' } as const, { holders: [], waiters: [] } as TestSlots)
 // Its own key, so state persisted before this pool existed loads as empty.
 const typecheckSlots = atom({ plugin: 'flow', key: 'typecheckSlots' } as const, { holders: [], waiters: [] } as TestSlots)
@@ -660,6 +662,7 @@ async function paneHome($: EngineInterface): Promise<void> {
   await update($, inboxOpen, () => ({}))
   await update($, batchPick, () => null)
   await update($, prShown, () => null)
+  await update($, cardScroll, () => NO_SCROLL)
   if (await read($, demo) !== null) await demoStop(demoIoOf($))
 }
 
@@ -2350,6 +2353,7 @@ function paneIoOf($: EngineInterface, lets: PaneLets): Omit<PaneIo, keyof PaneAc
       inboxNote: () => read($, inboxNote),
       graphFocus: () => read($, graphFocus),
       demo: () => read($, demo),
+      cardScroll: () => read($, cardScroll),
     },
     set: {
       selected: fn => update($, selected, fn),
@@ -2371,6 +2375,7 @@ function paneIoOf($: EngineInterface, lets: PaneLets): Omit<PaneIo, keyof PaneAc
       inboxNote: fn => update($, inboxNote, fn),
       graphFocus: fn => update($, graphFocus, fn),
       demo: fn => update($, demo, fn),
+      cardScroll: fn => update($, cardScroll, fn),
     },
     resolve: ev => paneResolve($, ev),
     now: () => $.clock.now(),
@@ -2768,6 +2773,15 @@ export const register: Register = (on, options) => {
     if (e.origin.kind !== 'person') return next(e)
     await paneHome($)
     return { value: undefined }
+  })
+
+  // The wheel and PgUp/PgDn over an open card whose body is taller than its room move that body (pane-run.tsx);
+  // the card's header and buttons stay put. Anywhere else the pane scrolls as the engine does it.
+  on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
+    const io = paneIoOf($, paneLets)
+    const moved = await paneScroll(io, e.by, e.bodyRows)
+    if (!moved) return next(e)
+    return {}
   })
 
   // The pane draws in pane-run.tsx.

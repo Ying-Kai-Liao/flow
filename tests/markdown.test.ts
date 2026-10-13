@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { clipLines, cutLines, mdFit, mdFlat, mdLines, mdPlain, parseInline, rowLines } from '../hooks/markdown'
+import { clipLines, mdFit, mdFlat, mdLines, mdPlain, parseInline, rowLines, strWidth, textRows } from '../hooks/markdown'
 import type { Line, Span } from '../hooks/markdown'
 
 const str = (l: Line): string => l.map(s => s.t).join('')
@@ -126,12 +126,43 @@ test('flat and fitted forms: one line, markers dropped, style kept, cut with an 
   expect(mdPlain('x'.repeat(50), 10)).toBe('xxxxxxxxx…')
 })
 
-test('cutLines and clipLines end a long text in a marker instead of overflowing', () => {
+test('clipLines ends a long text in a marker instead of overflowing', () => {
   const l = mdLines('a\nb\nc\nd\ne', 60)
-  expect(cutLines(l, 3).map(str)).toEqual(['a', 'b', '+3 more lines'])
-  expect(cutLines(l, 9)).toBe(l)
+  expect(clipLines(l, 9, 60)).toBe(l)
   expect(clipLines(l, 2, 60).map(str)).toEqual(['a', 'b…'])
   expect(clipLines(mdLines('a long line of text', 60), 1, 60)).toHaveLength(1)
+})
+
+test('display width: CJK, kana, Hangul and fullwidth forms take two columns, combining and zero-width marks none, box drawing one', () => {
+  expect(strWidth('abc')).toBe(3)
+  expect(strWidth('测试')).toBe(4)
+  expect(strWidth('テスト')).toBe(6)
+  expect(strWidth('한국')).toBe(4)
+  expect(strWidth('ＡＢ')).toBe(4)
+  expect(strWidth('e\u0301')).toBe(1)
+  expect(strWidth('a\u200bb')).toBe(2)
+  expect(strWidth('┌─┐│└┘')).toBe(6)
+})
+
+for (const width of [20, 21, 60]) {
+  test(`CJK text wraps by display width at ${width} columns: no row is wider and no wide character is split`, () => {
+    const text = `${'这是一个很长的测试问题文本'.repeat(4)} テスト mixed with words テスト **太字** and \`代码\`\n\n- 列表项目 ${'很长'.repeat(15)}\n\n\`\`\`\n┌──────┐ 框图 ${'内容'.repeat(20)}\n\`\`\``
+    const out = rows(text, width)
+    for (const l of out) expect(strWidth(l)).toBeLessThanOrEqual(width)
+    // Every character comes through: the rows joined hold the whole question text.
+    expect(out.join('').replace(/\s/g, '')).toContain('这是一个很长的测试问题文本'.repeat(4))
+    expect(out.join('')).toContain('┌──────┐')
+    // Wide rows are filled: a run of CJK uses the width, not a character count of it.
+    const full = out.find(l => /^[这是一个很长的测试问题文本]+$/.test(l))!
+    expect(strWidth(full)).toBeGreaterThanOrEqual(width - 1)
+  })
+}
+
+test('textRows counts the rows plain text wraps to, wide characters by their width', () => {
+  expect(textRows('short', 40)).toBe(1)
+  expect(textRows('', 40)).toBe(1)
+  expect(textRows('one\ntwo', 40)).toBe(2)
+  expect(textRows('测'.repeat(30), 20)).toBe(3)
 })
 
 test('a real PR body is read as markdown: the section heading, labels, code and the bullets', () => {

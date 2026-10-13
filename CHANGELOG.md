@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The Flow pane's question/decision card, PR card and batch card no longer cut a long body to "+N more lines": the body (question, why, instead could; the PR rows; the batch's PRs) scrolls between a pinned header and pinned buttons, note and answer Input, by the mouse wheel and PgUp/PgDn (a `ui.scroll` hook on the pane) or `u up` / `m more`, with a dim position line ("↑ 4 above · lines 5-18 of 40 · ↓ 22 below"). The offset is kept per card in the new `cardScroll` atom, starts at the top on another card, Back or Esc home, and is clamped when the pane or the text changes. Markdown wrapping now counts display width: CJK, Hangul, kana and fullwidth forms take two columns and combining or zero-width marks none, so no wrapped row is wider than the pane and a wide character is never split at the edge.
+
 ## [0.6.114] - 2026-10-14
 
 ### Fixed

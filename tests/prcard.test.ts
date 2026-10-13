@@ -356,6 +356,32 @@ test('the pane: the ready batch line opens the batch card; a PR in it opens its 
   await ui.unmount()
 })
 
+test('the pane: a batch with more PRs than the pane has rows scrolls its PR list; the confirm prompt and Push stay', { options: { ...OPTS, merge_mode: 'auto' } }, async ($, on) => {
+  const w = world(on)
+  const prs = [7, 8, 9, 10, 11, 12, 13, 14]
+  for (const n of prs) await handover($, n)
+  for (const n of prs) await reviewer($, 'r1', { action: 'take', pr: n })
+  w.refs.set(refOf(S1.slice(0, 8)), S1)
+  expect(await reviewer($, 'r1', { action: 'ready', prs, sha: S1, base_sha: BASE, check: '42 tests passed', version: '0.5.1' })).toContain('Recorded batch 11111111')
+  const ui = await mount($, 12)
+  await ui.press({ key: 'batch-open' })
+  expect(await ui.find({ text: /^lines 1-\d+ of 8 · ↓ \d+ below$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'batch-pr-14' })).toBeUndefined()
+  await ui.press({ key: 'batch-drop' })
+  for (let i = 0; i < 8 && await ui.find({ text: /↓ \d+ below/ }) !== undefined; i++) {
+    await ui.press({ key: 'batch-down' })
+    expect(await ui.find({ type: 'Button', key: 'batch-push' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'batch-drop-yes' })).toBeDefined()
+  }
+  expect(await ui.find({ type: 'Button', key: 'batch-pr-14' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'batch-pr-7' })).toBeUndefined()
+  await ui.press({ key: 'batch-up' })
+  await ui.press({ key: 'batch-up' })
+  await ui.press({ key: 'batch-up' })
+  expect(await ui.find({ type: 'Button', key: 'batch-pr-7' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('the pane: Send back asks first, then sends one PR back through the push gate; Drop returns them all', { options: { ...OPTS, merge_mode: 'auto' } }, async ($, on) => {
   const w = world(on)
   await readyBatch($, w)
@@ -503,14 +529,38 @@ for (const columns of [60, 100]) {
   })
 }
 
-test('the pane: a card taller than the pane keeps its buttons and ends in "+N more lines"', { options: OPTS }, async ($, on) => {
+test('the pane: a PR card taller than the pane scrolls its body with m and u to the last line; Back and the buttons stay', { options: OPTS }, async ($, on) => {
   const body = '## Verification\nRan:\n' + Array.from({ length: 12 }, (_, i) => `- \`step ${i}\`: **pass**`).join('\n') + '\nExercised: ran it\nNot verified:\n- the full check'
   world(on, 'ok', { body })
   await handover($, 7)
   const ui = await mount($, 14)
   await ui.press({ key: 'await-open' })
-  expect(await ui.find({ text: /\+\d+ more lines/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: 'pr-approve' })).toBeDefined()
+  expect(await ui.find({ text: /^lines 1-\d+ of \d+ · ↓ \d+ below$/ })).toBeDefined()
+  expect(await ui.find({ text: /more lines/ })).toBeUndefined()
+  expect(await ui.find({ text: /- the full check/ })).toBeUndefined()
+  await ui.press({ key: 'pr-up' })
+  expect(await ui.find({ text: /^lines 1-/ })).toBeDefined()
+  for (let i = 0; i < 12 && await ui.find({ text: /↓ \d+ below/ }) !== undefined; i++) {
+    await ui.press({ key: 'pr-down' })
+    expect(await ui.find({ type: 'Button', key: 'pr-approve' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'pr-back' })).toBeDefined()
+  }
+  expect(await ui.find({ text: /the full check/ })).toBeDefined()
+  expect(await ui.find({ text: /↓ \d+ below/ })).toBeUndefined()
   expect(await ui.find({ text: /\*\*/ })).toBeUndefined()
+  // Back and the card again: from its top.
+  await ui.press({ key: 'pr-back' })
+  await ui.press({ key: 'await-open' })
+  expect(await ui.find({ text: /^lines 1-/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the pane: a short PR card neither scrolls nor shows where it is', { options: OPTS }, async ($, on) => {
+  world(on)
+  await handover($, 7)
+  const ui = await mount($)
+  await ui.press({ key: 'await-open' })
+  expect(await ui.find({ type: 'Button', key: 'pr-down' })).toBeUndefined()
+  expect(await ui.find({ text: /lines \d+-\d+ of/ })).toBeUndefined()
   await ui.unmount()
 })
