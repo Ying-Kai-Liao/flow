@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: the session.start hook body and the settings loading moved to hooks/startup-run.ts; no behaviour change.
+
 ## [0.6.99] - 2026-10-13
 
 ### Changed
