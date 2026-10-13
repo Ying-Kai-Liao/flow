@@ -2,6 +2,7 @@ import type { Activity, AgentRow, Handover } from '../types'
 import { ENDED } from './deliver'
 import { CONTINUE, isReviewer, MANAGER, QUEUE, REVIEWER, WORKER } from './core'
 import { SESSION } from './sessions'
+import { noteKey } from './state'
 import type { GNode } from './graph'
 
 // Display order: what may need a person first, finished agents last.
@@ -30,7 +31,47 @@ export const HANDOVER_GLYPH: Record<Handover['status'], string> = {
   pending: '…', awaiting: '⏸', taken: '●', ready: '⇪', done: '✓', returned: '↩',
 }
 
-export type TreeItem = { a: AgentRow; depth: number; kids: number; collapsed: boolean }
+// `finished` marks the one row that stands for every finished manager (FINISHED_KEY): how many
+// managers it holds and how many agents under them.
+export type TreeItem = { a: AgentRow; depth: number; kids: number; collapsed: boolean; finished?: { managers: number; workers: number } }
+
+// The fold key of the finished row in the pane's `folded` map; unset or true is collapsed.
+export const FINISHED_KEY = '#finished'
+
+// What still holds an ended agent open: handovers it is owed, the owners (names) of open inbox items,
+// and whether its own plan graph has a node that is not done.
+export type OpenWork = { handovers: Handover[]; owners: string[]; planOpen: (name: string) => boolean }
+
+// The top-level managers that fold into the finished row: ended, nothing live under them, and no open work of their own (a handover not done, an open inbox item, a plan node not done).
+// Work is matched by noteKey, as the inbox does; while a live agent shares that key (a restart as
+// <name>-2) the work is its, so the old row still folds. A row with no name folds on status alone.
+// A worker main started itself stays drawn: its report is what the person reads next.
+// `keep` is an agent that must stay drawn (the transcript the pane follows): its top agent never folds.
+export function finishedIds(list: AgentRow[], work: OpenWork, keep?: string | null): Set<string> {
+  const ids = new Set(list.map(a => a.id))
+  const under = (id: string, seen = new Set<string>()): AgentRow[] => list
+    .filter(x => x.parentId === id && !seen.has(x.id) && (seen.add(x.id), true))
+    .flatMap(x => [x, ...under(x.id, seen)])
+  const live = new Set(list.filter(a => a.name !== undefined && !ENDED.has(a.status)).map(a => noteKey(a.name!)))
+  const open = (name: string): boolean => {
+    const key = noteKey(name)
+    if (live.has(key)) return false
+    return work.handovers.some(h => h.status !== 'done' && noteKey(h.reportTo ?? '') === key)
+      || work.owners.some(o => noteKey(o ?? '') === key)
+      || work.planOpen(name)
+  }
+  const out = new Set<string>()
+  for (const a of list) {
+    if (a.parentId !== undefined && ids.has(a.parentId)) continue
+    if (a.type !== MANAGER || !ENDED.has(a.status)) continue
+    const below = under(a.id)
+    if (below.some(x => !ENDED.has(x.status))) continue
+    if (a.name !== undefined && open(a.name)) continue
+    if (keep != null && (a.id === keep || below.some(x => x.id === keep))) continue
+    out.add(a.id)
+  }
+  return out
+}
 
 // Managers and the reviewer start collapsed; everything else has no default.
 export const foldDefault = (a: AgentRow): boolean | undefined => (a.type === MANAGER || isReviewer(a.type) ? true : undefined)
@@ -39,9 +80,12 @@ export const foldDefault = (a: AgentRow): boolean | undefined => (a.type === MAN
 // its children hidden: the person's choice wins, then the role's default, then `auto`, which folds
 // every agent with children except the ones on the way to the highlight (a crowded tree).
 // `at` is the highlight, moved up to the nearest row that is drawn.
+// `finished` (from finishedIds) draws those top-level agents as one row after the others, collapsed
+// unless `fold[FINISHED_KEY]` is false; expanded, they follow it one level in. A highlight hidden in
+// the collapsed row moves to the row.
 export function treeItems(
   list: AgentRow[], fold: Record<string, boolean>, cur: string | null | undefined, auto: boolean,
-  acts: Record<string, Activity> = {},
+  acts: Record<string, Activity> = {}, finished: Set<string> = new Set(),
 ): { items: TreeItem[]; at: string | undefined } {
   const ids = new Set(list.map(a => a.id))
   const kids = (id: string | undefined) => list
@@ -56,10 +100,27 @@ export function treeItems(
     items.push({ a, depth, kids: under.length, collapsed })
     if (!collapsed) for (const c of under) walk(c, depth + 1)
   }
-  for (const a of kids(undefined)) walk(a, 0)
+  const tops = kids(undefined)
+  for (const a of tops.filter(x => !finished.has(x.id))) walk(a, 0)
+  const done = tops.filter(x => finished.has(x.id))
+  if (done.length > 0) {
+    const all = (id: string, seen: Set<string>): number => list
+      .filter(x => x.parentId === id && !seen.has(x.id) && (seen.add(x.id), true))
+      .reduce((n, x) => n + 1 + all(x.id, seen), 0)
+    const workers = done.reduce((n, a) => n + all(a.id, new Set([a.id])), 0)
+    const collapsed = fold[FINISHED_KEY] !== false
+    items.push({
+      a: { id: FINISHED_KEY, description: '', type: 'finished', status: 'completed' },
+      depth: 0, kids: done.length, collapsed, finished: { managers: done.length, workers },
+    })
+    if (!collapsed) for (const a of done) walk(a, 1)
+  }
   const drawn = new Set(items.map(i => i.a.id))
   let at: string | undefined = cur ?? undefined
-  while (at !== undefined && !drawn.has(at)) at = list.find(a => a.id === at)?.parentId
+  while (at !== undefined && !drawn.has(at)) {
+    if (finished.has(at)) { at = FINISHED_KEY; break }
+    at = list.find(a => a.id === at)?.parentId
+  }
   return { items, at }
 }
 

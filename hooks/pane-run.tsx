@@ -27,7 +27,7 @@ import { paneChecksLine } from './checks'
 import { behindLines } from './deploy'
 import { claudeLimits, SESSION } from './sessions'
 import { elapsed, labelOf, warnPercent, windowOf } from './meter'
-import { foldDefault, shortModel } from './pane'
+import { FINISHED_KEY, finishedIds, foldDefault, shortModel } from './pane'
 import { MANAGER, mirror } from './core'
 import { planOwner } from './roster-run'
 import { createGate, ttlCache, USAGE_TTL_MS } from './pane-throttle'
@@ -316,6 +316,10 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
     await acted()
     await io.set.folded(f => ({ ...f, [QUESTIONS_KEY]: f[QUESTIONS_KEY] === false }))
   }
+  const toggleFinished = async () => {
+    await acted()
+    await io.set.folded(f => ({ ...f, [FINISHED_KEY]: f[FINISHED_KEY] === false }))
+  }
   const ctx: PaneCtx = {
     els: { Box, Text, Button }, list, acts, plans, rows, columns, modelOf, t, gfocus, shown, sessionMap, arm, armMs: ARM_MS,
     askers, decisionPhrases: settings.decisionPhrases, toggle, card, runTime, control, acted, open,
@@ -434,9 +438,15 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
   const mainU = main?.tokens === undefined ? undefined
     : { percent: main.percent ?? Math.round(main.tokens / main.window * 100), tokens: main.tokens, window: main.window }
 
+  // Finished managers fold into one row; the transcript in view keeps its agent drawn.
+  const finished = finishedIds(list, {
+    handovers: Object.values(hs),
+    owners: openAll(boxNow).map(q => q.owner),
+    planOpen: name => Object.values(plans[planOwner(plans, name)] ?? {}).some(n => n.state !== 'done'),
+  }, following ? viewId : undefined)
   return treeView({
     ...ctx, hs, fold, cur, unhanded, leftover, limits, openQs, openItems, fyiCount, anyOpen, checksLine, gate, breakerNote, inboxRows, deployLines, mainU, mainModel: shortModel(io.mainModel()), mainTime,
-    mergeQueueKey: MERGE_QUEUE_KEY, questionsKey: QUESTIONS_KEY, warnOf, meter, toggleFold, toggleQueue, toggleQuestions,
+    mergeQueueKey: MERGE_QUEUE_KEY, questionsKey: QUESTIONS_KEY, finished, warnOf, meter, toggleFold, toggleQueue, toggleQuestions, toggleFinished,
     readCursor: () => io.read.cursor(),
     setCursor: id => io.set.cursor(() => id),
     focusRow: id => io.focus(id).catch(() => undefined),
