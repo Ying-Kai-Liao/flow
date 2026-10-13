@@ -213,9 +213,11 @@ export async function afterToolCall(io: ToolCallIo, e: { agentId?: string }, r: 
 
 // --- The flow tools' multi-line cases (runFlowTool's switch stays in register.tsx) ---------------
 
-// The io is built per call without the call: the call comes in as an argument where a case needs it, so no
-// closure in register.tsx holds `$` together with the hook's event (the plugin directory flags that).
-export type FlowToolsIo = {
+// Each case has its own small io, built per call by its own builder in register.tsx (as handoverIoOf is), holding
+// only what that case uses. Built without the call: the call comes in as an argument where a member needs it, so no
+// closure in register.tsx holds `$` together with the hook's event (the plugin directory flags that). One io shared
+// by all eight cases (flowToolsIoOf, 0.6.103 to 0.6.111) was still reported MOD_CAPABILITY_USE_NOT_PLAIN at its calls.
+type CaseMembers = {
   agents: () => Promise<AgentInfo[]>
   exec: (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
   cwd: () => Promise<string | undefined>
@@ -225,8 +227,8 @@ export type FlowToolsIo = {
   toolCaller: (agentId: string | undefined) => Promise<ToolCaller>
   handovers: () => Promise<Parameters<typeof releaseToolAccess>[2]>
   ownerName: (id: string | undefined) => Promise<string>
-  release: (e: Call) => Promise<Out | undefined>
-  reviewer: (e: Call) => Promise<Out | undefined>
+  release: (settings: Settings, e: Call) => Promise<Out | undefined>
+  reviewer: (settings: Settings, e: Call) => Promise<Out | undefined>
   readNotes: (manager: string) => Promise<string>
   appendNote: (manager: string, line: string) => Promise<boolean>
   notesPath: (manager: string) => Promise<string | undefined>
@@ -234,21 +236,29 @@ export type FlowToolsIo = {
   sweep: (base: string, apply: boolean) => Promise<string>
   pushState: () => Promise<Parameters<typeof pushLines>[0]>
   pushAct: (act: { kind: 'push' } | { kind: 'drop' } | { kind: 'back'; pr: number }) => Promise<string>
-  sessionTool: (e: Call, caller: { id: string; name: string }) => Promise<string>
+  sessionTool: (settings: Settings, e: Call, caller: { id: string; name: string }) => Promise<string>
   deployTool: (e: Call, isMain: boolean, caller: string) => Promise<string>
 }
+export type ReleaseCaseIo = Pick<CaseMembers, 'toolCaller' | 'handovers' | 'release'>
+export type ReviewerCaseIo = Pick<CaseMembers, 'toolCaller' | 'handovers' | 'reviewer'>
+export type GuardTestsCaseIo = Pick<CaseMembers, 'sessionWorktree' | 'agents' | 'exec' | 'cwd'>
+export type NoteCaseIo = Pick<CaseMembers, 'readNotes' | 'now' | 'appendNote' | 'logNote' | 'notesPath'>
+export type CleanCaseIo = Pick<CaseMembers, 'sweep'>
+export type SessionCaseIo = Pick<CaseMembers, 'ownerName' | 'sessionTool'>
+export type DeployCaseIo = Pick<CaseMembers, 'ownerName' | 'toolCaller' | 'handovers' | 'deployTool'>
+export type PushCaseIo = Pick<CaseMembers, 'pushState' | 'pushAct'>
 
-export async function releaseCase(io: FlowToolsIo, e: Call): Promise<Out | undefined> {
+export async function releaseCase(io: ReleaseCaseIo, settings: Settings, e: Call): Promise<Out | undefined> {
   const refused = releaseToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())
-  return refused !== undefined ? { result: refused } : io.release(e)
+  return refused !== undefined ? { result: refused } : io.release(settings, e)
 }
 
-export async function reviewerCase(io: FlowToolsIo, e: Call): Promise<Out | undefined> {
+export async function reviewerCase(io: ReviewerCaseIo, settings: Settings, e: Call): Promise<Out | undefined> {
   const refused = reviewerToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())
-  return refused !== undefined ? { result: refused } : io.reviewer(e)
+  return refused !== undefined ? { result: refused } : io.reviewer(settings, e)
 }
 
-export async function guardTestsCase(io: FlowToolsIo, base: string, map: Parameters<typeof guardTestsFor>[1], e: Call): Promise<Out> {
+export async function guardTestsCase(io: GuardTestsCaseIo, base: string, map: Parameters<typeof guardTestsFor>[1], e: Call): Promise<Out> {
   const input = e
   if (Object.keys(map).length === 0) return { result: guardReport([], false) }
   let files: string[]
@@ -273,7 +283,7 @@ export async function guardTestsCase(io: FlowToolsIo, base: string, map: Paramet
   return { result: guardReport(guardTestsFor(files, map), true) }
 }
 
-export async function noteCase(io: FlowToolsIo, e: Call): Promise<Out> {
+export async function noteCase(io: NoteCaseIo, e: Call): Promise<Out> {
   const input = e
   const manager = String(input.manager ?? '').trim()
   if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
@@ -289,7 +299,7 @@ export async function noteCase(io: FlowToolsIo, e: Call): Promise<Out> {
   return { result: `Noted in ${await io.notesPath(manager)}.` }
 }
 
-export async function cleanCase(io: FlowToolsIo, settings: Pick<Settings, 'base' | 'cleanup'>, e: Call): Promise<Out> {
+export async function cleanCase(io: CleanCaseIo, settings: Pick<Settings, 'base' | 'cleanup'>, e: Call): Promise<Out> {
   const apply = e.apply === true
   if (apply && settings.cleanup === 'off') {
     return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await io.sweep(settings.base, false)}` }
@@ -297,13 +307,13 @@ export async function cleanCase(io: FlowToolsIo, settings: Pick<Settings, 'base'
   return { result: await io.sweep(settings.base, apply) }
 }
 
-export async function sessionCase(io: FlowToolsIo, e: Call): Promise<Out> {
+export async function sessionCase(io: SessionCaseIo, settings: Settings, e: Call): Promise<Out> {
   const id = e.agentId
   const caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await io.ownerName(id) }
-  return { result: await io.sessionTool(e, caller) }
+  return { result: await io.sessionTool(settings, e, caller) }
 }
 
-export async function deployCase(io: FlowToolsIo, e: Call): Promise<Out> {
+export async function deployCase(io: DeployCaseIo, e: Call): Promise<Out> {
   const isMain = e.agentId === undefined
   const caller = isMain ? 'main' : await io.ownerName(e.agentId!)
   const refused = deployToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())
@@ -311,7 +321,7 @@ export async function deployCase(io: FlowToolsIo, e: Call): Promise<Out> {
   return { result: await io.deployTool(e, isMain, caller) }
 }
 
-export async function pushCase(io: FlowToolsIo, e: Call): Promise<Out> {
+export async function pushCase(io: PushCaseIo, e: Call): Promise<Out> {
   const input = e
   if (e.agentId !== undefined) return { result: 'Refused: only main releases a ready batch, on the user\'s word (or the user, with /flow push). Managers, workers and the reviewer cannot push it.' }
   const action = String(input.action ?? 'list')

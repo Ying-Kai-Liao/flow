@@ -106,6 +106,11 @@ export type PaneIo = {
   setPaneFollow: (f: { pick: string; cur: string } | null) => void
   paneView: () => string | null
   setPaneView: (v: string | null) => void
+} & PaneActs
+
+// The pane's actions that run a `$`-taking helper of register.tsx, built by their own small builder (paneActsIoOf)
+// so neither builder fans out to every helper the pane reaches (see plain-names check 8).
+export type PaneActs = {
   unhanded: () => Promise<Unhanded[]>
   endedOwners: () => Promise<Set<string>>
   demoArm: (s: DemoState) => void
