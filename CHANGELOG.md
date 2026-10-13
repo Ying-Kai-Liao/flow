@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.107] - 2026-10-13
+
+### Changed
+
+- Add reviewer_delay: close handovers share one reviewer batch (#209)
+
 ## [0.6.106] - 2026-10-13
 
 ### Fixed
