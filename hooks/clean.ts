@@ -98,6 +98,8 @@ export type CleanInputs = {
   // Worktrees whose lock file is older than 10 minutes; a younger or unaged lock may belong to an
   // agent that is still starting and not yet in the roster.
   oldLocks?: Set<string>
+  // Branches of best-of-N arms that lost (an `arm-lost` event, hooks/bestof.ts): with a closed PR and pushed they are safe like a merged one.
+  lost?: Set<string>
 }
 
 export type Kept = { kind: 'worktree' | 'branch'; name: string; reason: string; needsLook: boolean }
@@ -290,7 +292,7 @@ export function selectCleanup(i: CleanInputs): Sweep {
       keep('branch', b, `in use by ${live.name ?? live.id}`, false)
       continue
     }
-    const v = landed(i, tip, b, false)
+    const v = landed(i, tip, b, i.lost?.has(b) === true)
     if (v.ok) {
       sweep.remove.branches.push(b)
       if (v.dropped) sweep.dropped.push({ kind: 'branch', name: b, commits: v.dropped })
@@ -433,6 +435,7 @@ async function gatherClean(io: CleanIo, base: string): Promise<CleanGathered> {
   const continued = (await io.log()).filter(l => l.event === 'continue')
   const cwdOf = new Map(hs.filter(h => h.takenBy !== undefined && h.worktree !== undefined).map(h => [h.takenBy!, h.worktree!]))
   const waiting = waitingPaths(hs, continued, prs)
+  const lost = new Set((await io.log()).filter(l => l.event === 'arm-lost' && l.branch !== undefined).map(l => l.branch!))
   const roster = (await io.agents()).map(a => ({
     id: a.id, live: isLive(a.status), ...(a.name !== undefined && { name: a.name }),
     ...(a.name !== undefined && cwdOf.has(a.name) && { cwd: cwdOf.get(a.name) }),
@@ -448,7 +451,7 @@ async function gatherClean(io: CleanIo, base: string): Promise<CleanGathered> {
     roster.push({ id: sessionKey(s.name), live, name: s.name, cwd: s.worktree })
     if (s.hostWorktree !== undefined) roster.push({ id: sessionKey(s.name), live, name: s.name, cwd: s.hostWorktree })
   }
-  const partial: Omit<CleanInputs, 'ancestry'> = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting }
+  const partial: Omit<CleanInputs, 'ancestry'> = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting, lost }
   // Content equivalence for tips a merged PR of the branch family may have replaced (a rebase
   // leaves the old commits behind): contained when every file they changed since the merge base
   // has the very same tree entry on origin/<base>. Anything odd (quoted names, many files) is not.

@@ -17,6 +17,8 @@ export type LedgerEntry = {
   sizeFeedback?: boolean
   // The arm of the size_ab A/B this spawn was routed under (hooks/size-ab.ts); absent when the A/B was off.
   sizeArm?: 'jev' | 'off'
+  // A best-of-N arm (hooks/bestof.ts): the group is the package name, id the arm letter (a successor `<pkg>-a-2` stays in arm a), of how many arms.
+  arm?: { group: string; id: string; of: number }
   // The reasoning effort flow set for the agent at spawn (turn.step rewrite); unset when it inherited the session's.
   effort?: string
   // When the agent was first and last counted (ms); the status block and the 90-day prune use them.
@@ -152,7 +154,8 @@ export type DagNode = {
   blockedNotified?: boolean
 }
 // A holder of, or a waiter for, a test slot (the test_slot tool). key is the agent id, or "main".
-export type SlotEntry = { key: string; name: string; label: string; since: number; claimed?: boolean }
+export type SlotEntry = { key: string; name: string; label: string; since: number; claimed?: boolean; priority?: boolean }
+// priority marks a reviewer waiter: it queues ahead of the others (enqueueWaiter in slots.ts).
 // claimed is false for a holder granted the slot from the line who has not yet confirmed with acquire.
 
 export type TestSlots = { holders: SlotEntry[]; waiters: SlotEntry[] }
@@ -229,7 +232,7 @@ export type Session = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff' | 'branch-delete' | 'tests-failed' | 'flaky' | 'decide'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff' | 'branch-delete' | 'tests-failed' | 'flaky' | 'decide' | 'arm-pick' | 'arm-lost'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string
@@ -475,6 +478,7 @@ declare module 'claude-code' {
       // Per owner ("main" or a manager's name), the plan's nodes by id.
       plan: Record<string, Record<string, DagNode>>
       testSlots: TestSlots
+      typecheckSlots: TestSlots
       viewMode: 'tree' | 'graph' | 'inbox' | 'card' | 'archive' | 'pr' | 'batch'
       // The PR card: the PR shown and where Back goes; the PR picked to send back from the batch card.
       prShown: number | null

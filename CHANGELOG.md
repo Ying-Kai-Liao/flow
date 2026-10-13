@@ -14,6 +14,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The `manager_harness`, `reviewer_harness` and `session_host` settings and the session tool's `host` parameter. A file that still has them is read once per load with a toast: a terminal manager or reviewer harness maps to mode `session_host` (`orca` or `tmux`, else `orca`).
+## [0.6.102] - 2026-10-13
+
+### Changed
+
+- The demo replay's code moved out of `hooks/register.tsx` into `hooks/demo-run.ts`, and "Where code goes" in the reference now maps each hook to its module (no behaviour change).
+
+## [0.6.101] - 2026-10-13
+
+### Changed
+
+- Move the disk relay and terminal role-session code out of hooks/register.tsx into hooks/relay-run.ts and hooks/role-session-run.ts (no behaviour change)
+
+## [0.6.100] - 2026-10-13
+
+### Changed
+
+- Internal: the session.start hook body and the settings loading moved to hooks/startup-run.ts; no behaviour change.
+
+## [0.6.99] - 2026-10-13
+
+### Changed
+
+- Throttle Flow pane redraws (#203)
+
+## [0.6.98] - 2026-10-13
+
+### Changed
+
+- Internal: the generic tool.call hook body, the main-checkout guard, the wrap-up reminder and the flow tools' multi-line cases (guard_tests, note, clean, push, session, deploy, release, reviewer) moved from hooks/register.tsx to hooks/toolcall-run.ts; no behaviour change.
+### Changed
+
+- The Flow pane redraws background updates (activity, ledger, roster, clock) at most about 4 times a second with a trailing redraw, skips draws that change nothing, reads each atom once per draw and caches session usage for 1 s; key presses and selection still redraw at once
+
+## [0.6.97] - 2026-10-13
+
+### Changed
+
+- Move the Flow pane's hook bodies into hooks/pane-run.tsx (#200)
+
+## [0.6.96] - 2026-10-13
+
+### Changed
+
+- Move the agent.spawn hook body into hooks/spawn-run.ts (no behaviour change)
+
+## [0.6.95] - 2026-10-13
+
+### Changed
+
+- Internal: the turn.step and turn.complete hook bodies and the handoff recording moved from hooks/register.tsx to hooks/turn-run.ts; no behaviour change.
+### Changed
+
+- Internal: the Flow pane's hook bodies (draw and focus) moved from hooks/register.tsx to hooks/pane-run.tsx; no behaviour change.
+
+## [0.6.94] - 2026-10-13
+
+### Changed
+
+- Group duplicate questions across managers: one row, one answer (#197)
+
+## [0.6.93] - 2026-10-13
+
+### Changed
+
+- Best-of-N competing workers (opt-in) (#193)
+
+## [0.6.92] - 2026-10-13
+
+### Changed
+
+- Reviewer carries many PRs per full check (batch_max, late join, bisect, timeout rerun) (#192)
+- Typecheck slot pool; workers run only their test files (#194)
+### Added
+
+- Best-of-N, opt-in (`best_of_n` off | brief | auto, `best_of_n_arms` 2..3): a manager may start 2-3 competing agent workers on one brief, named `<pkg>-a`/`-b`/`-c` with an `Arm: <letter> of <N>` line. The spawn hook refuses an arm spawn that breaks the protocol (setting off, too many arms, wrong letter or name, not a manager, over `max_workers`); arm ledger rows carry `arm` so cost per arm is recorded. The new `mcp__flow__arms` tool picks the winner (`pick` closes the other arms' PRs, logs `arm-pick` / `arm-lost`, names losers that still run) and reports cost per arm and the group's overhead over the winner (`report`). Handover refuses an arm's PR unless it is the picked winner; the "PR nobody handed over" list skips open arm groups and losers; the cleanup removes a loser's worktree and local branch once it is pushed with its PR closed. Arms count as one package in the size digest, the size A/B report and the decide-eval size data. Docs: Best of N.
+### Added
+
+- Duplicate question groups: the same open question (same topic and options, or same text and options) from several managers shows once in `/flow inbox`, the Flow pane and `mcp__flow__status` (`x3` and the askers), and one answer from main or the user answers every open member. Deploy, env, push, reviewer, guard and escalated items are never grouped.
+
+## [0.6.91] - 2026-10-13
+
+### Changed
+
+- The reviewer (agent or terminal) queues ahead of worker and main waiters for a test slot, so its full check no longer waits behind every worker's run; it never preempts a holder or an offered grant.
+
+### Added
+
+- Unit tests for the `/flow` command dispatch (`tests/command.test.ts`), the usage accounting behind `turn.step` and `turn.complete` (`tests/usage-run.test.ts`: tokens in the ledger, a turn counted once, the hand-off warning) and the pane's body-rows sizing (the key-hint row stays last when the tree overflows).
+
+### Added
+
+- Standing rules settle the inbox. After main answers, `mcp__flow__answer` offers (once, with the exact `mcp__flow__standing` add call) a rule for any topic or exact question answered the same way 3 or more times, and the Flow pane's inbox shows it as a `+ rule?` line (`s` hides it); `mcp__flow__standing` has a `dismiss` action. Kept decisions are covered: a rule with `kinds: ["fyi"]` and answer `Keep` keeps matching decisions the moment they are recorded, before `decide_inbox`, and stays undoable. Topics compare normalized (case, `_`/`-`/space, one trailing "s"), and a rule made from a topic-less question records its option set. Nothing is added without your add call; deploy, env, push, reviewer and person-check items are never auto-answered or suggested.
+
+### Added
+
+- Direct unit tests for `hooks/resume.ts` (leftover gathering, disk items, resume instructions), `hooks/reviewer-route.ts` (send guard, report routing, need lines) and `hooks/roster-run.ts` (plan owner, manager ownership, live managers).
+
+## [0.6.90] - 2026-10-13
+
+### Changed
+
+- Live-test fixes: lite line, manager report write, relayed ask test (#195)
+### Fixed
+
+- `mcp__flow__answer` with `defaults: true` and no `ids` no longer answers blocking questions: it skips them and says so; naming one in `ids` still takes its default.
+
+## [0.6.89] - 2026-10-13
+
+### Changed
+
+- usage-command tests (WIP) (#187)
+### Fixed
+
+- A task line that merely starts with "Mode: lite" (such as "Mode: lite is NOT wanted") no longer starts the manager in lite mode; only a line that is exactly `Mode: lite` does.
+- A terminal manager can write its own session report file (`sessions/<name>/report.md`); every other edit stays refused.
+- Test that a blocking ask relayed from a terminal manager stays open in main's inbox and cannot be answered by the manager.
+### Added
+
+- Bigger reviewer batches: PRs that arrive before the full check join the batch (also after a failed check's rework) up to the new `batch_max` setting (default 10; 1 = one PR per batch). On a failure that does not belong to one PR the reviewer bisects the batch to the PR that breaks the check, and a failure where every test timed out is rerun once before it counts. The pushed sha is still always one whose exact tree passed the full check.
+### Added
+
+- Typechecks (`npm run typecheck`, `tsc`, `npx tsc`) take a lock of their own: `test_slot` with `kind: "typecheck"`, settings `typecheck_slots` (default 1) and `typecheck_commands` (empty: off), a 10 minute lease, shown in the Flow status line as `tsc 1/1`. The hook refuses a typecheck without a typecheck slot (a test-slot holder, like the reviewer's full check, may typecheck).
+- `scripts/test-files.sh` runs only the named test files (`claude plugin test` takes a folder, not files), or with `--jobs N` the whole suite in chunks of N files to cap the runner's child processes.
+
+### Changed
+
+- A worker's whole-suite run is refused even when it holds a test slot; workers run only the files they touched. The worker prompt says so. The reviewer's full check is unchanged.
+- `claude plugin test --help`, `-h` and `--version` are no longer treated as suite runs.
+- docs: the runner starts min(files, CPU cores) child processes, not one per file; sizing advice for `test_slots`.
 
 ## [0.6.88] - 2026-10-13
 
@@ -29,6 +158,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Two main sessions in one repo no longer both pump and deliver for the same terminal manager or reviewer: each role session records its owning main (session id and pid), a main handles only its own, and takes over ones whose owner is gone or unrecorded. A subagent of a terminal manager can now only read through the flow tools (status, guard_tests, migrations, test_slot, list actions); its writes are refused.
+### Added
+
+- Tests for the reviewer terminal re-tell (a due deploy or push run is typed again only when its signature changes) and for the gone-reviewer relay to main.
 
 ## [0.6.86] - 2026-10-13
 

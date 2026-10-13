@@ -153,7 +153,7 @@ export const PREFLIGHT_TOOL: ToolSpec = {
 
 export const ANSWER_TOOL: ToolSpec = {
   name: 'answer',
-  description: 'Answer questions addressed to you in the decision inbox. Decisions (mcp__flow__fyi) work the same way: choice Keep, or defaults: true, keeps them; any other choice or free text undoes the decision and messages the owner. Main may answer any decision. choice: an option\'s letter, number or text, or free text. defaults: true takes every default of your open questions, or only those in ids.',
+  description: 'Answer questions addressed to you in the decision inbox. Decisions (mcp__flow__fyi) work the same way: choice Keep, or defaults: true, keeps them; any other choice or free text undoes the decision and messages the owner. Main may answer any decision. choice: an option\'s letter, number or text, or free text. defaults: true takes the default of your open decisions and non-blocking questions; a blocking question needs an explicit answer or its id in ids.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -169,7 +169,7 @@ export const ANSWER_TOOL: ToolSpec = {
         },
       },
       defaults: { type: 'boolean', description: 'Answer with the defaults' },
-      ids: { type: 'array', items: { type: 'string' }, description: 'With defaults: only these question ids' },
+      ids: { type: 'array', items: { type: 'string' }, description: 'With defaults: only these question ids (naming a blocking question takes its default)' },
     },
   },
   isDeferred: false,
@@ -177,18 +177,20 @@ export const ANSWER_TOOL: ToolSpec = {
 
 export const STANDING_TOOL: ToolSpec = {
   name: 'standing',
-  description: 'Main only. Standing answers: rules that answer a recurring decision-inbox question at once. "list": rules and suggestions (questions answered the same way 3+ times); with no rules it offers starting rules, accepted with "add" and seed/seeds. "add": topic or match (case-insensitive regex on the question), answer, optional blocking (default false: blocking questions are left to you) and from. "remove": id (rules without one: file and position, e.g. personal:1). escalate: true makes matching questions blocking and yours alone; answer "default" takes the question\'s own default (non-blocking only).',
+  description: 'Main only. Standing answers: rules that answer a recurring decision-inbox question at once. "list": rules and suggestions (questions answered the same way 3+ times); with no rules it offers starting rules, accepted with "add" and seed/seeds. "add": topic or match (case-insensitive regex on the question), answer, optional blocking (default false: blocking questions are left to you) and from. "remove": id (rules without one: file and position, e.g. personal:1). "dismiss": id of a suggestion (or "all"): it is not offered again. kinds ["fyi"] makes a rule that keeps matching recorded decisions (answer "Keep"); without kinds a rule answers ordinary questions only. Topics compare ignoring case, _ - and spaces, and one trailing s. escalate: true makes matching questions blocking and yours alone; answer "default" takes the question\'s own default (non-blocking only).',
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list', 'add', 'remove'] },
+      action: { type: 'string', enum: ['list', 'add', 'remove', 'dismiss'] },
       topic: { type: 'string' },
       match: { type: 'string' },
       answer: { type: 'string', description: 'An option of the question: its text, letter or number' },
       blocking: { type: 'boolean' },
       escalate: { type: 'boolean', description: 'Instead of an answer: matching questions are blocking and never auto-answered' },
       from: { type: 'string' },
-      id: { type: 'string' },
+      kinds: { type: 'array', items: { type: 'string' }, description: 'Kinds of item the rule may answer: "ask" (default), "fyi" (a recorded decision, kept), "deploy", "env"' },
+      options: { type: 'array', items: { type: 'string' }, description: 'For a topic-less rule: the option set the question must have' },
+      id: { type: 'string', description: 'remove: the rule id. dismiss: the suggestion id, or "all"' },
       seed: { type: 'string', description: `With add: a starting rule by id (${seedIds().join(', ')})` },
       seeds: { type: 'array', items: { type: 'string' }, description: 'With add: several starting rules by id' },
     },
@@ -352,6 +354,7 @@ export const TEST_SLOT_TOOL: ToolSpec = {
     type: 'object',
     properties: {
       action: { type: 'string', enum: ['acquire', 'release', 'status'] },
+      kind: { type: 'string', enum: ['test', 'typecheck'], description: 'Which pool: "test" (default) or "typecheck", a separate lighter pool for npm run typecheck / tsc (typecheck_slots, 10 minute lease). Holding one does not grant the other.' },
       label: { type: 'string', description: 'What you will run, e.g. "full suite"' },
       result: { type: 'string', enum: ['pass', 'fail'], description: 'release: how the run ended' },
       failed_tests: { type: 'array', items: { type: 'string' }, description: 'release with result fail: the exact names of the failing tests' },
@@ -391,6 +394,22 @@ export const SIZE_AB_TOOL: ToolSpec = {
   name: 'size_ab_report',
   description: 'Main only. Reads the cost ledger and log of the size_ab A/B (Jev sizing on even local days, the Size line alone on odd days) and prints, per arm and role, packages, $ per merged PR, how many needed a -N successor and the model mix; says when an arm has too few packages to conclude. Read-only, no network.',
   inputSchema: { type: 'object', properties: {} },
+  isDeferred: true,
+}
+
+export const ARMS_TOOL: ToolSpec = {
+  name: 'arms',
+  description: 'Best-of-N (setting best_of_n): the manager that started competing arms (<pkg>-a, <pkg>-b, <pkg>-c, each with an "Arm: <letter> of <N>" line in its brief) picks the winner. "pick" (group = the package name without the arm letter, pr = the winner\'s PR, reason): closes the other arms\' open PRs with a comment (their branches stay), logs the pick, and returns each arm\'s cost so far and which losing arms still run (stop those with TaskStop yourself). Only the picked arm\'s PR can then be handed over. A repeat with the same PR is a no-op; another PR is refused. "report": per group each arm\'s outcome (won, lost, pending), merged or not, $ per arm and the overhead of the group over the winner; a manager sees its own groups, main all.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['pick', 'report'] },
+      group: { type: 'string', description: 'pick: the package name without the arm letter (csv-export for csv-export-a)' },
+      pr: { type: 'number', description: 'pick: the winner\'s PR number' },
+      reason: { type: 'string', description: 'pick: why this arm won; goes into the comment on the closed PRs' },
+    },
+    required: ['action'],
+  },
   isDeferred: true,
 }
 

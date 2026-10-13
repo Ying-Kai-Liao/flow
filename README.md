@@ -124,6 +124,8 @@ with defaults, is in the [reference](docs/reference.md).
 - [Reference](docs/reference.md): every setting, the tools agents use, and the files flow keeps.
 - Workers can also run in other coding tools, such as Codex. See
   [Workers in other harnesses](docs/how-it-works.md#workers-in-other-harnesses).
+- The whole run can instead run in terminals, with `mode` `orca` or `tmux`. See
+  [Managers and the reviewer in a terminal](docs/how-it-works.md#managers-and-the-reviewer-in-a-terminal).
 - Workers run as in-session agents by default, so neither Orca nor tmux is needed. See
   [Without Orca](docs/reference.md#without-orca).
 
@@ -174,8 +176,9 @@ The plugin runs these programs through `$.process.run`, each with a fixed argume
   harness program on `PATH`.
 - `mkdir`, `rm`, `test`, `tail`, `find`, `ps`: its own state files, and to tell a live worktree
   from a leftover in `/flow clean`.
-- `tmux` or `orca`: only in `mode` `orca` or `tmux`, where every manager, worker and the reviewer is a terminal. They create the terminal, type the brief and messages into it, read
-  its screen, and close it.
+- `tmux` or `orca`: only in `mode` `orca` or `tmux`, where every manager, worker and the reviewer is
+  a terminal. They create the terminal, type the brief and messages into it, read its screen, and
+  close it.
 - The harness itself, in that terminal: `claude --permission-mode bypassPermissions`,
   `codex --dangerously-bypass-approvals-and-sandbox`, `gemini --yolo` or `opencode`, or the
   command you put in `harnesses`. **The built-ins start with permission checks turned off.** Such

@@ -952,3 +952,39 @@ test('a long markdown question in a short pane ends in a marker and keeps the op
   expect(lines.some(l => /^y default/.test(l))).toBe(true)
   await ui.unmount()
 })
+
+test('three decisions kept the same way show a rule hint row in the inbox; s hides it for good and no rule is written', async ($, on) => {
+  const w = world(on)
+  await fyi($, 'w1', [F(1, 'tone'), F(2, 'tone'), F(3, 'tone'), F(4, 'other')])
+  for (const id of ['d1', 'd2', 'd3']) await $.tool.call({ tool: 'mcp__flow__answer', answers: [{ id, choice: 'Keep' }] } as never)
+  await fyi($, 'w1', [F(5, 'tone')])
+  const ui = await mount($)
+  await open(ui)
+  expect(await has(ui, /^\+ rule\? decisions topic tone answered "Keep" 3x/)).toBe(true)
+  expect(await ui.find({ text: /s hide rule hint/ })).toBeDefined()
+  await ui.press({ key: 'inbox-sugg' })
+  expect(await has(ui, /rule\?/)).toBe(false)
+  expect(await ui.find({ text: /s hide rule hint/ })).toBeUndefined()
+  expect(w.files.get(`${DIR}/suggest-offered.json`)).toMatch(/"dismissed": true/)
+  expect(w.files.has('/r/.git/flow/config.json')).toBe(false)
+  await ui.unmount()
+})
+
+test('a duplicate question group is one row with its count and askers; a pick answers every member', async ($, on) => {
+  const w = world(on, [
+    { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
+    { id: 'm2', name: 'pdf-export', description: 'm', type: 'flow:manager', status: 'running' },
+  ])
+  const dup = { ...Q, topic: 'format' }
+  await ask($, 'm1', [dup])
+  await ask($, 'm2', [dup])
+  const ui = await mount($)
+  await open(ui)
+  expect(await has(ui, /▸ q1 x2 BLOCKING /)).toBe(true)
+  expect(await has(ui, /q2/)).toBe(false)
+  await ui.press({ key: 'item-q1' })
+  expect(await has(ui, /x2 \(answers all\): csv-export, pdf-export/)).toBe(true)
+  await ui.press({ key: 'pick-b' })
+  expect(stored(w.files).map(x => `${x.id}:${x.state}:${x.answer}`)).toEqual(['q1:answered:tsv', 'q2:answered:tsv'])
+  await ui.unmount()
+})

@@ -82,8 +82,8 @@ test('slotRefusal: an unconfirmed grant, an ended holder and an expired lease do
 // --- The hook ---
 
 const AGENTS: AgentInfo[] = [
-  { id: 'w1', name: 'w1', description: 'w', type: 'flow:worker', status: 'running' },
-  { id: 'w2', name: 'w2', description: 'w', type: 'flow:worker', status: 'running' },
+  { id: 'w1', name: 'w1', description: 'w', type: 'flow:reviewer', status: 'running' },
+  { id: 'w2', name: 'w2', description: 'w', type: 'flow:reviewer', status: 'running' },
 ]
 
 function world(on: Parameters<TestBody>[1]) {

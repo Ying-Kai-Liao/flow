@@ -10,7 +10,7 @@ import { parseRules } from './standing'
 import type { Resolved } from './standing'
 import { mergeGuardTests, parseGuardTests } from './guardtests'
 import type { GuardMap } from './guardtests'
-import { DEFAULT_SUITE_COMMANDS } from './testguard'
+import { DEFAULT_SUITE_COMMANDS, DEFAULT_TYPECHECK_COMMANDS } from './testguard'
 import { harnessesOf } from './sessions'
 import type { HarnessSpec } from './sessions'
 import { allowList } from './guards'
@@ -74,6 +74,7 @@ export const KEYS: Record<string, Kind> = {
   worker_checks: 'list',
   always_tests: 'list',
   flaky_tests: 'list',
+  batch_max: 'number',
   guard_tests: 'globmap',
   verify_paths: 'list',
   deploy_targets: 'objects',
@@ -81,6 +82,8 @@ export const KEYS: Record<string, Kind> = {
   state_file: 'object',
   test_slots: 'number',
   test_slot_commands: 'list',
+  typecheck_slots: 'number',
+  typecheck_commands: 'list',
   context_warn_tokens: 'number',
   max_managers: 'number',
   max_continues: 'number',
@@ -90,6 +93,8 @@ export const KEYS: Record<string, Kind> = {
   size_feedback: 'boolean',
   size_ab: 'string',
   mode: 'string',
+  best_of_n: 'string',
+  best_of_n_arms: 'number',
   worker_harness: 'string',
   // Replaced by mode; still read (modeOf) so an old settings file keeps working.
   manager_harness: 'string',
@@ -110,7 +115,7 @@ export const KEYS: Record<string, Kind> = {
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const EFFORT_KEYS = ['explore_effort', 'worker_effort', 'worker_effort_small', 'worker_effort_normal', 'manager_effort', 'reviewer_effort']
 export const MODES = ['agent', 'orca', 'tmux']
-export const CHOICES: Record<string, string[]> = { ...Object.fromEntries(EFFORT_KEYS.map(k => [k, [...EFFORT_LEVELS, 'inherit']])), push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'], size_ab: ['off', 'daily'], mode: MODES }
+export const CHOICES: Record<string, string[]> = { ...Object.fromEntries(EFFORT_KEYS.map(k => [k, [...EFFORT_LEVELS, 'inherit']])), push_mode: ['auto', 'confirm'], preflight: ['on', 'off'], ask_cards: ['on', 'off'], release: ['on', 'off'], release_github: ['on', 'off'], size_model: ['off', 'jev', 'openai'], decision_api: ['auto', 'off', 'jev', 'openai'], size_ab: ['off', 'daily'], best_of_n: ['off', 'brief', 'auto'], mode: MODES }
 
 // API keys are sensitive /config options (kept in secure storage); a settings file, which may be committed, can't set them.
 export const SECRET_KEYS = ['typesafe_api_key', 'jev_api_key', 'openrouter_api_key', 'openai_api_key']
@@ -298,7 +303,7 @@ export type WarnSettings = { contextWarn: number; contextWarn1m: number; context
 type Guards = { mainGuard: boolean; mainAllow: string[] }
 
 // `options` is the merged settings (settings.ts): a value of the wrong type has already been dropped.
-export function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; sizeFeedback: boolean; sizeAb: 'off' | 'daily'; preflight: boolean; preflightWait: number; askCards: boolean; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
+export function settingsOf(options: Record<string, unknown>, base: string): Settings & { contextWarn: number; contextWarn1m: number; contextWarnTokens: number; handoff: boolean; maxManagers: number; maxContinues: number; sizeFeedback: boolean; sizeAb: 'off' | 'daily'; bestOfN: 'off' | 'brief' | 'auto'; bestOfNArms: number; preflight: boolean; preflightWait: number; askCards: boolean; verifyPaths: string[]; cleanup: 'auto' | 'off'; harnesses: Record<string, HarnessSpec>; minQuota: number; guardTests: GuardMap } & Guards {
   const str = (k: string, d: string) => (typeof options[k] === 'string' && options[k] !== '' ? String(options[k]) : d)
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? Number(options[k]) : d)
   const strs = (k: string) => (Array.isArray(options[k]) ? (options[k] as unknown[]).filter((x): x is string => typeof x === 'string') : [])
@@ -321,6 +326,8 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     maxContinues: Math.max(0, Math.round(num('max_continues', 2))),
     sizeFeedback: options.size_feedback !== false,
     sizeAb: str('size_ab', 'off') === 'daily' ? 'daily' : 'off',
+    bestOfN: ((v: string) => (v === 'brief' || v === 'auto' ? v : 'off'))(str('best_of_n', 'off')),
+    bestOfNArms: Math.min(3, Math.max(2, Math.round(num('best_of_n_arms', 2)))),
     preflight: str('preflight', 'on') !== 'off',
     preflightWait: Math.max(1, num('preflight_wait', 10)),
     askCards: str('ask_cards', 'on') !== 'off',
@@ -340,6 +347,8 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     maxManagers: Math.max(1, Math.round(num('max_managers', 20))),
     testSlots: Math.max(1, Math.floor(num('test_slots', 1))),
     testSlotCommands: Array.isArray(options.test_slot_commands) ? strs('test_slot_commands') : DEFAULT_SUITE_COMMANDS,
+    typecheckSlots: Math.max(1, Math.floor(num('typecheck_slots', 1))),
+    typecheckCommands: Array.isArray(options.typecheck_commands) ? strs('typecheck_commands') : DEFAULT_TYPECHECK_COMMANDS,
     workerModel: model('worker_model', DEFAULT_WORKER_MODEL),
     workerModelSmall: model('worker_model_small', 'haiku'),
     workerModelNormal: model('worker_model_normal', 'sonnet'),
@@ -382,6 +391,7 @@ export function settingsOf(options: Record<string, unknown>, base: string): Sett
     workerChecks: strs('worker_checks'),
     alwaysTests: strs('always_tests'),
     flakyTests: strs('flaky_tests'),
+    batchMax: Math.max(1, Math.floor(num('batch_max', 10))),
     release: str('release', 'off') === 'on',
     releaseGithub: str('release_github', 'off') === 'on',
     releaseFiles: strs('release_files'),

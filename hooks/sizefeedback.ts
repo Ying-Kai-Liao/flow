@@ -1,4 +1,4 @@
-import type { Ledger, LogEvent } from '../types'
+import type { Ledger, LedgerEntry, LogEvent } from '../types'
 import { baseName } from './cost'
 import { generation, isSize } from './routing'
 import type { Size } from './routing'
@@ -14,7 +14,9 @@ const EXAMPLES = 3
 // only a successor counts there. Workers still running count as recent, not as rerun. '' when there is too little history.
 export function sizeDigest(ledger: Ledger, log: Pick<LogEvent, 'event' | 'branch'>[]): string {
   const workers = Object.values(ledger).filter(r => r.role === 'worker')
-  const firsts = workers.filter(r => generation(r.name) === 1 && isSize(r.size))
+  // The arms of a best-of-N group are one first attempt: only the group's first arm counts (hooks/bestof.ts).
+  const firstArm = (r: LedgerEntry) => r.arm === undefined || !workers.some(w => w.arm?.group === r.arm!.group && w.arm.id < r.arm!.id)
+  const firsts = workers.filter(r => generation(r.name) === 1 && isSize(r.size) && firstArm(r))
   if (firsts.length < MIN_WORKERS) return ''
   const handedOff = new Set(log.filter(l => (l.event === 'continue' || l.event === 'handoff') && l.branch !== undefined).map(l => l.branch))
   const successors = new Set(workers.filter(r => generation(r.name) > 1).map(r => baseName(r.name)))
