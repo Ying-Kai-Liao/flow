@@ -122,7 +122,7 @@ with defaults, is in the [reference](docs/reference.md).
 - [How flow works](docs/how-it-works.md): roles, pre-flight, the inbox and standing answers,
   merge modes, releases, deploying, cleanup and the rules the reviewer follows.
 - [Reference](docs/reference.md): every setting, the tools agents use, and the files flow keeps.
-- Workers can also run in other coding tools, such as Codex. See
+- In `mode` `orca` or `tmux`, workers can also run in other coding tools, such as Codex. See
   [Workers in other harnesses](docs/how-it-works.md#workers-in-other-harnesses).
 - The whole run can instead run in terminals, with `mode` `orca` or `tmux`. See
   [Managers and the reviewer in a terminal](docs/how-it-works.md#managers-and-the-reviewer-in-a-terminal).
@@ -183,7 +183,7 @@ The plugin runs these programs through `$.process.run`, each with a fixed argume
   `codex --dangerously-bypass-approvals-and-sandbox`, `gemini --yolo` or `opencode`, or the
   command you put in `harnesses`. **The built-ins start with permission checks turned off.** Such
   a worker runs unattended in its own worktree, and nobody sits at that terminal to approve a
-  `git push`. This happens only when you pick a session harness. The default workers are
+  `git push`. This happens only in `mode` `orca` or `tmux`. In the default `agent` mode workers are
   in-session agents, and they keep the session's normal permission mode.
 - A harness's `quota` command from your `harnesses` setting, to read how much quota is left.
 - `uname -s`, once, and then `open`, `xdg-open` or `explorer` with a PR's URL: only when you press

@@ -230,7 +230,7 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
   const wantEffort = effortRole === undefined || explicit ? undefined : effortFor(effortRole, routed?.size, io.settings(), undefined)
   const targetEffort = wantEffort === undefined ? undefined : effortFor(effortRole!, routed?.size, io.settings(), await io.effortEnv())
   // mode orca/tmux: main's manager runs as a claude in a terminal. The Agent tool is answered with a refusal that
-  // says it started; on a start failure the normal spawn below goes on.
+  // says it started, or why it did not: a failed start is a refusal, never an agent.
   if (e.subagentType === MANAGER && e.parentAgentId === undefined) {
     const started = await startManagerSession(io, e, { routed, liteMode })
     if (started !== undefined) return started

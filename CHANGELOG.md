@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The `manager_harness`, `reviewer_harness` and `session_host` settings and the session tool's `host` parameter. A file that still has them is read once per load with a toast: a terminal manager or reviewer harness maps to mode `session_host` (`orca` or `tmux`, else `orca`).
+
 ## [0.6.102] - 2026-10-13
 
 ### Changed
