@@ -70,7 +70,7 @@ import type { InitIo } from './init'
 import { demoArm, demoMove, demoStart, demoStop, demoTool } from './demo-run'
 import type { DemoIo } from './demo-run'
 import type { DemoState } from './demo-replay'
-import { DEMO_DONE, paneDraw, paneFocus } from './pane-run'
+import { paneDraw, paneFocus } from './pane-run'
 import type { PaneEvent, PaneIo } from './pane-run'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
@@ -140,7 +140,7 @@ import {
   EMPTY_DEPLOYS, ENV_KIND,
   release,
 } from './deploy'
-import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, TEXT_MAX, WORKER, WORKERS } from './core'
+import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, TEXT_MAX, WORKER, WORKERS } from './core'
 import type { Deploys, Draft, Hold, TargetInfo } from './deploy'
 import {
   closeReturnedEnv as closeReturnedEnvTo, deployTool as deployToolTo, holdTarget as holdTargetTo, onDeployAnswer as onDeployAnswerTo, onEnvAnswer as onEnvAnswerTo,
