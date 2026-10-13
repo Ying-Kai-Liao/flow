@@ -246,8 +246,9 @@ export function unhandedPrs(
 
 async function currentUnhanded($: EngineInterface): Promise<Unhanded[]> {
   if (!mirror.queueOn) return []
+  const clockNow = $.clock.now()
   const [cache, hs, rows, acts, t] = await Promise.all([
-    read($, prCache), read($, handovers), read($, roster), read($, activity), $.clock.now(),
+    read($, prCache), read($, handovers), read($, roster), read($, activity), clockNow,
   ])
   await loadLedger($)
   const l = await read($, ledger)
@@ -301,12 +302,17 @@ async function settleSlots($: EngineInterface, rows: AgentRow[], t: number, pre:
     left = [...st.holders, ...st.waiters].map(e => e.key).filter(k => !stay.has(k))
     return state
   })
-  for (const n of notes) void $.ui.toast(n)
+  for (const n of notes) $.ui.toast(n)
   await signalSlots($, granted, left)
 }
 
-const sh = ($: EngineInterface, script: string, ...args: string[]) =>
-  $.process.run(['sh', '-c', script, 'sh', ...args], { timeoutMs: 5_000 }).catch(() => undefined)
+async function sh($: EngineInterface, script: string, ...args: string[]) {
+  try {
+    return await $.process.run(['sh', '-c', script, 'sh', ...args], { timeoutMs: 5_000 })
+  } catch {
+    return undefined
+  }
+}
 
 async function signalSlots($: EngineInterface, granted: SlotEntry[], left: string[], kind: 'test' | 'typecheck' = 'test'): Promise<void> {
   const dir = kind === 'test' ? slotDir : typecheckDir(slotDir)
@@ -318,7 +324,12 @@ async function signalSlots($: EngineInterface, granted: SlotEntry[], left: strin
     const f = grantFile(dir, g.key)
     if (f) await sh($, 'mkdir -p "$(dirname "$1")" && : > "$1"', f)
     if (g.key !== 'main') {
-      await deliver($, g.key, kind === 'test' ? `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.` : `flow: your typecheck slot is granted (${g.label}). Call mcp__flow__test_slot kind "typecheck" action "acquire" to confirm, run, then release.`, { onGone: () => undefined }).catch(() => undefined)
+      const text = kind === 'test' ? `flow: your test slot is granted (${g.label}). Call mcp__flow__test_slot acquire to confirm, run, then release.` : `flow: your typecheck slot is granted (${g.label}). Call mcp__flow__test_slot kind "typecheck" action "acquire" to confirm, run, then release.`
+      try {
+        await deliver($, g.key, text, { onGone: () => undefined })
+      } catch {
+        // The grant file is the signal; a lost message is only a missed nudge.
+      }
     }
   }
 }
@@ -340,8 +351,60 @@ async function settleTypecheck($: EngineInterface, rows: AgentRow[], t: number, 
     left = [...st.holders, ...st.waiters].map(e => e.key).filter(k => !stay.has(k))
     return state
   })
-  for (const n of notes) void $.ui.toast(n)
+  for (const n of notes) $.ui.toast(n)
   await signalSlots($, granted, left, 'typecheck')
+}
+
+// A command in `cwd` when one is given; an `if`, so each $ call stays a whole return value.
+function execIn($: EngineInterface, argv: string[], cwd: string | undefined) {
+  if (cwd === undefined) return $.process.run(argv)
+  return $.process.run(argv, { cwd })
+}
+
+async function writeText($: EngineInterface, path: string, text: string): Promise<void> {
+  await $.fs.write(path, text)
+}
+
+// The $ calls whose failure has a fallback, each in a try/catch rather than a chained .then/.catch: the plugin
+// directory reads a $ call that is not a whole statement or value as not plain (MOD_CAPABILITY_USE_NOT_PLAIN).
+// $.env.get takes a literal name (the engine lists the variables a module reads), hence the switch.
+async function envOf($: EngineInterface, key: 'FLOW_ROLE' | 'FLOW_NAME' | 'FLOW_RELAY' | 'CLAUDE_CODE_EFFORT_LEVEL'): Promise<string | undefined> {
+  try {
+    switch (key) {
+      case 'FLOW_ROLE': return await $.env.get('FLOW_ROLE')
+      case 'FLOW_NAME': return await $.env.get('FLOW_NAME')
+      case 'FLOW_RELAY': return await $.env.get('FLOW_RELAY')
+      case 'CLAUDE_CODE_EFFORT_LEVEL': return await $.env.get('CLAUDE_CODE_EFFORT_LEVEL')
+    }
+  } catch {
+    return undefined
+  }
+}
+
+async function usageOf($: EngineInterface) {
+  try {
+    return await $.session.usage()
+  } catch {
+    return undefined
+  }
+}
+
+async function existsQuietly($: EngineInterface, path: string): Promise<boolean> {
+  try {
+    const found = await $.fs.exists(path)
+    return Boolean(found)
+  } catch {
+    return false
+  }
+}
+
+async function readQuietly($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    const text = await $.fs.read(path)
+    return String(text)
+  } catch {
+    return undefined
+  }
 }
 
 // The last batch the release tool cut, so a retried push does not release twice.
@@ -349,12 +412,12 @@ let lastRelease: { key: string; version: string } | undefined
 
 function releaseIoOf($: EngineInterface): ReleaseIo {
   return {
-    exec: (argv, cwd) => cwd === undefined ? $.process.run(argv) : $.process.run(argv, { cwd }),
+    exec: (argv, cwd) => execIn($, argv, cwd),
     sleep: ms => $.clock.sleep(ms),
     now: () => $.clock.now(),
-    exists: path => $.fs.exists(path),
-    read: path => $.fs.read(path),
-    write: async (path, text) => { await $.fs.write(path, text) },
+    fileExists: path => $.fs.exists(path),
+    readFile: path => $.fs.read(path),
+    writeFile: (path, text) => writeText($, path, text),
     stateDir: () => stateDir($),
     readJson: path => readJson($, path),
     writeJsonAtomic: (path, obj) => writeJsonAtomic($, path, obj),
@@ -376,7 +439,7 @@ function handoverIoOf($: EngineInterface, options: Record<string, unknown>): Han
     best: (what, fn) => best($, what, fn),
     saveHandover: ho => saveHandover($, ho),
     appendLog: event => appendLog($, event),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     refresh: () => refresh($),
     arms: async () => { await loadLedger($); return { ledger: await read($, ledger), log: await readLog($) } },
     ensureQueue: why => ensureQueue($, why),
@@ -399,12 +462,12 @@ function inboxIoOf($: EngineInterface): InboxIo {
     standing: standingIoOf($),
     refresh: () => refresh($),
     deliver: (id, text, opts) => deliver($, id, text, opts),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     ownerNameOf: id => ownerNameOf($, id),
     answerQuestion: (wanted, choice, by, options, user) => answerQuestion($, wanted, choice, by, options, user),
     withPreflight: fn => withPreflight($, fn),
     preflightTick: rows => preflightTick($, rows),
-    submitLater: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
+    submitLater: text => { toMain($, text) },
     paneOpen: () => flowPaneOpen($),
     net: decideIoOf($),
   }
@@ -495,7 +558,7 @@ function commandIoOf($: EngineInterface): CommandIo {
     roster: () => read($, roster),
     endedManagers: rows => endedManagers(rows),
     endedOwners: () => endedOwnersOf($),
-    panes: async () => [...(await $.ui.panes())],
+    panes: () => panesOf($),
     close: () => $.ui.close({ id: PANE }),
     home: () => paneHome($),
     open: () => $.ui.open({ id: PANE, title: 'Flow', focus: true, closeOnEscape: true }),
@@ -510,7 +573,7 @@ function commandIoOf($: EngineInterface): CommandIo {
     best: (what, fn) => best($, what, fn),
     saveHandover: ho => saveHandover($, ho),
     appendLog: event => appendLog($, event),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     ensureQueue: why => ensureQueue($, why),
     releaseReviewerHalt: () => releaseHaltTo(breakerIoOf($), 'user'),
     refresh: () => refresh($),
@@ -537,12 +600,13 @@ function limitsLine(rows: AgentRow[], workers: number): string {
 function initIoOf($: EngineInterface): InitIo {
   return {
     readFile: path => readText($, path),
-    exists: path => $.fs.exists(path).then(Boolean, () => false),
+    exists: path => existsQuietly($, path),
     writeFile: async (path, text) => {
       try {
         const tmp = `${path}.${Date.now()}.tmp`
         await $.fs.write(tmp, text)
-        return (await $.process.run(['mv', tmp, path])).exitCode === 0
+        const r = await $.process.run(['mv', tmp, path])
+        return r.exitCode === 0
       } catch {
         return false
       }
@@ -560,14 +624,14 @@ const demo = atom({ plugin: 'flow', key: 'demo' } as const, null as DemoState | 
 function demoIoOf($: EngineInterface): DemoIo {
   return {
     get: () => read($, demo),
-    set: fn => update($, demo, fn).then(() => undefined),
+    set: async fn => { await update($, demo, fn) },
     clearInbox: async () => {
       await update($, inboxDraft, () => '')
       await update($, inboxNote, () => '')
     },
     serial: paneSerial,
     now: () => $.clock.now(),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     after: (ms, fn) => { $.clock.after(ms, fn) },
     openPane: () => $.ui.open({ id: PANE, title: 'Flow', focus: true, closeOnEscape: true }),
     listAgents: () => $.agent.list(),
@@ -599,23 +663,23 @@ function rosterIoOf($: EngineInterface): RosterIo {
     list: () => $.agent.list(),
     now: () => $.clock.now(),
     plan: () => read($, plan),
-    updatePlan: fn => update($, plan, fn).then(() => undefined),
+    updatePlan: async fn => { await update($, plan, fn) },
     activity: () => read($, activity),
-    updateActivity: fn => update($, activity, fn).then(() => undefined),
+    updateActivity: async fn => { await update($, activity, fn) },
     handovers: () => read($, handovers),
     seen: () => read($, seenAgents),
-    setSeen: known => update($, seenAgents, () => known).then(() => undefined),
+    setSeen: async known => { await update($, seenAgents, () => known) },
     log: () => readLog($),
     inbox: () => read($, inbox),
     roster: () => read($, roster),
-    setRoster: rows => update($, roster, () => rows).then(() => undefined),
-    setNow: t => update($, now, () => t).then(() => undefined),
+    setRoster: async rows => { await update($, roster, () => rows) },
+    setNow: async t => { await update($, now, () => t) },
     sessions: () => read($, sessions),
     testSlots: () => read($, testSlots),
     typecheckSlots: () => read($, typecheckSlots),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     status: line => $.ui.status(line),
-    wakeMain: text => { $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined)) },
+    wakeMain: text => { toMain($, text) },
     autoSweep: () => autoSweep($),
     settleSlots: (rows, t) => settleSlots($, rows, t),
     unhanded: async () => (await currentUnhanded($)).length,
@@ -640,7 +704,7 @@ function refresh($: EngineInterface): Promise<AgentRow[]> { return refreshTo(ros
 
 async function openPane($: EngineInterface): Promise<void> {
   const r = await $.ui.open({ id: PANE, title: 'Flow', closeOnEscape: true })
-  if (!r.isPlaced) void $.ui.toast('flow is running agents: type /flow to watch them')
+  if (!r.isPlaced) $.ui.toast('flow is running agents: type /flow to watch them')
 }
 
 // flow's state on disk: <git-common-dir>/flow/. Shared by every worktree of the repo, never part
@@ -695,7 +759,8 @@ async function writeJsonAtomic($: EngineInterface, path: string, obj: unknown): 
 // The parsed file, or undefined when it is missing, unreadable or not JSON.
 async function readJson($: EngineInterface, path: string): Promise<unknown> {
   try {
-    return JSON.parse(await $.fs.read(path))
+    const text = await $.fs.read(path)
+    return JSON.parse(text)
   } catch {
     return undefined
   }
@@ -718,7 +783,10 @@ function costIoOf($: EngineInterface): CostIo {
     updateDelta: async fn => { await update($, ledgerDelta, fn) },
     epoch: () => read($, ledgerEpoch),
     setEpoch: async e => { await update($, ledgerEpoch, () => e) },
-    startedAt: async () => (await $.session.usage().then(x => x, () => undefined))?.startedAt,
+    startedAt: async () => {
+      const usage = await usageOf($)
+      return usage?.startedAt
+    },
     liveIds: async () => (await read($, roster)).map(a => a.id),
     hasSessions: async () => Object.keys(await read($, sessions)).length > 0,
   }
@@ -801,7 +869,8 @@ function withChecks<T>($: EngineInterface, fn: (cur: Checks) => { checks: Checks
 // The version the running plugin was installed as: its plugin.json next to the module. Undefined when unreadable.
 async function installedVersion($: EngineInterface): Promise<string | undefined> {
   try {
-    const v = (JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: unknown }).version
+    const text = await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)
+    const v = (JSON.parse(text) as { version?: unknown }).version
     return typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v) ? v : undefined
   } catch {
     return undefined
@@ -834,7 +903,9 @@ async function captureChecks($: EngineInterface, ho: Handover, verifyPaths: stri
     try { files = r.exitCode === 0 ? (JSON.parse(r.stdout) as { files: { path: string }[] }).files.map(f => f.path) : undefined } catch { files = undefined }
     if (files !== undefined && !anyMatch(verifyPaths, files)) { command = undefined; note = SKIP_NOTE }
   }
-  const t = live ? await $.clock.now() : ho.at
+  // Read unconditionally (a plain statement); only a live run stamps with it.
+  const clockT = await $.clock.now()
+  const t = live ? clockT : ho.at
   const items = await Promise.all(needs.map(async n => ({
     steps: n.steps, version: await versionAt($, ho.sha, n.steps),
     ...(n.pr === ho.pr && command !== undefined ? { verifyCommand: command } : {}), ...(n.pr === ho.pr && note !== undefined ? { note } : {}),
@@ -868,7 +939,7 @@ async function preflightTick($: EngineInterface, rows: AgentRow[]): Promise<void
   // A round of skipped managers only has nothing to say.
   if (members.every(e => e === undefined || e.phase === 'skipped')) return
   const text = renderRound(due.state, await read($, inbox), due.round, ended, t, due.timedOut, mirror.askCards)
-  $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
+  toMain($, text)
 }
 
 // Why this manager may not start workers yet, or undefined. Only a recorded manager is ever gated.
@@ -920,7 +991,10 @@ async function toolCallerOf($: EngineInterface, agentId: string | undefined): Pr
   return me.type === MANAGER || WORKERS.has(me.type) ? { kind: 'other' } : { kind: 'reviewer' }
 }
 
-const today = async ($: EngineInterface) => new Date(await $.clock.now()).toISOString().slice(0, 10)
+async function today($: EngineInterface) {
+  const t = await $.clock.now()
+  return new Date(t).toISOString().slice(0, 10)
+}
 
 function messagingIoOf($: EngineInterface): MessagingIo {
   return {
@@ -989,7 +1063,7 @@ function deployIoOf($: EngineInterface): DeployIo {
     today: () => today($),
     noteText,
     best: (what, fn) => best($, what, fn),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     toMain: text => toMain($, text),
     paneOpen: () => flowPaneOpen($),
   }
@@ -1044,7 +1118,7 @@ function pushIoOf($: EngineInterface): PushIo {
         if (dir !== undefined) await writeJsonAtomic($, `${dir}/release.json`, {})
       }
     },
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
   }
 }
 
@@ -1057,7 +1131,7 @@ function onPushAnswer($: EngineInterface, q: Question, answer: string, by: strin
 function standingIoOf($: EngineInterface): StandingIo {
   return {
     locate: () => locate($),
-    readFile: path => $.fs.read(path).then(String, () => undefined),
+    readFile: path => readQuietly($, path),
     mkdirp: dir => $.process.run(['mkdir', '-p', dir]),
     writeJson: (path, obj) => writeJsonAtomic($, path, obj),
     readJson: path => readJson($, path),
@@ -1079,7 +1153,8 @@ async function appendLog($: EngineInterface, event: Omit<LogEvent, 'ts'>, max = 
   try {
     const dir = await stateDir($)
     if (dir === undefined) return
-    const ts = new Date(await $.clock.now()).toISOString()
+    const t = await $.clock.now()
+    const ts = new Date(t).toISOString()
     const entry: LogEvent = { ts, ...event }
     if (entry.text !== undefined) entry.text = cap(entry.text.replaceAll('\n', ' '), max)
     await $.process.run(['mkdir', '-p', dir])
@@ -1094,12 +1169,8 @@ async function appendLog($: EngineInterface, event: Omit<LogEvent, 'ts'>, max = 
 async function readLog($: EngineInterface): Promise<LogEvent[]> {
   const dir = await stateDir($)
   if (dir === undefined) return []
-  let raw: string
-  try {
-    raw = await $.fs.read(`${dir}/log.jsonl`)
-  } catch {
-    return []
-  }
+  const raw = await readQuietly($, `${dir}/log.jsonl`)
+  if (raw === undefined) return []
   const events: LogEvent[] = []
   for (const line of raw.split('\n')) {
     try {
@@ -1121,7 +1192,7 @@ async function appendNote($: EngineInterface, name: string, line: string): Promi
   try {
     const path = await notesPath($, name)
     if (path === undefined) return false
-    const old = await $.fs.read(path).catch(() => `# ${name.replace(/-\d+$/, '')}\n`)
+    const old = await readQuietly($, path) ?? `# ${name.replace(/-\d+$/, '')}\n`
     // fs has no append: the file is rewritten whole. Notes are small and a manager is their only writer.
     await $.fs.write(path, `${old.endsWith('\n') ? old : `${old}\n`}${line}\n`)
     return true
@@ -1162,7 +1233,8 @@ async function loadHandovers($: EngineInterface): Promise<Record<string, Handove
   if (dir === undefined) return out
   let names: string[]
   try {
-    names = (await $.fs.list(`${dir}/handovers`)).filter(f => f.name.endsWith('.json')).map(f => f.name)
+    const files = await $.fs.list(`${dir}/handovers`)
+    names = files.filter(f => f.name.endsWith('.json')).map(f => f.name)
   } catch {
     return out
   }
@@ -1199,8 +1271,9 @@ const wokenByOthers = new Set<string>()
 const reviewerWork = atom({ plugin: 'flow', key: 'reviewerWork' } as const, {} as Record<string, RunWork>)
 // Failing tests per agent and test_slot label, and the flaky ones a run saw (see testfail.ts).
 const testFails = atom({ plugin: 'flow', key: 'testFails' } as const, NO_FAILS as TestFails)
-const noteRunWork = ($: EngineInterface, id: string, f: (w: RunWork | undefined) => RunWork) =>
-  update($, reviewerWork, m => ({ ...Object.fromEntries(Object.entries(m).slice(-FORWARDED_RIDS)), [id]: f(m[id]) }))
+function noteRunWork($: EngineInterface, id: string, f: (w: RunWork | undefined) => RunWork) {
+  return update($, reviewerWork, m => ({ ...Object.fromEntries(Object.entries(m).slice(-FORWARDED_RIDS)), [id]: f(m[id]) }))
+}
 
 // `$` stays in this file: deliver.ts gets the three calls it needs.
 // Managers that ended their turn to wait for a merge and have work left: a send resumes them, so they
@@ -1232,7 +1305,8 @@ function ioOf($: EngineInterface, from = 'main'): DeliverIo {
       const ss = await sessionOfId($, id)
       if (ss !== undefined) return sessionRow(ss).status
       if (id.startsWith('session:')) return undefined
-      const s = (await $.agent.list()).find(a => a.id === id)?.status
+      const all = await $.agent.list()
+      const s = all.find(a => a.id === id)?.status
       return resumable.has(id) && (s === undefined || s === 'completed') ? 'idle' : s
     },
     send: async (id, text) => {
@@ -1252,20 +1326,52 @@ function ioOf($: EngineInterface, from = 'main'): DeliverIo {
       }
       refusals.delete(id)
     },
-    after: (ms, fn) => void $.clock.after(ms, fn),
+    after: (ms, fn) => { $.clock.after(ms, fn) },
     name: async id => {
       const s = await sessionOfId($, id)
-      return s?.name ?? (await $.agent.list()).find(a => a.id === id)?.name
+      if (s !== undefined) return s.name
+      const all = await $.agent.list()
+      return all.find(a => a.id === id)?.name
     },
   }
 }
 const refusals = new Map<string, string>()
-const deliver = ($: EngineInterface, id: string, text: string, opts?: DeliverOptions) => deliverTo(ioOf($), id, text, opts)
-const flushAgent = ($: EngineInterface, id: string) => flushTo(ioOf($), id)
-const holdForReviewer = ($: EngineInterface, id: string) => holdTo(ioOf($), id)
+function deliver($: EngineInterface, id: string, text: string, opts?: DeliverOptions) {
+  return deliverTo(ioOf($), id, text, opts)
+}
+function flushAgent($: EngineInterface, id: string) {
+  return flushTo(ioOf($), id)
+}
+function holdForReviewer($: EngineInterface, id: string) {
+  return holdTo(ioOf($), id)
+}
 // isShown is the engine's own flag; an entry without it counts as shown.
-const flowPaneOpen = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id === PANE && p.isShown !== false)
-const toMain = ($: EngineInterface, text: string) => $.clock.after(0, () => void $.prompt.submit({ text }).catch(() => undefined))
+async function flowPaneOpen($: EngineInterface) {
+  const panes = await $.ui.panes()
+  return panes.some(p => p.id === PANE && p.isShown !== false)
+}
+async function mtimeOf($: EngineInterface, path: string) {
+  const st = await $.fs.stat(path)
+  return st.mtimeMs
+}
+async function panesOf($: EngineInterface) {
+  const panes = await $.ui.panes()
+  return [...panes]
+}
+// Submits `text` to main after a clock tick, without waiting; a refused submit is dropped.
+function toMain($: EngineInterface, text: string) {
+  return $.clock.after(0, () => { void submitQuietly($, text) })
+}
+function submitText($: EngineInterface, text: string) {
+  return $.prompt.submit({ text })
+}
+async function submitQuietly($: EngineInterface, text: string): Promise<void> {
+  try {
+    await $.prompt.submit({ text })
+  } catch {
+    // The prompt is gone or busy: the text is dropped, as before.
+  }
+}
 
 function routeIoOf($: EngineInterface): RouteIo {
   return {
@@ -1285,9 +1391,15 @@ function routeIoOf($: EngineInterface): RouteIo {
     toMain: text => void toMain($, text),
   }
 }
-const resolveReportTo = ($: EngineInterface, given: unknown, callerId: string | undefined) => resolveReportToTo(routeIoOf($), given, callerId)
-const managerFinished = ($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[], report?: string) => managerFinishedTo(routeIoOf($), ids, name, rows, report)
-const mainHasAnswer = ($: EngineInterface, answer: string) => mainHasAnswerTo(routeIoOf($), answer)
+function resolveReportTo($: EngineInterface, given: unknown, callerId: string | undefined) {
+  return resolveReportToTo(routeIoOf($), given, callerId)
+}
+function managerFinished($: EngineInterface, ids: string[], name: string, rows: { id: string; parentId?: string; status: string }[], report?: string) {
+  return managerFinishedTo(routeIoOf($), ids, name, rows, report)
+}
+function mainHasAnswer($: EngineInterface, answer: string) {
+  return mainHasAnswerTo(routeIoOf($), answer)
+}
 
 // Everything the spawn routing in spawn.ts needs from the engine and the plugin's state.
 function spawnIoOf($: EngineInterface): SpawnIo {
@@ -1320,7 +1432,7 @@ function spawnHookIoOf($: EngineInterface, state: SpawnState): SpawnHookIo {
     lite: () => read($, lite),
     gate: agentId => preflightGate($, agentId),
     jev: () => jevOf($, state.settings()),
-    effortEnv: () => $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined),
+    effortEnv: () => envOf($, 'CLAUDE_CODE_EFFORT_LEVEL'),
     toast: text => $.ui.toast(text),
     best: (what, fn) => best($, what, fn),
     refresh: () => refresh($),
@@ -1343,17 +1455,21 @@ function jevOf($: EngineInterface, settings: DecideSettings): SizeJev | undefine
   return sizeWith((text, q) => decide(io, settings, text, q, DECIDE_TIMEOUT_MS, settings.sizeMinConfidence ?? 0), sourceOf(settings))
 }
 
+async function fetchOf($: EngineInterface, url: string, init: Parameters<FetchLike>[1]) {
+  const r = await $.http.fetch(url, { method: init.method, headers: init.headers, body: init.body })
+  return { ok: r.ok, status: r.status, json: async () => JSON.parse(r.text) as unknown }
+}
+
 // The engine's fetch and timer as the decision API takes them.
 function decideIoOf($: EngineInterface): DecideIo {
-  const fetch: FetchLike = (url, init) => $.http.fetch(url, { method: init.method, headers: init.headers, body: init.body })
-    .then(r => ({ ok: r.ok, status: r.status, json: async () => JSON.parse(r.text) as unknown }))
+  const fetch: FetchLike = (url, init) => fetchOf($, url, init)
   return { fetch, after: (ms: number, fn: () => void) => $.clock.after(ms, fn) }
 }
 
 function decideEvalIoOf($: EngineInterface): DecideEvalIo {
   return {
     stateDir: () => stateDir($),
-    readFile: path => $.fs.read(path).then(String, () => undefined),
+    readFile: path => readQuietly($, path),
     writeFile: async (path, text) => { await $.fs.write(path, text) },
     decideIo: decideIoOf($),
     now: () => $.clock.now(),
@@ -1431,7 +1547,7 @@ function reviewerIoOf($: EngineInterface, base: string): ReviewerIo {
     best: (what, fn) => best($, what, fn),
     saveHandover: ho => saveHandover($, ho),
     appendLog: event => appendLog($, event),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     refresh: () => refresh($),
     closeReturnedEnv: ho => closeReturnedEnv($, ho),
     settleBatch: () => settleBatch($),
@@ -1535,7 +1651,8 @@ async function spawnReviewer($: EngineInterface, input: { subagentType: string; 
   const settings = terminalSettings()
   if (settings === undefined) return $.agent.spawn(agentInput)
   const rules = parseMode(settings.mergeMode) === 'confirm' ? REVIEWER_SESSION_RULES_CONFIRM : REVIEWER_SESSION_RULES_AUTO
-  const reviewerEffort = effortFor('reviewer', undefined, settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
+  const effortEnv = await envOf($, 'CLAUDE_CODE_EFFORT_LEVEL')
+  const reviewerEffort = effortFor('reviewer', undefined, settings, effortEnv)
   const r = await startRoleSession(sessionIoOf($), {
     role: 'reviewer', name: input.name, owner: { id: 'main', name: 'main' },
     ...(settings.reviewerModel !== undefined && { model: settings.reviewerModel }),
@@ -1543,7 +1660,7 @@ async function spawnReviewer($: EngineInterface, input: { subagentType: string; 
     prompt: `${rules}${fill(REVIEWER_PROMPT, settings)}\n\n${input.prompt}`,
   }, settings)
   if (!r.ok) {
-    void $.ui.toast(`flow: could not start the reviewer in a terminal (${r.text})`)
+    $.ui.toast(`flow: could not start the reviewer in a terminal (${r.text})`)
     await best($, 'logging the reviewer start failure', () => appendLog($, { event: 'note', owner: 'main', agent: input.name, text: `reviewer could not start in a terminal: ${r.text}` }))
     return { deny: r.text }
   }
@@ -1569,7 +1686,7 @@ function breakerIoOf($: EngineInterface): BreakerIo {
     set: async b => { await update($, reviewerBreaker, () => b) },
     now: () => $.clock.now(),
     withInbox: fn => withInbox($, fn),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
   }
 }
 
@@ -1624,20 +1741,33 @@ let autoQueued = false
 function autoSweep($: EngineInterface): void {
   if (mirror.cleanupMode !== 'auto' || autoQueued) return
   autoQueued = true
-  void sweep($, mirror.cleanupBase, true, undefined, () => { autoQueued = false })
-    .catch(err => warn($, 'cleaning up', err))
+  void sweepOrWarn($, true, () => { autoQueued = false }, 'cleaning up')
+}
+
+// A background sweep: a failure goes to the log, never to the caller.
+async function sweepOrWarn($: EngineInterface, apply: boolean, started: (() => void) | undefined, what: string): Promise<void> {
+  try {
+    await sweep($, mirror.cleanupBase, apply, undefined, started)
+  } catch (err) {
+    await warn($, what, err)
+  }
 }
 
 // The dry sweep behind the pane's leftover line, on the PR list's cadence.
 function refreshLeftovers($: EngineInterface): void {
-  void sweep($, mirror.cleanupBase, false).catch(err => warn($, 'looking for leftovers', err))
+  void sweepOrWarn($, false, undefined, 'looking for leftovers')
 }
 
 // The wrap-up as a message, for an agent idle or waiting between turns. A refused send is logged, not retried.
 async function sendWrapUp($: EngineInterface, me: { id: string; type: string; name?: string }, percent: number, limit: string): Promise<void> {
   const text = wrapUpText(ROLE[me.type] ?? 'worker', percent, limit)
   // A wrap-up for an agent that is gone is only logged, not sent on to main.
-  const sent = await deliver($, me.id, text, { urgent: true, onGone: () => undefined }).catch(() => false)
+  let sent = false
+  try {
+    sent = await deliver($, me.id, text, { urgent: true, onGone: () => undefined })
+  } catch {
+    // Not sent: logged below.
+  }
   // A refused send is re-queued by deliver() and reads as sent there; the refusal is recorded by the io.
   if (!sent || refusals.has(me.id)) $.ui.log(`flow: wrap-up for ${me.name ?? me.id} not delivered: ${refusals.get(me.id) ?? 'unknown'}`)
 }
@@ -1646,16 +1776,17 @@ async function sendWrapUp($: EngineInterface, me: { id: string; type: string; na
 // Re-armed when usage drops back below the threshold (after a /compact).
 async function warnMain($: EngineInterface, settings: ReturnType<typeof settingsOf>, state: { warned: boolean }): Promise<number | undefined> {
   if (!settings.handoff) return undefined
-  const usage = await $.session.usage().then(u => u, () => undefined)
+  const usage = await usageOf($)
   const main = usage?.context
   if (main?.tokens === undefined) return undefined
   if (main.tokens < thresholdOf(settings, main.window)) { state.warned = false; return main.window }
   if (state.warned) return main.window
-  if (!(await $.agent.list()).some(a => a.type === MANAGER || a.type === WORKER || isReviewer(a.type))) return main.window
+  const agents = await $.agent.list()
+  if (!agents.some(a => a.type === MANAGER || a.type === WORKER || isReviewer(a.type))) return main.window
   state.warned = true
   const percent = main.percent ?? Math.round(main.tokens / main.window * 100)
   const text = `flow: main session at ${percent}% context. It can't be replaced like a worker: run /compact, or restart Claude Code and run /flow resume.`
-  void $.ui.toast(text)
+  $.ui.toast(text)
   $.ui.log(text)
   return main.window
 }
@@ -1669,7 +1800,7 @@ function usageIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, 
     activity: () => read($, activity),
     updateActivity: async fn => { await update($, activity, fn) },
     agents: () => $.agent.list(),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     sendWrapUp: (me, percent, limit) => sendWrapUp($, me, percent, limit),
     warnMain: () => warnMain($, settings, mainWarn),
   }
@@ -1704,7 +1835,7 @@ function turnIoOf($: EngineInterface, settings: ReturnType<typeof settingsOf>, h
     write: async (path, text) => { await $.fs.write(path, text) },
     setHandoff: async (branch, record) => { await update($, handoffs, hs => ({ ...hs, [branch]: record })) },
     lean: ask => handoffLean(decideIoOf($), standingIoOf($), settings, ask),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     deliver: (id, text, opts) => deliver($, id, text, opts),
     maxContinues: () => settings.maxContinues,
     decideSettings: () => settings,
@@ -1752,8 +1883,11 @@ async function locate($: EngineInterface): Promise<string[]> {
 
 async function readText($: EngineInterface, path: string): Promise<string | undefined> {
   try {
-    if (path === '' || !(await $.fs.exists(path))) return undefined
-    return String(await $.fs.read(path))
+    if (path === '') return undefined
+    const found = await $.fs.exists(path)
+    if (!found) return undefined
+    const text = await $.fs.read(path)
+    return String(text)
   } catch {
     return undefined
   }
@@ -1771,7 +1905,7 @@ function startupIoOf($: EngineInterface, options: Record<string, unknown>, held:
     initHint: INIT_HINT,
     best: (what, fn) => best($, what, fn),
     run: (argv, opts) => $.process.run(argv, opts),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     every: (ms, fn) => { $.clock.every(ms, fn) },
     after: (ms, fn) => { $.clock.after(ms, fn) },
     now: () => $.clock.now(),
@@ -1779,7 +1913,7 @@ function startupIoOf($: EngineInterface, options: Record<string, unknown>, held:
     setRelay: r => { relay = r },
     locate: () => locate($),
     readText: path => readText($, path),
-    mtime: async path => (await $.fs.stat(path)).mtimeMs,
+    mtime: path => mtimeOf($, path),
     // Written out field by field: the plugin directory confirms an agent leaves permissions with the user only
     // from an object literal in the call. These are the fields registerAgents (startup-run.ts) sets.
     registerAgent: spec => $.agent.register({ name: spec.name, description: spec.description, prompt: spec.prompt, model: spec.model, isolation: spec.isolation, background: spec.background }),
@@ -1810,7 +1944,8 @@ function startupIoOf($: EngineInterface, options: Record<string, unknown>, held:
     setPush: async disk => { await update($, pushState, () => disk) },
     setLite: async disk => { await update($, lite, () => disk) },
     mergeSessions: async raw => {
-      const disk = normalizeSessions(raw, await $.clock.now())
+      const t = await $.clock.now()
+      const disk = normalizeSessions(raw, t)
       await update($, sessions, cur => ({ ...disk, ...cur }))
     },
     snapshotSessions: async () => { roleState.saved = JSON.stringify(durableSessions(await read($, sessions))) },
@@ -1826,7 +1961,10 @@ function startupIoOf($: EngineInterface, options: Record<string, unknown>, held:
     watchSessions: () => void watchSessions($),
     fetchPrs: () => void fetchPrs($),
     refreshLeftovers: () => refreshLeftovers($),
-    tickNow: async () => { await $.clock.now().then(t => update($, now, () => t)) },
+    tickNow: async () => {
+      const t = await $.clock.now()
+      await update($, now, () => t)
+    },
     startReviewer: async () => void (await ensureQueue($)),
     clearDemo: async () => { await update($, demo, () => null) },
     firstRun: () => firstRun(initIoOf($)),
@@ -1847,17 +1985,21 @@ async function runCmd($: EngineInterface, argv: string[], timeoutMs = 60_000): P
 // The platform, asked once through `uname -s`: the engine has no platform field.
 let platform: Promise<string> | undefined
 function platformOf($: EngineInterface): Promise<string> {
-  platform ??= runCmd($, ['uname', '-s'], 5_000).then(r => platformOfUname(r.exitCode === 0 ? r.stdout : undefined))
+  if (platform === undefined) platform = askPlatform($)
   return platform
+}
+async function askPlatform($: EngineInterface): Promise<string> {
+  const r = await runCmd($, ['uname', '-s'], 5_000)
+  return platformOfUname(r.exitCode === 0 ? r.stdout : undefined)
 }
 
 function sessionIoOf($: EngineInterface): SessionIo {
   return {
     run: (argv, timeoutMs) => runCmd($, argv, timeoutMs),
     now: () => $.clock.now(),
-    after: (ms, fn) => void $.clock.after(ms, fn),
+    after: (ms, fn) => { $.clock.after(ms, fn) },
     stat: path => $.fs.stat(path),
-    read: path => $.fs.read(path),
+    readFile: path => $.fs.read(path),
     write: (path, text) => $.fs.write(path, text),
     sessions: () => read($, sessions),
     updateSessions: async fn => {
@@ -1888,7 +2030,9 @@ function onRoleReport($: EngineInterface, s: Session, report: string): Promise<v
 function onRoleGone($: EngineInterface, s: Session, tail: string): Promise<void> { return onRoleGoneTo(roleIoOf($), s, tail) }
 function persistSessions($: EngineInterface): Promise<void> { return persistSessionsTo(roleIoOf($)) }
 
-const watchSessions = ($: EngineInterface) => watchSessionsTo(sessionIoOf($))
+function watchSessions($: EngineInterface) {
+  return watchSessionsTo(sessionIoOf($))
+}
 
 // --- Who owns a role session (role-session-run.ts) ---
 function identityOf($: EngineInterface): Promise<MainIdentity | undefined> { return identityTo(roleIoOf($)) }
@@ -1931,13 +2075,19 @@ let relay: RelayMode | undefined
 // The files and processes the relay needs, both for the client in the terminal's copy and for main's pump.
 function relayIoOf($: EngineInterface): RelayIo {
   return {
-    list: async dir => (await $.fs.list(dir)).map(f => f.name),
-    read: async path => String(await $.fs.read(path)),
+    list: async dir => {
+      const files = await $.fs.list(dir)
+      return files.map(f => f.name)
+    },
+    readFile: async path => {
+      const text = await $.fs.read(path)
+      return String(text)
+    },
     write: (path, text) => $.fs.write(path, text),
     // mv is rename(2) inside one directory: only one of two racing claimers wins.
     rename: async (from, to) => (await runCmd($, ['mv', from, to], 10_000)).exitCode === 0,
     remove: path => runCmd($, ['rm', '-f', path], 10_000),
-    mtime: async path => (await $.fs.stat(path)).mtimeMs,
+    mtime: path => mtimeOf($, path),
     now: () => $.clock.now(),
     // The host kills a process after ten minutes at most, which is the wait loop's own limit: a kill there is the
     // same "no answer", so it reads as the loop's exit 4.
@@ -1945,7 +2095,8 @@ function relayIoOf($: EngineInterface): RelayIo {
       const t0 = await $.clock.now()
       const r = await runCmd($, argv, Math.min(timeoutMs ?? 60_000, 600_000))
       // Only a run that really ran out its time; an sh that failed to start stays the failure it is.
-      const ranOut = (await $.clock.now()) - t0 >= 599_000
+      const t1 = await $.clock.now()
+      const ranOut = t1 - t0 >= 599_000
       return (timeoutMs ?? 0) > 600_000 && r.exitCode === 127 && ranOut ? { ...r, exitCode: 4 } : r
     },
   }
@@ -1965,10 +2116,10 @@ function pumpIoOf($: EngineInterface): PumpIo {
 }
 
 async function relayModeOf($: EngineInterface): Promise<RelayMode | undefined> {
-  const role = await $.env.get('FLOW_ROLE').catch(() => undefined)
+  const role = await envOf($, 'FLOW_ROLE')
   if (role !== 'worker' && role !== 'manager' && role !== 'reviewer') return undefined
-  const name = await $.env.get('FLOW_NAME').catch(() => undefined)
-  const dir = await $.env.get('FLOW_RELAY').catch(() => undefined)
+  const name = await envOf($, 'FLOW_NAME')
+  const dir = await envOf($, 'FLOW_RELAY')
   return { role, name: name ?? '', dir: dir === undefined || dir === '' ? undefined : dir }
 }
 
@@ -2243,7 +2394,7 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
 
     case 'mcp__flow__decide_eval': return ({ result: await decideEvalTool(decideEvalIoOf($), settings, e, e.agentId) })
 
-    case 'mcp__flow__size_ab_report': return ({ result: await sizeAbTool({ stateDir: () => stateDir($), readFile: path => $.fs.read(path).then(String, () => undefined) }, e.agentId) })
+    case 'mcp__flow__size_ab_report': return ({ result: await sizeAbTool({ stateDir: () => stateDir($), readFile: path => readQuietly($, path) }, e.agentId) })
 
     case 'mcp__flow__arms': return armsTool(armsIoOf($), e, e.agentId)
 
@@ -2328,7 +2479,7 @@ function paneIoOf($: EngineInterface, lets: PaneLets): Omit<PaneIo, keyof PaneAc
     resolve: ev => paneResolve($, ev),
     now: () => $.clock.now(),
     usage: () => paneUsage($),
-    toast: text => { void $.ui.toast(text) },
+    toast: text => { $.ui.toast(text) },
     invalidate: () => paneInvalidate($),
     after: (ms, fn) => { $.clock.after(ms, fn) },
     focus: key => paneFocusKey($, key),
@@ -2505,7 +2656,7 @@ export const register: Register = (on, options) => {
     if (relay !== undefined) return { text: 'Run /flow-tasks in the main Claude Code session.' }
     const args = e.args.trim()
     const text = `Use the flow:dispatch skill, "Tasks from a source": pick tasks from ${args ? `the task source and selection "${args}"` : 'this project\'s task source'} and start a manager for each.`
-    $.clock.after(1, () => void $.prompt.submit({ text }))
+    $.clock.after(1, () => { void submitText($, text) })
     return { text: `Picking tasks${args ? ` from ${args}` : ''}.` }
   })
 
