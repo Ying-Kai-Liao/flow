@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.110] - 2026-10-14
+
 ### Added
 
 - Flow pane: finished managers (ended, nothing live under them, no open handover, inbox item or plan node of their own) and their workers fold into one "▸ N finished · M workers" row after the other agents, collapsed by default; press it, or `f`, to expand or collapse. The transcript the pane follows stays drawn.
