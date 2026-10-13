@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `docs/task-lifecycle.md`: a walkthrough of one task from request to cleanup, naming the `hooks/` module behind each step.
+
 ## [0.6.102] - 2026-10-13
 
 ### Changed

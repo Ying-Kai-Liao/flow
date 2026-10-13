@@ -119,6 +119,7 @@ with defaults, is in the [reference](docs/reference.md).
 
 ## Learn more
 
+- [Life of a task](docs/task-lifecycle.md): one task's path from request to cleanup, and the code behind each step.
 - [How flow works](docs/how-it-works.md): roles, pre-flight, the inbox and standing answers,
   merge modes, releases, deploying, cleanup and the rules the reviewer follows.
 - [Reference](docs/reference.md): every setting, the tools agents use, and the files flow keeps.
