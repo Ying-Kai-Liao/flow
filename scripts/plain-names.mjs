@@ -7,6 +7,7 @@
 //    directory reads a typed arrow taking `$` as a hook declared as something else.
 // 3. Under hooks/, a file that registers hooks declares nothing else under the names it gives `on` (register's
 //    first parameter), `$` or a hook's third parameter (`next`).
+// 4. Under hooks/, a call taking `$` is never the operand of a parenthesized non-null assertion: `(await f($, x))!`.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -70,6 +71,13 @@ for (const file of files) {
         (ts.isArrowFunction(fn) && fn.type === undefined && n.name.text === '$') ||
         (ts.isVariableDeclaration(fn.parent) && ts.isIdentifier(fn.parent.name) && fn.parent.name.text === 'register'))
       if (!ok) say(n, `declares ${n.name.text}, a name this file gives on, $ or a hook's next`)
+    }
+    if (hooks && ts.isNonNullExpression(n) && ts.isParenthesizedExpression(n.expression)) {
+      let inner = n.expression.expression
+      if (ts.isAwaitExpression(inner)) inner = inner.expression
+      if (ts.isCallExpression(inner) && inner.arguments.some(a => ts.isIdentifier(a) && a.text === '$')) {
+        say(n, 'a call taking $ is wrapped in parentheses and !: assign it to a const first')
+      }
     }
     ts.forEachChild(n, visit)
   }

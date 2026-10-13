@@ -2012,7 +2012,10 @@ function relayExecIoOf($: EngineInterface, c: FlowCtx): RelayExecIo {
     refresh: () => refresh($),
     slotLimits: () => ({ test: c.settings.testSlots, typecheck: c.settings.typecheckSlots ?? 1 }),
     flowTools: FLOW_TOOLS,
-    runFlow: async (tool, input) => (await runFlowTool($, tool, input, c))!,
+    runFlow: async (tool, input) => {
+      const out = await runFlowTool($, tool, input, c)
+      return out!
+    },
   }
 }
 
@@ -2361,9 +2364,11 @@ export const register: Register = (on, options) => {
   // In a relay copy nothing here may run: the generic hook above answers every flow tool through main,
   // and a call that got this far must not touch the copy's (empty) state.
   for (const tool of FLOW_TOOLS) {
-    on('tool.call', { tool: tool as never }, async ($, e) => relay !== undefined
-      ? { result: `flow relay: ${tool.replace('mcp__flow__', '')} did not reach the main session; try again.` }
-      : (await runFlowTool($, tool, e as unknown as FlowCall, { settings, options, installed }))!).catch(toolCatch)
+    on('tool.call', { tool: tool as never }, async ($, e) => {
+      if (relay !== undefined) return { result: `flow relay: ${tool.replace('mcp__flow__', '')} did not reach the main session; try again.` }
+      const out = await runFlowTool($, tool, e as unknown as FlowCall, { settings, options, installed })
+      return out!
+    }).catch(toolCatch)
   }
 
   // Main can't be replaced like a worker: one warning per crossing, never an auto-compact.
