@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The demo replay's code moved out of `hooks/register.tsx` into `hooks/demo-run.ts`, and "Where code goes" in the reference now maps each hook to its module (no behaviour change).
+
 ## [0.6.101] - 2026-10-13
 
 ### Changed
