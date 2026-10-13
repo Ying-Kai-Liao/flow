@@ -58,8 +58,8 @@ export type SpawnHookIo = {
   withPreflight: <T>(fn: (cur: Preflight) => { state: Preflight; out: T }) => Promise<T>
   after: (ms: number, fn: () => void) => void
   sessions: () => Promise<Record<string, Session>>
-  // manager_harness: the harness a manager runs in (undefined: as an agent), and the start of its terminal session.
-  roleHarness: () => { harness: string; settings: Settings } | undefined
+  // The settings when flow runs in a terminal mode (orca or tmux), undefined in agent mode, and the start of a terminal session.
+  terminalSettings: () => Settings | undefined
   startRoleSession: (p: RoleStart, s: SessionSettings) => ReturnType<typeof import('./session-run').startRoleSession>
   // State that register() keeps single: the [1m] and in-place continue refusals, and the effort maps turn.step also reads.
   noLong: () => boolean
@@ -89,31 +89,31 @@ async function armSpawnCheck(io: SpawnHookIo, e: AgentSpawnInput, settings: Sett
   }, e.parentAgentId, now)
 }
 
-// main's flow:manager spawn as a terminal session (manager_harness), after the model routing. Undefined: the
-// agent starts as usual. The bookkeeping an in-process manager gets (pre-flight record, lite record, size
+// main's flow:manager spawn as a terminal session (mode orca or tmux), after the model routing. Undefined: the
+// agent starts as usual (agent mode); a terminal that cannot start is a refusal, not an agent. The bookkeeping an in-process manager gets (pre-flight record, lite record, size
 // decision) is done here; the session's own start logs the spawn and opens its activity card.
 async function startManagerSession(io: SpawnHookIo, e: AgentSpawnInput, ctx: { routed: Routed | undefined; liteMode: boolean }): Promise<{ deny: string } | undefined> {
-  const route = io.roleHarness()
-  if (route === undefined) return undefined
+  const settings = io.terminalSettings()
+  if (settings === undefined) return undefined
   const name = (e as { name?: string }).name ?? e.description
   // The same manager asked for twice: it is running, so the answer is the same success, not a second manager.
   const live = (await io.sessions())[name]
   if (live !== undefined && live.role === 'manager' && sessionLive(live)) {
     return { deny: `flow: manager ${name} already runs in ${live.host} (${live.handle}) as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
   }
-  const model = e.model ?? route.settings.managerModel
+  const model = e.model ?? settings.managerModel
   // A terminal manager has no Agent tool, so it cannot start arms: no best-of-N text for it.
-  const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', route.settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), { ...route.settings, bestOfN: 'off' })
-  const managerEffort = effortFor('manager', undefined, route.settings, await io.effortEnv())
+  const rules = fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', settings.useReviewer ? REVIEWER_RULE : NO_REVIEWER_RULE), { ...settings, bestOfN: 'off' })
+  const managerEffort = effortFor('manager', undefined, settings, await io.effortEnv())
   const r = await io.startRoleSession({
-    role: 'manager', name, harness: route.harness, owner: { id: 'main', name: 'main' },
+    role: 'manager', name, owner: { id: 'main', name: 'main' },
     ...(typeof model === 'string' && { model }),
     ...(managerEffort !== undefined && { effort: managerEffort }),
     prompt: `${MANAGER_SESSION_RULES}${rules}\n\n${e.prompt}`,
-  }, route.settings)
+  }, settings)
   if (!r.ok) {
-    void io.toast(`flow: could not start manager ${name} in a terminal (${r.text}); starting it as an agent`)
-    return undefined
+    void io.toast(`flow: could not start manager ${name} in a terminal (${r.text})`)
+    return { deny: `flow: could not start manager ${name} in a terminal: ${r.text}` }
   }
   const id = sessionKey(name)
   if (mirror.preflightOn) await io.best('recording a pre-flight', () => recordManager(io, name, e.prompt, ctx.liteMode))
@@ -229,8 +229,8 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
   // The env is read only when there is an effort to apply; a failed read counts as unset.
   const wantEffort = effortRole === undefined || explicit ? undefined : effortFor(effortRole, routed?.size, io.settings(), undefined)
   const targetEffort = wantEffort === undefined ? undefined : effortFor(effortRole!, routed?.size, io.settings(), await io.effortEnv())
-  // manager_harness: main's manager runs as a claude in a terminal. The Agent tool is answered with a refusal that
-  // says it started; on a start failure the normal spawn below goes on.
+  // mode orca/tmux: main's manager runs as a claude in a terminal. The Agent tool is answered with a refusal that
+  // says it started, or why it did not: a failed start is a refusal, never an agent.
   if (e.subagentType === MANAGER && e.parentAgentId === undefined) {
     const started = await startManagerSession(io, e, { routed, liteMode })
     if (started !== undefined) return started

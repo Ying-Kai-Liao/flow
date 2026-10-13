@@ -425,30 +425,18 @@
       "default": "auto",
       "options": ["auto", "off"]
     },
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "description": "Where flow runs, one for the whole run: agent (managers, workers and the reviewer are agents in this session), orca (every manager, worker and the reviewer is a terminal in Orca) or tmux (the same in tmux sessions). Managers and the reviewer in a terminal are always Claude Code; workers use worker_harness.",
+      "default": "agent",
+      "options": ["agent", "orca", "tmux"]
+    },
     "worker_harness": {
       "type": "string",
       "title": "Worker harness",
-      "description": "Advanced: What managers start workers with: agent (a flow:worker in this session), or a harness run in a terminal: claude, codex, gemini, opencode, or a name from the harnesses setting. Managers can still pick another one per worker.",
+      "description": "Advanced: The CLI terminal workers run (mode orca or tmux): claude (the default), codex, gemini, opencode, or a name from the harnesses setting. agent means claude. Managers can still pick another one per worker.",
       "default": "agent"
-    },
-    "manager_harness": {
-      "type": "string",
-      "title": "Manager harness",
-      "description": "Advanced: Where managers run: agent (a flow:manager in this session), or claude (a Claude Code in a terminal whose flow tools are relayed to this session). Other harnesses cannot load the plugin and fall back to agent.",
-      "default": "agent"
-    },
-    "reviewer_harness": {
-      "type": "string",
-      "title": "Reviewer harness",
-      "description": "Advanced: Where the reviewer runs: agent (a flow:reviewer in this session), or claude (one long-lived Claude Code in a terminal and worktree whose flow tools are relayed to this session). Other harnesses fall back to agent.",
-      "default": "agent"
-    },
-    "session_host": {
-      "type": "string",
-      "title": "Session host",
-      "description": "Advanced: Where workers in other harnesses run: auto (Orca when it is running, else tmux), orca or tmux.",
-      "default": "auto",
-      "options": ["auto", "orca", "tmux"]
     },
     "harnesses": {
       "type": "string",

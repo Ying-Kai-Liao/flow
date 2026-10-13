@@ -168,6 +168,18 @@ test('the manager prompt routes by the Size line and never tells an agent to pas
   expect(fill(REVIEWER_PROMPT, s)).toContain('subagent_type "general-purpose", model "opus"')
 })
 
+test('a terminal mode tells the manager to start workers with the session tool; agent mode drops that section', () => {
+  const m = (s: Settings) => fill(MANAGER_PROMPT.replace('{{REVIEWER_RULE}}', REVIEWER_RULE), s)
+  const term = m({ ...base, mode: 'tmux', workerHarness: 'codex' })
+  expect(term).toContain('Start each worker with `mcp__flow__session` action "start" (this repo runs in mode tmux')
+  expect(term).not.toContain('Start each worker with the Agent tool')
+  expect(term).not.toContain('{{')
+  expect(term).toContain('workers run in codex by default')
+  const agent = m(base)
+  expect(agent).toContain('Start each worker with the Agent tool')
+  expect(agent).not.toContain('## Workers in a terminal')
+})
+
 test('batch_max renders into the reviewer prompt, default 10, minimum 1', () => {
   expect(all(base)[2]).toContain('A batch holds at most 10 PRs.')
   expect(all({ ...base, batchMax: 3 })[2]).toContain('until the batch holds 3 PRs')

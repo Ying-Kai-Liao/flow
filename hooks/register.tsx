@@ -116,7 +116,7 @@ import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, m
 import type { FlowToolsIo, GuardIo, ToolCallIo } from './toolcall-run'
 import { flowCatch, toolCatch } from './toolguard'
 import {
-  ago, harnessesOf, roleAgents, roleHarnessOf, runsOutIn, sessionLive, sessionRow,
+  ago, harnessesOf, roleAgents, runsOutIn, sessionLive, sessionRow,
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
 import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSessions as watchSessionsTo } from './session-run'
@@ -1321,7 +1321,7 @@ function spawnHookIoOf($: EngineInterface, state: SpawnState): SpawnHookIo {
     withPreflight: fn => withPreflight($, fn),
     after: (ms, fn) => $.clock.after(ms, fn),
     sessions: () => read($, sessions),
-    roleHarness: () => roleHarnessFor($, 'manager'),
+    terminalSettings,
     startRoleSession: (p, s) => startRoleSession(sessionIoOf($), p, s),
   }
 }
@@ -1496,36 +1496,29 @@ async function reviewerRan($: EngineInterface, id: string, name: string, end: { 
 // is a closure variable).
 let heldSettings: ReturnType<typeof settingsOf> | undefined
 
-// A role harness that cannot run (unknown, or not claude) is said once per reason, then the agent runs as before.
-const roleReasons = new Set<string>()
-function roleHarnessFor($: EngineInterface, role: 'manager' | 'reviewer'): { harness: string; settings: ReturnType<typeof settingsOf> } | undefined {
-  const s = heldSettings
-  if (s === undefined) return undefined
-  const picked = roleHarnessOf((role === 'manager' ? s.managerHarness : s.reviewerHarness) ?? 'agent', s.harnesses)
-  if (picked.reason !== undefined && !roleReasons.has(`${role}:${picked.reason}`)) {
-    roleReasons.add(`${role}:${picked.reason}`)
-    void $.ui.toast(`flow: ${role}_harness: ${picked.reason}`)
-  }
-  return picked.harness === 'agent' ? undefined : { harness: picked.harness, settings: s }
+// The settings when flow runs in a terminal mode (orca or tmux); undefined in agent mode.
+function terminalSettings(): ReturnType<typeof settingsOf> | undefined {
+  return heldSettings !== undefined && (heldSettings.mode ?? 'agent') !== 'agent' ? heldSettings : undefined
 }
 
-// The reviewer: a terminal session when reviewer_harness names a claude harness, else the agent as always.
-// A session that cannot start falls back to the agent (and says why) so the queue is not stuck on it.
+// The reviewer: a terminal session in mode orca or tmux, else the agent as always. A terminal that cannot
+// start is not replaced by an agent: the handover stays pending and the next trigger tries again.
 async function spawnReviewer($: EngineInterface, input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }): Promise<{ deny?: string }> {
   const { pending, ...agentInput } = input
-  const route = roleHarnessFor($, 'reviewer')
-  if (route === undefined) return $.agent.spawn(agentInput)
-  const rules = parseMode(route.settings.mergeMode) === 'confirm' ? REVIEWER_SESSION_RULES_CONFIRM : REVIEWER_SESSION_RULES_AUTO
-  const reviewerEffort = effortFor('reviewer', undefined, route.settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
+  const settings = terminalSettings()
+  if (settings === undefined) return $.agent.spawn(agentInput)
+  const rules = parseMode(settings.mergeMode) === 'confirm' ? REVIEWER_SESSION_RULES_CONFIRM : REVIEWER_SESSION_RULES_AUTO
+  const reviewerEffort = effortFor('reviewer', undefined, settings, await $.env.get('CLAUDE_CODE_EFFORT_LEVEL').catch(() => undefined))
   const r = await startRoleSession(sessionIoOf($), {
-    role: 'reviewer', name: input.name, harness: route.harness, owner: { id: 'main', name: 'main' },
-    ...(route.settings.reviewerModel !== undefined && { model: route.settings.reviewerModel }),
+    role: 'reviewer', name: input.name, owner: { id: 'main', name: 'main' },
+    ...(settings.reviewerModel !== undefined && { model: settings.reviewerModel }),
     ...(reviewerEffort !== undefined && { effort: reviewerEffort }),
-    prompt: `${rules}${fill(REVIEWER_PROMPT, route.settings)}\n\n${input.prompt}`,
-  }, route.settings)
+    prompt: `${rules}${fill(REVIEWER_PROMPT, settings)}\n\n${input.prompt}`,
+  }, settings)
   if (!r.ok) {
-    void $.ui.toast(`flow: could not start the reviewer in a terminal (${r.text}); using an agent`)
-    return $.agent.spawn(agentInput)
+    void $.ui.toast(`flow: could not start the reviewer in a terminal (${r.text})`)
+    await best($, 'logging the reviewer start failure', () => appendLog($, { event: 'note', owner: 'main', agent: input.name, text: `reviewer could not start in a terminal: ${r.text}` }))
+    return { deny: r.text }
   }
   const told = pending ?? []
   if (told.length > 0) await sessionIoOf($).updateSessions(all => all[input.name] === undefined ? all : { ...all, [input.name]: { ...all[input.name]!, nudged: told } })

@@ -122,13 +122,11 @@ export const tmuxName = (name: string): string => `flow-${name}`
 
 export const sessionKey = (name: string): string => `session:${name}`
 
-// `auto` takes Orca when its runtime answers, else tmux.
-export function pickHost(choice: string, orcaUp: boolean, tmuxUp: boolean): Host | { error: string } {
-  if (choice === 'orca') return orcaUp ? 'orca' : { error: 'Orca is not reachable (orca status). Open Orca, or use host "tmux".' }
-  if (choice === 'tmux') return tmuxUp ? 'tmux' : { error: 'tmux is not installed.' }
-  if (orcaUp) return 'orca'
-  if (tmuxUp) return 'tmux'
-  return { error: 'Neither Orca (orca status) nor tmux is available to run a session in.' }
+// The mode's host, or why it is not up. No fallback to the other host: one mode at a time.
+export function pickHost(mode: string, orcaUp: boolean, tmuxUp: boolean): Host | { error: string } {
+  if (mode === 'orca') return orcaUp ? 'orca' : { error: 'mode orca, but Orca is not reachable (orca status). Start Orca, or set mode to agent or tmux.' }
+  if (mode === 'tmux') return tmuxUp ? 'tmux' : { error: 'mode tmux, but tmux is not installed (tmux -V failed). Install tmux, or set mode to agent or orca.' }
+  return { error: 'flow runs in agent mode; terminal workers need mode orca or tmux.' }
 }
 
 // The first terminal handle in an `orca … --json` answer, wherever the runtime puts it.
@@ -180,18 +178,6 @@ export function roleAgents(sessions: Record<string, Session> | Session[]): { id:
 // calls. Written as an inline assignment prefix, which works in front of any harness's command line.
 export function relayEnv(role: 'manager' | 'reviewer' | 'worker', name: string, dir?: string): string {
   return `FLOW_ROLE=${role} FLOW_NAME=${shellQuote(name)}${dir === undefined ? '' : ` FLOW_RELAY=${shellQuote(dir)}`}`
-}
-
-// Only claude loads this plugin and so can relay its flow tools; a manager or reviewer harness
-// that is not claude falls back to the agent. `value` is the setting: "agent" or a harness name.
-export function roleHarnessOf(value: string, harnesses: Record<string, HarnessSpec>): { harness: string; reason?: string } {
-  const v = value.trim()
-  if (v === '' || v === 'agent') return { harness: 'agent' }
-  const spec = harnesses[v]
-  if (spec === undefined) return { harness: 'agent', reason: `unknown harness "${v}"; using agent` }
-  const first = (spec.program ?? spec.start.trim().split(/\s+/)[0] ?? '').split('/').pop()
-  if (v === 'claude' || spec.digest === 'claude-transcript' || first === 'claude') return { harness: v }
-  return { harness: 'agent', reason: `harness "${v}" does not run claude, the only one that loads the flow plugin and relays its tools; using agent` }
 }
 
 export function sessionLine(s: Session): string {

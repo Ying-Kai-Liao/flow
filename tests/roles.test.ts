@@ -1,8 +1,8 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 
-import { harnessesOf, parseClaudeTranscript, relayEnv, roleAgents, roleHarnessOf, sessionLive, sessionRow } from '../hooks/sessions'
-import { settingsOf } from '../hooks/settings'
+import { harnessesOf, parseClaudeTranscript, relayEnv, roleAgents, sessionLive, sessionRow } from '../hooks/sessions'
+import { mergeLayers, modeOf, settingsOf } from '../hooks/settings'
 import { MANAGER_SESSION_RULES, REVIEWER_SESSION_RULES_AUTO, REVIEWER_SESSION_RULES_CONFIRM } from '../hooks/prompts'
 
 const SESSION_BASE = {
@@ -35,18 +35,6 @@ test('the relay environment is a quoted inline prefix', () => {
   expect(relayEnv('manager', "it's", '/a b')).toBe(`FLOW_ROLE=manager FLOW_NAME='it'\\''s' FLOW_RELAY='/a b'`)
 })
 
-test('only agent or a claude-running harness can run a manager or the reviewer', () => {
-  const h = harnessesOf({ mine: { start: 'my-wrapper {prompt}', digest: 'claude-transcript' }, wrapped: '/usr/local/bin/claude --x {prompt}', aider: 'aider {prompt}' })
-  expect(roleHarnessOf('agent', h)).toEqual({ harness: 'agent' })
-  expect(roleHarnessOf('', h)).toEqual({ harness: 'agent' })
-  expect(roleHarnessOf('claude', h)).toEqual({ harness: 'claude' })
-  expect(roleHarnessOf('mine', h)).toEqual({ harness: 'mine' })
-  expect(roleHarnessOf('wrapped', h)).toEqual({ harness: 'wrapped' })
-  expect(roleHarnessOf('codex', h)).toMatchObject({ harness: 'agent', reason: expect.stringContaining('claude') })
-  expect(roleHarnessOf('aider', h).harness).toBe('agent')
-  expect(roleHarnessOf('nope', h)).toMatchObject({ harness: 'agent', reason: expect.stringContaining('unknown') })
-})
-
 test('the Claude digest marks the turn done when the last assistant row ended it and no user row follows', () => {
   const asst = (stop: string | null, t: string) => JSON.stringify({ type: 'assistant', timestamp: t, message: { stop_reason: stop, content: [{ type: 'text', text: 'ok' }] } })
   const user = JSON.stringify({ type: 'user', timestamp: '2026-10-09T11:00:30Z', message: { content: 'next' } })
@@ -57,12 +45,25 @@ test('the Claude digest marks the turn done when the last assistant row ended it
   expect(sessionLive({ ...SESSION_BASE, status: 'stopped' })).toBe(false)
 })
 
-test('manager_harness and reviewer_harness default to agent', () => {
-  const d = settingsOf({}, 'main')
-  expect(d.managerHarness).toBe('agent')
-  expect(d.reviewerHarness).toBe('agent')
-  const s = settingsOf({ manager_harness: 'claude', reviewer_harness: 'claude' }, 'main')
-  expect([s.managerHarness, s.reviewerHarness]).toEqual(['claude', 'claude'])
+test('mode defaults to agent; the replaced keys map onto it, with one note', () => {
+  expect(settingsOf({}, 'main').mode).toBe('agent')
+  expect(settingsOf({ mode: 'tmux' }, 'main').mode).toBe('tmux')
+  expect(settingsOf({ mode: 'bogus' }, 'main').mode).toBe('agent')
+  expect(modeOf({ manager_harness: 'claude' })).toMatchObject({ mode: 'orca', note: expect.stringContaining('using mode orca') })
+  expect(modeOf({ reviewer_harness: 'claude', session_host: 'tmux' }).mode).toBe('tmux')
+  expect(modeOf({ manager_harness: 'agent', reviewer_harness: 'agent', session_host: 'tmux' })).toMatchObject({ mode: 'agent', note: expect.stringContaining('using mode agent') })
+  expect(modeOf({ mode: 'tmux', manager_harness: 'claude' }).mode).toBe('tmux')
+  expect(modeOf({}).note).toBeUndefined()
+  expect(settingsOf({ manager_harness: 'claude', session_host: 'tmux' }, 'main').mode).toBe('tmux')
+})
+
+test('loading warns once about the replaced keys, and about a terminal worker_harness in agent mode', () => {
+  const old = mergeLayers({}, [{ path: '/r/s.json', text: JSON.stringify({ manager_harness: 'claude', session_host: 'tmux' }) }])
+  expect(old.warnings.filter(w => w.includes('replaced by `mode`'))).toEqual(['flow: manager_harness/session_host are replaced by `mode`; using mode tmux'])
+  const w = mergeLayers({}, [{ path: '/r/s.json', text: JSON.stringify({ worker_harness: 'codex' }) }])
+  expect(w.warnings.some(x => x.includes('need mode orca or tmux'))).toBe(true)
+  expect(w.raw.mode).toBeUndefined()
+  expect(mergeLayers({ mode: 'orca' }, [{ path: '/r/s.json', text: JSON.stringify({ worker_harness: 'codex' }) }]).warnings).toEqual([])
 })
 
 test('the terminal role prompts carry the report file and their rules', () => {

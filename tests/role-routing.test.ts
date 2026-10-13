@@ -9,7 +9,7 @@ type On = Parameters<TestBody>[1]
 const DIR = '/r/.git/flow'
 const ok = (stdout = '') => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 const BODY = '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- the full check'
-const TMUX = { session_host: 'tmux' }
+const TMUX = { mode: 'tmux' }
 
 // The breaker tests' world plus a tmux that starts, types and dies on cue.
 function world(on: On) {
@@ -20,7 +20,7 @@ function world(on: On) {
   const spawns: { name: string | undefined; prompt: string }[] = []
   const toasts: string[] = []
   const runs: string[][] = []
-  const state = { alive: true }
+  const state = { alive: true, tmuxDown: false }
   on('agent.list', () => ({ value: agents }))
   on('session.start', () => ({ cwd: '/r' }))
   on('command.register', () => ({ value: undefined } as never))
@@ -61,6 +61,7 @@ function world(on: On) {
     if (a[0] === 'git' && a[1] === 'rev-parse' && a.includes('--git-common-dir')) return ok('/r/.git\n')
     if (cmd === 'git worktree list --porcelain') return ok('worktree /r\nHEAD abc\nbranch refs/heads/main\n')
     if (cmd === 'orca status') return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (cmd === 'tmux -V') return state.tmuxDown ? { value: { exitCode: 127, stdout: '', stderr: 'not found', isStdoutTruncated: false, isStderrTruncated: false } } : ok('tmux 3.4')
     if (cmd.startsWith('tmux display-message')) return ok(state.alive ? 'claude\n' : 'zsh\n')
     if (cmd.startsWith('tmux capture-pane')) return ok('')
     if (a[0] === 'mv') {
@@ -93,7 +94,7 @@ async function report(w: W, name: string, text: string) {
   await w.clock.settle()
 }
 
-test('manager_harness claude: main\'s manager spawn starts a terminal session and is answered as a success', { options: { manager_harness: 'claude', ...TMUX } }, async ($, on) => {
+test('mode tmux: main\'s manager spawn starts a terminal session and is answered as a success', { options: TMUX }, async ($, on) => {
   const w = world(on)
   await start($)
   const r = await spawnManager($, 'csv-mgr')
@@ -109,7 +110,7 @@ test('manager_harness claude: main\'s manager spawn starts a terminal session an
   expect(stored(w, 'preflight').entries['csv-mgr']).toBeDefined()
 })
 
-test('manager_harness agent (the default) starts the agent as before', async ($, on) => {
+test('mode agent (the default) starts the agent as before', async ($, on) => {
   const w = world(on)
   await start($)
   const r = await spawnManager($, 'csv-mgr')
@@ -118,15 +119,15 @@ test('manager_harness agent (the default) starts the agent as before', async ($,
   expect(newSessions(w)).toEqual([])
 })
 
-test('a manager harness that does not run claude falls back to the agent with one toast', { options: { manager_harness: 'codex', ...TMUX } }, async ($, on) => {
+test('a terminal mode starts the manager as claude whatever worker_harness is', { options: { ...TMUX, worker_harness: 'codex' } }, async ($, on) => {
   const w = world(on)
   await start($)
   await spawnManager($, 'csv-mgr')
-  expect(w.spawns.map(s => s.name)).toEqual(['csv-mgr'])
-  expect(w.toasts.filter(t => t.includes('does not run claude'))).toHaveLength(1)
+  expect(w.spawns).toEqual([])
+  expect(stored(w, 'sessions')['csv-mgr']).toMatchObject({ role: 'manager', harness: 'claude' })
 })
 
-test('reviewer_harness claude, auto: two handovers use one terminal; the second is typed into it', { options: { reviewer_harness: 'claude', ...TMUX } }, async ($, on) => {
+test('mode tmux, auto: two handovers use one terminal; the second is typed into it', { options: TMUX }, async ($, on) => {
   const w = world(on)
   await start($)
   expect(await handover($, 7)).toContain('Started reviewer reviewer-1')
@@ -144,7 +145,7 @@ test('reviewer_harness claude, auto: two handovers use one terminal; the second 
   expect(typed(w)).toEqual(['new handover: #8'])
 })
 
-test('reviewer in a terminal with merge_mode confirm: one batch, the session is stopped after its report and the next start is reviewer-2', { options: { reviewer_harness: 'claude', merge_mode: 'confirm', ...TMUX } }, async ($, on) => {
+test('reviewer in a terminal with merge_mode confirm: one batch, the session is stopped after its report and the next start is reviewer-2', { options: { merge_mode: 'confirm', ...TMUX } }, async ($, on) => {
   const w = world(on)
   await start($)
   // A confirm-mode PR waits for the user; the approval starts the reviewer.
@@ -162,7 +163,7 @@ test('reviewer in a terminal with merge_mode confirm: one batch, the session is 
   expect(newSessions(w)).toEqual(['flow-reviewer-1', 'flow-reviewer-2'])
 })
 
-test('reviewer in a terminal, auto: a report keeps the terminal and a gone terminal counts in the breaker', { options: { reviewer_harness: 'claude', ...TMUX } }, async ($, on) => {
+test('reviewer in a terminal, auto: a report keeps the terminal and a gone terminal counts in the breaker', { options: TMUX }, async ($, on) => {
   const w = world(on)
   await start($)
   await handover($, 7)
@@ -180,7 +181,38 @@ test('reviewer in a terminal, auto: a report keeps the terminal and a gone termi
   expect(stored(w, 'reviewer-breaker').run).toMatchObject({ name: 'reviewer-2' })
 })
 
-test('both harness settings agent: the reviewer is an agent and no session is started', async ($, on) => {
+test('mode tmux with tmux missing: the manager is refused, not started as an agent', { options: TMUX }, async ($, on) => {
+  const w = world(on)
+  w.state.tmuxDown = true
+  await start($)
+  const r = await spawnManager($, 'csv-mgr')
+  expect(r).toContain('mode tmux, but tmux is not installed')
+  expect(w.spawns).toEqual([])
+  expect(newSessions(w)).toEqual([])
+})
+
+test('mode orca with Orca down: the manager is refused and tmux is not tried', { options: { mode: 'orca' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const r = await spawnManager($, 'csv-mgr')
+  expect(r).toContain('mode orca, but Orca is not reachable')
+  expect(w.spawns).toEqual([])
+  expect(newSessions(w)).toEqual([])
+})
+
+test('mode tmux with tmux missing: no agent reviewer takes over; the reason is toasted and the next trigger retries', { options: TMUX }, async ($, on) => {
+  const w = world(on)
+  w.state.tmuxDown = true
+  await start($)
+  expect(await handover($, 7)).not.toContain('Started reviewer reviewer-1')
+  expect(w.spawns).toEqual([])
+  expect(w.toasts.some(t => t.includes('could not start the reviewer') && t.includes('tmux is not installed'))).toBe(true)
+  w.state.tmuxDown = false
+  await handover($, 8)
+  expect(newSessions(w).length).toBe(1)
+})
+
+test('mode agent (the default): the reviewer is an agent and no session is started', async ($, on) => {
   const w = world(on)
   await start($)
   expect(await handover($, 7)).toContain('Started reviewer reviewer-1')
@@ -188,7 +220,7 @@ test('both harness settings agent: the reviewer is an agent and no session is st
   expect(newSessions(w)).toEqual([])
 })
 
-test('a PR sent back and handed over again, or approved after being held, is typed into the live reviewer again', { options: { reviewer_harness: 'claude', ...TMUX } }, async ($, on) => {
+test('a PR sent back and handed over again, or approved after being held, is typed into the live reviewer again', { options: TMUX }, async ($, on) => {
   const w = world(on)
   await start($)
   await handover($, 7)
@@ -206,7 +238,7 @@ test('a PR sent back and handed over again, or approved after being held, is typ
   expect(typed(w)).toEqual(['new handover: #7', 'new handover: #9'])
 })
 
-test('a manager whose terminal already runs is answered as started, not spawned as an agent', { options: { manager_harness: 'claude', ...TMUX } }, async ($, on) => {
+test('a manager whose terminal already runs is answered as started, not spawned as an agent', { options: TMUX }, async ($, on) => {
   const w = world(on)
   await start($)
   await spawnManager($, 'csv-mgr')
