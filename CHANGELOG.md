@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.103] - 2026-10-13
+
 ### Fixed
 
 - The plugin loader rejected `hooks/register.tsx` (`MOD_CAPABILITY_USE_NOT_PLAIN`) because two `runFlowTool($, ...)` calls were wrapped in parentheses and `!`; they are plain statements now, and `scripts/plain-names.mjs` (run by `npm run typecheck`) flags the pattern under `hooks/`.
