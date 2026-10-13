@@ -25,6 +25,15 @@
 //    passing $ to a function that reaches one: the directory reported 0.6.109 at three flowToolsIoOf($, ...) calls,
 //    though the shapes sat in agentsOf and paneIoOf. These shapes are the ones the file gained after 0.6.84, the last
 //    release the directory passed; that release has none, and it had the other wrapped shapes checks 1-6 allow.
+//    0.6.111 removed every shape this check finds and the directory still reported the same three calls, so it does
+//    not predict the directory; it stays as a guard on shapes no release has needed.
+// 8. Under hooks/, in a file that registers hooks, an io builder (a top-level function taking $ and returning an
+//    object literal) is not called from more than one case of a switch when more than 12 of its members use $
+//    (directly or by passing it on). A guess calibrated to evidence, not a known rule: the directory reported
+//    flowToolsIoOf($, ...) in runFlowTool's switch on 0.6.103 to 0.6.111 (8 cases, 19 members using $) whatever its
+//    members looked like, while handoverIoOf, planIoOf and slotsIoOf (one case each) and inboxIoOf (4 cases, 11
+//    members) in the same switch were never reported, and 0.6.84, the last release it passed, built each tool's io
+//    in its own hook. Give each case its own small io builder holding only what it uses.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -115,6 +124,7 @@ for (const file of files) {
   visit(sf)
   if (registers) bundled(sf, say)
   if (registers) wrapped(sf, say)
+  if (registers) shared(sf, say)
 }
 
 // Check 6. Top-level functions by name, the parameters that receive a hook's event, then each closure naming both.
@@ -282,6 +292,39 @@ function wrapped(sf, say) {
   for (const uses of own.values()) for (const [n, why] of uses) say(n, `${why}: bind it to a const first (check 7)`)
   for (const out of calls.values()) {
     for (const [n, callee] of out) if (bad.has(callee)) say(n, `$ is passed to ${nameOf.get(callee)}, which reaches a wrapped $ use (check 7)`)
+  }
+}
+
+// Check 8. The io builders, the switch cases that call each, then the members of each that use $.
+function shared(sf, say) {
+  const isFn = n => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)
+  const pname = p => ts.isIdentifier(p.name) ? p.name.text : undefined
+  const MAX = 12
+  const builders = new Map()
+  for (const s of sf.statements) {
+    if (!ts.isFunctionDeclaration(s) || !s.name || !s.body) continue
+    const dollar = s.parameters.map(pname).find(n => n === '$')
+    const ret = s.body.statements.find(ts.isReturnStatement)
+    if (dollar && ret?.expression && ts.isObjectLiteralExpression(ret.expression)) builders.set(s.name.text, ret.expression)
+  }
+  // A member uses $ when it names it anywhere, in a call, a property read or a nested object.
+  const usesDollar = n => (ts.isIdentifier(n) && n.text === '$') || (ts.forEachChild(n, usesDollar) ?? false)
+  const cases = new Map() // builder name -> [call, case clause]
+  const visit = n => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && builders.has(n.expression.text) && n.arguments.some(a => ts.isIdentifier(a) && a.text === '$')) {
+      for (let p = n.parent; p && !isFn(p); p = p.parent) {
+        if (ts.isCaseClause(p) || ts.isDefaultClause(p)) { cases.set(n.expression.text, [...(cases.get(n.expression.text) ?? []), [n, p]]); break }
+      }
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
+  for (const [name, at] of cases) {
+    const clauses = new Set(at.map(([, c]) => c))
+    if (clauses.size < 2) continue
+    const using = builders.get(name).properties.filter(p => usesDollar(p)).length
+    if (using <= MAX) continue
+    for (const [n] of at) say(n, `${name} is one io shared by ${clauses.size} switch cases with ${using} members using $ (over ${MAX}): give each case its own small io builder (check 8)`)
   }
 }
 

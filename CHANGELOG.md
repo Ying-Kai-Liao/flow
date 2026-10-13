@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN finding at the `flowToolsIoOf($, settings, options)` calls, fifth round: flowToolsIoOf is gone. Each of the eight flow tool cases that used it (release, reviewer/queue, guard_tests, note, clean, session, deploy, push) builds its own small io holding only what it uses (`releaseCaseIoOf($)` ... `deployCaseIoOf($, options)`), shaped like handoverIoOf, and takes the settings itself. The Flow pane's 14 actions that call a `$`-taking helper moved out of paneIoOf into their own builder, paneActsIoOf. Behaviour is unchanged. `scripts/plain-names.mjs` gains check 8, a guess calibrated to the evidence: an io builder shared by several switch cases with more than 12 members using `$`. It reports the eight flowToolsIoOf calls on 0.6.111 (the first three are the lines the directory listed) and nothing on 0.6.84; `tests/plain-names.node-test.mjs` covers it.
+
 ## [0.6.111] - 2026-10-14
 
 ### Fixed
