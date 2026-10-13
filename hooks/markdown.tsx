@@ -3,7 +3,7 @@
 // content: anything it does not understand comes through as its literal characters.
 //
 // Everything is worked out as `Line`s (rows of styled spans, already wrapped to the width), so a caller
-// that has to count or slice rows (the PR card's "+N more lines") counts what is really drawn. The
+// that has to count or slice rows (a card body that scrolls) counts what is really drawn. The
 // element helpers at the bottom only turn Lines into Text. Pure and cheap: results are cached per text
 // and width.
 import type { Els } from './pane-view'
@@ -17,7 +17,35 @@ const BULLETS = ['•', '◦']
 const BAR = '│'
 const RULE = '─'
 
-const len = (s: string): number => [...s].length
+// Terminal columns of one character: 0 for combining marks and zero-width ones, 2 for East Asian Wide and
+// Fullwidth (CJK, Hangul, kana, fullwidth forms, the wide emoji blocks), 1 for the rest; box drawing stays 1.
+const WIDE: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f], [0x231a, 0x231b], [0x2329, 0x232a], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff], [0xa000, 0xa4cf], [0xa960, 0xa97f], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe10, 0xfe19],
+  [0xfe30, 0xfe6f], [0xff00, 0xff60], [0xffe0, 0xffe6], [0x1f300, 0x1f64f], [0x1f900, 0x1f9ff], [0x20000, 0x3fffd],
+]
+const ZERO = /^[\p{Mn}\p{Me}\u200b-\u200f\u2060\ufeff\ufe00-\ufe0f]$/u
+export function charWidth(c: string): number {
+  const cp = c.codePointAt(0) ?? 0
+  if (cp < 0x300) return cp < 0x20 || (cp >= 0x7f && cp < 0xa0) ? 0 : 1
+  if (ZERO.test(c)) return 0
+  return WIDE.some(([a, b]) => cp >= a && cp <= b) ? 2 : 1
+}
+// The display width of a string in terminal columns.
+export const strWidth = (s: string): number => { let n = 0; for (const c of s) n += charWidth(c); return n }
+// The longest head of `s` that fits in `cols` columns: a wide character that would cross the edge is left out.
+const takeCols = (s: string, cols: number): string => {
+  let n = 0
+  let out = ''
+  for (const c of s) {
+    const w = charWidth(c)
+    if (n + w > cols) break
+    n += w
+    out += c
+  }
+  return out
+}
+const len = strWidth
 const lineLen = (l: Line): number => l.reduce((n, s) => n + len(s.t), 0)
 const sameStyle = (a: Span, b: Span): boolean => a.bold === b.bold && a.italic === b.italic && a.under === b.under && a.strike === b.strike && a.dim === b.dim && a.color === b.color
 const styleOf = (s: Span): Omit<Span, 't'> => { const { t: _t, ...rest } = s; return rest }
@@ -294,11 +322,14 @@ function pieces(w: Word, n: number): Word[] {
   const out: Word[] = []
   let cur: Word = { parts: [], n: 0, space: w.space }
   for (const p of w.parts) {
-    let rest = [...p.t]
-    while (rest.length > 0) {
-      const take = rest.slice(0, n - cur.n)
-      cur.parts.push({ ...p, t: take.join('') })
-      cur.n += take.length
+    let rest = p.t
+    while (rest !== '') {
+      let take = takeCols(rest, n - cur.n)
+      // A wide character never splits across the edge: it starts the next piece (or takes a piece alone when even that is narrower).
+      if (take === '' && cur.n > 0) { out.push(cur); cur = { parts: [], n: 0, space: false }; continue }
+      if (take === '') take = [...rest][0]!
+      cur.parts.push({ ...p, t: take })
+      cur.n += len(take)
       rest = rest.slice(take.length)
       if (cur.n >= n) { out.push(cur); cur = { parts: [], n: 0, space: false } }
     }
@@ -504,7 +535,7 @@ export function mdFit(text: string, max: number): Span[] {
   let left = room - 1
   for (const s of spans) {
     if (left <= 0) break
-    const t = [...s.t].slice(0, left).join('')
+    const t = takeCols(s.t, left)
     left -= len(t)
     out.push({ ...s, t })
   }
@@ -519,11 +550,9 @@ export function mdPlain(text: string, max?: number): string {
   return (max === undefined ? mdFlat(text) : mdFit(text, max)).map(s => s.t).join('')
 }
 
-// At most `max` rows: when some do not fit, the last shown one is replaced by "+N more lines".
-export function cutLines(lines: Line[], max: number): Line[] {
-  if (lines.length <= max) return lines
-  const keep = Math.max(0, max - 1)
-  return [...lines.slice(0, keep), [plainSpan(`+${lines.length - keep} more lines`, { dim: true })]]
+// The rows plain text takes when the pane wraps it to `width` columns: for counting the fixed rows around a card's body.
+export function textRows(text: string, width: number): number {
+  return text.split('\n').reduce((n, l) => n + wrap([plainSpan(l)], Math.max(1, Math.floor(width)), [], []).length, 0)
 }
 
 // At most `max` rows, the last shown one ending in "…" when some were left out: for a card with a fixed height.
@@ -536,7 +565,7 @@ export function clipLines(lines: Line[], max: number, width: number): Line[] {
   let left = room
   for (const sp of last) {
     if (left <= 0) break
-    const t = [...sp.t].slice(0, left).join('')
+    const t = takeCols(sp.t, left)
     left -= len(t)
     spans.push({ ...sp, t })
   }
