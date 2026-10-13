@@ -77,7 +77,7 @@ import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
 import { describeCall, ROLE } from './pane'
 import {
-  fill, MANAGER_PROMPT, NO_REVIEWER_RULE, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO,
+  fill, REVIEWER_PROMPT, REVIEWER_SESSION_RULES_AUTO,
   REVIEWER_SESSION_RULES_CONFIRM,
 } from './prompts'
 import type { Settings } from './prompts'
