@@ -1,6 +1,7 @@
 // This file is the wiring only: atoms, `on(...)` hooks, `$.tool.register` calls, and io builders whose
 // closures spell out each `$.noun.event(...)` call. New logic goes into a module under hooks/, either
 // pure or taking an io object of closures (deliver.ts; pane-run.tsx holds the pane's hook bodies this way).
+// Which module holds each hook's body: docs/reference.md, "Where code goes".
 // The engine's rules: `$` never crosses an import (no imported function taking `$`, no `$`-taking closure
 // passed as an argument); a module may register its own hooks with an exported registerX(on, ctx) when
 // everything its hooks call with `$` is in that same file; atoms are declared with literal refs in each
@@ -66,11 +67,11 @@ import { DEMO_TOOL, SETTINGS_TOOL } from './init-tools'
 import { ANSWER_TOOL, ASK_TOOL, CHECK_TOOL, CLEAN_TOOL, DECIDE_EVAL_TOOL, DEPLOY_TOOL, FYI_TOOL, GUARD_TESTS_TOOL, HANDOVER_TOOL, MIGRATIONS_TOOL, NOTE_TOOL, PLAN_TOOL, PREFLIGHT_TOOL, PUSH_TOOL, RELEASE_TOOL, ARMS_TOOL, reviewerTool, SESSION_TOOL, SIZE_AB_TOOL, STANDING_TOOL, STATUS_TOOL, TEST_SLOT_TOOL } from './tools'
 import { detect as initDetect, firstRun, HINT as INIT_HINT, settingsTool, writeMarker } from './init'
 import type { InitIo } from './init'
-import { advance as demoAdvance, canAdvance, isLast as demoIsLast, startDemo, stepOf as demoStepOf } from './demo-replay'
+import { demoArm, demoMove, demoStart, demoStop, demoTool } from './demo-run'
+import type { DemoIo } from './demo-run'
 import type { DemoState } from './demo-replay'
 import { DEMO_DONE, paneDraw, paneFocus } from './pane-run'
 import type { PaneEvent, PaneIo } from './pane-run'
-import { DEMO_AGENT, isDemoCommit, planCleanup, toInspect } from './demo-clean'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
 import { ROLE } from './pane'
@@ -522,8 +523,8 @@ function commandIoOf($: EngineInterface): CommandIo {
     tellManager: (name, text) => tellManager($, name, text),
     initDetect: options => initDetect(initIoOf($), options),
     initMark: d => writeMarker(initIoOf($), d),
-    demoStart: () => demoStart($),
-    demoStop: () => demoStop($),
+    demoStart: () => demoStart(demoIoOf($)),
+    demoStop: () => demoStop(demoIoOf($)),
   }
 }
 
@@ -554,38 +555,24 @@ function initIoOf($: EngineInterface): InitIo {
 // The replay's state is this atom alone: no agent, handover or inbox row of the real flow is touched, and a
 // restart loses it. Each start gets a new generation, so a timer of an earlier run does nothing.
 const demo = atom({ plugin: 'flow', key: 'demo' } as const, null as DemoState | null)
-let demoGen = 0
 
-
-// One change to the running replay, in the pane's own order. Timers pass the generation they were set for.
-function demoMove($: EngineInterface, fn: (s: DemoState, t: number) => DemoState, gen?: number): Promise<void> {
-  return paneSerial(async () => {
-    const cur = await read($, demo)
-    if (cur === null || (gen !== undefined && cur.gen !== gen)) return
-    const moved = fn(cur, await $.clock.now())
-    if (moved === cur) return
-    await update($, demo, () => moved)
-    if (moved.step === cur.step) return
-    if (demoIsLast(moved)) void $.ui.toast(DEMO_DONE)
-    demoArm($, moved)
-  })
-}
-
-function demoArm($: EngineInterface, s: DemoState): void {
-  const ms = demoStepOf(s).autoMs
-  if (ms === undefined) return
-  $.clock.after(ms, () => void demoMove($, (cur, t) => (cur.step === s.step && canAdvance(cur) ? demoAdvance(cur, t) : cur), s.gen).catch(() => undefined))
-}
-
-async function demoStart($: EngineInterface): Promise<string> {
-  if (await read($, demo) !== null) return 'The demo is already running in the Flow pane. /flow init demo stop ends it.'
-  const s = startDemo(++demoGen, await $.clock.now())
-  await update($, demo, () => s)
-  await update($, inboxDraft, () => '')
-  await update($, inboxNote, () => '')
-  demoArm($, s)
-  await $.ui.open({ id: PANE, title: 'Flow', focus: true, closeOnEscape: true })
-  return 'Demo started in the Flow pane: a replay of one task with canned agents. No agents run, no tokens are used, nothing is written. m = next step, x = stop, or /flow init demo stop.'
+// The io the demo functions (demo-run.ts) work through; the entry points below stay `$`-taking wrappers.
+function demoIoOf($: EngineInterface): DemoIo {
+  return {
+    get: () => read($, demo),
+    set: fn => update($, demo, fn).then(() => undefined),
+    clearInbox: async () => {
+      await update($, inboxDraft, () => '')
+      await update($, inboxNote, () => '')
+    },
+    serial: paneSerial,
+    now: () => $.clock.now(),
+    toast: text => { void $.ui.toast(text) },
+    after: (ms, fn) => { $.clock.after(ms, fn) },
+    openPane: () => $.ui.open({ id: PANE, title: 'Flow', focus: true, closeOnEscape: true }),
+    listAgents: () => $.agent.list(),
+    run: argv => runCmd($, argv),
+  }
 }
 
 // The view the pane was last drawn under: a focus event carries none, and a focus move is the
@@ -604,51 +591,7 @@ async function paneHome($: EngineInterface): Promise<void> {
   await update($, inboxOpen, () => ({}))
   await update($, batchPick, () => null)
   await update($, prShown, () => null)
-  if (await read($, demo) !== null) await demoStop($)
-}
-
-async function demoStop($: EngineInterface): Promise<string> {
-  if (await read($, demo) === null) return 'No demo is running.'
-  await update($, demo, () => null)
-  await update($, inboxDraft, () => '')
-  await update($, inboxNote, () => '')
-  return 'Demo stopped; the pane shows your real work again.'
-}
-
-// Removes what a real demo left: its worktree and branch, by the demo's own names only. Refused while a demo agent lives.
-async function demoCleanup($: EngineInterface): Promise<string> {
-  const live = (await $.agent.list()).filter(a => a.name !== undefined && DEMO_AGENT.test(a.name) && LIVE_STATUS.has(a.status))
-  if (live.length > 0) return `Not cleaned: ${live.map(a => a.name).join(', ')} still running. Wait for it to end, then clean up.`
-  const trees = await runCmd($, ['git', 'worktree', 'list', '--porcelain'])
-  const refs = await runCmd($, ['git', 'for-each-ref', '--format=%(refname:short)', 'refs/heads/flow/'])
-  // A worker's worktree whose branch is not named for the demo is the demo's only when its one commit is the demo file.
-  const confirmed: string[] = []
-  for (const w of toInspect(trees.stdout)) {
-    const diff = await runCmd($, ['git', '-C', w.path, 'diff', '--name-status', 'HEAD~1', 'HEAD'])
-    const status = await runCmd($, ['git', '-C', w.path, 'status', '--porcelain'])
-    if (diff.exitCode === 0 && status.exitCode === 0 && isDemoCommit(diff.stdout, status.stdout)) confirmed.push(w.path)
-  }
-  const plan = planCleanup(trees.stdout, refs.stdout.split('\n').map(l => l.trim()).filter(l => l !== ''), confirmed)
-  const out: string[] = plan.kept.map(k => `kept: ${k}`)
-  for (const w of plan.worktrees) {
-    const r = await runCmd($, ['git', 'worktree', 'remove', '--force', w.path])
-    out.push(r.exitCode === 0 ? `removed worktree ${w.path}` : `could not remove worktree ${w.path}: ${r.stderr.trim()}`)
-  }
-  for (const b of plan.branches) {
-    const r = await runCmd($, ['git', 'branch', '-D', b])
-    out.push(r.exitCode === 0 ? `deleted branch ${b}` : `could not delete branch ${b}: ${r.stderr.trim()}`)
-  }
-  return out.length === 0 ? 'Nothing of the demo is left.' : out.join('\n')
-}
-
-async function demoTool($: EngineInterface, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
-  if (agentId !== undefined) return { result: 'Refused: only main runs the demo.' }
-  const action = String(input.action ?? 'status')
-  if (action === 'start') return { result: await demoStart($) }
-  if (action === 'stop') return { result: await demoStop($) }
-  if (action === 'cleanup') return { result: await demoCleanup($) }
-  const agents = (await $.agent.list()).filter(a => a.name !== undefined && DEMO_AGENT.test(a.name)).map(a => `${a.name} (${a.status})`)
-  return { result: `Replay: ${(await read($, demo)) === null ? 'not running' : 'running'}. Real demo agents: ${agents.join(', ') || 'none'}.` }
+  if (await read($, demo) !== null) await demoStop(demoIoOf($))
 }
 
 function rosterIoOf($: EngineInterface): RosterIo {
@@ -2199,7 +2142,7 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
 
     case 'mcp__flow__arms': return armsTool(armsIoOf($), e, e.agentId)
 
-    case 'mcp__flow__demo': return demoTool($, e, e.agentId)
+    case 'mcp__flow__demo': return demoTool(demoIoOf($), e, e.agentId)
 
     case 'mcp__flow__migrations': return migrationsTool(migrationsIoOf($), settings, e)
 
@@ -2292,9 +2235,9 @@ function paneIoOf($: EngineInterface, e: PaneEvent, lets: PaneLets, options: Rec
     setPaneView: v => { paneView = v },
     unhanded: () => currentUnhanded($),
     endedOwners: () => endedOwnersOf($),
-    demoArm: s => demoArm($, s),
-    demoMove: fn => demoMove($, fn),
-    demoStop: () => demoStop($),
+    demoArm: s => demoArm(demoIoOf($), s),
+    demoMove: fn => demoMove(demoIoOf($), fn),
+    demoStop: () => demoStop(demoIoOf($)),
     pushAct: (act, by) => pushAct($, act, by),
     approve: n => approvePr(commandIoOf($), n),
     reject: (n, why) => rejectPr(commandIoOf($), n, why),

@@ -391,6 +391,23 @@ npm run check                    # typecheck + validate + claude plugin test .
 
 Where code goes: `hooks/register.tsx` is the wiring only (atoms, `on(...)` hooks, `$.tool.register` calls, and small io builders that spell out each `$.noun.event(...)` call). Put new logic in a module under `hooks/`. The engine's rules: `$` never crosses an import (no imported function taking `$`, no `$`-taking closure passed through an argument), so a module is either pure (`pushgate.ts`, `clean.ts`, `table.ts`) or takes an io object of plain closures that `register.tsx` builds (`deliver.ts` is the example; `pane-run.tsx` holds the pane's hook bodies the same way, behind a `PaneIo`). A module may register its own hooks through an exported `registerX(on, ctx)` when everything those hooks call with `$` is in that same file. Atoms are declared with a literal ref (`atom({ plugin: 'flow', key: '...' } as const, init)`) in each file that reads or writes them; the same key is the same state, but importing an atom is refused.
 
+Module map: which file holds the body of each `register.tsx` hook.
+
+| Hook or feature | Body lives in |
+| --- | --- |
+| `session.start` | `startup-run.ts` |
+| `agent.spawn` | `spawn-run.ts` |
+| `tool.call` (the guards and activity log) | `toolcall-run.ts` |
+| each flow tool call | `runFlowTool` in `register.tsx`, which hands over to the `*-run.ts` module of that tool (`handover-run.ts`, `deploy-run.ts`, `inbox-run.ts`, ...) |
+| `turn.step`, `turn.complete` | `turn-run.ts` |
+| `ui.render`, `ui.focus` | `pane-run.tsx` |
+| relay (a copy forwarding its flow tools to main) | `relay-run.ts` |
+| terminal sessions (other harnesses) | `role-session-run.ts` |
+| the demo (`/flow init demo`, `mcp__flow__demo`) | `demo-run.ts` |
+| `/flow` | `command.ts` |
+
+Still in `register.tsx`: the atoms, the shared core (roster refresh, delivery, the inbox, preflight and checks chains, the storage helpers), the io builders (`paneIoOf`, `commandIoOf`, `demoIoOf`, ...) and the hook registrations.
+
 `npm run typecheck` works in a fresh worktree: it runs `npm ci` when `node_modules` is missing and,
 when `.claude-plugin/types` is missing, symlinks it to the main checkout's copy. Claude Code writes
 those type definitions itself (gitignored, per Claude Code version) when it loads the plugin from a
