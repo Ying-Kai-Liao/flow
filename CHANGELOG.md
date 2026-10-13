@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.114] - 2026-10-14
+
 ### Fixed
 
 - The plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN finding at the release, session.start and agent.spawn calls (0.6.113 lines 2371, 2636, 2680), seventh round: those three paths are back in the shape 0.6.84, the last release that passed, had. mcp__flow__release has its own tool.call hook again, which checks access and calls `releaseTool(releaseIoOf($), ...)` in place (a relayed call takes the same inline case in runFlowTool); releaseCaseIoOf, releaseRun and ReleaseCaseIo are gone. The session.start and agent.spawn hooks write their io object in the hook body; startupIoOf and spawnHookIoOf are gone. No io on these paths, nor the turn hooks' or the pane's, hands out a closure assigning an outer variable: register()'s state (settings, the reload paths, noLong, noContinue, main's model and window, the pane's follow, the installed version) lives in one `kept` object written by property, the release retry-guard in `releaseMemo.last`, and relay, slotDir and the settings mirror are set by top-level functions. Behaviour is unchanged. `scripts/plain-names.mjs` gains check 10, calibrated: a setter handed out by a large io builder or one reached through another function. It reports exactly the three listed lines on 0.6.113 and nothing on 0.6.84; `tests/plain-names.node-test.mjs` covers it.
