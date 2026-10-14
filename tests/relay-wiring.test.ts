@@ -200,6 +200,17 @@ test('a relayed release runs the inline case in runFlowTool: a manager session t
   expect(answerOf(w, 'r1')?.result).toContain('Refused: mcp__flow__release is not for you; it belongs to the reviewer.')
 })
 
+test('a relayed queue call runs the inline reviewer case in runFlowTool: list answers, take from a manager that is not lite is refused', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER }))
+  await start($)
+  leave(w, 'q1', 'mcp__flow__queue', { action: 'list' })
+  leave(w, 'q2', 'mcp__flow__queue', { action: 'take' })
+  await w.clock.advance(1200)
+  expect(answerOf(w, 'q1')?.result).toBe('No pending handovers.')
+  expect(answerOf(w, 'q2')?.result).toContain('Refused: mcp__flow__reviewer is not for you; it belongs to the reviewer.')
+})
+
 test('a relayed session start by a manager that has not filed its pre-flight is refused before anything starts', async ($, on) => {
   const w = world(on)
   w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER }))

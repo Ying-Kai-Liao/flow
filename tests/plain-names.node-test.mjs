@@ -1,4 +1,4 @@
-// scripts/plain-names.mjs checks 8 and 9 on a small hooks file in a scratch repo. The plugin test sandbox has no fs and
+// scripts/plain-names.mjs checks 8 to 11 on a small hooks file in a scratch repo. The plugin test sandbox has no fs and
 // cannot run the script, so this runs under `node --test` (npm run check).
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -176,4 +176,64 @@ export default (on: any) => {
   assert.equal(r.status, 1)
   assert.equal((r.out.match(/\(check 10\)/g) ?? []).length, 1, r.out)
   assert.match(r.out, /register\.ts:14: releaseCaseIoOf reaches a builder that hands out a setter through another function/)
+})
+
+// A runFlowTool case calling a case io whose closure wraps a helper that builds another io from $ and `pass` (a
+// helper parameter, or nothing).
+function caseIoFile(pass) {
+  return `function reviewerIoOf($: any, base?: string) {
+  return { now: () => $.clock.now(), base: () => base }
+}
+async function reviewerRun($: any, settings: { base: string }) {
+  const io = reviewerIoOf($${pass})
+  return io
+}
+function reviewerCaseIoOf($: any) {
+  return { reviewer: (settings: { base: string }) => reviewerRun($, settings) }
+}
+function runFlowTool($: any, tool: string) {
+  switch (tool) {
+    case 'reviewer': return reviewerCaseIoOf($)
+    default: return undefined
+  }
+}
+export default (on: any) => {
+  on('tool.call', async ($: any, e: any) => runFlowTool($, e.tool))
+}
+`
+}
+
+test('check 11 flags a case io whose closure wraps a helper building an io from $ and its own parameter', () => {
+  const r = run(caseIoFile(', settings.base'))
+  assert.equal(r.status, 1)
+  assert.equal((r.out.match(/\(check 11\)/g) ?? []).length, 1, r.out)
+  assert.match(r.out, /register\.ts:13: reviewerCaseIoOf reaches an io through a closure calling reviewerRun, which builds reviewerIoOf/)
+  // A helper building its io from $ alone (sessionTool, markNudged, paneDemoArm on 0.6.115) passes.
+  assert.equal(run(caseIoFile('')).status, 0)
+})
+
+// A pane hook calling an io builder that spreads `lets` in; `lets` holds a setter when `setter` is set.
+function spreadFile(members, setter) {
+  const body = Array.from({ length: members }, (_, i) => `    m${i}: () => $.clock.now(),`).join('\n')
+  return `const kept = { follow: 0 }
+function paneIoOf($: any, lets: any) {
+  return {
+${body}
+    ...lets,
+  }
+}
+export default (on: any) => {
+  const lets = { follow: () => kept.follow${setter ? ', setFollow: (f: number) => { kept.follow = f }' : ''} }
+  on('ui.render', async ($: any, e: any) => paneIoOf($, lets))
+}
+`
+}
+
+test('check 11 flags a large io builder spreading in a parameter that holds a setter, property writes included', () => {
+  const r = run(spreadFile(13, true))
+  assert.equal(r.status, 1)
+  assert.match(r.out, /paneIoOf spreads its parameter lets, which holds a setter, into an io with 13 members using \$ \(over 12\).*\(check 11\)/)
+  // No setter in it (toolCallIoOf's held), or a small io (usageIoOf's mainHeld): passes.
+  assert.equal(run(spreadFile(13, false)).status, 0)
+  assert.equal(run(spreadFile(12, true)).status, 0)
 })

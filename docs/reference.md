@@ -405,7 +405,7 @@ Module map: which file holds the body of each `register.tsx` hook.
 | the demo (`/flow init demo`, `mcp__flow__demo`) | `demo-run.ts` |
 | `/flow` | `command.ts` |
 
-Still in `register.tsx`: the atoms, the shared core (roster refresh, delivery, the inbox, preflight and checks chains, the storage helpers), the io builders (`paneIoOf`, `commandIoOf`, `demoIoOf`, ...) and the hook registrations.
+Still in `register.tsx`: the atoms, the shared core (roster refresh, delivery, the inbox, preflight and checks chains, the storage helpers), the io builders (`handoverIoOf`, `commandIoOf`, `demoIoOf`, ...) and the hook registrations.
 
 `npm run typecheck` works in a fresh worktree: it runs `npm ci` when `node_modules` is missing and,
 when `.claude-plugin/types` is missing, symlinks it to the main checkout's copy. Claude Code writes

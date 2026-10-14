@@ -1,5 +1,5 @@
 // The bodies of the Flow pane's hooks (ui.focus, ui.render), as functions of a PaneIo: register.tsx owns the
-// `on(...)` registrations and builds the io from the event's `$` (paneIoOf), so `$` never crosses an import.
+// `on(...)` registrations and writes the io from the event's `$` in each hook, so `$` never crosses an import.
 import type { Activity, AgentRow, Breaker, Handover, Ledger, Leftovers, Session } from '../types'
 import type { AgentFact, Plan } from './dag'
 import type { Limit } from './sessions'
@@ -81,7 +81,7 @@ export type PaneState = {
 
 // The single seam for the pane's state reads: one closure per atom, called while the pane draws so the
 // draw subscribes through the render hook's own `$`. Everything the pane needs from register.tsx
-// (the engine, the `$`-taking helpers, the closure lets) is behind this io, built per event by paneIoOf.
+// (the engine, the `$`-taking helpers, the closure lets) is behind this io, written per event in the ui.render hook.
 export type PaneIo = {
   read: { [K in keyof PaneState]: () => Promise<PaneState[K]> }
   set: {
@@ -110,8 +110,8 @@ export type PaneIo = {
   setPaneView: (v: string | null) => void
 } & PaneActs
 
-// The pane's actions that run a `$`-taking helper of register.tsx, built by their own small builder (paneActsIoOf)
-// so neither builder fans out to every helper the pane reaches (see plain-names check 8).
+// The pane's actions that run a `$`-taking helper of register.tsx, written in the same io literal
+// (a builder of their own, paneActsIoOf, until plain-names check 11).
 export type PaneActs = {
   unhanded: () => Promise<Unhanded[]>
   endedOwners: () => Promise<Set<string>>
@@ -128,6 +128,13 @@ export type PaneActs = {
   answer: (id: string, choice: string | null) => Promise<string>
   sessionTool: (input: Record<string, unknown>) => Promise<string>
 }
+
+// What ui.focus and ui.scroll use of PaneIo: their hooks write just these members inline (plain-names check 11).
+export type PaneFocusIo = {
+  read: Pick<PaneIo['read'], 'roster'>
+  set: Pick<PaneIo['set'], 'selected' | 'cursor' | 'overrideView'>
+} & Pick<PaneIo, 'paneFollow' | 'paneView'>
+export type PaneScrollIo = { set: Pick<PaneIo['set'], 'cardScroll'> } & Pick<PaneIo, 'invalidate'>
 
 export type PaneEvent = { props?: unknown; viewport?: { rows: number; columns: number } }
 
@@ -148,7 +155,7 @@ function fetchPrDetails(io: PaneIo, pr: number): void {
 }
 
 // Arrows and Tab move the focus ring over the cards; the highlight follows it.
-export async function paneFocus(io: PaneIo, element: string | undefined): Promise<void> {
+export async function paneFocus(io: PaneFocusIo, element: string | undefined): Promise<void> {
   if (element === undefined || !(await io.read.roster()).some(a => a.id === element)) return
   // Acting while following keeps what was shown, then the person's move applies on top.
   const f = io.paneFollow()
@@ -168,7 +175,7 @@ export const NO_SCROLL = { key: '', top: 0 }
 
 // Moves the drawn card's body by `by` rows, clamped at both ends; a page key (by a whole pane body, `bodyRows`)
 // moves the card's own page. False when no card body scrolls.
-export async function paneScroll(io: Pick<PaneIo, 'set' | 'invalidate'>, by: number, bodyRows?: number): Promise<boolean> {
+export async function paneScroll(io: PaneScrollIo, by: number, bodyRows?: number): Promise<boolean> {
   const s = scrollable
   if (s === null) return false
   const step = bodyRows !== undefined && Math.abs(by) >= bodyRows ? Math.sign(by) * s.page : by

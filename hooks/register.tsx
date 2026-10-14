@@ -48,7 +48,7 @@ import {
   closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, markDelivered, normalizePreflight, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
-import { EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess } from './lite'
+import { EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess, reviewerToolAccess } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
   addChecks, anyMatch, EMPTY_CHECKS, normalizeChecks, parseNeeds,
@@ -71,7 +71,7 @@ import { demoArm, demoMove, demoStart, demoStop, demoTool } from './demo-run'
 import type { DemoIo } from './demo-run'
 import type { DemoState } from './demo-replay'
 import { NO_SCROLL, paneDraw, paneFocus, paneScroll } from './pane-run'
-import type { PaneActs, PaneEvent, PaneIo } from './pane-run'
+import type { PaneEvent, PaneFocusIo, PaneIo, PaneScrollIo } from './pane-run'
 import { approvePr, platformOfUname, rejectPr } from './prcard'
 import type { DetailsCache } from './prcard'
 import { ROLE } from './pane'
@@ -112,8 +112,8 @@ import { flowCommand } from './command'
 import type { CommandIo } from './command'
 import { elapsed, tokensDown, labelOf, thresholdOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
-import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, reviewerCase, sessionCase } from './toolcall-run'
-import type { CleanCaseIo, DeployCaseIo, GuardIo, GuardTestsCaseIo, NoteCaseIo, PushCaseIo, ReviewerCaseIo, SessionCaseIo, ToolCallIo } from './toolcall-run'
+import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, sessionCase } from './toolcall-run'
+import type { CleanCaseIo, DeployCaseIo, GuardIo, GuardTestsCaseIo, NoteCaseIo, PushCaseIo, SessionCaseIo, ToolCallIo } from './toolcall-run'
 import { flowCatch, toolCatch } from './toolguard'
 import {
   ago, harnessesOf, roleAgents, runsOutIn, sessionLive, sessionRow,
@@ -649,6 +649,11 @@ function demoIoOf($: EngineInterface): DemoIo {
 // The view the pane was last drawn under: a focus event carries none, and a focus move is the
 // person acting in that view.
 let paneView: string | null = null
+
+// The pane's io sets paneView through this, not a closure assigning it (plain-names check 10).
+function setPaneView(v: string | null): void {
+  paneView = v
+}
 
 // Home: the tree with nothing selected and every card, view and demo closed. The followed transcript is
 // adopted as the ui.focus handler does, so the pane does not jump back to it. inboxDraft stays: an
@@ -2151,75 +2156,9 @@ const FLOW_TOOLS = [
   'mcp__flow__status',
 ] as const
 
-// The ios of the multi-line flow tool cases (bodies in toolcall-run.ts), one builder per case holding only what
-// that case uses, shaped like handoverIoOf: one-line members, each a plain $.noun.method(...) or one call passing $
-// to a function declared below. None takes the call or the settings: a case passes them to the member that needs
-// them. One io shared by all eight cases (flowToolsIoOf) was reported MOD_CAPABILITY_USE_NOT_PLAIN at its calls on
-// 0.6.103 to 0.6.111 whatever its members looked like (see plain-names check 8).
-function reviewerCaseIoOf($: EngineInterface): ReviewerCaseIo {
-  return {
-    toolCaller: agentId => toolCallerOf($, agentId),
-    handovers: () => read($, handovers),
-    reviewer: (settings, call) => reviewerRun($, settings, call),
-  }
-}
-
-function guardTestsCaseIoOf($: EngineInterface): GuardTestsCaseIo {
-  return {
-    sessionWorktree: id => sessionWorktreeOf($, id),
-    agents: () => $.agent.list(),
-    exec: argv => $.process.run(argv),
-    cwd: () => $.session.cwd(),
-  }
-}
-
-function noteCaseIoOf($: EngineInterface): NoteCaseIo {
-  return {
-    readNotes: manager => readNotes($, manager),
-    now: () => $.clock.now(),
-    appendNote: (manager, line) => appendNote($, manager, line),
-    logNote: (owner, text) => logNoteOf($, owner, text),
-    notesPath: manager => notesPath($, manager),
-  }
-}
-
-function cleanCaseIoOf($: EngineInterface): CleanCaseIo {
-  return {
-    sweep: (base, apply) => sweep($, base, apply),
-  }
-}
-
-function sessionCaseIoOf($: EngineInterface): SessionCaseIo {
-  return {
-    ownerName: id => ownerNameOf($, id),
-    sessionTool: (settings, call, caller) => sessionTool($, call, caller, settings),
-  }
-}
-
-function deployCaseIoOf($: EngineInterface, options: Record<string, unknown>): DeployCaseIo {
-  return {
-    ownerName: id => ownerNameOf($, id),
-    toolCaller: agentId => toolCallerOf($, agentId),
-    handovers: () => read($, handovers),
-    deployTool: (call, isMain, caller) => deployTool($, options, call, isMain, caller),
-  }
-}
-
-function pushCaseIoOf($: EngineInterface): PushCaseIo {
-  return {
-    pushState: () => read($, pushState),
-    pushAct: act => pushAct($, act, 'main'),
-  }
-}
-
 async function sessionWorktreeOf($: EngineInterface, id: string): Promise<string | undefined> {
   const s = await sessionOfId($, id)
   return s?.worktree
-}
-
-async function reviewerRun($: EngineInterface, settings: ReturnType<typeof settingsOf>, call: FlowCall): Promise<FlowOut | undefined> {
-  const io = reviewerIoOf($, settings.base)
-  return reviewerToolRun(io, settings, call, call.agentId)
 }
 
 function logNoteOf($: EngineInterface, owner: string, text: string): Promise<void> {
@@ -2269,14 +2208,30 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
       return releaseTool(releaseIoOf($), settings, e)
     }
 
+    // The reviewer and queue tools reach here only relayed, as release does, and build reviewerIoOf in place.
     case 'mcp__flow__reviewer':
-    case 'mcp__flow__queue': return reviewerCase(reviewerCaseIoOf($), settings, e)
+    case 'mcp__flow__queue': {
+      const refused = reviewerToolAccess(await toolCallerOf($, e.agentId), e, await read($, handovers))
+      if (refused !== undefined) return { result: refused }
+      return reviewerToolRun(reviewerIoOf($, settings.base), settings, e, e.agentId)
+    }
 
     case 'mcp__flow__plan': return planTool(planIoOf($), settings, e, e.agentId)
 
     case 'mcp__flow__test_slot': return testSlotTool(slotsIoOf($), settings, e)
 
-    case 'mcp__flow__guard_tests': return guardTestsCase(guardTestsCaseIoOf($), settings.base, settings.guardTests, e)
+    // The multi-line cases (bodies in toolcall-run.ts) write their io as an object literal in the case, as the
+    // hooks of 0.6.84 did, with no builder between: one-line members, each a plain $.noun.method(...) or one
+    // call passing $ to a function declared at the top of this file (plain-names check 11).
+    case 'mcp__flow__guard_tests': {
+      const io: GuardTestsCaseIo = {
+        sessionWorktree: id => sessionWorktreeOf($, id),
+        agents: () => $.agent.list(),
+        exec: argv => $.process.run(argv),
+        cwd: () => $.session.cwd(),
+      }
+      return guardTestsCase(io, settings.base, settings.guardTests, e)
+    }
 
     case 'mcp__flow__ask': return askTool(inboxIoOf($), options, e, e.agentId)
     case 'mcp__flow__fyi': return fyiTool(inboxIoOf($), e, e.agentId, settings, options)
@@ -2285,9 +2240,21 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__standing': return standingTool(standingIoOf($), options, e, e.agentId)
     case 'mcp__flow__check': return checkTool(checksIoOf($), installed, e, e.agentId)
 
-    case 'mcp__flow__note': return noteCase(noteCaseIoOf($), e)
+    case 'mcp__flow__note': {
+      const io: NoteCaseIo = {
+        readNotes: manager => readNotes($, manager),
+        now: () => $.clock.now(),
+        appendNote: (manager, line) => appendNote($, manager, line),
+        logNote: (owner, text) => logNoteOf($, owner, text),
+        notesPath: manager => notesPath($, manager),
+      }
+      return noteCase(io, e)
+    }
 
-    case 'mcp__flow__clean': return cleanCase(cleanCaseIoOf($), settings, e)
+    case 'mcp__flow__clean': {
+      const io: CleanCaseIo = { sweep: (base, apply) => sweep($, base, apply) }
+      return cleanCase(io, settings, e)
+    }
 
     case 'mcp__flow__settings': return settingsTool(initIoOf($), options, e, e.agentId)
 
@@ -2301,119 +2268,38 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
 
     case 'mcp__flow__migrations': return migrationsTool(migrationsIoOf($), settings, e)
 
-    case 'mcp__flow__session': return sessionCase(sessionCaseIoOf($), settings, e)
+    case 'mcp__flow__session': {
+      const io: SessionCaseIo = {
+        ownerName: id => ownerNameOf($, id),
+        sessionTool: (s, call, caller) => sessionTool($, call, caller, s),
+      }
+      return sessionCase(io, settings, e)
+    }
 
-    case 'mcp__flow__deploy': return deployCase(deployCaseIoOf($, options), e)
+    case 'mcp__flow__deploy': {
+      const io: DeployCaseIo = {
+        ownerName: id => ownerNameOf($, id),
+        toolCaller: agentId => toolCallerOf($, agentId),
+        handovers: () => read($, handovers),
+        deployTool: (call, isMain, caller) => deployTool($, options, call, isMain, caller),
+      }
+      return deployCase(io, e)
+    }
 
-    case 'mcp__flow__push': return pushCase(pushCaseIoOf($), e)
+    case 'mcp__flow__push': {
+      const io: PushCaseIo = {
+        pushState: () => read($, pushState),
+        pushAct: act => pushAct($, act, 'main'),
+      }
+      return pushCase(io, e)
+    }
 
     case 'mcp__flow__status': return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
     default: return undefined
   }
 }
 
-type PaneLets = Pick<PaneIo, 'settings' | 'installed' | 'mainModel' | 'mainWindow' | 'setMainWindow' | 'paneFollow' | 'setPaneFollow'>
-
-// What the pane (pane-run.tsx) draws with, built from one event's `$`: a read closure per atom, the setters and
-// the engine calls. The lets of register() come in as `lets`. Its actions come from paneActsIoOf, built beside it.
-function paneIoOf($: EngineInterface, lets: PaneLets): Omit<PaneIo, keyof PaneActs> {
-  return {
-    read: {
-      roster: () => read($, roster),
-      activity: () => read($, activity),
-      selected: () => read($, selected),
-      cursor: () => read($, cursor),
-      folded: () => read($, folded),
-      overrideView: () => read($, overrideView),
-      hinted: () => read($, hinted),
-      now: () => read($, now),
-      handovers: () => read($, handovers),
-      inbox: () => read($, inbox),
-      checks: () => read($, checks),
-      ledger: () => read($, ledger),
-      leftovers: () => read($, leftovers),
-      sessions: () => read($, sessions),
-      harnessLimits: () => read($, harnessLimits),
-      armed: () => read($, armed),
-      deploys: () => read($, deploys),
-      behind: () => read($, behind),
-      pushState: () => read($, pushState),
-      reviewerBreaker: () => read($, reviewerBreaker),
-      plan: () => read($, plan),
-      viewMode: () => read($, viewMode),
-      prShown: () => read($, prShown),
-      prBack: () => read($, prBack),
-      batchPick: () => read($, batchPick),
-      prDetails: () => read($, prDetails),
-      inboxCursor: () => read($, inboxCursor),
-      cardBack: () => read($, cardBack),
-      inboxFolds: () => read($, inboxFolds),
-      inboxOpen: () => read($, inboxOpen),
-      inboxDraft: () => read($, inboxDraft),
-      inboxNote: () => read($, inboxNote),
-      graphFocus: () => read($, graphFocus),
-      demo: () => read($, demo),
-      cardScroll: () => read($, cardScroll),
-    },
-    set: {
-      selected: fn => update($, selected, fn),
-      cursor: fn => update($, cursor, fn),
-      folded: fn => update($, folded, fn),
-      overrideView: fn => update($, overrideView, fn),
-      hinted: fn => update($, hinted, fn),
-      armed: fn => update($, armed, fn),
-      viewMode: fn => update($, viewMode, fn),
-      prShown: fn => update($, prShown, fn),
-      prBack: fn => update($, prBack, fn),
-      batchPick: fn => update($, batchPick, fn),
-      prDetails: fn => update($, prDetails, fn),
-      inboxCursor: fn => update($, inboxCursor, fn),
-      cardBack: fn => update($, cardBack, fn),
-      inboxFolds: fn => update($, inboxFolds, fn),
-      inboxOpen: fn => update($, inboxOpen, fn),
-      inboxDraft: fn => update($, inboxDraft, fn),
-      inboxNote: fn => update($, inboxNote, fn),
-      graphFocus: fn => update($, graphFocus, fn),
-      demo: fn => update($, demo, fn),
-      cardScroll: fn => update($, cardScroll, fn),
-    },
-    resolve: ev => paneResolve($, ev),
-    now: () => $.clock.now(),
-    usage: () => paneUsage($),
-    toast: text => { $.ui.toast(text) },
-    invalidate: () => paneInvalidate($),
-    after: (ms, fn) => { $.clock.after(ms, fn) },
-    focus: key => paneFocusKey($, key),
-    fill: text => $.prompt.fill({ text, mode: 'replace' }),
-    runProcess: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
-    serial: paneSerial,
-    ...lets,
-    paneView: () => paneView,
-    setPaneView: v => { paneView = v },
-  }
-}
-
-// The pane's actions (PaneActs in pane-run.tsx): one call each to a `$`-taking helper of this file.
-function paneActsIoOf($: EngineInterface, lets: PaneLets, options: Record<string, unknown>): PaneActs {
-  return {
-    unhanded: () => currentUnhanded($),
-    endedOwners: () => endedOwnersOf($),
-    demoArm: s => paneDemoArm($, s),
-    demoMove: fn => paneDemoMove($, fn),
-    demoStop: () => paneDemoStop($),
-    pushAct: (act, by) => pushAct($, act, by),
-    approve: n => paneApprove($, n),
-    reject: (n, why) => paneReject($, n, why),
-    platform: () => platformOf($),
-    paneInboxRows: () => paneInboxRows($),
-    suggestions: () => paneSuggestionsOf($, options),
-    dismiss: ids => paneDismiss($, options, ids),
-    answer: (id, choice) => answerQuestion($, id, choice, 'main', {}, true),
-    sessionTool: input => paneSessionTool($, input, lets.settings()),
-  }
-}
-
-// paneIoOf's helpers: each binds an io or a value to a const before the call, so no $ call sits inside another
+// The pane hooks' helpers: each binds an io or a value to a const before the call, so no $ call sits inside another
 // call's arguments, a cast, or a .then/.catch chain (the plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN).
 function paneResolve($: EngineInterface, ev: PaneEvent): ReturnType<EngineInterface['ui']['resolve']> {
   const at = ev as Parameters<EngineInterface['ui']['resolve']>[0]
@@ -2703,7 +2589,22 @@ export const register: Register = (on, options) => {
     return out!
   }).catch(toolCatch)
 
-  for (const tool of FLOW_TOOLS.filter(t => t !== 'mcp__flow__release')) {
+  // The reviewer and queue tools: the same access rule, and reviewerIoOf($) built in place, as 0.6.84 had it
+  // (plain-names check 11). A relayed call reaches the same through runFlowTool.
+  for (const tool of ['mcp__flow__reviewer', 'mcp__flow__queue'] as const) {
+    on('tool.call', { tool }, async ($, e) => {
+      if (relay !== undefined) return { result: `flow relay: ${tool.replace('mcp__flow__', '')} did not reach the main session; try again.` }
+      const input = e as unknown as FlowCall
+      const refused = reviewerToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
+      if (refused !== undefined) return { result: refused }
+      const out = await reviewerToolRun(reviewerIoOf($, kept.settings.base), kept.settings, input, e.agentId)
+      return out!
+    }).catch(toolCatch)
+  }
+
+  // Release, reviewer and queue have their own hooks above.
+  const OWN_HOOK: readonly string[] = ['mcp__flow__release', 'mcp__flow__reviewer', 'mcp__flow__queue']
+  for (const tool of FLOW_TOOLS.filter(t => !OWN_HOOK.includes(t))) {
     on('tool.call', { tool: tool as never }, async ($, e) => {
       if (relay !== undefined) return { result: `flow relay: ${tool.replace('mcp__flow__', '')} did not reach the main session; try again.` }
       const out = await runFlowTool($, tool, e as unknown as FlowCall, { settings: kept.settings, options, installed: kept.installed })
@@ -2748,21 +2649,21 @@ export const register: Register = (on, options) => {
     return r
   })
 
-  const paneLets: PaneLets = {
-    settings: () => kept.settings,
-    installed: () => kept.installed,
-    mainModel: () => kept.mainModel,
-    mainWindow: () => kept.mainWindow,
-    setMainWindow: w => { kept.mainWindow = w },
-    paneFollow: () => kept.paneFollow,
-    setPaneFollow: f => { kept.paneFollow = f },
-  }
   // Arrows and Tab move the focus ring over the cards; the highlight follows it (pane-run.tsx).
+  // Each pane hook writes the io it needs in its body, as 0.6.84 did, with no builder taking `$` (plain-names check 11).
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const r = await next(e)
-    const io = paneIoOf($, paneLets)
-    const acts = paneActsIoOf($, paneLets, options)
-    await paneFocus({ ...io, ...acts }, e.element)
+    const io: PaneFocusIo = {
+      read: { roster: () => read($, roster) },
+      set: {
+        selected: fn => update($, selected, fn),
+        cursor: fn => update($, cursor, fn),
+        overrideView: fn => update($, overrideView, fn),
+      },
+      paneFollow: () => kept.paneFollow,
+      paneView: () => paneView,
+    }
+    await paneFocus(io, e.element)
     return r
   })
 
@@ -2778,7 +2679,10 @@ export const register: Register = (on, options) => {
   // The wheel and PgUp/PgDn over an open card whose body is taller than its room move that body (pane-run.tsx);
   // the card's header and buttons stay put. Anywhere else the pane scrolls as the engine does it.
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
-    const io = paneIoOf($, paneLets)
+    const io: PaneScrollIo = {
+      set: { cardScroll: fn => update($, cardScroll, fn) },
+      invalidate: () => paneInvalidate($),
+    }
     const moved = await paneScroll(io, e.by, e.bodyRows)
     if (!moved) return next(e)
     return {}
@@ -2786,8 +2690,100 @@ export const register: Register = (on, options) => {
 
   // The pane draws in pane-run.tsx.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const io = paneIoOf($, paneLets)
-    const acts = paneActsIoOf($, paneLets, options)
-    return paneDraw({ ...io, ...acts }, e)
+    const io: PaneIo = {
+      read: {
+        roster: () => read($, roster),
+        activity: () => read($, activity),
+        selected: () => read($, selected),
+        cursor: () => read($, cursor),
+        folded: () => read($, folded),
+        overrideView: () => read($, overrideView),
+        hinted: () => read($, hinted),
+        now: () => read($, now),
+        handovers: () => read($, handovers),
+        inbox: () => read($, inbox),
+        checks: () => read($, checks),
+        ledger: () => read($, ledger),
+        leftovers: () => read($, leftovers),
+        sessions: () => read($, sessions),
+        harnessLimits: () => read($, harnessLimits),
+        armed: () => read($, armed),
+        deploys: () => read($, deploys),
+        behind: () => read($, behind),
+        pushState: () => read($, pushState),
+        reviewerBreaker: () => read($, reviewerBreaker),
+        plan: () => read($, plan),
+        viewMode: () => read($, viewMode),
+        prShown: () => read($, prShown),
+        prBack: () => read($, prBack),
+        batchPick: () => read($, batchPick),
+        prDetails: () => read($, prDetails),
+        inboxCursor: () => read($, inboxCursor),
+        cardBack: () => read($, cardBack),
+        inboxFolds: () => read($, inboxFolds),
+        inboxOpen: () => read($, inboxOpen),
+        inboxDraft: () => read($, inboxDraft),
+        inboxNote: () => read($, inboxNote),
+        graphFocus: () => read($, graphFocus),
+        demo: () => read($, demo),
+        cardScroll: () => read($, cardScroll),
+      },
+      set: {
+        selected: fn => update($, selected, fn),
+        cursor: fn => update($, cursor, fn),
+        folded: fn => update($, folded, fn),
+        overrideView: fn => update($, overrideView, fn),
+        hinted: fn => update($, hinted, fn),
+        armed: fn => update($, armed, fn),
+        viewMode: fn => update($, viewMode, fn),
+        prShown: fn => update($, prShown, fn),
+        prBack: fn => update($, prBack, fn),
+        batchPick: fn => update($, batchPick, fn),
+        prDetails: fn => update($, prDetails, fn),
+        inboxCursor: fn => update($, inboxCursor, fn),
+        cardBack: fn => update($, cardBack, fn),
+        inboxFolds: fn => update($, inboxFolds, fn),
+        inboxOpen: fn => update($, inboxOpen, fn),
+        inboxDraft: fn => update($, inboxDraft, fn),
+        inboxNote: fn => update($, inboxNote, fn),
+        graphFocus: fn => update($, graphFocus, fn),
+        demo: fn => update($, demo, fn),
+        cardScroll: fn => update($, cardScroll, fn),
+      },
+      resolve: ev => paneResolve($, ev),
+      now: () => $.clock.now(),
+      usage: () => paneUsage($),
+      toast: text => { $.ui.toast(text) },
+      invalidate: () => paneInvalidate($),
+      after: (ms, fn) => { $.clock.after(ms, fn) },
+      focus: key => paneFocusKey($, key),
+      fill: text => $.prompt.fill({ text, mode: 'replace' }),
+      runProcess: (argv, timeoutMs) => $.process.run(argv, { timeoutMs }),
+      serial: paneSerial,
+      settings: () => kept.settings,
+      installed: () => kept.installed,
+      mainModel: () => kept.mainModel,
+      mainWindow: () => kept.mainWindow,
+      setMainWindow: w => { kept.mainWindow = w },
+      paneFollow: () => kept.paneFollow,
+      setPaneFollow: f => { kept.paneFollow = f },
+      paneView: () => paneView,
+      setPaneView,
+      unhanded: () => currentUnhanded($),
+      endedOwners: () => endedOwnersOf($),
+      demoArm: s => paneDemoArm($, s),
+      demoMove: fn => paneDemoMove($, fn),
+      demoStop: () => paneDemoStop($),
+      pushAct: (act, by) => pushAct($, act, by),
+      approve: n => paneApprove($, n),
+      reject: (n, why) => paneReject($, n, why),
+      platform: () => platformOf($),
+      paneInboxRows: () => paneInboxRows($),
+      suggestions: () => paneSuggestionsOf($, options),
+      dismiss: ids => paneDismiss($, options, ids),
+      answer: (id, choice) => answerQuestion($, id, choice, 'main', {}, true),
+      sessionTool: input => paneSessionTool($, input, kept.settings),
+    }
+    return paneDraw(io, e)
   })
 }
