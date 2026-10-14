@@ -1,4 +1,4 @@
-// scripts/plain-names.mjs checks 8 to 11 on a small hooks file in a scratch repo. The plugin test sandbox has no fs and
+// scripts/plain-names.mjs checks 8 to 12 on a small hooks file in a scratch repo. The plugin test sandbox has no fs and
 // cannot run the script, so this runs under `node --test` (npm run check).
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -236,4 +236,49 @@ test('check 11 flags a large io builder spreading in a parameter that holds a se
   // No setter in it (toolCallIoOf's held), or a small io (usageIoOf's mainHeld): passes.
   assert.equal(run(spreadFile(13, false)).status, 0)
   assert.equal(run(spreadFile(12, true)).status, 0)
+})
+
+// A runFlowTool case io whose member calls `helper`, the body of which is `body` (0.6.116's sessionWorktreeOf).
+function chainFile(body) {
+  return `function read($: any, key: string) { return $.state.get(key) }
+async function sessionOfId($: any, id: string) {
+  const all = await read($, 'sessions')
+  return all[id]
+}
+async function helper($: any, id: string) {
+${body}
+}
+function guardTestsCase(io: unknown) { return io }
+function runFlowTool($: any, tool: string) {
+  switch (tool) {
+    case 'guard': {
+      const io = {
+        lookup: (id: string) => helper($, id),
+        agents: () => $.agent.list(),
+      }
+      return guardTestsCase(io)
+    }
+    default: return undefined
+  }
+}
+export default (on: any) => {
+  on('tool.call', async ($: any, e: any) => runFlowTool($, e.tool))
+}
+`
+}
+
+test('check 12 flags a call passing $ to a helper that returns an optional chain on a value from $', () => {
+  const r = run(chainFile('  const s = await sessionOfId($, id)\n  return s?.worktree'))
+  assert.equal(r.status, 1)
+  assert.equal((r.out.match(/\(check 12\)/g) ?? []).length, 1, r.out)
+  assert.match(r.out, /register\.ts:15: helper returns an optional chain \(\?\.\) on a value from \$/)
+  // On a $ call itself, too.
+  assert.match(run(chainFile('  return (await $.session.usage())?.startedAt')).out, /\(check 12\)/)
+})
+
+test('check 12 passes a plain if before the read, the whole value returned, and [...] alone', () => {
+  assert.equal(run(chainFile('  const s = await sessionOfId($, id)\n  if (s === undefined) return undefined\n  return s.worktree')).status, 0)
+  assert.equal(run(chainFile('  return sessionOfId($, id)')).status, 0)
+  // sessionOfId's own `all[id]` is not reported: 0.6.84 had `(await read($, x))[k]` and passed.
+  assert.equal(run(chainFile('  const all = await read($, "sessions")\n  return all[id]')).status, 0)
 })

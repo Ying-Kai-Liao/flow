@@ -64,6 +64,15 @@
 //    ui.scroll and ui.render (spreading paneLets with setMainWindow and setPaneFollow), while sessionCaseIoOf (its
 //    helper builds sessionIoOf($) from $ alone), paneActsIoOf, toolCallIoOf (spreads held, no setter) and usageIoOf
 //    (spreads mainHeld's setters, 7 members) were not; 0.6.84, which passed, built those ios in the hooks.
+// 12. Under hooks/, in a file that registers hooks, $ is followed from each hook into the file's top-level functions
+//    as in check 7. A call passing $ is reported when the function it calls returns an optional chain (`s?.worktree`)
+//    on a value from $: a const bound to a `$.noun.method(...)` call or to a call passing $, awaited or not, or such a
+//    call itself. Bind it, then read the property after a plain `if`, or return the whole value and read it in the
+//    caller's pure code. A guess calibrated to evidence, not a known rule: 0.6.116 was reported at one line only,
+//    `sessionWorktree: id => sessionWorktreeOf($, id)` in runFlowTool, whose helper returned `s?.worktree` on
+//    `const s = await sessionOfId($, id)`, while the note, session, deploy and push case ios, written in the same
+//    `x => helper($, x)` shape, were not; 0.6.84, which passed, had no such helper. `[...]` alone is not reported:
+//    0.6.84 had `(await read($, x))[k]` and sessionOfId returns `all[...]`, and neither was flagged.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -158,6 +167,7 @@ for (const file of files) {
   if (registers) plain(sf, say)
   if (registers) setters(sf, say)
   if (registers) layers(sf, say)
+  if (registers) chained(sf, say)
 }
 
 // Check 6. Top-level functions by name, the parameters that receive a hook's event, then each closure naming both.
@@ -621,6 +631,68 @@ function layers(sf, say) {
     ts.forEachChild(n, visit)
   }
   visit(sf)
+}
+
+// Check 12. $ followed from the hooks as in check 7, then each call passing $ to a function returning `x?.y` on a value from $.
+function chained(sf, say) {
+  const isFn = n => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)
+  const pname = p => ts.isIdentifier(p.name) ? p.name.text : undefined
+  const top = new Map()
+  for (const s of sf.statements) if (ts.isFunctionDeclaration(s) && s.name && s.body) top.set(s.name.text, s)
+  const strip = n => { while (ts.isAwaitExpression(n) || ts.isParenthesizedExpression(n)) n = n.expression; return n }
+  // A `$.noun.method(...)` call or a call passing $, by the name $ has in the function.
+  const fromDollar = (n, d) => {
+    n = strip(n)
+    if (!ts.isCallExpression(n)) return false
+    if (n.arguments.some(a => ts.isIdentifier(a) && a.text === d)) return true
+    const e = n.expression
+    return ts.isPropertyAccessExpression(e) && ts.isPropertyAccessExpression(e.expression) && ts.isIdentifier(e.expression.expression) && e.expression.expression.text === d
+  }
+  // Whether `fn` returns an optional chain whose head is a call from $ or a const bound to one.
+  const returnsChain = (fn, d) => {
+    const bound = new Set()
+    let hit = false
+    const visit = k => {
+      if (hit || (k !== fn && isFn(k))) return
+      if (ts.isVariableDeclaration(k) && ts.isIdentifier(k.name) && k.initializer && fromDollar(k.initializer, d) &&
+          (k.parent.flags & ts.NodeFlags.Const) !== 0) bound.add(k.name.text)
+      if (ts.isReturnStatement(k) && k.expression) {
+        const r = strip(k.expression)
+        if (ts.isOptionalChain(r)) {
+          let head = r
+          while (ts.isPropertyAccessExpression(head) || ts.isElementAccessExpression(head) || (ts.isCallExpression(head) && ts.isOptionalChain(head))) head = strip(head.expression)
+          if ((ts.isIdentifier(head) && bound.has(head.text)) || fromDollar(head, d)) hit = true
+        }
+      }
+      ts.forEachChild(k, visit)
+    }
+    ts.forEachChild(fn.body, visit)
+    return hit
+  }
+  const holds = new Map()
+  const queue = []
+  const reach = (fn, name) => { if (name !== undefined && !holds.has(fn)) { holds.set(fn, name); queue.push(fn) } }
+  const findHooks = n => { if (isFn(n) && isHook(n) && n.parameters[0]) reach(n, pname(n.parameters[0])); ts.forEachChild(n, findHooks) }
+  findHooks(sf)
+  while (queue.length > 0) {
+    const fn = queue.shift()
+    const name = holds.get(fn)
+    const visit = k => {
+      if (k !== fn && isFn(k) && k.parameters.some(p => pname(p) === name)) return
+      if (ts.isCallExpression(k) && ts.isIdentifier(k.expression) && top.has(k.expression.text)) {
+        const at = k.arguments.findIndex(a => ts.isIdentifier(a) && a.text === name)
+        const callee = top.get(k.expression.text)
+        const d = at < 0 ? undefined : pname(callee.parameters[at] ?? {})
+        if (d !== undefined) {
+          if (returnsChain(callee, d)) say(k, `${k.expression.text} returns an optional chain (?.) on a value from $: return the value and read it in the caller's pure code (check 12)`)
+          reach(callee, d)
+        }
+      }
+      ts.forEachChild(k, visit)
+    }
+    // The body itself, not only its children: a hook's arrow body may be the call (\`async ($, e) => runFlowTool($, e)\`).
+    visit(fn.body)
+  }
 }
 
 if (findings.length > 0) {
