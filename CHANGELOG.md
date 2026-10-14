@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.116] - 2026-10-14
+
 ### Fixed
 
 - The plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN finding at the reviewer/queue case and the Flow pane hooks (0.6.115 lines 2273, 2763, 2781, and 2789 past the three-line cap), eighth round: the same 0.6.84 shape that cleared release, session.start and agent.spawn in 0.6.114. mcp__flow__reviewer and mcp__flow__queue have their own tool.call hook again, which checks access and calls `reviewerToolRun(reviewerIoOf($, ...), ...)` in place (a relayed call takes the same inline case in runFlowTool); reviewerCaseIoOf, reviewerRun, ReviewerCaseIo and reviewerCase are gone. The other multi-line runFlowTool cases (guard_tests, note, clean, session, deploy, push) write their io as an object literal in the case; their builders are gone. ui.focus, ui.scroll and ui.render write the pane io in the hook body (ui.focus and ui.scroll only the few members they use, typed PaneFocusIo and PaneScrollIo); paneIoOf, paneActsIoOf and PaneLets are gone, and paneView is set by a top-level function. Behaviour is unchanged. `scripts/plain-names.mjs` gains check 11, calibrated: an io builder reaching another io through a closure-wrapped helper that builds it from its own parameter, or spreading in a setter-holding parameter into a large io. It reports exactly those four lines on 0.6.115 and nothing on 0.6.84; `tests/plain-names.node-test.mjs` covers it.
