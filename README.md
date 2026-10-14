@@ -12,6 +12,12 @@ session. Managers plan each task. Workers build it, each in its own git worktree
 requests. A reviewer merges them, runs your checks, cuts the release and deploys. You only make
 the decisions.
 
+<p align="center">
+  <a href="docs/demo/flow-demo.mp4">
+    <img src="docs/demo/flow-demo.gif" alt="flow demo: the Flow pane runs a crew of managers and workers in parallel; a question reaches your inbox, you answer it with one key, and everyone keeps going." width="800">
+  </a>
+</p>
+
 ```
 you ── main session
          ├── manager: csv-export          one per task: plans, reviews, hands PRs over
