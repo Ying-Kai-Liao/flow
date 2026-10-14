@@ -211,6 +211,26 @@ test('a relayed queue call runs the inline reviewer case in runFlowTool: list an
   expect(answerOf(w, 'q2')?.result).toContain('Refused: mcp__flow__reviewer is not for you; it belongs to the reviewer.')
 })
 
+test('relayed push, deploy, clean and guard_tests run their inline cases in runFlowTool and answer as their own hooks do', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER }))
+  await start($)
+  leave(w, 'p1', 'mcp__flow__push', { action: 'list' })
+  leave(w, 'd1', 'mcp__flow__deploy', { action: 'approve', id: 'x' })
+  leave(w, 'c1', 'mcp__flow__clean', {})
+  leave(w, 't1', 'mcp__flow__guard_tests', { files: ['hooks/register.tsx'] })
+  await w.clock.advance(1200)
+  // A relayed caller is never main: push is refused as it is for any agent, and a gated deploy action by its access check.
+  expect(answerOf(w, 'p1')?.result).toContain('Refused: only main releases a ready batch')
+  expect(answerOf(w, 'd1')?.result).toContain('Refused: mcp__flow__deploy is not for you')
+  // A dry-run clean and guard_tests with files named answer the session as they answer main.
+  expect(answerOf(w, 'c1')?.result).toContain('git worktree list')
+  expect(answerOf(w, 't1')?.result).toBeTruthy()
+  expect(answerOf(w, 'c1')?.result).toBe((await $.tool.call({ tool: 'mcp__flow__clean' } as never)).result)
+  expect(answerOf(w, 't1')?.result).toBe((await $.tool.call({ tool: 'mcp__flow__guard_tests', files: ['hooks/register.tsx'] } as never)).result)
+  expect((await $.tool.call({ tool: 'mcp__flow__push', action: 'list' } as never)).result).toBe('Nothing ready to push.')
+})
+
 test('a relayed session start by a manager that has not filed its pre-flight is refused before anything starts', async ($, on) => {
   const w = world(on)
   w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER }))

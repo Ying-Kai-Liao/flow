@@ -5,13 +5,10 @@ import { isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, WORKER, WORKERS } from './co
 import { allowed, flowActive, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, remoteDeleteRefusal, resolvePath, writeTargets } from './guards'
 import type { WriteTarget } from './guards'
 import { guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
-import { deployToolAccess, releaseToolAccess } from './lite'
-import type { ToolCaller } from './lite'
 import { limitLabel, windowOf, wrapUpText } from './meter'
 import { describeCall, ROLE, summarizeCall } from './pane'
-import { pushLines } from './pushgate-run'
 import { sessionLive } from './sessions'
-import { findWorktree, noteKey } from './state'
+import { findWorktree } from './state'
 import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun, workerSuiteRefusal } from './testguard'
 import type { settingsOf } from './settings'
 
@@ -20,7 +17,7 @@ type Call = { agentId?: string } & Record<string, unknown>
 type Out = { result: unknown } | { deny: string }
 
 // The bodies of the generic tool.call hook (the guards before the tool, the delivery hooks on
-// SendMessage, the activity line, the wrap-up reminder after it) and the flow tools' multi-line cases.
+// SendMessage, the activity line, the wrap-up reminder after it) and guard_tests' body.
 // The registrations stay in register.tsx; this takes closures over the atoms, the roster and the state
 // of register() (the engine refuses `$` across an import).
 
@@ -211,40 +208,19 @@ export async function afterToolCall(io: ToolCallIo, e: { agentId?: string }, r: 
   }
 }
 
-// --- The flow tools' multi-line cases (runFlowTool's switch stays in register.tsx) ---------------
+// --- guard_tests' body (its hook and runFlowTool's relayed case stay in register.tsx) ---------------------
 
-// Each case has its own small io, written as an object literal in its runFlowTool case in register.tsx, holding
-// only what that case uses. Written without the call: the call comes in as an argument where a member needs it, so no
-// closure in register.tsx holds `$` together with the hook's event (the plugin directory flags that). One io shared
-// by all eight cases (flowToolsIoOf, 0.6.103 to 0.6.111) was still reported MOD_CAPABILITY_USE_NOT_PLAIN at its calls,
-// and so were per-case builders reached through a `$`-wrapping closure (reviewerCaseIoOf, 0.6.115). The reviewer and
-// queue tools have their own hook (register.tsx), as release has.
-type CaseMembers = {
+// Its io is written as an object literal in the hook and in the case, holding only what it uses, each member a plain
+// $.noun.method(...) or one call passing $. Note, clean, session, deploy and push had case bodies here too, reached
+// through case-io closures that took `$` deeper than 0.6.84 did (the plugin directory flagged the note case's,
+// 0.6.116 and 0.6.117); their bodies are written in their hooks and cases now, as 0.6.84 wrote them (plain-names check 13).
+export type GuardTestsCaseIo = {
+  // The terminal sessions on record, by name.
+  sessions: () => Promise<Record<string, Session>>
   agents: () => Promise<AgentInfo[]>
   exec: (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
   cwd: () => Promise<string | undefined>
-  now: () => Promise<number>
-  // The terminal sessions on record, by name.
-  sessions: () => Promise<Record<string, Session>>
-  toolCaller: (agentId: string | undefined) => Promise<ToolCaller>
-  handovers: () => Promise<Parameters<typeof releaseToolAccess>[2]>
-  ownerName: (id: string | undefined) => Promise<string>
-  readNotes: (manager: string) => Promise<string>
-  appendNote: (manager: string, line: string) => Promise<boolean>
-  notesPath: (manager: string) => Promise<string | undefined>
-  logNote: (owner: string, text: string) => Promise<void>
-  sweep: (base: string, apply: boolean) => Promise<string>
-  pushState: () => Promise<Parameters<typeof pushLines>[0]>
-  pushAct: (act: { kind: 'push' } | { kind: 'drop' } | { kind: 'back'; pr: number }) => Promise<string>
-  sessionTool: (settings: Settings, e: Call, caller: { id: string; name: string }) => Promise<string>
-  deployTool: (e: Call, isMain: boolean, caller: string) => Promise<string>
 }
-export type GuardTestsCaseIo = Pick<CaseMembers, 'sessions' | 'agents' | 'exec' | 'cwd'>
-export type NoteCaseIo = Pick<CaseMembers, 'readNotes' | 'now' | 'appendNote' | 'logNote' | 'notesPath'>
-export type CleanCaseIo = Pick<CaseMembers, 'sweep'>
-export type SessionCaseIo = Pick<CaseMembers, 'ownerName' | 'sessionTool'>
-export type DeployCaseIo = Pick<CaseMembers, 'ownerName' | 'toolCaller' | 'handovers' | 'deployTool'>
-export type PushCaseIo = Pick<CaseMembers, 'pushState' | 'pushAct'>
 
 export async function guardTestsCase(io: GuardTestsCaseIo, base: string, map: Parameters<typeof guardTestsFor>[1], e: Call): Promise<Out> {
   const input = e
@@ -276,60 +252,4 @@ export async function guardTestsCase(io: GuardTestsCaseIo, base: string, map: Pa
     files = [...diff.stdout.split('\n').map(l => l.trim()).filter(Boolean), ...(dirty.exitCode === 0 ? pathsFromStatus(dirty.stdout) : [])]
   }
   return { result: guardReport(guardTestsFor(files, map), true) }
-}
-
-export async function noteCase(io: NoteCaseIo, e: Call): Promise<Out> {
-  const input = e
-  const manager = String(input.manager ?? '').trim()
-  if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
-  const text = typeof input.text === 'string' ? input.text.trim() : ''
-  if (text === '') {
-    const notes = await io.readNotes(manager)
-    return { result: notes === '' ? 'No notes yet.' : notes }
-  }
-  const date = new Date(await io.now()).toISOString().slice(0, 10)
-  const line = input.kind === 'decision' ? `- ${date} decision: "${text}"` : `- ${date} progress: ${text}`
-  if (!await io.appendNote(manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
-  await io.logNote(noteKey(manager), text)
-  return { result: `Noted in ${await io.notesPath(manager)}.` }
-}
-
-export async function cleanCase(io: CleanCaseIo, settings: Pick<Settings, 'base' | 'cleanup'>, e: Call): Promise<Out> {
-  const apply = e.apply === true
-  if (apply && settings.cleanup === 'off') {
-    return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await io.sweep(settings.base, false)}` }
-  }
-  return { result: await io.sweep(settings.base, apply) }
-}
-
-export async function sessionCase(io: SessionCaseIo, settings: Settings, e: Call): Promise<Out> {
-  const id = e.agentId
-  const caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await io.ownerName(id) }
-  return { result: await io.sessionTool(settings, e, caller) }
-}
-
-export async function deployCase(io: DeployCaseIo, e: Call): Promise<Out> {
-  const isMain = e.agentId === undefined
-  const caller = isMain ? 'main' : await io.ownerName(e.agentId!)
-  const refused = deployToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())
-  if (refused !== undefined) return { result: refused }
-  return { result: await io.deployTool(e, isMain, caller) }
-}
-
-export async function pushCase(io: PushCaseIo, e: Call): Promise<Out> {
-  const input = e
-  if (e.agentId !== undefined) return { result: 'Refused: only main releases a ready batch, on the user\'s word (or the user, with /flow push). Managers, workers and the reviewer cannot push it.' }
-  const action = String(input.action ?? 'list')
-  if (action === 'list') {
-    const lines = pushLines(await io.pushState())
-    return { result: lines.length === 0 ? 'Nothing ready to push.' : lines.join('\n') }
-  }
-  if (action === 'push') return { result: await io.pushAct({ kind: 'push' }) }
-  if (action === 'drop') return { result: await io.pushAct({ kind: 'drop' }) }
-  if (action === 'send-back') {
-    const pr = Number(input.pr)
-    if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: send-back needs pr, a PR number of the batch.' }
-    return { result: await io.pushAct({ kind: 'back', pr }) }
-  }
-  return { result: 'Unknown action: use list, push, send-back or drop.' }
 }

@@ -48,7 +48,7 @@ import {
   closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, markDelivered, normalizePreflight, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
-import { EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess, reviewerToolAccess } from './lite'
+import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess, reviewerToolAccess } from './lite'
 import type { LiteState, ToolCaller } from './lite'
 import {
   addChecks, anyMatch, EMPTY_CHECKS, normalizeChecks, parseNeeds,
@@ -112,8 +112,8 @@ import { flowCommand } from './command'
 import type { CommandIo } from './command'
 import { elapsed, tokensDown, labelOf, thresholdOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
-import { afterToolCall, beforeToolCall, cleanCase, deployCase, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo, noteCase, pushCase, sessionCase } from './toolcall-run'
-import type { CleanCaseIo, DeployCaseIo, GuardIo, GuardTestsCaseIo, NoteCaseIo, PushCaseIo, SessionCaseIo, ToolCallIo } from './toolcall-run'
+import { afterToolCall, beforeToolCall, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo } from './toolcall-run'
+import type { GuardIo, GuardTestsCaseIo, ToolCallIo } from './toolcall-run'
 import { flowCatch, toolCatch } from './toolguard'
 import {
   ago, harnessesOf, roleAgents, runsOutIn, sessionLive, sessionRow,
@@ -134,7 +134,7 @@ import {
   EMPTY_PUSH,
 } from './pushgate'
 import type { PushState } from './pushgate'
-import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
+import { onPushAnswer as onPushAnswerTo, pushAct as pushActTo, pushLines, recordReady as recordReadyTo, settleBatch as settleBatchTo } from './pushgate-run'
 import type { PushAct, PushIo } from './pushgate-run'
 import {
   EMPTY_DEPLOYS, ENV_KIND,
@@ -2157,9 +2157,8 @@ const FLOW_TOOLS = [
   'mcp__flow__status',
 ] as const
 
-function logNoteOf($: EngineInterface, owner: string, text: string): Promise<void> {
-  return best($, 'logging a note', () => appendLog($, { event: 'note', owner, text }))
-}
+// Push is main's alone: what every other caller, a relayed session too, is answered.
+const PUSH_REFUSED = 'Refused: only main releases a ready batch, on the user\'s word (or the user, with /flow push). Managers, workers and the reviewer cannot push it.'
 
 // The generic tool.call hook's io (bodies in toolcall-run.ts). The settings and main's model are read live
 // through `held`: register() reassigns them.
@@ -2216,9 +2215,8 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
 
     case 'mcp__flow__test_slot': return testSlotTool(slotsIoOf($), settings, e)
 
-    // The multi-line cases (bodies in toolcall-run.ts) write their io as an object literal in the case, as the
-    // hooks of 0.6.84 did, with no builder between: one-line members, each a plain $.noun.method(...) or one
-    // call passing $ to a function declared at the top of this file (plain-names check 11).
+    // guard_tests reaches here only relayed, as release does. Its body is guardTestsCase's (toolcall-run.ts), with
+    // the io written in the case, one-line members only: no member reaches past 2 hops (plain-names checks 11 and 13).
     case 'mcp__flow__guard_tests': {
       const io: GuardTestsCaseIo = {
         sessions: () => read($, sessions),
@@ -2236,20 +2234,31 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__standing': return standingTool(standingIoOf($), options, e, e.agentId)
     case 'mcp__flow__check': return checkTool(checksIoOf($), installed, e, e.agentId)
 
+    // Note, clean, session, deploy and push reach here only relayed, as release does: their own hooks in register()
+    // answer everyone else. Each case is written inline, as 0.6.84 wrote the hooks, with no io object between: the
+    // closures of a case io added hops, and the plugin directory flagged the note case's at 6 (plain-names check 13).
     case 'mcp__flow__note': {
-      const io: NoteCaseIo = {
-        readNotes: manager => readNotes($, manager),
-        now: () => $.clock.now(),
-        appendNote: (manager, line) => appendNote($, manager, line),
-        logNote: (owner, text) => logNoteOf($, owner, text),
-        notesPath: manager => notesPath($, manager),
+      const manager = String(e.manager ?? '').trim()
+      if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
+      const text = typeof e.text === 'string' ? e.text.trim() : ''
+      if (text === '') {
+        const notes = await readNotes($, manager)
+        return { result: notes === '' ? 'No notes yet.' : notes }
       }
-      return noteCase(io, e)
+      const now = await $.clock.now()
+      const date = new Date(now).toISOString().slice(0, 10)
+      const line = e.kind === 'decision' ? `- ${date} decision: "${text}"` : `- ${date} progress: ${text}`
+      if (!await appendNote($, manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
+      await best($, 'logging a note', () => appendLog($, { event: 'note', owner: noteKey(manager), text }))
+      return { result: `Noted in ${await notesPath($, manager)}.` }
     }
 
     case 'mcp__flow__clean': {
-      const io: CleanCaseIo = { sweep: (base, apply) => sweep($, base, apply) }
-      return cleanCase(io, settings, e)
+      const apply = e.apply === true
+      if (apply && settings.cleanup === 'off') {
+        return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await sweep($, settings.base, false)}` }
+      }
+      return { result: await sweep($, settings.base, apply) }
     }
 
     case 'mcp__flow__settings': return settingsTool(initIoOf($), options, e, e.agentId)
@@ -2265,29 +2274,35 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     case 'mcp__flow__migrations': return migrationsTool(migrationsIoOf($), settings, e)
 
     case 'mcp__flow__session': {
-      const io: SessionCaseIo = {
-        ownerName: id => ownerNameOf($, id),
-        sessionTool: (s, call, caller) => sessionTool($, call, caller, s),
-      }
-      return sessionCase(io, settings, e)
+      const id = e.agentId
+      const caller: Caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await ownerNameOf($, id) }
+      return { result: await sessionTool($, e, caller, settings) }
     }
 
     case 'mcp__flow__deploy': {
-      const io: DeployCaseIo = {
-        ownerName: id => ownerNameOf($, id),
-        toolCaller: agentId => toolCallerOf($, agentId),
-        handovers: () => read($, handovers),
-        deployTool: (call, isMain, caller) => deployTool($, options, call, isMain, caller),
-      }
-      return deployCase(io, e)
+      const isMain = e.agentId === undefined
+      const caller = isMain ? 'main' : await ownerNameOf($, e.agentId)
+      const refused = deployToolAccess(await toolCallerOf($, e.agentId), e, await read($, handovers))
+      if (refused !== undefined) return { result: refused }
+      return { result: await deployTool($, options, e, isMain, caller) }
     }
 
+    // A relayed caller is never main, so push is refused here; the case stays so the answer is the same as the hook's.
     case 'mcp__flow__push': {
-      const io: PushCaseIo = {
-        pushState: () => read($, pushState),
-        pushAct: act => pushAct($, act, 'main'),
+      if (e.agentId !== undefined) return { result: PUSH_REFUSED }
+      const action = String(e.action ?? 'list')
+      if (action === 'list') {
+        const lines = pushLines(await read($, pushState))
+        return { result: lines.length === 0 ? 'Nothing ready to push.' : lines.join('\n') }
       }
-      return pushCase(io, e)
+      if (action === 'push') return { result: await pushAct($, { kind: 'push' }, 'main') }
+      if (action === 'drop') return { result: await pushAct($, { kind: 'drop' }, 'main') }
+      if (action === 'send-back') {
+        const pr = Number(e.pr)
+        if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: send-back needs pr, a PR number of the batch.' }
+        return { result: await pushAct($, { kind: 'back', pr }, 'main') }
+      }
+      return { result: 'Unknown action: use list, push, send-back or drop.' }
     }
 
     case 'mcp__flow__status': return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
@@ -2598,8 +2613,92 @@ export const register: Register = (on, options) => {
     }).catch(toolCatch)
   }
 
-  // Release, reviewer and queue have their own hooks above.
-  const OWN_HOOK: readonly string[] = ['mcp__flow__release', 'mcp__flow__reviewer', 'mcp__flow__queue']
+  // guard_tests, note, clean, session, deploy and push: each its own hook with its body written in it, as 0.6.84 had
+  // them. Through runFlowTool, a case io's closure calling a helper that wraps another closure took `$` 6 hops from
+  // the hook, deeper than 0.6.84 ever went (5), and the plugin directory flagged it (plain-names check 13). A relayed
+  // call reaches the same through runFlowTool's inline cases. Each answers a relay copy and a failure as the loop below does.
+  on('tool.call', { tool: 'mcp__flow__guard_tests' }, async ($, e) => {
+    if (relay !== undefined) return { result: 'flow relay: guard_tests did not reach the main session; try again.' }
+    // The body is guardTestsCase's (toolcall-run.ts), shared with the relayed case; its io is written here, in the hook,
+    // as 0.6.84's size_ab_report hook wrote its own.
+    const io: GuardTestsCaseIo = {
+      sessions: () => read($, sessions),
+      agents: () => $.agent.list(),
+      exec: argv => $.process.run(argv),
+      cwd: () => $.session.cwd(),
+    }
+    const out = await guardTestsCase(io, kept.settings.base, kept.settings.guardTests, e as unknown as FlowCall)
+    return out
+  }).catch(toolCatch)
+
+  on('tool.call', { tool: 'mcp__flow__note' }, async ($, e) => {
+    if (relay !== undefined) return { result: 'flow relay: note did not reach the main session; try again.' }
+    const input = e as unknown as FlowCall
+    const manager = String(input.manager ?? '').trim()
+    if (manager === '') return { result: 'Refused: manager (your agent name) is required.' }
+    const text = typeof input.text === 'string' ? input.text.trim() : ''
+    if (text === '') {
+      const notes = await readNotes($, manager)
+      return { result: notes === '' ? 'No notes yet.' : notes }
+    }
+    const now = await $.clock.now()
+    const date = new Date(now).toISOString().slice(0, 10)
+    const line = input.kind === 'decision' ? `- ${date} decision: "${text}"` : `- ${date} progress: ${text}`
+    if (!await appendNote($, manager, line)) return { result: 'Not saved: notes need a repo (or the write failed; see the UI log).' }
+    await best($, 'logging a note', () => appendLog($, { event: 'note', owner: noteKey(manager), text }))
+    return { result: `Noted in ${await notesPath($, manager)}.` }
+  }).catch(toolCatch)
+
+  on('tool.call', { tool: 'mcp__flow__clean' }, async ($, e) => {
+    if (relay !== undefined) return { result: 'flow relay: clean did not reach the main session; try again.' }
+    const apply = (e as unknown as FlowCall).apply === true
+    if (apply && kept.settings.cleanup === 'off') {
+      return { result: `Cleanup is off (the cleanup setting): a dry run instead, nothing removed. A person removes with /flow clean --yes.\n${await sweep($, kept.settings.base, false)}` }
+    }
+    return { result: await sweep($, kept.settings.base, apply) }
+  }).catch(toolCatch)
+
+  on('tool.call', { tool: 'mcp__flow__session' }, async ($, e) => {
+    if (relay !== undefined) return { result: 'flow relay: session did not reach the main session; try again.' }
+    const id = e.agentId
+    const caller: Caller = id === undefined ? { id: 'main', name: 'main' } : { id, name: await ownerNameOf($, id) }
+    return { result: await sessionTool($, e as unknown as FlowCall, caller, kept.settings) }
+  }).catch(toolCatch)
+
+  on('tool.call', { tool: 'mcp__flow__deploy' }, async ($, e) => {
+    if (relay !== undefined) return { result: 'flow relay: deploy did not reach the main session; try again.' }
+    const input = e as unknown as FlowCall
+    const isMain = e.agentId === undefined
+    const caller = isMain ? 'main' : await ownerNameOf($, e.agentId)
+    const refused = deployToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
+    if (refused !== undefined) return { result: refused }
+    return { result: await deployTool($, options, input, isMain, caller) }
+  }).catch(toolCatch)
+
+  on('tool.call', { tool: 'mcp__flow__push' }, async ($, e) => {
+    if (relay !== undefined) return { result: 'flow relay: push did not reach the main session; try again.' }
+    const input = e as unknown as FlowCall
+    if (e.agentId !== undefined) return { result: PUSH_REFUSED }
+    const action = String(input.action ?? 'list')
+    if (action === 'list') {
+      const lines = pushLines(await read($, pushState))
+      return { result: lines.length === 0 ? 'Nothing ready to push.' : lines.join('\n') }
+    }
+    if (action === 'push') return { result: await pushAct($, { kind: 'push' }, 'main') }
+    if (action === 'drop') return { result: await pushAct($, { kind: 'drop' }, 'main') }
+    if (action === 'send-back') {
+      const pr = Number(input.pr)
+      if (!Number.isInteger(pr) || pr <= 0) return { result: 'Refused: send-back needs pr, a PR number of the batch.' }
+      return { result: await pushAct($, { kind: 'back', pr }, 'main') }
+    }
+    return { result: 'Unknown action: use list, push, send-back or drop.' }
+  }).catch(toolCatch)
+
+  // The tools above have their own hooks.
+  const OWN_HOOK: readonly string[] = [
+    'mcp__flow__release', 'mcp__flow__reviewer', 'mcp__flow__queue',
+    'mcp__flow__guard_tests', 'mcp__flow__note', 'mcp__flow__clean', 'mcp__flow__session', 'mcp__flow__deploy', 'mcp__flow__push',
+  ]
   for (const tool of FLOW_TOOLS.filter(t => !OWN_HOOK.includes(t))) {
     on('tool.call', { tool: tool as never }, async ($, e) => {
       if (relay !== undefined) return { result: `flow relay: ${tool.replace('mcp__flow__', '')} did not reach the main session; try again.` }

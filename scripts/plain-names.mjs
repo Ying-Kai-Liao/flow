@@ -73,6 +73,18 @@
 //    `const s = await sessionOfId($, id)`, while the note, session, deploy and push case ios, written in the same
 //    `x => helper($, x)` shape, were not; 0.6.84, which passed, had no such helper. `[...]` alone is not reported:
 //    0.6.84 had `(await read($, x))[k]` and sessionOfId returns `all[...]`, and neither was flagged.
+// 13. Under hooks/, in a file that registers hooks, $ is followed from each hook and the hops it takes are counted:
+//    each call passing $ to a top-level function of the file is one hop, and so is each closure naming $ inside a
+//    function reached (written in an object literal, as an argument or bound to a const). A hook's own closures are
+//    the hook (no hop), and an io builder (a top-level function taking $ and returning an object literal) ends the
+//    chain at its own hop. The longest chain from each hook, without going round a cycle, is at most 5. A deeper one
+//    is reported at its first hop inside the function the hook calls, or at the hook's call when that is the only
+//    one. Write the body in the hook, as 0.6.84 did, or drop a wrapper between. A guess calibrated to evidence
+//    (hypothesis D, depth), not a known rule: 0.6.84, which passed, goes 5 deep at most (session.start's
+//    captureChecks > withChecks > closure > writeJsonAtomic > warn); 0.6.116 and 0.6.117 were reported at the note
+//    case io's `logNote: (owner, text) => logNoteOf($, owner, text)` in runFlowTool (runFlowTool > that closure >
+//    logNoteOf > best's closure > appendLog > stateDir, 6 deep) and nothing else here goes past 5. Every round that
+//    cleared a site also shortened its chain. The directory seems to report only the first such site in a function.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -168,6 +180,7 @@ for (const file of files) {
   if (registers) setters(sf, say)
   if (registers) layers(sf, say)
   if (registers) chained(sf, say)
+  if (registers) depth(sf, say)
 }
 
 // Check 6. Top-level functions by name, the parameters that receive a hook's event, then each closure naming both.
@@ -693,6 +706,78 @@ function chained(sf, say) {
     // The body itself, not only its children: a hook's arrow body may be the call (\`async ($, e) => runFlowTool($, e)\`).
     visit(fn.body)
   }
+}
+
+// Check 13. The longest chain of hops $ takes from each hook; one deeper than 0.6.84's is reported.
+function depth(sf, say) {
+  const MAX = 5
+  const isFn = n => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)
+  const pname = p => p !== undefined && ts.isIdentifier(p.name) ? p.name.text : undefined
+  const top = new Map()
+  const builders = new Set()
+  for (const s of sf.statements) {
+    if (!ts.isFunctionDeclaration(s) || !s.name || !s.body) continue
+    top.set(s.name.text, s)
+    const ret = s.body.statements.find(ts.isReturnStatement)
+    if (s.parameters.some(p => pname(p) === '$') && ret?.expression && ts.isObjectLiteralExpression(ret.expression)) builders.add(s)
+  }
+  const names = (n, d) => (ts.isIdentifier(n) && n.text === d) || (ts.forEachChild(n, k => names(k, d) || undefined) ?? false)
+  const nameOf = fn => ts.isFunctionDeclaration(fn) ? fn.name.text : 'a closure'
+  // The hops out of `fn`, where $ is named `d`: its calls passing $ on, and its closures naming $. A hook's own
+  // closures are walked as part of it.
+  const hops = (fn, d, own) => {
+    const out = []
+    const visit = k => {
+      if (k !== fn && isFn(k)) {
+        if (k.parameters.some(p => pname(p) === d)) return
+        if (own) ts.forEachChild(k, visit)
+        else if (names(k, d)) out.push({ to: k, d, at: k })
+        return
+      }
+      if (ts.isCallExpression(k) && ts.isIdentifier(k.expression) && top.has(k.expression.text)) {
+        const callee = top.get(k.expression.text)
+        const i = k.arguments.findIndex(a => ts.isIdentifier(a) && a.text === d)
+        const pd = i < 0 ? undefined : pname(callee.parameters[i])
+        if (pd !== undefined) out.push({ to: callee, d: pd, at: k })
+      }
+      ts.forEachChild(k, visit)
+    }
+    visit(fn.body)
+    return out
+  }
+  // The longest chain on from a function, as its hops; a builder ends it, and a hop back onto the chain is skipped.
+  const memo = new Map()
+  const onChain = new Set()
+  const longest = (fn, d) => {
+    if (memo.has(fn)) return memo.get(fn)
+    onChain.add(fn)
+    let best = []
+    if (!builders.has(fn)) {
+      for (const h of hops(fn, d, false)) {
+        if (onChain.has(h.to)) continue
+        const rest = longest(h.to, h.d)
+        if (rest.length + 1 > best.length) best = [h, ...rest]
+      }
+    }
+    onChain.delete(fn)
+    memo.set(fn, best)
+    return best
+  }
+  const reported = new Set()
+  const visit = n => {
+    if (isFn(n) && isHook(n) && n.parameters[0]) {
+      for (const h of hops(n, pname(n.parameters[0]), true)) {
+        const chain = [h, ...longest(h.to, h.d)]
+        if (chain.length <= MAX) continue
+        const at = (chain[1] ?? chain[0]).at
+        if (reported.has(at)) continue
+        reported.add(at)
+        say(at, `$ goes ${chain.length} hops from the hook here (${chain.map(c => nameOf(c.to)).join(' > ')}), deeper than 0.6.84's ${MAX}: write the body in the hook (check 13)`)
+      }
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
 }
 
 if (findings.length > 0) {
