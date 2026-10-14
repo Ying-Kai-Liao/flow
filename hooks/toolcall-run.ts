@@ -5,7 +5,7 @@ import { isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, WORKER, WORKERS } from './co
 import { allowed, flowActive, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, remoteDeleteRefusal, resolvePath, writeTargets } from './guards'
 import type { WriteTarget } from './guards'
 import { guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
-import { deployToolAccess, releaseToolAccess, reviewerToolAccess } from './lite'
+import { deployToolAccess, releaseToolAccess } from './lite'
 import type { ToolCaller } from './lite'
 import { limitLabel, windowOf, wrapUpText } from './meter'
 import { describeCall, ROLE, summarizeCall } from './pane'
@@ -213,10 +213,12 @@ export async function afterToolCall(io: ToolCallIo, e: { agentId?: string }, r: 
 
 // --- The flow tools' multi-line cases (runFlowTool's switch stays in register.tsx) ---------------
 
-// Each case has its own small io, built per call by its own builder in register.tsx (as handoverIoOf is), holding
-// only what that case uses. Built without the call: the call comes in as an argument where a member needs it, so no
+// Each case has its own small io, written as an object literal in its runFlowTool case in register.tsx, holding
+// only what that case uses. Written without the call: the call comes in as an argument where a member needs it, so no
 // closure in register.tsx holds `$` together with the hook's event (the plugin directory flags that). One io shared
-// by all eight cases (flowToolsIoOf, 0.6.103 to 0.6.111) was still reported MOD_CAPABILITY_USE_NOT_PLAIN at its calls.
+// by all eight cases (flowToolsIoOf, 0.6.103 to 0.6.111) was still reported MOD_CAPABILITY_USE_NOT_PLAIN at its calls,
+// and so were per-case builders reached through a `$`-wrapping closure (reviewerCaseIoOf, 0.6.115). The reviewer and
+// queue tools have their own hook (register.tsx), as release has.
 type CaseMembers = {
   agents: () => Promise<AgentInfo[]>
   exec: (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
@@ -227,7 +229,6 @@ type CaseMembers = {
   toolCaller: (agentId: string | undefined) => Promise<ToolCaller>
   handovers: () => Promise<Parameters<typeof releaseToolAccess>[2]>
   ownerName: (id: string | undefined) => Promise<string>
-  reviewer: (settings: Settings, e: Call) => Promise<Out | undefined>
   readNotes: (manager: string) => Promise<string>
   appendNote: (manager: string, line: string) => Promise<boolean>
   notesPath: (manager: string) => Promise<string | undefined>
@@ -238,18 +239,12 @@ type CaseMembers = {
   sessionTool: (settings: Settings, e: Call, caller: { id: string; name: string }) => Promise<string>
   deployTool: (e: Call, isMain: boolean, caller: string) => Promise<string>
 }
-export type ReviewerCaseIo = Pick<CaseMembers, 'toolCaller' | 'handovers' | 'reviewer'>
 export type GuardTestsCaseIo = Pick<CaseMembers, 'sessionWorktree' | 'agents' | 'exec' | 'cwd'>
 export type NoteCaseIo = Pick<CaseMembers, 'readNotes' | 'now' | 'appendNote' | 'logNote' | 'notesPath'>
 export type CleanCaseIo = Pick<CaseMembers, 'sweep'>
 export type SessionCaseIo = Pick<CaseMembers, 'ownerName' | 'sessionTool'>
 export type DeployCaseIo = Pick<CaseMembers, 'ownerName' | 'toolCaller' | 'handovers' | 'deployTool'>
 export type PushCaseIo = Pick<CaseMembers, 'pushState' | 'pushAct'>
-
-export async function reviewerCase(io: ReviewerCaseIo, settings: Settings, e: Call): Promise<Out | undefined> {
-  const refused = reviewerToolAccess(await io.toolCaller(e.agentId), e, await io.handovers())
-  return refused !== undefined ? { result: refused } : io.reviewer(settings, e)
-}
 
 export async function guardTestsCase(io: GuardTestsCaseIo, base: string, map: Parameters<typeof guardTestsFor>[1], e: Call): Promise<Out> {
   const input = e

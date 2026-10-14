@@ -54,6 +54,16 @@
 //    releaseIoOf's setLast through releaseRun), startupIoOf($, ...) (setRelay, setSlotDir, the held setters) and
 //    spawnHookIoOf($, spawnState) (setNoLong, setNoContinue), while 0.6.84, which passed, built releaseIoOf($), with
 //    setLast, in the release tool's own hook and handed mainHeld's setters only to the small usageIoOf.
+// 11. Under hooks/, in a file that registers hooks, a call passing $ to an io builder is reported when the builder
+//    (a) has a member that is a closure whose body is one call passing $ to a helper (not a builder) that binds a
+//    builder to a const from $ and something of its own other parameters (`const io = reviewerIoOf($, settings.base)`),
+//    or (b) spreads in a parameter whose argument holds a closure whose whole body is an assignment (a property write
+//    counts here) and has more than 12 members using $, nested objects' members counted one by one. A guess calibrated
+//    to evidence, not a known rule: 0.6.115 was reported at reviewerCaseIoOf($) (reaching reviewerIoOf through the
+//    closure `reviewer: (settings, call) => reviewerRun($, settings, call)`) and paneIoOf($, paneLets) in ui.focus,
+//    ui.scroll and ui.render (spreading paneLets with setMainWindow and setPaneFollow), while sessionCaseIoOf (its
+//    helper builds sessionIoOf($) from $ alone), paneActsIoOf, toolCallIoOf (spreads held, no setter) and usageIoOf
+//    (spreads mainHeld's setters, 7 members) were not; 0.6.84, which passed, built those ios in the hooks.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -147,6 +157,7 @@ for (const file of files) {
   if (registers) shared(sf, say)
   if (registers) plain(sf, say)
   if (registers) setters(sf, say)
+  if (registers) layers(sf, say)
 }
 
 // Check 6. Top-level functions by name, the parameters that receive a hook's event, then each closure naming both.
@@ -515,6 +526,97 @@ function setters(sf, say) {
       while (fn && !isFn(fn)) fn = fn.parent
       const using = n.properties.filter(p => usesDollar(p)).length
       if (fn && isHook(fn) && using > MAX) say(n, `an io written in a hook hands out a setter and has ${using} members using $ (over ${MAX}): write through a holder object's property (check 10)`)
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
+}
+
+// Check 11. The io builders, which of them reach another builder through a closure-wrapped helper or spread in a
+// parameter holding a setter, then each call passing $ to one.
+function layers(sf, say) {
+  const pname = p => ts.isIdentifier(p.name) ? p.name.text : undefined
+  const MAX = 12
+  const top = new Map()
+  const builders = new Map() // name -> [declaration, returned object literal]
+  for (const s of sf.statements) {
+    if (!ts.isFunctionDeclaration(s) || !s.name || !s.body) continue
+    top.set(s.name.text, s)
+    const ret = s.body.statements.find(ts.isReturnStatement)
+    if (s.parameters.some(p => pname(p) === '$') && ret?.expression && ts.isObjectLiteralExpression(ret.expression)) builders.set(s.name.text, [s, ret.expression])
+  }
+  const consts = new Map()
+  const collect = n => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) consts.set(n.name.text, n.initializer)
+    ts.forEachChild(n, collect)
+  }
+  collect(sf)
+  const dollarAt = (call, name) => call.arguments.findIndex(a => ts.isIdentifier(a) && a.text === name)
+  // Whether an expression names one of `params` (`settings`, `settings.base`).
+  const names = (n, params) => (ts.isIdentifier(n) && params.has(n.text)) || (ts.forEachChild(n, k => names(k, params) || undefined) ?? false)
+  // The builder a helper binds to a const, passing it $ (by the name its $ has there) and something of the helper's
+  // other parameters: `const io = reviewerIoOf($, settings.base)`. One passed $ alone (`const io = sessionIoOf($)`) is not.
+  const buildsIo = (fn, d) => {
+    const params = new Set(fn.parameters.map(pname).filter(n => n !== undefined && n !== d))
+    let hit
+    const visit = k => {
+      if (hit) return
+      const c = ts.isVariableDeclaration(k) ? k.initializer : undefined
+      if (c && ts.isCallExpression(c) && ts.isIdentifier(c.expression) && builders.has(c.expression.text) && dollarAt(c, d) >= 0 &&
+          c.arguments.some(a => !(ts.isIdentifier(a) && a.text === d) && names(a, params))) { hit = c.expression.text; return }
+      ts.forEachChild(k, visit)
+    }
+    visit(fn.body)
+    return hit
+  }
+  // A member written as a closure whose body is one call passing $ to a helper (not a builder) that builds an io.
+  const wrapped = (obj, d) => {
+    for (const p of obj.properties) {
+      const v = ts.isPropertyAssignment(p) ? p.initializer : undefined
+      if (!v || !(ts.isArrowFunction(v) || ts.isFunctionExpression(v))) continue
+      let call = v.body
+      if (ts.isAwaitExpression(call)) call = call.expression
+      if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression)) continue
+      const callee = call.expression.text, at = dollarAt(call, d)
+      if (at < 0 || builders.has(callee) || !top.has(callee)) continue
+      const f = top.get(callee)
+      const inner = buildsIo(f, pname(f.parameters[at] ?? {}))
+      if (inner !== undefined) return `${callee}, which builds ${inner}`
+    }
+    return undefined
+  }
+  // A closure whose whole body is an assignment, to a name or a property (`w => { kept.mainWindow = w }`).
+  const assigns = fn => {
+    if (!(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || fn.body === undefined) return false
+    const stmts = ts.isBlock(fn.body) ? fn.body.statements : [fn.body]
+    if (stmts.length !== 1) return false
+    const e = ts.isExpressionStatement(stmts[0]) ? stmts[0].expression : stmts[0]
+    return ts.isBinaryExpression(e) && e.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && e.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+  }
+  const holdsSetter = (v, seen = new Set()) => {
+    if (v === undefined || seen.has(v)) return false
+    seen.add(v)
+    if (ts.isIdentifier(v)) return holdsSetter(consts.get(v.text), seen)
+    if (!ts.isObjectLiteralExpression(v)) return false
+    return v.properties.some(p => ts.isPropertyAssignment(p) ? assigns(p.initializer) || holdsSetter(p.initializer, seen)
+      : ts.isSpreadAssignment(p) ? holdsSetter(p.expression, seen) : false)
+  }
+  // Members using $, those of nested objects counted one by one.
+  const usesDollar = n => (ts.isIdentifier(n) && n.text === '$') || (ts.forEachChild(n, usesDollar) ?? false)
+  const count = obj => obj.properties.reduce((n, p) => n + (ts.isPropertyAssignment(p) && ts.isObjectLiteralExpression(p.initializer) ? count(p.initializer) : usesDollar(p) ? 1 : 0), 0)
+  const visit = n => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && builders.has(n.expression.text) && dollarAt(n, '$') >= 0) {
+      const name = n.expression.text
+      const [decl, obj] = builders.get(name)
+      const d = pname(decl.parameters.find(p => pname(p) === '$'))
+      const via = wrapped(obj, d)
+      if (via !== undefined) say(n, `${name} reaches an io through a closure calling ${via}: write the io in the hook or the case (check 11)`)
+      for (const p of obj.properties) {
+        if (!ts.isSpreadAssignment(p) || !ts.isIdentifier(p.expression)) continue
+        const i = decl.parameters.findIndex(q => pname(q) === p.expression.text)
+        const using = count(obj)
+        if (i >= 0 && holdsSetter(n.arguments[i]) && using > MAX) say(n, `${name} spreads its parameter ${p.expression.text}, which holds a setter, into an io with ${using} members using $ (over ${MAX}): write the io in the hook (check 11)`)
+      }
     }
     ts.forEachChild(n, visit)
   }
