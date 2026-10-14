@@ -224,8 +224,8 @@ type CaseMembers = {
   exec: (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
   cwd: () => Promise<string | undefined>
   now: () => Promise<number>
-  // The worktree of a terminal session by agent id.
-  sessionWorktree: (id: string) => Promise<string | undefined>
+  // The terminal sessions on record, by name.
+  sessions: () => Promise<Record<string, Session>>
   toolCaller: (agentId: string | undefined) => Promise<ToolCaller>
   handovers: () => Promise<Parameters<typeof releaseToolAccess>[2]>
   ownerName: (id: string | undefined) => Promise<string>
@@ -239,7 +239,7 @@ type CaseMembers = {
   sessionTool: (settings: Settings, e: Call, caller: { id: string; name: string }) => Promise<string>
   deployTool: (e: Call, isMain: boolean, caller: string) => Promise<string>
 }
-export type GuardTestsCaseIo = Pick<CaseMembers, 'sessionWorktree' | 'agents' | 'exec' | 'cwd'>
+export type GuardTestsCaseIo = Pick<CaseMembers, 'sessions' | 'agents' | 'exec' | 'cwd'>
 export type NoteCaseIo = Pick<CaseMembers, 'readNotes' | 'now' | 'appendNote' | 'logNote' | 'notesPath'>
 export type CleanCaseIo = Pick<CaseMembers, 'sweep'>
 export type SessionCaseIo = Pick<CaseMembers, 'ownerName' | 'sessionTool'>
@@ -254,7 +254,14 @@ export async function guardTestsCase(io: GuardTestsCaseIo, base: string, map: Pa
   else {
     // The caller's own worktree, else the session's directory.
     let dir: string | undefined
-    const mine = e.agentId === undefined ? undefined : await io.sessionWorktree(e.agentId)
+    // A relayed call (`session:<name>`) diffs that session's worktree; the lookup is here, not in register.tsx,
+    // because the plugin directory flagged a `$` helper returning `s?.worktree` (MOD_CAPABILITY_USE_NOT_PLAIN).
+    let mine: string | undefined
+    if (e.agentId !== undefined && e.agentId.startsWith('session:')) {
+      const all = await io.sessions()
+      const named = all[e.agentId.slice('session:'.length)]
+      if (named !== undefined) mine = named.worktree
+    }
     if (mine !== undefined) dir = mine
     else if (e.agentId !== undefined) {
       const me = (await io.agents()).find(a => a.id === e.agentId)

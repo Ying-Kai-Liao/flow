@@ -798,7 +798,8 @@ function costIoOf($: EngineInterface): CostIo {
     setEpoch: async e => { await update($, ledgerEpoch, () => e) },
     startedAt: async () => {
       const usage = await usageOf($)
-      return usage?.startedAt
+      if (usage === undefined) return undefined
+      return usage.startedAt
     },
     liveIds: async () => (await read($, roster)).map(a => a.id),
     hasSessions: async () => Object.keys(await read($, sessions)).length > 0,
@@ -2156,11 +2157,6 @@ const FLOW_TOOLS = [
   'mcp__flow__status',
 ] as const
 
-async function sessionWorktreeOf($: EngineInterface, id: string): Promise<string | undefined> {
-  const s = await sessionOfId($, id)
-  return s?.worktree
-}
-
 function logNoteOf($: EngineInterface, owner: string, text: string): Promise<void> {
   return best($, 'logging a note', () => appendLog($, { event: 'note', owner, text }))
 }
@@ -2225,7 +2221,7 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
     // call passing $ to a function declared at the top of this file (plain-names check 11).
     case 'mcp__flow__guard_tests': {
       const io: GuardTestsCaseIo = {
-        sessionWorktree: id => sessionWorktreeOf($, id),
+        sessions: () => read($, sessions),
         agents: () => $.agent.list(),
         exec: argv => $.process.run(argv),
         cwd: () => $.session.cwd(),

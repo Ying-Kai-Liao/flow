@@ -5,6 +5,8 @@ import type { TestBody } from 'claude-code/testing'
 import { checkEvidence } from '../hooks/evidence'
 import { globMatches, guardTestsFor, mergeGuardTests, parseGuardTests, suggestGlobs, suggestionsFor } from '../hooks/guardtests'
 import { mergeLayers } from '../hooks/settings'
+import { guardTestsCase } from '../hooks/toolcall-run'
+import type { GuardTestsCaseIo } from '../hooks/toolcall-run'
 
 type Dollar = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -169,6 +171,33 @@ test('guard_tests tool: with no input it diffs the caller\'s worktree plus uncom
   expect(r).toContain('src/routes/new.ts')
   expect(w.calls).toContain('git -C /r/.claude/worktrees/agent-w1 diff --name-only --no-renames origin/main...HEAD')
   expect(w.calls.some(c => c.startsWith('git -C /r/.claude/worktrees/agent-w1 status'))).toBe(true)
+})
+
+// guardTestsCase on its own: which directory each caller's diff runs in. A relayed `session:<name>` uses its
+// recorded session's worktree (looked up here, not in register.tsx: plain-names check 12).
+test('guard_tests case: main diffs the session cwd, a worker its worktree, a relayed session its recorded worktree', async () => {
+  const dirs = async (agentId: string | undefined, sessions: Record<string, { worktree: string }>) => {
+    const ran: string[] = []
+    const io: GuardTestsCaseIo = {
+      sessions: async () => sessions as never,
+      agents: async () => [{ id: 'w1', name: 'csv-worker', description: 'w', type: 'flow:worker', status: 'running' }],
+      exec: async argv => {
+        ran.push(argv.join(' '))
+        if (argv[1] === 'worktree') return { exitCode: 0, stdout: 'worktree /r/.claude/worktrees/agent-w1\nHEAD abc\nbranch refs/heads/flow/csv-worker\n', stderr: '' }
+        return { exitCode: 0, stdout: '', stderr: '' }
+      },
+      cwd: async () => '/r',
+    }
+    await guardTestsCase(io, 'main', MAP, { agentId })
+    return ran.filter(c => c.includes(' diff ')).map(c => c.split(' ')[2])
+  }
+  const m1 = { m1: { worktree: '/wt/m1' } }
+  expect(await dirs(undefined, m1)).toEqual(['/r'])
+  expect(await dirs('w1', m1)).toEqual(['/r/.claude/worktrees/agent-w1'])
+  expect(await dirs('session:m1', m1)).toEqual(['/wt/m1'])
+  // No session on record by that name, or a plain id that matches a session's name: no session worktree.
+  expect(await dirs('session:m2', m1)).toEqual(['/r'])
+  expect(await dirs('m1', m1)).toEqual(['/r'])
 })
 
 test('handover: a missing guard test is refused naming the glob; listing it lets it through; same answer twice', { options: OPTS }, async ($, on) => {

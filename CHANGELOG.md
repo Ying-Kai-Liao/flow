@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN finding at the guard_tests case (0.6.116 line 2228, `sessionWorktree: id => sessionWorktreeOf($, id)`), ninth round: its helper returned `s?.worktree` on a value from a `$` helper, a shape 0.6.84 never had. The case io now passes `sessions: () => read($, sessions)` and guardTestsCase (toolcall-run.ts) looks up a relayed `session:<name>` caller's worktree itself, in pure code; sessionWorktreeOf is gone. costIoOf's `startedAt` reads `usage.startedAt` after a plain `if` instead of `usage?.startedAt`. Behaviour is unchanged. `scripts/plain-names.mjs` gains check 12, calibrated: a call passing `$` to a function that returns an optional chain on a value from `$`. It reports exactly line 2228 on 0.6.116 and nothing on 0.6.84; `tests/plain-names.node-test.mjs` covers it, and `tests/guardtests.test.ts` covers which directory each caller's diff runs in.
+
 ## [0.6.116] - 2026-10-14
 
 ### Fixed
