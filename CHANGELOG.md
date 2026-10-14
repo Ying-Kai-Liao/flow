@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The plugin directory's MOD_CAPABILITY_USE_NOT_PLAIN finding at the note case (0.6.117 line 2244, `logNote: (owner, text) => logNoteOf($, owner, text)`), tenth round: `$` went 6 hops from the hook there (runFlowTool > the case io's closure > logNoteOf > best's closure > appendLog > stateDir), deeper than 0.6.84, which passed, ever went (5). guard_tests, note, clean, session, deploy and push each have their own tool.call hook again, with the body written in it as in 0.6.84 (note calls best/appendLog in the hook), and runFlowTool's relayed cases for them are written inline with no io object. logNoteOf, noteCase, cleanCase, sessionCase, deployCase, pushCase and their io types are gone; guardTestsCase stays, with its io written in the hook and the case. A new plain-names check 13 (calibrated, hypothesis D) reports a chain from a hook deeper than 5 hops: 1 on 0.6.117, 0 on 0.6.84 and here. Behaviour is unchanged for main, agents and relayed `session:<name>` callers.
+
 ## [0.6.117] - 2026-10-14
 
 ### Fixed

@@ -1,4 +1,4 @@
-// scripts/plain-names.mjs checks 8 to 12 on a small hooks file in a scratch repo. The plugin test sandbox has no fs and
+// scripts/plain-names.mjs checks 8 to 13 on a small hooks file in a scratch repo. The plugin test sandbox has no fs and
 // cannot run the script, so this runs under `node --test` (npm run check).
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -281,4 +281,66 @@ test('check 12 passes a plain if before the read, the whole value returned, and 
   assert.equal(run(chainFile('  return sessionOfId($, id)')).status, 0)
   // sessionOfId's own `all[id]` is not reported: 0.6.84 had `(await read($, x))[k]` and passed.
   assert.equal(run(chainFile('  const all = await read($, "sessions")\n  return all[id]')).status, 0)
+})
+
+// The note tool as 0.6.117 reached it (`hook`: the hook's body) and the helpers under it: stateDir is 1 hop below
+// appendLog, appendLog 1 below best's closure.
+function depthFile(hook, extra = '') {
+  return `async function stateDir($: any) { return $.process.run(['git']) }
+async function appendLog($: any, text: string) {
+  const dir = await stateDir($)
+  return $.fs.write(String(dir), text)
+}
+async function best($: any, what: string, fn: () => Promise<unknown>) { try { await fn() } catch { await $.ui.toast(what) } }
+function logNoteOf($: any, text: string) {
+  return best($, 'logging a note', () => appendLog($, text))
+}
+function noteCase(io: { logNote: (t: string) => Promise<unknown> }, text: string) { return io.logNote(text) }
+function noteIoOf($: any) {
+  return { logNote: (text: string) => logNoteOf($, text) }
+}
+function runFlowTool($: any, tool: string) {
+  switch (tool) {
+    case 'note': {
+      const io = {
+        logNote: (text: string) => logNoteOf($, text),
+      }
+      return noteCase(io, tool)
+    }
+    default: return undefined
+  }
+}
+${extra}
+export default (on: any) => {
+  on('tool.call', async ($: any, e: any) => {
+${hook}
+  })
+}
+`
+}
+
+test('check 13 flags a chain from a hook deeper than 0.6.84\'s 5 hops, at its first hop inside the function the hook calls', () => {
+  // runFlowTool > the case io's closure > logNoteOf > best's closure > appendLog > stateDir: 6 (0.6.116 and 0.6.117).
+  const r = run(depthFile('    return runFlowTool($, e.tool)'))
+  assert.equal(r.status, 1)
+  assert.equal((r.out.match(/\(check 13\)/g) ?? []).length, 1, r.out)
+  assert.match(r.out, /register\.ts:18: \$ goes 6 hops from the hook here \(runFlowTool > a closure > logNoteOf > a closure > appendLog > stateDir\)/)
+  // One more wrapper below a hook's own closure: logNoteOf > best's closure > appendLog > stateDir is 4, and 2 more is 6.
+  const deeper = run(depthFile('    return wrap($, e.tool)', 'function wrap($: any, t: string) { return twice($, t) }\nfunction twice($: any, t: string) { return logNoteOf($, t) }'))
+  assert.match(deeper.out, /\$ goes 6 hops from the hook here \(wrap > twice > logNoteOf > a closure > appendLog > stateDir\)/)
+})
+
+test('check 13 passes best/appendLog written in the hook, a hook\'s own closures, a chain ended by an io builder, and a cycle', () => {
+  // 0.6.84's note hook: best > ... and the hook's own closure > appendLog > stateDir: 2 hops.
+  const own = run(depthFile("    const text = String(e.text)\n    await best($, 'logging a note', () => appendLog($, text))\n    return undefined"))
+  assert.equal(own.status, 0, own.out)
+  // The case io written in the hook: its closures are the hook's, so logNoteOf > best's closure > appendLog > stateDir is 4.
+  const inHook = run(depthFile('    const io = { logNote: (t: string) => logNoteOf($, t) }\n    return noteCase(io, e.text)'))
+  assert.equal(inHook.status, 0, inHook.out)
+  // An io builder ends the chain at its own hop.
+  const built = run(depthFile('    const io = noteIoOf($)\n    return noteCase(io, e.text)'))
+  assert.equal(built.status, 0, built.out)
+  // A helper calling itself through a closure is not counted round the cycle.
+  const cycle = run(depthFile('    return loop($, 3)', 'function loop($: any, n: number): unknown {\n  if (n === 0) return undefined\n  return $.clock.after(1, () => loop($, n - 1))\n}'))
+  assert.equal(cycle.status, 0, cycle.out)
 })
