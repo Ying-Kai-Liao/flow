@@ -1,8 +1,11 @@
 import { CARDS_TEXT } from './askcards'
+import { MANAGER } from './core'
+import { ENDED } from './deliver'
 import { noteKey } from './state'
 import { EMPTY_INBOX, parseAsk, renderInbox } from './inbox'
+import { sessionKey } from './sessions'
 import type { AskedQuestion, Inbox, Question } from './inbox'
-import type { Entry, Filing, Preflight, Round } from '../types'
+import type { AgentRow, Entry, Filing, Handover, Preflight, Round } from '../types'
 
 export type { Entry, Filing, Preflight, Round }
 
@@ -111,6 +114,7 @@ export function recordSpawn(state: Preflight, name: string, skip: boolean, now: 
   const round = open
   const entry: Entry = { name, phase: skip ? 'skipped' : 'recon', round: round.id, spawnedAt: now, blocking: [], asked: [] }
   return {
+    ...state,
     next,
     entries: { ...state.entries, [key]: entry },
     rounds: rounds.map(r => (r === round ? { ...r, members: [...new Set([...r.members, key])] } : r)),
@@ -130,11 +134,37 @@ export function recordFiling(state: Preflight, name: string, filing: Filing, ids
 
 export const latestRound = (state: Preflight): Round | undefined => state.rounds[state.rounds.length - 1]
 
-const settled = (e: Entry | undefined, ended: ReadonlySet<string>, key: string) =>
+// Managers that will not file any more, by notes key: a Set (each one ended) or a Map to why.
+export type Done = ReadonlySet<string> | ReadonlyMap<string, string>
+
+const doneWhy = (done: Done, key: string): string | undefined =>
+  !done.has(key) ? undefined : done instanceof Map ? done.get(key) : 'ended'
+
+// The managers past pre-flight without filing (#222): one that ended with no live successor (a successor
+// is the same manager), a terminal manager that reported and sits idle (a session's 'reported' is the row
+// status 'idle'), and one owed a PR handed over since it was spawned, whatever its status.
+export function doneManagers(state: Preflight, rows: AgentRow[], handovers: Handover[]): Map<string, string> {
+  const managers = rows.filter(a => a.type === MANAGER && a.name !== undefined)
+  const finished = (a: AgentRow) => a.id === sessionKey(a.name!) && a.status === 'idle'
+  const live = new Set(managers.filter(a => !ENDED.has(a.status) && !finished(a)).map(a => noteKey(a.name!)))
+  const done = new Map<string, string>()
+  for (const h of handovers) {
+    const k = noteKey(h.reportTo ?? '')
+    const e = state.entries[k]
+    if (h.reportTo && e !== undefined && h.at >= e.spawnedAt) done.set(k, 'handed over a PR')
+  }
+  for (const a of managers) {
+    const k = noteKey(a.name!)
+    if (!live.has(k) && !done.has(k)) done.set(k, ENDED.has(a.status) ? 'ended' : 'finished')
+  }
+  return done
+}
+
+const settled = (e: Entry | undefined, ended: Done, key: string) =>
   e === undefined || e.phase !== 'recon' || ended.has(key)
 
 // A round that is open and due: everyone filed, skipped or ended, or the wait is over.
-export function dueRound(state: Preflight, ended: ReadonlySet<string>, now: number, waitMs: number): { round: Round; timedOut: boolean } | undefined {
+export function dueRound(state: Preflight, ended: Done, now: number, waitMs: number): { round: Round; timedOut: boolean } | undefined {
   const round = state.rounds.find(r => !r.delivered)
   if (round === undefined) return undefined
   const done = round.members.every(k => settled(state.entries[k], ended, k))
@@ -163,13 +193,44 @@ export function markDelivered(state: Preflight, roundId: number, now: number): P
   }
 }
 
-// A filing whose round was already delivered without it: it goes to main on its own, once.
-export function followUp(state: Preflight, name: string): { state: Preflight; send: boolean } {
+// What main was last told of a member: its phase (or why it is done), its filing and its open questions.
+// Times stay out, so the same filing sent again or a later tick tells nothing new.
+function said(state: Preflight, inbox: Inbox, done: Done, key: string): string {
+  const e = state.entries[key]
+  if (e === undefined) return ''
+  const qs = openOf(inbox, e, key).map(q => q.id).sort().join(',')
+  const why = e.phase === 'recon' ? doneWhy(done, key) : undefined
+  return JSON.stringify([e.phase, why ?? '', e.filing ?? null, qs])
+}
+
+const remember = (state: Preflight, keys: Record<string, string>): Preflight =>
+  ({ ...state, said: { ...state.said, ...keys } })
+
+// The round due now, marked delivered, and whether its message tells main anything: a round of skipped
+// managers only, or one whose every member stands as main was last told, is closed without a message.
+export function deliverRound(
+  state: Preflight, inbox: Inbox, done: Done, now: number, waitMs: number,
+): { state: Preflight; send?: { round: Round; timedOut: boolean; state: Preflight } } {
+  const d = dueRound(state, done, now, waitMs)
+  if (d === undefined) return { state }
+  const marked = markDelivered(state, d.round.id, now)
+  const members = d.round.members.filter(k => marked.entries[k] !== undefined)
+  const told = Object.fromEntries(members.map(k => [k, said(marked, inbox, done, k)]))
+  const changed = remember(marked, told)
+  const fresh = members.some(k => marked.entries[k]!.phase !== 'skipped') && members.some(k => state.said?.[k] !== told[k])
+  return fresh ? { state: changed, send: { ...d, state: changed } } : { state: changed }
+}
+
+// A filing whose round was already delivered without it: it goes to main on its own, once, and not
+// when main was already told the same.
+export function followUp(state: Preflight, name: string, inbox: Inbox = EMPTY_INBOX): { state: Preflight; send: boolean } {
   const key = noteKey(name)
   const e = state.entries[key]
   const round = e === undefined ? undefined : state.rounds.find(r => r.id === e.round)
   if (e === undefined || round === undefined || !round.delivered || round.reported.includes(key)) return { state, send: false }
-  return { state: { ...state, rounds: state.rounds.map(r => (r === round ? { ...r, reported: [...r.reported, key] } : r)) }, send: true }
+  const told = said(state, inbox, new Set(), key)
+  const next = remember({ ...state, rounds: state.rounds.map(r => (r === round ? { ...r, reported: [...r.reported, key] } : r)) }, { [key]: told })
+  return { state: next, send: state.said?.[key] !== told }
 }
 
 const openOf = (inbox: Inbox, e: Entry, key: string): Question[] =>
@@ -177,10 +238,11 @@ const openOf = (inbox: Inbox, e: Entry, key: string): Question[] =>
 
 const list = (xs: string[]) => xs.join('; ')
 
-function entryLines(key: string, e: Entry, inbox: Inbox, ended: ReadonlySet<string>): string[] {
+function entryLines(key: string, e: Entry, inbox: Inbox, ended: Done): string[] {
   const head = `- ${e.name}`
   if (e.phase === 'skipped') return [`${head}: skipped (Pre-flight: skip or Mode: lite)`]
-  if (e.phase === 'recon') return [`${head}: ${ended.has(key) ? 'ended without pre-flight' : 'still in recon, no pre-flight yet'}`]
+  const why = doneWhy(ended, key)
+  if (e.phase === 'recon') return [`${head}: ${why !== undefined ? `${why} without pre-flight` : 'still in recon, no pre-flight yet'}`]
   const f = e.filing!
   const qs = openOf(inbox, e, key)
   return [
@@ -196,7 +258,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 // The one message to main for a round.
 export function renderRound(
-  state: Preflight, inbox: Inbox, round: Round, ended: ReadonlySet<string>, now: number, timedOut: boolean, cards = false,
+  state: Preflight, inbox: Inbox, round: Round, ended: Done, now: number, timedOut: boolean, cards = false,
 ): string {
   const entries = round.members.flatMap(k => (state.entries[k] === undefined ? [] : [[k, state.entries[k]!] as const]))
   const filed = entries.filter(([, e]) => e.phase === 'filed')
@@ -207,7 +269,7 @@ export function renderRound(
   const lines = [
     `Pre-flight: ${plural(entries.length, 'task')}, ${shipped} already shipped, ${deps} depend on others, ${plural(open.length, 'question')}${blocking > 0 ? ` (${blocking} blocking)` : ''}`,
   ]
-  const waiting = entries.filter(([, e]) => e.phase === 'recon').map(([, e]) => e.name)
+  const waiting = entries.filter(([k, e]) => e.phase === 'recon' && !ended.has(k)).map(([, e]) => e.name)
   if (timedOut && waiting.length > 0) lines.push(`Timed out waiting for: ${waiting.join(', ')}. Their pre-flight follows as a separate message when filed.`)
   for (const [k, e] of entries) lines.push(...entryLines(k, e, inbox, ended))
   if (open.length > 0) {
@@ -236,7 +298,7 @@ export function renderFollowUp(state: Preflight, inbox: Inbox, name: string, now
 }
 
 // /flow preflight: the current (open) or latest round.
-export function renderStatus(state: Preflight | undefined, inbox: Inbox | undefined, ended: ReadonlySet<string>, now: number, waitMs: number): string {
+export function renderStatus(state: Preflight | undefined, inbox: Inbox | undefined, ended: Done, now: number, waitMs: number): string {
   const s = state ?? EMPTY_PREFLIGHT
   const round = s.rounds.find(r => !r.delivered) ?? latestRound(s)
   if (round === undefined) return 'No pre-flight round yet.'
@@ -251,7 +313,7 @@ export function renderStatus(state: Preflight | undefined, inbox: Inbox | undefi
 
 // A stored record read back from disk; anything malformed is dropped.
 export function normalizePreflight(raw: unknown): Preflight {
-  const r = raw as { next?: unknown; entries?: unknown; rounds?: unknown } | null
+  const r = raw as { next?: unknown; entries?: unknown; rounds?: unknown; said?: unknown } | null
   const entries: Record<string, Entry> = {}
   if (typeof r?.entries === 'object' && r.entries !== null) {
     for (const [k, v] of Object.entries(r.entries as Record<string, unknown>)) {
@@ -265,5 +327,9 @@ export function normalizePreflight(raw: unknown): Preflight {
     typeof x === 'object' && x !== null && typeof (x as Round).id === 'number' && Array.isArray((x as Round).members))
     .map(x => ({ ...x, reported: Array.isArray(x.reported) ? x.reported : [] }))
   const top = Math.max(0, ...rounds.map(x => x.id))
-  return { next: Math.max(top + 1, typeof r?.next === 'number' ? r.next : 1), entries, rounds }
+  // Absent before #222: nothing was told yet, so the next round goes out as it did.
+  const told = typeof r?.said === 'object' && r.said !== null
+    ? Object.fromEntries(Object.entries(r.said as Record<string, unknown>).filter((x): x is [string, string] => typeof x[1] === 'string'))
+    : undefined
+  return { next: Math.max(top + 1, typeof r?.next === 'number' ? r.next : 1), entries, rounds, ...(told !== undefined && { said: told }) }
 }

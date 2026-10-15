@@ -45,7 +45,7 @@ import {
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
-  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, markDelivered, normalizePreflight, renderRound,
+  closeStale, deliverRound, denyText, doneManagers, EMPTY_PREFLIGHT, gateOf, normalizePreflight, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
 import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess, reviewerToolAccess } from './lite'
@@ -563,7 +563,7 @@ function commandIoOf($: EngineInterface): CommandIo {
     handovers: () => read($, handovers),
     preflight: () => read($, preflight),
     roster: () => read($, roster),
-    endedManagers: rows => endedManagers(rows),
+    endedManagers: (state, rows, hs) => doneManagers(state, rows, hs),
     endedOwners: () => endedOwnersOf($),
     panes: () => panesOf($),
     close: () => $.ui.close({ id: PANE }),
@@ -930,29 +930,21 @@ async function captureChecks($: EngineInterface, ho: Handover, verifyPaths: stri
   })
 }
 
-// Managers that ended with no live manager of the same notes key (a successor is the same manager).
-function endedManagers(rows: AgentRow[]): Set<string> {
-  const live = new Set(liveManagers(rows).map(a => noteKey(a.name ?? '')))
-  return new Set(rows.filter(a => a.type === MANAGER && ENDED.has(a.status) && !live.has(noteKey(a.name ?? ''))).map(a => noteKey(a.name ?? '')))
-}
-
-// Sends the round to main once it is due: everyone filed, skipped or ended, or the wait is over. The
-// delivered flag is written inside the update, so two callers deliver it once.
+// Sends the round to main once it is due: everyone filed, skipped or done (preflight.ts doneManagers), or
+// the wait is over. The delivered flag is written inside the update, so two callers deliver it once; a
+// round telling main nothing new is closed unsent (deliverRound).
 async function preflightTick($: EngineInterface, rows: AgentRow[]): Promise<void> {
   if (!(await read($, preflight)).rounds.some(r => !r.delivered)) return
   const t = await $.clock.now()
-  const ended = endedManagers(rows)
+  const hs = await read($, handovers)
+  const items = await read($, inbox)
   const due = await withPreflight($, cur => {
-    const d = dueRound(cur, ended, t, mirror.preflightWaitMs)
-    if (d === undefined) return { state: cur, out: undefined }
-    const changed = markDelivered(cur, d.round.id, t)
-    return { state: changed, out: { ...d, state: changed } }
+    const done = doneManagers(cur, rows, Object.values(hs))
+    const d = deliverRound(cur, items, done, t, mirror.preflightWaitMs)
+    return { state: d.state, out: d.send === undefined ? undefined : { ...d.send, done } }
   })
   if (due === undefined) return
-  const members = due.round.members.map(k => due.state.entries[k])
-  // A round of skipped managers only has nothing to say.
-  if (members.every(e => e === undefined || e.phase === 'skipped')) return
-  const text = renderRound(due.state, await read($, inbox), due.round, ended, t, due.timedOut, mirror.askCards)
+  const text = renderRound(due.state, items, due.round, due.done, t, due.timedOut, mirror.askCards)
   toMain($, text)
 }
 

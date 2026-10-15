@@ -207,6 +207,21 @@ test('the round goes out after the wait without the managers still in recon; a l
   expect(w.submitted[1]).toContain('Pre-flight (late): login')
 })
 
+test('a manager spawned again and still in recon is not timed out for twice (#222)', async ($, on) => {
+  const w = world(on)
+  await manager($, 'csv')
+  await manager($, 'login')
+  await file($, 'a1')
+  await w.clock.advance(11 * MIN)
+  expect(w.submitted.length).toBe(1)
+  expect(w.submitted[0]).toContain('Timed out waiting for: login')
+  await manager($, 'login')
+  await w.clock.advance(11 * MIN)
+  expect(w.submitted.length).toBe(1)
+  const view = await $.command.run({ command: 'flow', args: 'preflight' } as never)
+  expect(view.text).toContain('Round 2: delivered to main')
+})
+
 test('a round of only skipped managers sends nothing; a manager that ended counts as done', async ($, on) => {
   const w = world(on)
   await manager($, 's1', 'Pre-flight: skip')

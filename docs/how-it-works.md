@@ -108,10 +108,13 @@ interruptions come before you leave.
   `mcp__flow__answer` (choices or `defaults: true`) releases it. A manager with only
   non-blocking questions starts at once on the defaults.
 - **The round**: managers started together form one round. When all have filed, skipped or
-  ended, or after `preflight_wait` minutes, the main session gets one message, "Pre-flight: 15
+  are done (ended, a terminal manager that reported and sits idle, or one a PR was handed over to
+  since it started), or after `preflight_wait` minutes, the main session gets one message, "Pre-flight: 15
   tasks, 2 already shipped, 3 depend on others, 6 questions", with each task's criteria and
-  findings and the numbered questions. You answer once. Managers still in recon at the timeout
-  follow as "Pre-flight (late): ...".
+  findings and the open numbered questions (answered ones are left out). You answer once. Managers still in recon at the timeout
+  follow as "Pre-flight (late): ..."; a done manager shows as e.g. "handed over a PR without
+  pre-flight" and is not waited for. A round or late filing that tells main nothing it was not
+  already told (every manager as last reported, no new open question) is not sent.
 - `/flow preflight` shows the open or latest round; `mcp__flow__status` shows the phase.
 - **Skip**: a line `Pre-flight: skip` in a manager's prompt exempts it (the main session uses it
   for a single small change). A `Mode: lite` line implies it (see Lite mode). With `preflight` off, nothing is gated.

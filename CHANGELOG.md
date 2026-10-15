@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Pre-flight no longer waits on managers that are done, nor repeats itself (#222, item 3). A manager that ended (agent or terminal session, with no live successor), a terminal manager that reported and sits idle, or one a PR was handed over to since it was spawned now counts as settled: it is not listed under "Timed out waiting for", does not hold the round open, and shows as "ended / finished / handed over a PR without pre-flight" instead of "still in recon" (preflight.ts `doneManagers`, also used by `/flow preflight`). preflight.json keeps what main was last told of each manager (`said`); a round or a late filing that tells main nothing new (every member as last reported, no new open question) is marked delivered without a message, so a manager spawned again while still in recon is not timed out for twice. Answered questions stay out of rounds and late follow-ups (tests added). An older preflight.json without `said` loads and sends as before.
+
 ## [0.6.118] - 2026-10-14
 
 ### Fixed
