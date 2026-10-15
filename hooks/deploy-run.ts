@@ -4,8 +4,8 @@
 import type { EnvChange, Handover, LogEvent } from '../types'
 import {
   applyAnswer, applyViewOf, approvalContext, closeEnvItems, declinedEntries, decideEnv, decideGate, ENV_KIND, envCommandFor, envListLine,
-  isApprove, normalizeDeploys, openApplyItem, openApprovalItem, reopenItem, openDeployIds, openEnvItems, pendingEnv, recordDeployed,
-  release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
+  isApprove, normalizeDeploys, openApplyItem, openApprovalItem, openDeployIds, openEnvItems, pendingEnv, recordDeployed,
+  envSettledLine, release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
 } from './deploy'
 import type { Deploys, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
 import { AUTO, matchRule } from './standing'
@@ -131,13 +131,18 @@ export async function onEnvAnswer(io: DeployIo, q: Question, answer: string): Pr
   if (!yes) {
     return e.role === 'change'
       ? ` ${e.target} is held by this: the gate skips it until main runs release on ${e.target}, which drops the declined change.`
-      : ` Not yet: ${e.target} keeps waiting; the next gate opens a fresh item for it.`
+      : ` Not yet: ${q.id} stays open and ${e.target} keeps waiting; answer done on ${q.id} when it is.`
   }
   const ib = await io.inbox()
   const stillOpen = ib.items.some(x => x.state === 'open' && x.kind === ENV_KIND && x.env?.target === e.target)
   if (!waiting || stillOpen || info === undefined || info.mode !== 'auto') return ''
   await withDeploys(io, cur => ({ deploys: setTarget(cur, e.target, { ...(cur.targets[e.target] ?? {}), due: true }), out: undefined }))
   return ` ${e.target} has its env answers. ${await io.ensureQueue('approval')}`
+}
+
+// The refusal for an answer to an env item whose change is already recorded for its target, else undefined.
+export async function envSettled(io: DeployIo, q: Question): Promise<string | undefined> {
+  return q.env === undefined ? undefined : envSettledLine(q, (await io.deploys()).targets[q.env.target])
 }
 
 // A person's (or main's) hold on a target.
@@ -249,7 +254,6 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
   if (gate.kind === 'envAsk') {
     const qids: string[] = [...gate.open]
     const created: string[] = []
-    const moved: Array<{ pr: number; name: string; field: 'qid' | 'loginQid'; qid: string }> = []
     await io.withInbox(cur => {
       let next = cur
       for (const e of gate.entries) {
@@ -258,28 +262,8 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
         qids.push(r.q.id)
         created.push(r.q.id)
       }
-      // An item answered "not yet" is replaced by a fresh copy, so the change keeps one open item.
-      for (const re of gate.reopen) {
-        const old = next.items.find(x => x.id === re.entry.change[re.field])
-        if (old === undefined) continue
-        const r = reopenItem(next, old, at)
-        next = r.inbox
-        qids.push(r.q.id)
-        created.push(r.q.id)
-        moved.push({ pr: re.entry.pr, name: re.entry.change.name, field: re.field, qid: r.q.id })
-      }
       return { inbox: next, out: undefined }
     })
-    for (const pr of new Set(moved.map(m => m.pr))) {
-      const h = (await io.handovers())[String(pr)]
-      if (h?.env === undefined) continue
-      const next: Handover = { ...h, env: h.env.map(c => {
-        const mine = moved.filter(x => x.pr === pr && x.name === c.name && c.target === target)
-        return mine.length === 0 ? c : { ...c, ...Object.fromEntries(mine.map(m => [m.field, m.qid])) }
-      }) }
-      await io.updateHandovers(hs => ({ ...hs, [String(pr)]: next }))
-      await io.best('saving a handover', () => io.saveHandover(next))
-    }
     io.toast(`Env on ${target} awaits you: /flow inbox (${qids.join(', ')})`)
     if (created.length > 0) await sendCards(cardsOf(io), options, () => `Env on ${target} awaits the user`, created)
     return `Awaits env: ${qids.join(', ')}. ${skipText(target)}`

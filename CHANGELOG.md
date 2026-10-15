@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Env items stay answerable (part of #222, item 1). "Not yet" (or anything but "done") on a secret, login or apply item leaves it open with the answer noted on it, and a later "done" on the same id is accepted; the gate waits on that same item instead of opening a fresh copy (reopenItem is gone). An answered env item takes a later explicit answer from the user (`/flow answer`, the pane) or main (`mcp__flow__answer` answers) and the gate follows the latest one: a change answered "no" then "yes" before a release is no longer held, a secret answered "done" then "not yet" is open again. A change the gate already settled (applied, set, dropped by a release) refuses a new answer with what happened; an item flow closed itself stays closed. The same answer twice changes nothing. Items stored as answered "not yet" before this read back open.
+- `mcp__flow__answer` with `defaults: true` never answers deploy, env, push and reviewer items or guard suggestions, also when named in `ids`: it says to answer them explicitly, as `/flow ok` does.
+
+### Added
+
+- Each answer records how it was given (`via`: user, main, defaults, standing, flow, manager). "Already answered" lines, `/flow inbox <id>`, the archive and the pane show it where the who alone does not say it, e.g. `("not yet" by main, via defaults)`, and an answer from the pane or a `/flow` command reads `by the user`. Older answers show as before.
+
 ## [0.6.118] - 2026-10-14
 
 ### Fixed

@@ -167,6 +167,10 @@ export function parseChoice(options: string[], choice: string): Choice {
   return { text: c, free: true }
 }
 
+// An env item for a step the person does themselves, answered anything but "done": it stays open.
+export const envOwed = (q: Question, answer: string | undefined): boolean =>
+  q.kind === 'env' && q.env !== undefined && q.env.role !== 'change' && (answer ?? '').trim().toLowerCase() !== 'done'
+
 export type Marked =
   | { kind: 'ok'; inbox: Inbox; q: Question; answer: string; isDefault: boolean }
   | { kind: 'unknown' }
@@ -184,16 +188,24 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   if (q === undefined) return { kind: 'unknown' }
   // A decision the decision API kept stays undoable: any answer but Keep takes it back. Keep itself changes nothing.
   const retake = q.state === 'answered' && (q.auto !== undefined || q.rule !== undefined) && isFyi(q) && choice !== null && parseChoice(q.options, choice).text !== KEEP
-  if (q.state === 'answered' && !retake) return { kind: 'answered', q }
+  // An env item stays answerable: a later explicit answer (the person's, or main relaying one) replaces the
+  // earlier one and the gate follows it. One the plugin closed itself (answeredBy "flow") stays closed.
+  const reanswer = q.state === 'answered' && q.kind === 'env' && q.answeredBy !== 'flow' && choice !== null && rule === undefined && (user || by === 'main') &&
+    parseChoice(q.options, choice).text !== q.answer
+  if (q.state === 'answered' && !retake && !reanswer) return { kind: 'answered', q }
   // Main may also answer any decision: the user overrides what a manager has not looked at.
   if (rule === undefined && !user && !isAddressee(q, by) && !(isFyi(q) && by === 'main') && !(q.viaQ !== undefined && by === 'main')) return { kind: 'refused', q }
   const answer = choice === null ? q.default : parseChoice(q.options, choice).text
   if (answer === '') return { kind: 'empty', q }
+  // A step the person owes (a secret, a login, an apply) is open until it is done: "not yet" is noted on it, not closing it.
+  const owed = envOwed(q, answer)
+  if (owed && q.state === 'open' && q.answer === answer) return { kind: 'answered', q }
   // Answering with the default's text counts as the default, however it was typed.
   const isDefault = answer === q.default
+  const via: NonNullable<Question['via']> = rule !== undefined ? 'standing' : user ? 'user' : choice === null ? 'defaults' : by === 'main' ? 'main' : 'manager'
   const { auto: _kept, rule: _rule, ...rest } = q
   const done: Question = {
-    ...rest, state: 'answered', answer, answeredBy: by, answeredAt: now, delivered: rule !== undefined,
+    ...rest, state: owed ? 'open' : 'answered', answer, answeredBy: by, answeredAt: now, via, delivered: rule !== undefined,
     ...(rule !== undefined ? { rule } : {}),
   }
   return { kind: 'ok', inbox: { ...inbox, items: inbox.items.map(x => (x.id === id ? done : x)) }, q: done, answer, isDefault }
@@ -552,7 +564,10 @@ export const archiveOf = (inbox: Inbox | undefined): Question[] =>
 
 export const ARCHIVE_SHOWN = 50
 
-export const archiveWho = (q: Question): string => (q.rule !== undefined ? `standing answer ${q.rule}` : q.auto !== undefined ? autoWho(q) : q.answeredBy ?? '?')
+// Who answered, and how when the who alone does not say it: "the user" (pane, /flow commands), "main, via defaults".
+// main's own explicit answer, a rule's, flow's and a manager's need no via; older answers have none.
+export const archiveWho = (q: Question): string =>
+  q.rule !== undefined ? `standing answer ${q.rule}` : q.auto !== undefined ? autoWho(q) : q.via === 'user' ? 'the user' : `${q.answeredBy ?? '?'}${q.via === 'defaults' ? ', via defaults' : ''}`
 // "jev (0.93)": the decision API that kept it and how sure it was.
 export const autoWho = (q: Question): string => `${q.auto?.by ?? '?'} (${(q.auto?.confidence ?? 0).toFixed(2)})`
 
@@ -601,6 +616,7 @@ export function renderItem(inbox: Inbox | undefined, id: string, now: number): s
   ]
   if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`)
   else {
+    if (q.answer !== undefined) lines.push('', `Last answer: ${q.answer} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}); still open.`)
     lines.push('', isFyi(q) ? `Keep: /flow ok ${q.id}. Undo: /flow no ${q.id} <what instead>.` : `Answer: /flow answer ${q.id} <letter or your own words>${needsExplicitAnswer(q) ? '' : `, or /flow ok ${q.id} for the default`}.`)
     if (overridesManager(q)) lines.push(`It is for ${q.addressee}; answering it overrides ${q.addressee}, who is told.`)
   }
@@ -649,6 +665,8 @@ export function normalizeInbox(raw: unknown): Inbox {
     const moved = new Map(old.map(x => [x, { ...x, id: `d${nextD++}`, alias: x.id }]))
     items = items.map(x => moved.get(x) ?? x)
   }
+  // An env step answered "not yet" before such items stayed open: open again, so it can be answered done.
+  items = items.map(x => (x.state === 'answered' && x.answeredBy !== 'flow' && envOwed(x, x.answer) ? { ...x, state: 'open' as const } : x))
   const top = Math.max(0, ...items.map(x => Math.max(num(x.id, /^q(\d+)$/), num(x.alias, /^q(\d+)$/))))
   return {
     next: Math.max(top + 1, typeof r?.next === 'number' ? r.next : 1),

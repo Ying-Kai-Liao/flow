@@ -7,7 +7,7 @@ import { autoKeepable, autoKeepFyis } from './decide-use'
 import type { DecideUseSettings } from './decide-use'
 import { MANAGER } from './core'
 import type { DeliverOptions } from './deliver'
-import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, KEEP, linkEscalations, markAnswered, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
+import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, KEEP, linkEscalations, markAnswered, needsExplicitAnswer, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
 import { followUp, FILE_HELP, parseFiling, recordFiling, renderFollowUp } from './preflight'
 import type { Preflight } from './preflight'
 import { alwaysRule, autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
@@ -190,9 +190,16 @@ export async function answerTool(io: InboxIo, options: Record<string, unknown>, 
     const ids = Array.isArray(input.ids) ? input.ids.map(String) : undefined
     const all = openFor(await io.standing.inbox(), by)
     // Without ids a bulk default never answers a blocking question: naming its id is the explicit answer.
-    const blocking = ids === undefined ? all.filter(q => !isFyi(q) && q.blocking === true) : []
+    const blocking = ids === undefined ? all.filter(q => !isFyi(q) && q.blocking === true && !needsExplicitAnswer(q)) : []
     for (const q of blocking) lines.push(`Skipped ${q.id} (blocking): answer it explicitly or name it in ids.`)
-    for (const id of ids ?? all.filter(q => !blocking.includes(q)).map(q => q.id)) if (!todo.has(id)) todo.set(id, null)
+    // Deploy, env, push and reviewer items and guard suggestions are the user's to answer: a default never
+    // answers them, also when named in ids (as /flow ok).
+    const box = await io.standing.inbox()
+    for (const id of ids ?? all.filter(q => !blocking.includes(q)).map(q => q.id)) {
+      const q = findItem(box, id)
+      if (q !== undefined && needsExplicitAnswer(q)) lines.push(`${q.id}: answer it explicitly (${q.guard !== undefined ? 'guard test' : q.kind === 'env' ? 'env change' : `${q.kind} item`}); a default never answers it. Relay the user's choice in answers.`)
+      else if (!todo.has(id)) todo.set(id, null)
+    }
     if (ids === undefined && all.length === 0 && todo.size === 0) lines.push('No open questions for you.')
   }
   if (todo.size === 0 && lines.length === 0) lines.push('Nothing to answer: pass answers, or defaults: true.')

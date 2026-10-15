@@ -492,7 +492,7 @@ export function inboxView(x: InboxCtx) {
     const found = fresh.findIndex(r => r.key === c)
     if (strict && c !== null && found < 0) {
       const was = (await io.readInbox()).items.find(x => x.id === c)
-      const by = was?.state === 'answered' ? ` (by ${was.answeredBy ?? '?'})` : ''
+      const by = was?.state === 'answered' ? ` (by ${archiveWho(was)})` : ''
       if (at === undefined) await io.setCursor(fresh[0]?.key ?? null)
       await io.setNote(`${c} ${was?.state === 'answered' ? 'was answered meanwhile' : 'moved out of the list'}${by}; ${at === undefined ? 'the highlight moved, press again' : 'nothing was changed'}.`)
       return undefined
