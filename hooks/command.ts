@@ -106,9 +106,12 @@ export async function flowCommand(
         if (q !== undefined && !isFyi(q)) lines.push(`${q.id}: not a decision; answer a question with /flow answer ${q.id} <choice>.`)
         else lines.push(await io.answerQuestion(m[1]!.toLowerCase(), m[2] ?? OVERTURN, 'main', options, true))
       } else {
-        const m = /^(\S+)\s+([\s\S]+)$/.exec(rest)
-        if (m === null) return { text: 'Usage: /flow answer <id> <option letter, number or your own words>' }
-        lines.push(await io.answerQuestion(m[1]!.toLowerCase(), m[2]!, 'main', options, true))
+        // Two answers pasted on one line split on the literal `/flow answer`; a bare "answer" inside free text stays put.
+        const usage = 'Usage: /flow answer <id> <option letter, number or your own words>'
+        const pieces = rest.split(/\s+\/flow\s+answer(?:\s+|$)/i).map(p => /^(\S+)\s+([\s\S]+)$/.exec(p.trim()))
+        // Parse every piece before answering any, so a malformed line records nothing.
+        if (pieces.some(m => m === null)) return { text: pieces.length > 1 ? `One answer per command: a piece has no id or no choice.\n${usage}` : usage }
+        for (const m of pieces) lines.push(await io.answerQuestion(m![1]!.toLowerCase(), m![2]!.trim(), 'main', options, true))
       }
       lines.push(stillOpen(await io.inbox()))
       return { text: lines.join('\n') }
