@@ -103,6 +103,25 @@ test('answer, no and ok route to answerQuestion with the user flag', async () =>
   expect(seen).toHaveLength(1)
 })
 
+test('answer splits a line with a repeated /flow answer, and refuses the whole line if a piece is malformed', async () => {
+  const seen: unknown[][] = []
+  const { io } = fake({ answerQuestion: async (...a: unknown[]) => { seen.push(a); return `answered ${a[0]}` } })
+  const out = (await run(io, 'answer q84 done /flow answer Q85 done')).text
+  expect(seen.map(a => [a[0], a[1]])).toEqual([['q84', 'done'], ['q85', 'done']])
+  expect(out).toContain('answered q84\nanswered q85')
+  // Free text that merely mentions answer stays one answer.
+  await run(io, 'answer q86 answer q87 later, flow answer too')
+  expect(seen.at(-1)).toEqual(['q86', 'answer q87 later, flow answer too', 'main', {}, true])
+  seen.length = 0
+  for (const line of ['answer q84 /flow answer q85 done', 'answer q84 done /flow answer', 'answer q84 done /FLOW ANSWER q85']) {
+    expect((await run(io, line)).text).toBe('One answer per command: a piece has no id or no choice.\nUsage: /flow answer <id> <option letter, number or your own words>')
+  }
+  expect(seen).toHaveLength(0)
+  // The same id twice answers in order; each result is answerQuestion's.
+  await run(io, 'answer q1 a /flow answer q1 b')
+  expect(seen.map(a => a[1])).toEqual(['a', 'b'])
+})
+
 test('checks: table, detail, and the pass/fail/skip branches', async () => {
   const { io } = fake()
   expect((await run(io, 'checks')).text.length).toBeGreaterThan(0)
