@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `test_slot` release counts a pass after a fail as flaky only when both ran on the same sha (optional `sha`, else the caller worktree's HEAD plus a hash of any uncommitted diff); a pass on another sha is a fix, and an unknown sha is never flaky (#222, item 6).
+
 ## [0.6.118] - 2026-10-14
 
 ### Fixed
