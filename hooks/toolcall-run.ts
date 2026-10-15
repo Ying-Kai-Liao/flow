@@ -8,7 +8,7 @@ import { guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
 import { limitLabel, windowOf, wrapUpText } from './meter'
 import { describeCall, ROLE, summarizeCall } from './pane'
 import { sessionLive } from './sessions'
-import { findWorktree } from './state'
+import { callerDir } from './testfail'
 import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun, workerSuiteRefusal } from './testguard'
 import type { settingsOf } from './settings'
 
@@ -228,23 +228,8 @@ export async function guardTestsCase(io: GuardTestsCaseIo, base: string, map: Pa
   let files: string[]
   if (Array.isArray(input.files)) files = input.files.filter((f): f is string => typeof f === 'string')
   else {
-    // The caller's own worktree, else the session's directory.
-    let dir: string | undefined
-    // A relayed call (`session:<name>`) diffs that session's worktree; the lookup is here, not in register.tsx,
-    // because the plugin directory flagged a `$` helper returning `s?.worktree` (MOD_CAPABILITY_USE_NOT_PLAIN).
-    let mine: string | undefined
-    if (e.agentId !== undefined && e.agentId.startsWith('session:')) {
-      const all = await io.sessions()
-      const named = all[e.agentId.slice('session:'.length)]
-      if (named !== undefined) mine = named.worktree
-    }
-    if (mine !== undefined) dir = mine
-    else if (e.agentId !== undefined) {
-      const me = (await io.agents()).find(a => a.id === e.agentId)
-      const wt = await io.exec(['git', 'worktree', 'list', '--porcelain']).catch(() => undefined)
-      if (me !== undefined && wt?.exitCode === 0) dir = findWorktree(wt.stdout, me.id, `flow/${me.name ?? me.id}`)?.path
-    }
-    dir ??= await io.cwd().catch(() => undefined)
+    // The caller's own worktree, else the session's directory (callerDir, testfail.ts, shared with test_slot).
+    const dir = await callerDir(io, e.agentId)
     const git = (...args: string[]) => io.exec(['git', ...(dir === undefined ? [] : ['-C', dir]), ...args])
     const diff = await git('diff', '--name-only', '--no-renames', `origin/${base}...HEAD`)
     if (diff.exitCode !== 0) return { result: `Could not work out your diff (git diff origin/${base}...HEAD failed: ${diff.stderr.trim().slice(0, 300)}). Call again with files: [...].` }

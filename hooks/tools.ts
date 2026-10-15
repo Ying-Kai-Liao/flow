@@ -349,7 +349,7 @@ export const PLAN_TOOL: ToolSpec = {
 
 export const TEST_SLOT_TOOL: ToolSpec = {
   name: 'test_slot',
-  description: 'A lock on heavy test runs: only test_slots of them run at once across all worktrees. "acquire" before a whole suite or any run over about a minute; if it says queued, wait as the answer tells you (grant file or message), then call acquire once to confirm. "release" when the run ends or fails, with result "pass"/"fail" and on fail failed_tests (exact names; a pass after a fail with the same label is reported as flaky). "status": holders and waiters.',
+  description: 'A lock on heavy test runs: only test_slots of them run at once across all worktrees. "acquire" before a whole suite or any run over about a minute; if it says queued, wait as the answer tells you (grant file or message), then call acquire once to confirm. "release" when the run ends or fails, with result "pass"/"fail" and on fail failed_tests (exact names; a pass after a fail with the same label on the same sha is reported as flaky; a pass on another tree is a fix). "status": holders and waiters.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -358,6 +358,7 @@ export const TEST_SLOT_TOOL: ToolSpec = {
       label: { type: 'string', description: 'What you will run, e.g. "full suite"' },
       result: { type: 'string', enum: ['pass', 'fail'], description: 'release: how the run ended' },
       failed_tests: { type: 'array', items: { type: 'string' }, description: 'release with result fail: the exact names of the failing tests' },
+      sha: { type: 'string', description: 'release: the commit the run was on (git rev-parse HEAD). Optional: without it the plugin reads your worktree\'s HEAD, plus a hash of any uncommitted diff' },
       wait_s: { type: 'number', description: `Seconds to wait for a slot before answering queued (default ${WAIT_DEFAULT_S}, at most ${WAIT_MAX_S})` },
     },
     required: ['action'],

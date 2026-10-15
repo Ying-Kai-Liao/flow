@@ -2,8 +2,8 @@ import type { AgentRow, LogEvent, SlotEntry, TestSlots } from '../types'
 import type { Settings } from './prompts'
 import { isReviewer } from './core'
 import { enqueueWaiter, grantFile, heldBy, slotLine, span, CLAIM_MS, LEASE_MS, WAIT_DEFAULT_S, WAIT_MAX_S } from './slots'
-import { noteRelease } from './testfail'
-import type { TestFails } from './testfail'
+import { needsTree, noteRelease, runTree } from './testfail'
+import type { CallerDirIo, TestFails } from './testfail'
 import { labelOf } from './meter'
 import { typecheckSlotTool } from './typecheck-slots'
 
@@ -23,6 +23,12 @@ export type SlotsIo = {
   // The typecheck pool (typecheck-slots.ts); optional so a test's io need not provide it.
   typecheckSlots?: () => Promise<TestSlots>
   settleTypecheck?: (rows: AgentRow[], t: number, pre?: (s: TestSlots) => TestSlots, me?: string) => Promise<void>
+  // What finds the caller's worktree, for the tree a released run was on; optional, and without them the tree is
+  // unknown (never flaky) unless the caller passes sha.
+  sessions?: CallerDirIo['sessions']
+  agents?: CallerDirIo['agents']
+  exec?: CallerDirIo['exec']
+  cwd?: CallerDirIo['cwd']
 }
 
 export async function testSlotTool(io: SlotsIo, settings: Settings, input: Record<string, unknown>): Promise<{ result: string }> {
@@ -50,11 +56,13 @@ export async function testSlotTool(io: SlotsIo, settings: Settings, input: Recor
       })
       let noted = ''
       await io.best('recording a test result', async () => {
-        const n = noteRelease(await io.testFails(), key, label, input.result, input.failed_tests)
-        if (n.event === undefined) return
-        await io.setTestFails(n.state)
-        await io.appendLog({ event: n.event.kind, owner: name, agent: name, text: n.event.text })
-        noted = ` ${n.answer}`
+        const fails = await io.testFails()
+        // git runs only when there is a fail to record or to compare against.
+        const tree = needsTree(fails, key, label, input.result) ? await runTree(io, typeof input.agentId === 'string' ? input.agentId : undefined, input.sha) : undefined
+        const n = noteRelease(fails, key, label, input.result, input.failed_tests, tree)
+        if (n.state !== fails) await io.setTestFails(n.state)
+        if (n.event !== undefined) await io.appendLog({ event: n.event.kind, owner: name, agent: name, text: n.event.text })
+        if (n.answer !== '') noted = ` ${n.answer}`
       })
       return { result: `${freed ? 'Released your test slot.' : 'You held no test slot; nothing to release.'}${noted}` }
     }
