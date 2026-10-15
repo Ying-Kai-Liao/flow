@@ -100,6 +100,8 @@ export type CleanInputs = {
   oldLocks?: Set<string>
   // Branches of best-of-N arms that lost (an `arm-lost` event, hooks/bestof.ts): with a closed PR and pushed they are safe like a merged one.
   lost?: Set<string>
+  // Worktrees restoreWorktree made again in the last RESTORED_MS: their owner is on its way back to them.
+  restored?: Set<string>
 }
 
 export type Kept = { kind: 'worktree' | 'branch'; name: string; reason: string; needsLook: boolean }
@@ -238,6 +240,11 @@ export function selectCleanup(i: CleanInputs): Sweep {
     }
     if (i.waiting?.has(w.path)) {
       keep('worktree', w.path, 'waiting for its successor', false)
+      hold()
+      continue
+    }
+    if (i.restored?.has(w.path)) {
+      keep('worktree', w.path, 'made again for its owner', false)
       hold()
       continue
     }
@@ -451,7 +458,7 @@ async function gatherClean(io: CleanIo, base: string): Promise<CleanGathered> {
     roster.push({ id: sessionKey(s.name), live, name: s.name, cwd: s.worktree })
     if (s.hostWorktree !== undefined) roster.push({ id: sessionKey(s.name), live, name: s.name, cwd: s.hostWorktree })
   }
-  const partial: Omit<CleanInputs, 'ancestry'> = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting, lost }
+  const partial: Omit<CleanInputs, 'ancestry'> = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting, lost, restored: restoredPaths() }
   // Content equivalence for tips a merged PR of the branch family may have replaced (a rebase
   // leaves the old commits behind): contained when every file they changed since the merge base
   // has the very same tree entry on origin/<base>. Anything odd (quoted names, many files) is not.
@@ -508,6 +515,37 @@ function exclusive<T>(fn: () => Promise<T>): Promise<T> {
   const run = sweepChain.then(fn, fn)
   sweepChain = run.catch(() => undefined)
   return run
+}
+
+// A worktree made again stays out of the sweeps this long: the reviewer it was made for may still be
+// resuming (not live on the roster yet), and a fresh detached checkout of the base reads as safe to remove.
+const RESTORED_MS = 10 * 60_000
+const restoredAt = new Map<string, number>()
+function restoredPaths(now = Date.now()): Set<string> {
+  for (const [p, t] of restoredAt) if (now - t >= RESTORED_MS) restoredAt.delete(p)
+  return new Set(restoredAt.keys())
+}
+
+type Exec = (argv: string[], timeoutMs: number) => Promise<{ exitCode: number; stdout: string; stderr?: string }>
+
+// A reviewer's worktree that is gone from disk (a sweep or a person removed it), made again at the same
+// path the way launch makes one: detached at origin/<base>. The reviewer that runs or resumes there gets
+// its directory back instead of failing every command (#222). Under the sweep lock, so a sweep never sees
+// it half made and two callers never both add it; the second finds it there. A missing directory still
+// registered (locked by its agent, or not pruned yet) is unlocked and pruned first, else the add refuses.
+export async function restoreWorktree(exec: Exec, path: string, base: string): Promise<{ restored: boolean } | { error: string }> {
+  return exclusive(async () => {
+    const run = (argv: string[], ms = 60_000) => exec(argv, ms).catch((err: unknown) => ({ exitCode: 1, stdout: '', stderr: err instanceof Error ? err.message : String(err) }))
+    if ((await run(['test', '-d', path], 10_000)).exitCode === 0) return { restored: false }
+    await run(['git', 'worktree', 'unlock', path])
+    await run(['git', 'worktree', 'prune'])
+    // A failed fetch leaves origin/<base> as it was, which still makes a usable checkout.
+    await run(['git', 'fetch', 'origin', base], 120_000)
+    const r = await run(['git', 'worktree', 'add', '--detach', path, `origin/${base}`], 120_000)
+    if (r.exitCode !== 0) return { error: (r.stderr ?? '').trim().split('\n')[0]?.slice(0, 200) || r.stdout.trim().split('\n')[0]?.slice(0, 200) || 'git worktree add failed' }
+    restoredAt.set(path, Date.now())
+    return { restored: true }
+  })
 }
 
 const leftoverCounts = (s: Sweep, failed: Kept[] = [], applied = false): Leftovers => ({

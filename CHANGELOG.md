@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A resumed reviewer no longer finds its worktree gone (#222, item 2). At session start the automatic sweep ran before the terminal sessions were loaded and adopted, so a terminal reviewer's (or worker's) worktree had no owner and was removed. It now runs after the sessions and the settings are loaded. A message to an agent-mode reviewer whose worktree is missing no longer resumes it into a missing directory. A live reviewer (running, waiting or idle) gets the worktree made again at the same path, detached at origin/<base>. An ended reviewer's message is refused with a clear line, and the queue starts a fresh reviewer for pending handovers. In tmux and Orca, a restart of a reviewer session, a message to it and keys pressed in it first make its missing worktree again the same way. A worker session's restart is refused when its worktree is gone. A worktree made again is kept out of the sweeps for 10 minutes. A completed reviewer's worktree is still removed after it ends.
+
 ## [0.6.118] - 2026-10-14
 
 ### Fixed

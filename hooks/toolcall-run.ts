@@ -1,7 +1,9 @@
 import type { AgentInfo } from 'claude-code'
 import type { Activity, AgentRow, Session, TestSlots } from '../types'
+import { parsePorcelain, restoreWorktree } from './clean'
 import type { AgentFact } from './dag'
 import { isReviewer, LIVE_STATUS, LOG_MAX, MANAGER, WORKER, WORKERS } from './core'
+import { ENDED } from './deliver'
 import { allowed, flowActive, killRefusal, mainCheckoutRefusal, mainRelative, parseWorktrees, remoteDeleteRefusal, resolvePath, writeTargets } from './guards'
 import type { WriteTarget } from './guards'
 import { guardReport, guardTestsFor, pathsFromStatus } from './guardtests'
@@ -51,6 +53,8 @@ export type ToolCallIo = GuardIo & {
   alreadyForwarded: (id: string, text: string) => Promise<boolean>
   deliverToSession: (fromId: string | undefined, target: Session, text: string) => Promise<string>
   holdForReviewer: (id: string) => void
+  // Starts a reviewer for pending handovers when none is live (the queue's own start; a no-op otherwise).
+  startReviewer: () => Promise<unknown>
   mainModel: () => string | undefined
   mainWindow: () => number | undefined
 }
@@ -91,6 +95,39 @@ export async function mainCheckoutGuard(io: GuardIo, e: Record<string, unknown>,
     if (t.git) return mainCheckoutRefusal(co.main, `\`git\` in ${t.path}`, allow)
     if (!allowed(rel, allow)) return mainCheckoutRefusal(co.main, t.path, allow)
   }
+  return undefined
+}
+
+// A message resumes an agent in the directory it ran in. A reviewer agent's worktree goes when it ends
+// (the sweep after its "done"), or with a sweep that ran while the roster did not know it, and a reviewer
+// resumed there failed every command and could not merge (#222). A live one (waiting for this message,
+// say) is the same process: its worktree is made again where it was. An ended one is not resumed: a
+// fresh reviewer gets a worktree of its own from the host, and the queue (handovers.json) is all the
+// state a reviewer has, so nothing is lost; a remade checkout at a path only guessed from its id would be.
+// The refusal text, or undefined to let the message through.
+async function reviewerWorktreeGone(io: ToolCallIo, to: string): Promise<string | undefined> {
+  const target = (await io.agents()).find(a => (a.id === to || a.name === to) && isReviewer(a.type))
+  // A pending one's worktree is the host's to make yet.
+  if (target === undefined || target.status === 'pending') return undefined
+  const wl = await io.exec(['git', 'worktree', 'list', '--porcelain'], 10_000).catch(() => undefined)
+  if (wl?.exitCode !== 0) return undefined
+  const all = parsePorcelain(wl.stdout)
+  const main = all[0]?.path
+  if (main === undefined) return undefined
+  // The host's isolation worktree: .claude/worktrees/agent-<id>, as the sweep matches it too.
+  const dir = target.id.startsWith('agent-') ? target.id : `agent-${target.id}`
+  const path = all.find(w => w.path.endsWith(`/${dir}`))?.path ?? `${main}/.claude/worktrees/${dir}`
+  const there = await io.exec(['test', '-d', path], 10_000).catch(() => undefined)
+  if (there?.exitCode === 0) return undefined
+  const who = target.name ?? target.id
+  if (ENDED.has(target.status)) {
+    await io.best('starting a fresh reviewer', async () => { await io.startReviewer() })
+    return `Not sent: ${who} has ended and its worktree ${path} is gone (the plugin removes a reviewer's worktree after it ends), ` +
+      'so a resumed reviewer would run in a missing directory and could not merge. Pending handovers go to a fresh reviewer: ' +
+      'the plugin starts one now if none is live. Send a message to that one, not to an ended reviewer.'
+  }
+  const r = await restoreWorktree(io.exec, path, io.settings().base)
+  if ('error' in r) return `Not sent: ${who}'s worktree ${path} is gone and could not be made again (${r.error}). Stop ${who} so a fresh reviewer takes the pending handovers.`
   return undefined
 }
 
@@ -157,6 +194,8 @@ export async function beforeToolCall(io: ToolCallIo, e: Call & { tool: string })
       }
     }
     if (named !== undefined && sessionLive(named) && !(await inRoster())) return { deny: await io.deliverToSession(id, named, text) }
+    const gone = await reviewerWorktreeGone(io, to)
+    if (gone !== undefined) return { deny: gone }
     await io.best('marking a wake-up', async () => {
       const listed = (await io.agents()).find(a => a.id === to || a.name === to)
       // A manager the host dropped from the roster is held by the id last seen for it.
