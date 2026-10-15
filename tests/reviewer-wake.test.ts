@@ -19,7 +19,7 @@ const ho = (pr: number, status = 'pending', at = 1): Handover => ({ pr, at, stat
 
 // ---- startQueue against a fake QueueIo ----
 
-function setup(initial: { pending?: Handover[]; agents?: { id?: string; name?: string; type: string; status: string }[]; session?: Session; breaker?: Breaker; until?: number; now?: number } = {}) {
+function setup(initial: { pending?: Handover[]; agents?: { id?: string; name?: string; type: string; status: string }[]; session?: Session; breaker?: Breaker; until?: number; now?: number; terminal?: boolean } = {}) {
   mirror.deployInfos = []
   const w = {
     handovers: Object.fromEntries((initial.pending ?? []).map(h => [String(h.pr), h])) as Record<string, Handover>,
@@ -57,7 +57,7 @@ function setup(initial: { pending?: Handover[]; agents?: { id?: string; name?: s
     deploys: async () => ({ targets: {} }) as never,
     runs: async () => w.spawns.length,
     setRuns: async () => undefined,
-    spawn: async input => { w.spawns.push(input.name); return {} },
+    spawn: async input => { w.spawns.push(input.name); return initial.terminal === true ? { terminal: true } : {} },
     reviewerSession: async () => w.session,
     nudge: async (_s, text, told) => { w.typed.push(text); w.session!.nudged = told; return undefined },
     setTold: async (_s, told) => { w.session!.nudged = told },
@@ -78,7 +78,9 @@ function setup(initial: { pending?: Handover[]; agents?: { id?: string; name?: s
 }
 
 const uid = () => Math.random().toString(36).slice(2)
-const reviewerAgent = (status: string, id = `r-${uid()}`) => ({ id, name: 'reviewer-1', type: 'flow:reviewer', status })
+// What an agent was told is kept by name for the module's life: a test that spawns reviewer-1 seeds it, so a later
+// test that must start from nothing passes a name of its own.
+const reviewerAgent = (status: string, id = `r-${uid()}`, name = 'reviewer-1') => ({ id, name, type: 'flow:reviewer', status })
 const terminal = (name = `rv-${uid()}`, nudged: string[] = []) => ({ name, host: 'tmux', nudged }) as unknown as Session
 
 test('a reviewer agent held on background work is told the pending handovers, once per handover', async () => {
@@ -116,9 +118,15 @@ test('a reviewer terminal that reports with a PR still pending is told it again,
   expect(w.typed).toEqual(['still pending: #7'])
   // A later trigger that is not a report does not repeat it.
   expect(await startQueue(io)).toContain('already been told')
-  // Another report with #7 still pending tells it again.
+  // A reviewer that cannot start a batch reports again: #7 is not told a second time, so it does not loop.
+  expect(await startQueue(io, 'other', s.name)).toContain('already been told')
+  expect(w.typed).toEqual(['still pending: #7'])
+  // A new handover after that report is told as new; the next report re-tells it once, and #7 not again.
+  w.handovers['8'] = ho(8)
+  await startQueue(io, 'handover')
   await startQueue(io, 'other', s.name)
-  expect(w.typed).toEqual(['still pending: #7', 'still pending: #7'])
+  await startQueue(io, 'other', s.name)
+  expect(w.typed).toEqual(['still pending: #7', 'new handover: #8', 'still pending: #8'])
   // A report from some other session name leaves this one's marks alone.
   expect(await startQueue(io, 'other', 'rv-other')).toContain('already been told')
 })
@@ -143,13 +151,66 @@ test('reviewer_delay: the deadline is kept with the wait, so a timer a reload ca
   expect(other.w.until).toBe(0)
 })
 
+test('a reviewer agent is not messaged about the handovers its spawn prompt named', async () => {
+  const { w, io } = setup({ pending: [ho(7), ho(8)] })
+  expect(await startQueue(io)).toBe('Started reviewer reviewer-1.')
+  // It took some and runs its check in the background: more handovers arrive.
+  const id = `r-${uid()}`
+  w.agents = [{ id, name: 'reviewer-1', type: 'flow:reviewer', status: 'waiting' }]
+  expect(await startQueue(io)).toContain('already been told')
+  w.handovers['9'] = ho(9)
+  await startQueue(io, 'handover')
+  expect(w.sent.map(s => s.text)).toEqual([expect.stringContaining('Pending handovers: #9.')])
+})
+
+test('an agent spawn arms no reach timer; only a reviewer started in a terminal does', async () => {
+  const agent = setup({ pending: [ho(7)], session: undefined })
+  await startQueue(agent.io)
+  expect(agent.w.reaches).toEqual([])
+  expect(agent.w.breaker.run?.reachFrom).toBeUndefined()
+  const term = setup({ pending: [ho(7)], terminal: true })
+  await startQueue(term.io)
+  expect(term.w.reaches).toEqual([REACH_MS])
+})
+
+test('a waiting reviewer that refuses a message while holding taken PRs is not joined by a second one; main is told once', async () => {
+  const a = reviewerAgent('waiting', undefined, `rv-${uid()}`)
+  const { w, io } = setup({ pending: [ho(7, 'taken'), ho(8)], agents: [a] })
+  w.refuse = 'not accepting messages'
+  expect(await startQueue(io, 'handover')).toContain('holds taken PRs')
+  expect(await startQueue(io, 'handover')).toContain('holds taken PRs')
+  expect(w.spawns).toEqual([])
+  expect(w.told).toHaveLength(1)
+  // Its taken PR is done: nothing it holds is at risk, and a fresh reviewer starts.
+  w.handovers['7'] = ho(7, 'done')
+  expect(await startQueue(io)).toBe('Started reviewer reviewer-1.')
+})
+
+test('the first unreachable retry ignores an earlier short-run backoff', () => {
+  const shortRuns: Breaker = { streak: 1, endedAt: 99_000, error: 'ended with no answer' }
+  const r = unreachedEnd(shortRuns, 'reviewer-3', 100_000)
+  expect(decide(r.breaker, 111_000)).toEqual({ kind: 'spawn' })
+  // A short run after it brings the short-run backoff back.
+  const short = endRun(startRun(r.breaker, 'reviewer-4', 111_000, true), { name: 'reviewer-4', now: 111_500, answer: '', reason: 'error' })
+  expect(decide(short.breaker, 112_000).kind).toBe('wait')
+})
+
+test('a stale reviewer_delay deadline does not hold a handover for a busy reviewer terminal', async () => {
+  const s = terminal(undefined, [toldKey(ho(7))])
+  const { w, io } = setup({ pending: [ho(7), ho(8)], session: s, until: 1_000_000 + 60_000 })
+  expect(await startQueue(io, 'handover')).toContain('picks it up')
+  expect(w.typed).toEqual(['new handover: #8'])
+  expect(w.until).toBe(0)
+  expect(w.delays).toEqual([])
+})
+
 test('a reviewer terminal whose tools never reached the plugin is stopped and replaced: on its report, or REACH_MS after its start', async () => {
   const s = terminal()
   const started = startRun(EMPTY_BREAKER, s.name, 1_000_000 - 40_000, true)
-  const reported = setup({ pending: [ho(7)], session: s, breaker: started })
+  const reported = setup({ pending: [ho(7)], session: s, breaker: started, terminal: true })
   expect(await startQueue(reported.io, 'other', s.name)).toBe('Started reviewer reviewer-1.')
   expect(reported.w.stopped).toEqual([s.name])
-  expect(reported.w.breaker).toMatchObject({ unreachable: 1, streak: 0, run: { name: 'reviewer-1', reached: false } })
+  expect(reported.w.breaker).toMatchObject({ unreachable: 1, streak: 0, run: { name: 'reviewer-1', reached: false, reachFrom: 1_000_000 } })
   expect(reported.w.told).toHaveLength(1)
   expect(reported.w.reaches).toEqual([REACH_MS])
   // Not yet REACH_MS and no report: it is still starting up, and is told the work.
@@ -161,6 +222,12 @@ test('a reviewer terminal whose tools never reached the plugin is stopped and re
   const late = setup({ pending: [ho(7)], session: old, breaker: startRun(EMPTY_BREAKER, old.name, 1_000_000 - REACH_MS, true) })
   expect(await startQueue(late.io)).toBe('Started reviewer reviewer-1.')
   expect(late.w.stopped).toEqual([old.name])
+  // The wait counts from when its terminal started, not from when the run was recorded.
+  const slow = terminal()
+  const slowRun = { ...startRun(EMPTY_BREAKER, slow.name, 1_000_000 - REACH_MS, true), run: { name: slow.name, startedAt: 1_000_000 - REACH_MS, reached: false, reachFrom: 1_000_000 - 10_000 } }
+  const slowStart = setup({ pending: [ho(7)], session: slow, breaker: slowRun })
+  expect(await startQueue(slowStart.io)).toContain('picks it up')
+  expect(slowStart.w.stopped).toEqual([])
   // One that reached the plugin is never stopped for it.
   const fine = terminal()
   const ok = setup({ pending: [ho(7)], session: fine, breaker: reachRun(startRun(EMPTY_BREAKER, fine.name, 0, true), fine.name) })
@@ -319,7 +386,8 @@ test('agent mode: a pending handover reaches a reviewer held on background work'
   await start($)
   expect(await handover($, 7)).toContain('Started reviewer reviewer-1')
   w.agents.find(a => a.id === 'r1')!.status = 'waiting'
-  expect(await handover($, 8)).toContain('The waiting reviewer reviewer-1 was told: #7, #8.')
+  // #7 was in its spawn prompt: only #8 is sent.
+  expect(await handover($, 8)).toContain('The waiting reviewer reviewer-1 was told: #8.')
   expect(w.sent.filter(s => JSON.stringify(s.to).includes('r1'))).toHaveLength(1)
   expect(await handover($, 8)).toContain('already been told')
   // Refused: a fresh reviewer starts rather than leave the PRs waiting.

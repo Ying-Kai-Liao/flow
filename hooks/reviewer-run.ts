@@ -147,7 +147,8 @@ export type QueueIo = {
   runs: () => Promise<number>
   setRuns: (n: number) => Promise<unknown>
   // `pending` is for a reviewer in a terminal: the handovers its first prompt already names count as told.
-  spawn: (input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }) => Promise<{ deny?: string }>
+  // `terminal`: the reviewer started in a terminal session, not as an agent.
+  spawn: (input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }) => Promise<{ deny?: string; terminal?: boolean }>
   // The live reviewer running in a terminal, if any, and the way to type a line into it (a failure is the
   // refusal text). Absent when the plugin has no terminal sessions to offer.
   reviewerSession?: () => Promise<Session | undefined>
@@ -288,6 +289,9 @@ export async function startQueue(io: QueueIo, why: QueueWhy = 'other', reported?
     if (held === undefined) return 'The running reviewer picks it up at its next list.'
     const told = await tellAgent(io, held as { id: string; name?: string })
     if (told !== undefined) return told
+    // Refused. A reviewer holding taken PRs may be merging: a second one would merge and push the base beside it, so
+    // the PRs wait for its end, which starts the next reviewer. Main hears of it once per reviewer.
+    if (Object.values(await io.handovers()).some(h => h.status === 'taken')) return heldBack(io, held as { id: string; name?: string })
   }
   // A batch (any state) holds the queue: pending handovers go in after the push run.
   const batch = await io.batch()
@@ -299,6 +303,7 @@ export async function startQueue(io: QueueIo, why: QueueWhy = 'other', reported?
   // What makes a target due again is a new approval or a new deploy, so those are in the signature.
   const dueSig = dueEntries.map(([name, t]) => `${name}:${t.deployedAt ?? 0}:${t.approval?.at ?? 0}`).join(',')
   let session = io.reviewerSession === undefined ? undefined : await io.reviewerSession()
+  let again: string[] = []
   if (session !== undefined && await unreached(io, session, reported)) session = undefined
   if (session !== undefined) {
     // Forget what is no longer true before any early return: a PR that went back to pending (approved, handed
@@ -306,7 +311,14 @@ export async function startQueue(io: QueueIo, why: QueueWhy = 'other', reported?
     if (dueTargets.length === 0) sigNudged.delete(`${session.name}|deploy`)
     if (!pushDue) sigNudged.delete(`${session.name}|push`)
     const keys = new Set(pending.map(toldKey))
-    const kept = reported === session.name ? [] : (session.nudged ?? []).filter(k => keys.has(k))
+    // After a report, each pending handover is told again once per session: a reviewer that cannot start a batch
+    // (a dirty worktree, gh signed out) reports again, and must not be re-told the same PR every time.
+    if (reported === session.name) {
+      const done = retold.get(session.name) ?? []
+      again = [...keys].filter(k => !done.includes(k))
+      retold.set(session.name, [...done, ...again])
+    }
+    const kept = (session.nudged ?? []).filter(k => keys.has(k) && !again.includes(k))
     if (kept.length !== (session.nudged ?? []).length && io.setTold !== undefined) {
       await io.setTold(session, kept)
       session.nudged = kept
@@ -319,7 +331,7 @@ export async function startQueue(io: QueueIo, why: QueueWhy = 'other', reported?
   if (session !== undefined && io.nudge !== undefined) {
     const held = await delayStart(io, why, all, otherWork, session)
     if (held !== undefined) return held
-    return nudgeReviewer(io, session, pending, dueTargets, dueSig, pushDue ? batch : undefined, reported === session.name)
+    return nudgeReviewer(io, session, pending, dueTargets, dueSig, pushDue ? batch : undefined, again)
   }
   // The respawn circuit breaker: a halted queue waits for main, and a start soon after a failed one waits its turn.
   const now = await io.breaker.now()
@@ -354,13 +366,38 @@ export async function startQueue(io: QueueIo, why: QueueWhy = 'other', reported?
     await withBreaker(io.breaker, cur => ({ breaker: abandonRun(cur, `reviewer-${n}`, now), out: undefined }))
     return `Could not start a reviewer: ${started.deny}`
   }
-  // A terminal reviewer is looked at again once it should have called a flow tool; an agent's end says it itself.
-  if (io.reviewerSession !== undefined) io.reach?.(REACH_MS)
+  // The handovers its first prompt names are told: a reviewer agent held on its check is not messaged about them.
+  agentTold.set(`reviewer-${n}`, pending.map(toldKey))
+  // A terminal reviewer is looked at again once it should have called a flow tool, counted from when its terminal
+  // started; an agent's end says it itself.
+  if (started.terminal === true) {
+    const at = await io.breaker.now()
+    await withBreaker(io.breaker, cur => ({ breaker: cur.run?.name === `reviewer-${n}` ? { ...cur, run: { ...cur.run, reachFrom: at } } : cur, out: undefined }))
+    io.reach?.(REACH_MS)
+  }
   return `Started reviewer reviewer-${n}.`
 }
 
-// What a waiting reviewer agent was told, by agent id: the handover instances (toldKey), so each is sent once.
+// What a waiting reviewer agent was told, by agent name: the handover instances (toldKey), so each is sent once. Its
+// spawn prompt's handovers are in it from the start.
 const agentTold = new Map<string, string[]>()
+
+// The handovers told again to a reviewer terminal after one of its reports, by session name.
+const retold = new Map<string, string[]>()
+
+// Waiting reviewer agents that refused a message while holding taken PRs and that main was told about, by agent id.
+const heldBackTold = new Set<string>()
+
+async function heldBack(io: QueueIo, a: { id: string; name?: string }): Promise<string> {
+  const name = a.name ?? a.id
+  const line = `The waiting reviewer ${name} cannot be messaged and holds taken PRs; pending handovers wait for its end, which starts the next reviewer.`
+  if (!heldBackTold.has(a.id)) {
+    heldBackTold.add(a.id)
+    io.breaker.toast(`flow: ${line}`)
+    io.breaker.tell?.(`flow: ${line} No second reviewer starts beside it, since only one may merge.`)
+  }
+  return line
+}
 
 // Tells a reviewer agent held on background work about the pending handovers it was not told yet. undefined: the
 // message was refused, and a fresh reviewer starts instead.
@@ -369,13 +406,13 @@ async function tellAgent(io: QueueIo, a: { id: string; name?: string }): Promise
   const batch = await io.batch()
   const pending = batch !== undefined ? [] : Object.values(await io.handovers()).filter(h => h.status === 'pending')
   const keys = new Set(pending.map(toldKey))
-  const told = (agentTold.get(a.id) ?? []).filter(k => keys.has(k))
+  const told = (agentTold.get(name) ?? []).filter(k => keys.has(k))
   const fresh = pending.filter(h => !told.includes(toldKey(h)))
   if (pending.length === 0) return 'The running reviewer picks it up at its next list.'
   if (fresh.length === 0) return `The waiting reviewer ${name} has already been told.`
   const failed = await io.tell!(a.id, `Pending handovers: ${fresh.map(h => `#${h.pr}`).join(', ')}. Call mcp__flow__reviewer action "list" and work through them.`)
   if (failed !== undefined) return undefined
-  agentTold.set(a.id, [...told, ...fresh.map(toldKey)])
+  agentTold.set(name, [...told, ...fresh.map(toldKey)])
   return `The waiting reviewer ${name} was told: ${fresh.map(h => `#${h.pr}`).join(', ')}.`
 }
 
@@ -387,7 +424,7 @@ async function unreached(io: QueueIo, s: Session, reported: string | undefined):
   const b = await currentBreaker(io.breaker)
   if (b.run?.name !== s.name || b.run.reached !== false) return false
   const now = await io.breaker.now()
-  if (reported !== s.name && now - b.run.startedAt < REACH_MS) return false
+  if (reported !== s.name && now - (b.run.reachFrom ?? b.run.startedAt) < REACH_MS) return false
   await io.stopReviewer(s)
   const answer = reported === s.name ? 'it reported without one flow tool call reaching the plugin' : `no flow tool call reached the plugin in ${REACH_MS / 1000}s`
   await noteReviewerEnd(io.breaker, { name: s.name, answer })
@@ -402,8 +439,14 @@ async function delayStart(io: QueueIo, why: QueueWhy, all: Handover[], otherWork
   if (io.delay === undefined || why === 'other') return undefined
   const joins = 'The reviewer starts when the reviewer_delay wait ends; this joins that batch.'
   if (io.delay.running()) return joins
+  // A terminal reviewer that was told work, or holds a taken or ready PR, is working: it is told now.
+  const busy = session !== undefined && ((session.nudged ?? []).length > 0 || all.some(h => h.status === 'taken' || h.status === 'ready'))
   const until = io.delay.until === undefined ? 0 : await io.delay.until()
   if (until > 0) {
+    if (busy) {
+      await io.delay.setUntil?.(0)
+      return undefined
+    }
     const left = until - await io.breaker.now()
     if (left > 0) {
       io.delay.start(left)
@@ -415,7 +458,7 @@ async function delayStart(io: QueueIo, why: QueueWhy, all: Handover[], otherWork
   if (why !== 'handover' || otherWork) return undefined
   const ms = io.delay.ms()
   if (ms <= 0) return undefined
-  if (session !== undefined && ((session.nudged ?? []).length > 0 || all.some(h => h.status === 'taken' || h.status === 'ready'))) return undefined
+  if (busy) return undefined
   io.delay.start(ms)
   await io.delay.setUntil?.(await io.breaker.now() + ms)
   return `The reviewer starts in ${formatDelay(ms)} so close handovers share a batch.`
@@ -433,12 +476,15 @@ const sigNudged = new Map<string, string>()
 
 // A reviewer already runs in a terminal: it is not started again, the new work is typed into it. Only work it
 // was not told about goes in: a handover already in `nudged`, the same due deploys, the same push run.
-// `again`: it just reported, and the pending handovers are told as still pending.
-async function nudgeReviewer(io: QueueIo, s: Session, pending: Handover[], dueTargets: string[], deploySig: string, push: NonNullable<PushState['batch']> | undefined, again = false): Promise<string> {
+// `again`: the handovers told again after its report, named as still pending.
+async function nudgeReviewer(io: QueueIo, s: Session, pending: Handover[], dueTargets: string[], deploySig: string, push: NonNullable<PushState['batch']> | undefined, again: string[] = []): Promise<string> {
   const told = (s.nudged ?? []).filter(k => pending.some(h => toldKey(h) === k))
   const fresh = pending.filter(h => !told.includes(toldKey(h)))
+  const added = fresh.filter(h => !again.includes(toldKey(h)))
+  const still = fresh.filter(h => again.includes(toldKey(h)))
   const parts: string[] = []
-  if (fresh.length > 0) parts.push(`${again ? 'still pending' : 'new handover'}: ${fresh.map(h => `#${h.pr}`).join(', ')}`)
+  if (added.length > 0) parts.push(`new handover: ${added.map(h => `#${h.pr}`).join(', ')}`)
+  if (still.length > 0) parts.push(`still pending: ${still.map(h => `#${h.pr}`).join(', ')}`)
   if (dueTargets.length > 0 && sigNudged.get(`${s.name}|deploy`) !== deploySig) parts.push(`deploy due: ${dueTargets.join(', ')}`)
   const pushSig = push === undefined ? '' : `${push.id}:${push.state}`
   if (push !== undefined && sigNudged.get(`${s.name}|push`) !== pushSig) parts.push(`push run due: batch ${push.id}`)

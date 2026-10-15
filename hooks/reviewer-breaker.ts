@@ -33,7 +33,7 @@ export function normalizeBreaker(raw: unknown): Breaker {
   const out: Breaker = { streak: num(r.streak) && r.streak > 0 ? Math.floor(r.streak) : 0 }
   const run = r.run as Record<string, unknown> | undefined | null
   if (run && typeof run.name === 'string' && num(run.startedAt)) {
-    out.run = { name: run.name, startedAt: run.startedAt, ...(typeof run.reached === 'boolean' ? { reached: run.reached } : {}) }
+    out.run = { name: run.name, startedAt: run.startedAt, ...(typeof run.reached === 'boolean' ? { reached: run.reached } : {}), ...(num(run.reachFrom) ? { reachFrom: run.reachFrom } : {}) }
   }
   if (num(r.endedAt)) out.endedAt = r.endedAt
   if (typeof r.error === 'string') out.error = r.error
@@ -69,9 +69,10 @@ export function decide(b: Breaker, now: number): Decision {
 export const unreachableDelay = (n: number): number => (n <= 1 ? 0 : delayFor(n - 1))
 
 // How long the next start still waits after the last end: the longer of the short-run and the unreachable backoff.
+// After an unreachable end the short-run backoff does not apply: a fresh reviewer is the fix, not waiting.
 function waitLeft(b: Breaker, now: number): number {
   if (b.endedAt === undefined) return 0
-  const short = b.streak > 0 ? delayFor(b.streak) : 0
+  const short = b.streak > 0 && b.error?.startsWith(UNREACHABLE_ERROR) !== true ? delayFor(b.streak) : 0
   const unreached = (b.unreachable ?? 0) > 0 ? unreachableDelay(b.unreachable!) : 0
   return Math.max(short, unreached) - (now - b.endedAt)
 }

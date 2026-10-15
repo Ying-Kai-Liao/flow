@@ -395,8 +395,9 @@ export type Breaker = {
   // immediate failure halts sooner.
   streak: number
   // The reviewer in flight, by name, and when the plugin started it. `reached`: false from the start until one of
-  // its flow tool calls arrives in the plugin, then true; absent on a run recorded before this was tracked.
-  run?: { name: string; startedAt: number; reached?: boolean }
+  // its flow tool calls arrives in the plugin, then true; absent on a run recorded before this was tracked. `reachFrom`:
+  // when a terminal reviewer's terminal started, which its REACH_MS wait counts from.
+  run?: { name: string; startedAt: number; reached?: boolean; reachFrom?: number }
   // When the last reviewer ended, and why that counted as a failure.
   endedAt?: number
   error?: string

@@ -1664,7 +1664,7 @@ function terminalSettings(): ReturnType<typeof settingsOf> | undefined {
 
 // The reviewer: a terminal session in mode orca or tmux, else the agent as always. A terminal that cannot
 // start is not replaced by an agent: the handover stays pending and the next trigger tries again.
-async function spawnReviewer($: EngineInterface, input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }): Promise<{ deny?: string }> {
+async function spawnReviewer($: EngineInterface, input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }): Promise<{ deny?: string; terminal?: boolean }> {
   const { pending, ...agentInput } = input
   const settings = terminalSettings()
   if (settings === undefined) return $.agent.spawn(agentInput)
@@ -1684,7 +1684,7 @@ async function spawnReviewer($: EngineInterface, input: { subagentType: string; 
   }
   const told = pending ?? []
   if (told.length > 0) await markNudged($, input.name, told)
-  return {}
+  return { terminal: true }
 }
 
 // Records who a role session was told about. The io is bound to a const first: the plugin directory
