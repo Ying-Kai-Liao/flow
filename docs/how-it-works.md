@@ -176,7 +176,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   env and guard items tagged NEEDS YOU) with the options on one line (default marked) and age, the decisions
   as one flat table (id, from, headline, age; newest first, the newest 15 and a `+M more` line, `/flow inbox decisions`
   lists all), then what standing answers did. Rows never wrap and headlines are cut with an ellipsis;
-  `/flow inbox <id>` prints one item in full, with its why. Routine decisions (topics `worker-size`, `manager-size`) and those of agents that are over are folded into one line (`/flow inbox decisions` lists them, `/flow ok` keeps them with the rest); nothing expires or is acked by itself. `/flow inbox archive` lists what was answered, newest first (50; `archive all` for every one). `status` and the Flow pane show the open inbox first. An agent
+  `/flow inbox <id>` prints one item in full, with its why. Decisions of agents that are over are folded into one line (`/flow inbox decisions` lists them, `/flow ok` keeps them with the rest), and so are open `worker-size` / `manager-size` decisions an older inbox still holds; nothing expires or is acked by itself. Size decisions filed now are kept by default (see Decisions) and never open; `/flow inbox decisions` lists them under "Size decisions kept by default" (newest first, 15 shown). `/flow inbox archive` lists what was answered, newest first (50; `archive all` for every one). `status` and the Flow pane show the open inbox first. An agent
   with an open blocking question shows as asking in the pane, the toasts and the task graph.
 - You answer from the prompt: `/flow ok` keeps every open decision, `/flow ok d10 d11` or `/flow ok <owner|topic>`
   keeps those (an ordinary question named by id takes its default), `/flow no d12 <what instead>` undoes
@@ -191,7 +191,7 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   and `why:`. Keys: `j`/`k` move, `1`-`9` or `a`-`h` pick that option of the highlighted item, `y` takes a
   question's default or keeps a decision, `w` keeps all open decisions, `n` undoes the
   highlighted decision (with what you typed in the answer field as "what instead"), `r` types a free-text answer
-  (Enter sends), `x` folds or expands the group of routine decisions, `v` opens the archive, `i` goes back. Pressing a row opens the item as a large card (also from an open question or decision listed in the tree): full text and why, who asked and for whom, the asker's status, every option as a button (digits and `a`-`h` except `b`, which is Back), the input for your own words (a decision's input is "what instead"), `y`, `n`, `j`/`k`; after an answer the next card opens. The archive's cards are read-only. Deploy, env, push and guard items are never
+  (Enter sends), `x` folds or expands the group of routine decisions, `v` opens the archive, `i` goes back. Pressing a row opens the item as a large card (also from an open question or decision listed in the tree): full text and why, who asked and for whom, the asker's status, every option as a button (digits and `a`-`h` except `b`, which is Back), the input for your own words (a decision's input is "what instead"), `y`, `n`, `j`/`k`; after an answer the next card opens. The archive's cards are read-only, except a decision kept without anyone looking (by default, by the decision API or by a rule): its card keeps `n` and the "what instead" input, which undo it. Deploy, env, push and guard items are never
   answered by `y` or `w`: only their own digit or letter, or free text, answers them. Every answer
   goes through the same path as the `/flow` commands.
   The addressee answers with `mcp__flow__answer` (you, from the prompt or the pane, may answer anything): your main session for managers' questions (tell it "defaults", "1 b,
@@ -210,6 +210,15 @@ Questions reach you as one batched, numbered inbox instead of free-text reports.
   or, if it is no longer running, its manager (naming the owner); the undo is noted as a decision.
   The addressee may answer a decision, and so may main (the user overrides what a manager has not looked at).
   A decision is kept by a standing answer only through a rule that names `"kinds": ["fyi"]` (see Standing answers); it stays undoable.
+- **Size decisions are kept by default.** The plugin's own `worker-size` and `manager-size` decisions (a worker
+  or manager routed below large) are filed already kept: answered `Keep` by `default` (`answeredBy: "default"`,
+  `auto: {by: "default"}`), delivered, no message. They never count as open: not in the inbox summary, the
+  `status` head, the pane's counts, `/flow ok` or `w`. No standing rule reaches them. `/flow inbox decisions`
+  lists them and the archive shows "Kept by default". They stay undoable exactly as before: `/flow no dN <what
+  instead>`, `mcp__flow__answer {id: dN, choice}` or `n` on the pane's archive card messages the owner (an undone
+  `worker-size` decision makes the manager restart the package at the size you chose; an undone `manager-size`
+  decision makes that manager hand off). An inbox written before this keeps its open size decisions as they were
+  (open, folded as routine, keepable).
 - A report whose last line ends in `?` still counts as a question, for agents that don't use the
   tool. `decision_phrases` is deprecated.
 
@@ -231,34 +240,50 @@ id to revoke.
   goes to the inbox. `from` limits it to one asker (`foo-2` counts as `foo`). A blocking question is
   answered only by a rule with `blocking: true`. A bad rule is dropped with a settings warning.
 - Pushed suggestions. When main has answered a topic (or, with no topic, one exact question text) the
-  same way 3 or more times and no rule covers it, the `mcp__flow__answer` result gets one line offering
-  the rule with its exact `mcp__flow__standing` add call, and the Flow pane's inbox shows it as a `+ rule?`
-  line (`s` hides it). Each (topic, answer) is offered once (`suggest-offered.json` in the state dir);
-  `mcp__flow__standing {"action":"dismiss","id":...}` (or `"all"`) drops it for good. Nothing is added
-  until you call the add. Kept decisions count too: three kept `worker-size` decisions suggest
-  `{"topic":"worker-size","answer":"Keep","kinds":["fyi"]}`. A group holding a deploy, env, push, reviewer,
-  guard, escalated or linked item is never suggested.
+  same way 3 or more times and no rule of your own covers it, it is offered once, in the answer that makes
+  it 3, wherever main answers: one line in the `mcp__flow__answer` result or the `/flow answer|ok|no` output,
+  with the exact `mcp__flow__standing` add call, or a "Standing rule?" line in the pane after a pane answer.
+  If none of those showed it, the head of main's next `status` does. The Flow pane's inbox also shows pending
+  ones as `+ rule?` lines (`s` hides them). Each (topic, answer) is offered once in all (`suggest-offered.json`
+  in the state dir); `mcp__flow__standing {"action":"dismiss","id":...}` (or `"all"`) drops it for good.
+  Nothing is added until you call the add. Decisions main kept count too: three kept decisions of one topic
+  suggest `{"topic":"<topic>","answer":"Keep","kinds":["fyi"]}`; size decisions kept by default are not main's
+  answers and suggest nothing. A group holding a deploy, env, push, reviewer, guard, escalated or linked item
+  is never suggested.
 - Decision rules. A rule with `kinds: ["fyi"]` (answer `Keep` only) keeps a fresh routine decision the
   moment an agent records it (`answeredBy: "standing answer"`, the rule id on it, an `auto-answer` log
   line); the agent's result is unchanged. It runs before `decide_inbox`, which then skips the item. An
   ordinary rule (no kinds) does not keep a decision an agent records, an fyi rule never answers a question, and escalate rules still
-  win. Undo it like any kept decision (`/flow no <id>`); the owner is messaged.
+  win. Undo it like any kept decision (`/flow no <id>`); the owner is messaged. A rule without `kinds` is for
+  ordinary questions only, wherever it is checked: it never keeps or undoes a decision.
 - Matching. Topics compare ignoring case, `_`, `-` and spaces and one trailing "s". A rule made from a
   topic-less question also records its `options`; such a question matches only with the same option set and
-  its text matching `match`. No fuzzy matching. Deploy and env items still need a rule naming the kind;
-  push and reviewer items are never answered by a rule.
+  its text matching `match`. No fuzzy matching.
+- Never the user's own calls. A deploy approval, an env item (a value, a secret, a step you do yourself), a
+  push and a reviewer retry always wait for you: no rule answers them, a rule whose `kinds` names `deploy`,
+  `env`, `push` or `reviewer` is refused by `standing add`, and one already in a settings file is ignored
+  (a settings warning, and `standing list` marks it IGNORED). `always: true` makes no rule for them either.
 - Two more forms. `escalate: true` with no `answer` holds a matching question for you: no rule ever
   auto-answers it (whatever the order), it is recorded `blocking: true` and flagged
   `escalated: <rule id>`, and `mcp__flow__answer` refuses an answer from anyone but main; a worker's
   it is addressed to main (a worker's manager is told so and must not answer or re-ask it), and `/flow inbox` marks it ESCALATED. `answer: "default"` (the literal word)
   answers a matching non-blocking question with its own default and never touches a blocking one.
   A rule with both `escalate` and an `answer` is invalid and dropped with a warning.
-- Seeds. When no rule exists in any layer, `standing list` and the first `status` call by main
+- The built-in `conservative` rule, on by default. A non-blocking ordinary question (`mcp__flow__ask`) takes
+  its own default at once, the default the asker already went on: `answeredBy: "standing answer"`, rule
+  `conservative`, the ask result says "answered by standing answer conservative", and the notes and
+  `log.jsonl` name it. It comes after every rule of yours, so your own rule wins (a copy of the old
+  `conservative` seed in your file answers instead, with no double effect). It never answers a blocking
+  question, a decision, a deploy, env, push or reviewer item, a guard suggestion, an escalated question, a
+  manager's question escalating a worker's (`for`) or a pre-flight question. `standing list` shows it as
+  `conservative [built-in]` with its turn-off. Off: `conservative_default: false` (`mcp__flow__settings
+  {"action":"write","layer":"personal","values":{"conservative_default":false}}`), or
+  `mcp__flow__standing {"action":"remove","id":"conservative"}`, which writes that to your personal file.
+- Seeds. When no rule of your own exists in any layer, `standing list` and the first `status` call by main
   (once; `seeds-offered.json` in flow's state dir, next to `inbox.json`, records it) show "Suggested
   starting rules (not applied)": `tracker` (never write to an external task tracker without your yes;
-  topic `external-tracker`, escalate), `prod-env` (production environment changes always ask; topic
-  `prod-env-change`, escalate) and `conservative` (non-blocking questions take their own default).
-  Nothing is applied until you accept: `mcp__flow__standing {"action":"add","seed":"<id>"}` (or
+  topic `external-tracker`, escalate) and `prod-env` (production environment changes always ask; topic
+  `prod-env-change`, escalate). Nothing is applied until you accept: `mcp__flow__standing {"action":"add","seed":"<id>"}` (or
   `seeds: [ids]`) adds the rule to your personal file; an unknown id lists the valid ones, and a
   seed already present is not added twice. `standing list` keeps showing the remaining seeds while
   every rule you have is an accepted seed, and hides them once you have a rule of your own.

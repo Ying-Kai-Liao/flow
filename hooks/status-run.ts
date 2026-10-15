@@ -43,7 +43,8 @@ export type StatusIo = {
   plans: () => Promise<Plan>
   slots: () => Promise<TestSlots>
   typecheckSlots?: () => Promise<TestSlots>
-  offerSeeds: () => Promise<string[]>
+  // The starting rules once, and standing-rule suggestions no answer result showed yet (main only).
+  offers: () => Promise<string[]>
   pushState: () => Promise<PushState>
   breaker: () => Promise<Breaker>
   deploys: () => Promise<Deploys>
@@ -132,7 +133,7 @@ export async function statusTool(io: StatusIo, settings: Settings, input: Record
     const { shown, hidden } = cappedHandovers(list)
     const plans = scope === 'worker' ? [] : Object.entries(await io.plans()).filter(([who, g]) => Object.keys(g).length > 0 && (scope === 'all' || baseName(who) === myBase))
     const slots = scope === 'worker' ? '' : [slotLine(await io.slots(), settings.testSlots, await io.now()), io.typecheckSlots ? typecheckLine(await io.typecheckSlots(), (settings.typecheckSlots ?? 1), await io.now()) : ''].filter(Boolean).join('\n')
-    const seeds = agentId === undefined ? await io.offerSeeds() : []
+    const seeds = agentId === undefined ? await io.offers() : []
     const gate = scope === 'all' ? (await io.pushState()).batch : undefined
     const breaker = scope === 'worker' ? undefined : breakerLine(await io.breaker(), await io.now())
     const batchLines = gate?.state === 'ready' ? renderBatch(gate) : []

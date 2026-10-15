@@ -4,7 +4,7 @@ import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
 import { addQuestions, EMPTY_INBOX, fyiAsked, markAnswered } from '../hooks/inbox'
 import type { AskedQuestion, Inbox, Question } from '../hooks/inbox'
-import { fyiRules, matchRule, normTopic, parseRules, ruleFromQuestion, sameRule, suggest, validateRule } from '../hooks/standing'
+import { CONSERVATIVE, fyiRules, matchRule, normTopic, parseRules, ruleFromQuestion, sameRule, suggest, validateRule } from '../hooks/standing'
 import type { Resolved } from '../hooks/standing'
 
 type Dollar = Parameters<TestBody>[0]
@@ -50,6 +50,18 @@ test('with the real inbox shape and no rules, suggest proposes worker-size and m
   expect(suggest(FIXTURE, rules([{ topic: 'worker-size', answer: 'Keep' }])).length).toBe(2)
 })
 
+test('size decisions kept by default are not main\'s answers: they suggest no rule', () => {
+  const box: Inbox = { next: 1, items: many(5, i => ({ id: `d${i + 1}`, kind: 'fyi', topic: 'worker-size', owner: 'a', state: 'answered' as const, answer: 'Keep', answeredBy: 'default' })) }
+  expect(suggest(box, [])).toEqual([])
+})
+
+test('the built-in conservative rule does not count as covering a group main answered itself', () => {
+  const asks = many(3, i => ({ id: `q${i + 1}`, topic: 'bump', owner: 'a', state: 'answered' as const, answer: 'minor', answeredBy: 'main', options: ['patch', 'minor'] }))
+  const box: Inbox = { next: 4, items: asks.map(q => ({ ...q, kind: undefined, default: 'patch' })) }
+  expect(suggest(box, [CONSERVATIVE]).map(x => x.answer)).toEqual(['minor'])
+  expect(suggest(box, [...rules([{ topic: 'bump', answer: 'minor' }]), CONSERVATIVE])).toEqual([])
+})
+
 test('a group holding a deploy, env, guard, escalated or linked item is never suggested', () => {
   const kept = (extra: Record<string, unknown>) => ({ ...FIXTURE, items: [
     ...many(3, i => ({ id: `d${i + 1}`, kind: 'fyi', topic: 'x', owner: 'a', state: 'answered' as const, answer: 'Keep', answeredBy: 'main' })),
@@ -82,15 +94,17 @@ test('FYI rules: only a rule naming kind fyi reaches a decision, and a fyi rule 
   expect(matchRule(fyiRules(rules([{ topic: 't', answer: 'Keep', kinds: ['fyi'] }])), fyiQ)?.answer).toBe('Keep')
   expect(matchRule(rules([{ topic: 't', answer: 'Keep', kinds: ['fyi'] }]), ask)).toBeUndefined()
   expect(matchRule(rules([{ topic: 't', answer: 'Keep' }]), ask)?.answer).toBe('Keep')
+  // Without kinds a rule is for questions only, whatever list it is passed in: it never undoes or keeps a decision.
+  expect(matchRule(rules([{ topic: 't', answer: 'Undo' }]), fyiQ)).toBeUndefined()
+  expect(matchRule(rules([{ match: '.', answer: 'default' }]), fyiQ)).toBeUndefined()
+  expect(matchRule([CONSERVATIVE], fyiQ)).toBeUndefined()
   // An escalate rule still beats everything.
   expect(matchRule(fyiRules(rules([{ topic: 't', escalate: true }, { topic: 't', answer: 'Keep', kinds: ['fyi'] }])), fyiQ)).toBeUndefined()
-  // Deploy, env: only a rule naming the kind; push and reviewer: never.
+  // Deploy, env, push and reviewer: never, also by a rule that names the kind (it is ignored).
   for (const kind of ['deploy', 'env', 'push', 'reviewer']) {
     const hard = { ...fyiQ, kind, options: ['Keep', 'Undo'] } as Question
-    expect(matchRule(rules([{ topic: 't', answer: 'Keep', kinds: ['fyi'] }, { topic: 't', answer: 'Keep' }]), hard)).toBeUndefined()
+    expect(matchRule(rules([{ topic: 't', answer: 'Keep', kinds: ['fyi'] }, { topic: 't', answer: 'Keep' }, { topic: 't', answer: 'Keep', kinds: [kind] }, CONSERVATIVE.rule]), hard)).toBeUndefined()
   }
-  expect(matchRule(rules([{ topic: 't', answer: 'Keep', kinds: ['deploy'] }]), { ...fyiQ, kind: 'deploy' } as Question)?.answer).toBe('Keep')
-  expect(matchRule(rules([{ topic: 't', answer: 'Keep', kinds: ['push'] }]), { ...fyiQ, kind: 'push' } as Question)).toBeUndefined()
   // A rule never undoes a decision.
   expect('error' in validateRule({ topic: 't', answer: 'Undo', kinds: ['fyi'] })).toBe(true)
   expect('error' in validateRule({ topic: 't', answer: 'Keep', kinds: ['fyi'] })).toBe(false)
@@ -270,4 +284,30 @@ test('an escalate rule keeps a decision open even with a fyi rule', async ($, on
   await standing($, null, { action: 'add', topic: 'worker-size', escalate: true })
   await fyi($, 'w1', [{ decision: 'one', why: 'x', topic: 'worker-size' }])
   expect(stored(w.files)[0]!.state).toBe('open')
+})
+
+const cmd = ($: Dollar, args: string) => $.command.run({ command: 'flow', args } as never).then(r => r.text ?? '')
+const status = ($: Dollar) => call($, 'mcp__flow__status', null, {})
+
+test('/flow answer offers a suggestion the moment it reaches 3; the answer tool and status never repeat it', async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [BUMP(1), BUMP(2), BUMP(3), BUMP(4)])
+  expect(await cmd($, 'answer q1 minor')).not.toContain('Standing answer?')
+  await cmd($, 'answer q2 minor')
+  const third = await cmd($, 'answer q3 minor')
+  expect(third).toContain('Standing answer? topic Version_Bumps answered "minor" 3 times')
+  expect(third.split('Standing answer?').length).toBe(2)
+  expect(await answer($, null, { answers: [{ id: 'q4', choice: 'minor' }] })).not.toContain('Standing answer?')
+  expect(await status($)).not.toContain('Standing answer?')
+  expect(personalRules(w.files)).toEqual([])
+})
+
+test('status offers a suggestion no answer result showed, once', async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [BUMP(1), BUMP(2), BUMP(3)])
+  await answer($, null, { answers: [{ id: 'q1', choice: 'minor' }, { id: 'q2', choice: 'minor' }, { id: 'q3', choice: 'minor' }] })
+  // As if the answer had come from a path that shows nothing (the record lost): status is the fallback.
+  w.files.delete(`${DIR}/suggest-offered.json`)
+  expect(await status($)).toContain('Standing answer? topic Version_Bumps answered "minor" 3 times')
+  expect(await status($)).not.toContain('Standing answer?')
 })

@@ -5,7 +5,7 @@ import type { TestBody } from 'claude-code/testing'
 import { addQuestions, EMPTY_INBOX, inboxHead, markAnswered, renderInbox } from '../hooks/inbox'
 import type { AskedQuestion, Inbox, Question } from '../hooks/inbox'
 import { mergeLayers } from '../hooks/settings'
-import { escalation, matchRule, nextRuleId, parseRules, removeRule, renderRules, ruleFromQuestion, sameRule, SEEDS, seedsToOffer, suggest, validateRule } from '../hooks/standing'
+import { CONSERVATIVE, escalation, matchRule, nextRuleId, parseRules, removeRule, renderRules, ruleFromQuestion, sameRule, SEEDS, seedsToOffer, suggest, validateRule, withBuiltin } from '../hooks/standing'
 import type { Resolved } from '../hooks/standing'
 
 type Dollar = Parameters<TestBody>[0]
@@ -418,13 +418,15 @@ test('sameRule tells escalate from answer; renderRules describes the new forms',
 })
 
 test('seeds: offered with no rules, partly accepted ones filtered, hidden once a rule of your own exists', () => {
-  expect(SEEDS.map(s => s.id)).toEqual(['tracker', 'prod-env', 'conservative'])
-  expect(seedsToOffer([]).length).toBe(3)
+  expect(SEEDS.map(s => s.id)).toEqual(['tracker', 'prod-env'])
+  expect(seedsToOffer([]).length).toBe(2)
+  // The built-in rule is not a rule of your own: the seeds are still offered next to it.
+  expect(seedsToOffer([CONSERVATIVE]).length).toBe(2)
   const text = renderRules([], EMPTY_INBOX, [], seedsToOffer([]))
   expect(text).toContain('No standing answers.')
   expect(text).toContain('Suggested starting rules (not applied):')
   expect(text).toContain('mcp__flow__standing {"action":"add","seed":"tracker"}')
-  expect(seedsToOffer(rules([SEEDS[0]!.rule])).map(s => s.id)).toEqual(['prod-env', 'conservative'])
+  expect(seedsToOffer(rules([SEEDS[0]!.rule])).map(s => s.id)).toEqual(['prod-env'])
   expect(seedsToOffer(rules(SEEDS.map(s => s.rule)))).toEqual([])
   expect(seedsToOffer(rules([SEEDS[0]!.rule, { topic: 'format', answer: 'csv' }]))).toEqual([])
 })
@@ -435,19 +437,21 @@ test('standing list shows the seeds with no rules; add by seed, twice, several, 
   const w = world(on)
   expect(await standing($, null, { action: 'list' })).toContain('Suggested starting rules (not applied)')
   expect(personalRules(w.files)).toEqual([])
-  expect(await standing($, null, { action: 'add', seed: 'nope' })).toContain('ids are tracker, prod-env, conservative')
+  expect(await standing($, null, { action: 'add', seed: 'nope' })).toContain('ids are tracker, prod-env;')
   expect(personalRules(w.files)).toEqual([])
   expect(await standing($, null, { action: 'add', seed: 'tracker' })).toContain('tracker: rule s1 added')
   expect(personalRules(w.files)[0]).toMatchObject({ id: 's1', topic: 'external-tracker', escalate: true })
   expect(String(personalRules(w.files)[0]!.note)).toMatch(/^seed tracker, added \d{4}-\d\d-\d\d$/)
-  const again = await standing($, null, { action: 'add', seeds: ['tracker', 'conservative'] })
+  const again = await standing($, null, { action: 'add', seeds: ['tracker', 'prod-env'] })
   expect(again).toContain('tracker: already there as rule s1')
-  expect(again).toContain('conservative: rule s2 added')
+  expect(again).toContain('prod-env: rule s2 added')
   expect(personalRules(w.files).length).toBe(2)
   const after = await standing($, null, { action: 'list' })
   expect(after).toContain('ESCALATE')
-  expect(after).toContain('"seed":"prod-env"')
-  expect(after).not.toContain('"seed":"tracker"')
+  expect(after).not.toContain('"seed":')
+  // conservative is no seed any more: it is built in.
+  expect(await standing($, null, { action: 'add', seed: 'conservative' })).toContain('"conservative" is built in and on by default')
+  expect(personalRules(w.files).length).toBe(2)
   expect(await standing($, 'm1', { action: 'add', seed: 'tracker' })).toContain('only main')
 })
 
@@ -467,7 +471,7 @@ test('status shows no seeds when a rule already exists', async ($, on) => {
 
 test('an escalate rule forces blocking, flags the question, tells the manager, and refuses a manager\'s answer', async ($, on) => {
   const w = world(on)
-  await standing($, null, { action: 'add', seeds: ['tracker', 'conservative'] })
+  await standing($, null, { action: 'add', seeds: ['tracker'] })
   const TRACK = { question: 'Comment on the card?', options: ['yes', 'no'], default: 'no', blocking: false, topic: 'external-tracker' }
   expect(await ask($, 'w1', [TRACK])).toContain('end your turn now')
   const item = stored(w.files)[0]!
@@ -491,10 +495,65 @@ test('an escalate rule forces blocking, flags the question, tells the manager, a
   expect(w.toasts.length).toBe(1)
 })
 
-test('the conservative seed ("default") auto-answers a non-blocking ask and leaves a blocking one', async ($, on) => {
+test('the built-in conservative rule is on unless conservative_default is false, last after every rule', () => {
+  expect(withBuiltin([], {})).toEqual([CONSERVATIVE])
+  expect(withBuiltin([], { conservative_default: true })).toEqual([CONSERVATIVE])
+  expect(withBuiltin([], { conservative_default: false })).toEqual([])
+  const own = rules([{ topic: 'version-bump', answer: 'minor' }])
+  expect(withBuiltin(own, {}).map(r => r.rid)).toEqual(['personal:1', 'conservative'])
+  const bump = q('Which bump?', { topic: 'version-bump' })
+  expect(matchRule(withBuiltin(own, {}), bump)?.rule.rid).toBe('personal:1')
+  expect(matchRule([CONSERVATIVE], q('Other?'))).toMatchObject({ answer: 'patch', rule: { rid: 'conservative' } })
+  // Never a blocking question, a guard suggestion, an escalated or linked one.
+  for (const extra of [{ blocking: true }, { guard: { glob: '*', test: 't' } }, { forQ: 'q9' }]) expect(matchRule([CONSERVATIVE], q('Other?', extra))).toBeUndefined()
+  expect(matchRule([CONSERVATIVE], { ...q('Other?'), escalated: 's1' })).toBeUndefined()
+  expect(matchRule([CONSERVATIVE], { ...q('Other?'), viaQ: 'q8' })).toBeUndefined()
+  expect(mergeLayers({ conservative_default: false }, []).raw.conservative_default).toBe(false)
+})
+
+const ON = { conservative_default: true }
+
+test('conservative on: a non-blocking ask takes its default, named as the rule\'s answer; a blocking one waits', { options: ON }, async ($, on) => {
   const w = world(on)
-  await standing($, null, { action: 'add', seed: 'conservative' })
-  expect(await ask($, 'w1', [BUMP])).toBe('q1: answered by standing answer s1: patch. Carry on from it.')
+  expect(await ask($, 'w1', [BUMP])).toBe('q1: answered by standing answer conservative: patch. Carry on from it.')
   expect(await ask($, 'w1', [BLOCK])).toContain('q2: end your turn now')
   expect(stored(w.files).map(i => i.state)).toEqual(['answered', 'open'])
+  expect(stored(w.files)[0]).toMatchObject({ answeredBy: 'standing answer', rule: 'conservative', answer: 'patch' })
+  expect(notes(w.files)).toContain('(standing answer conservative)')
+  expect(await inbox($)).toContain('q1 csv-worker: Which bump? -> patch (rule conservative)')
+})
+
+test('conservative on: a manager\'s escalation of its worker\'s question is never taken by it', { options: ON }, async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [{ ...BLOCK, question: 'Which delimiter?' }])
+  expect(await ask($, 'm1', [{ ...BUMP, question: 'The worker asks the delimiter', for: 'q1' }])).toContain('q2: q1 is escalated to main')
+  expect(stored(w.files).map(i => i.state)).toEqual(['open', 'open'])
+})
+
+test('conservative on: your own rule wins, and your own copy of the old seed is no duplicate', { options: ON }, async ($, on) => {
+  const w = world(on, new Map([[PERSONAL, JSON.stringify({ standing_answers: [{ id: 's1', match: '.', answer: 'default', note: 'seed conservative' }, { id: 's2', topic: 'format', answer: 'tsv', blocking: true }] })]]))
+  expect(await ask($, 'w1', [BUMP])).toBe('q1: answered by standing answer s1: patch. Carry on from it.')
+  expect(await ask($, 'w1', [BLOCK])).toContain('q2: answered by standing answer s2: tsv')
+  expect(await standing($, null, { action: 'add', match: '.', answer: 'default' })).toContain('already says that')
+  expect(personalRules(w.files).length).toBe(2)
+})
+
+test('standing list shows the built-in rule as active with its turn-off; remove turns it off in the personal file', { options: ON }, async ($, on) => {
+  const w = world(on, new Map([[PERSONAL, JSON.stringify({ language: 'English' })]]))
+  const list = await standing($, null, { action: 'list' })
+  expect(list).toContain('conservative [built-in] match /./i -> "default"')
+  expect(list).toContain('"conservative_default":false')
+  expect(await standing($, null, { action: 'remove', id: 'conservative' })).toContain('the built-in rule is off (conservative_default false')
+  expect(JSON.parse(w.files.get(PERSONAL)!)).toEqual({ language: 'English', conservative_default: false })
+  expect(await standing($, null, { action: 'list' })).not.toContain('[built-in]')
+  expect(await standing($, null, { action: 'remove', id: 'conservative' })).toContain('already off')
+  expect(await ask($, 'w1', [BUMP])).toContain('proceed on the default')
+})
+
+test('a rule in a settings file naming env, deploy, push or reviewer is ignored and standing list says so', async ($, on) => {
+  world(on, new Map([[REPO, JSON.stringify({ standing_answers: [{ id: 'r1', match: 'Set', answer: 'yes', blocking: true, kinds: ['env'] }] })]]))
+  const list = await standing($, null, { action: 'list' })
+  expect(list).toContain('r1 [repo file (committed)] match /Set/i')
+  expect(list).toContain('IGNORED: names kinds env')
+  expect(await standing($, null, { action: 'add', match: 'Deploy', answer: 'deploy', kinds: ['deploy'] })).toContain('Refused: kinds may not name')
 })

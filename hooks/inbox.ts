@@ -69,6 +69,20 @@ export const KEEP = 'Keep'
 export const OVERTURN = 'Undo'
 export const isFyi = (q: Question): boolean => q.kind === 'fyi'
 
+// A size decision (worker-size, manager-size) is filed already kept: answered Keep by "default", with the same
+// `auto` marker the decision API leaves, so markAnswered still lets main undo it. It never counts as open.
+export const DEFAULT_BY = 'default'
+export const isKeptByDefault = (q: Question): boolean => q.state === 'answered' && q.auto?.by === DEFAULT_BY
+
+// A decision kept without anyone looking (by default, the decision API or a rule): still undoable by main.
+export const undoable = (q: Question): boolean => q.state === 'answered' && isFyi(q) && (q.auto !== undefined || q.rule !== undefined)
+
+// Marks a decision just filed as kept by default; delivered, since its owner already went on it.
+export function keepByDefault(inbox: Inbox, id: string, now: number): Inbox {
+  const auto = { by: DEFAULT_BY, confidence: 1 }
+  return { ...inbox, items: inbox.items.map(x => (x.id === id && x.state === 'open' ? { ...x, state: 'answered' as const, answer: KEEP, answeredBy: DEFAULT_BY, answeredAt: now, delivered: true, auto } : x)) }
+}
+
 // An item by its id, or by the question id a decision had before it got its d-id.
 export const findItem = (inbox: Inbox | undefined, id: string): Question | undefined => {
   const w = id.trim().toLowerCase()
@@ -183,7 +197,7 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   const id = q?.id ?? wanted
   if (q === undefined) return { kind: 'unknown' }
   // A decision the decision API kept stays undoable: any answer but Keep takes it back. Keep itself changes nothing.
-  const retake = q.state === 'answered' && (q.auto !== undefined || q.rule !== undefined) && isFyi(q) && choice !== null && parseChoice(q.options, choice).text !== KEEP
+  const retake = undoable(q) && choice !== null && parseChoice(q.options, choice).text !== KEEP
   if (q.state === 'answered' && !retake) return { kind: 'answered', q }
   // Main may also answer any decision: the user overrides what a manager has not looked at.
   if (rule === undefined && !user && !isAddressee(q, by) && !(isFyi(q) && by === 'main') && !(q.viaQ !== undefined && by === 'main')) return { kind: 'refused', q }
@@ -265,9 +279,16 @@ export const recentAuto = (inbox: Inbox | undefined, now: number): Question[] =>
     .sort((a, b) => (b.answeredAt ?? 0) - (a.answeredAt ?? 0)).slice(0, 10)
 
 // The decisions the decision API kept in the last 24 h and nobody has answered since, newest first.
+// Size decisions kept by default are not among them: they have their own list.
 export const recentKept = (inbox: Inbox | undefined, now: number): Question[] =>
-  (inbox?.items ?? []).filter(q => q.state === 'answered' && q.auto !== undefined && now - (q.answeredAt ?? 0) <= DAY)
+  (inbox?.items ?? []).filter(q => q.state === 'answered' && q.auto !== undefined && !isKeptByDefault(q) && now - (q.answeredAt ?? 0) <= DAY)
     .sort((a, b) => (b.answeredAt ?? 0) - (a.answeredAt ?? 0))
+
+export const KEPT_DEFAULT_SHOWN = 15
+
+// The size decisions kept by default and not undone, newest first.
+export const keptByDefault = (inbox: Inbox | undefined): Question[] =>
+  (inbox?.items ?? []).filter(isKeptByDefault).sort((a, b) => (b.answeredAt ?? 0) - (a.answeredAt ?? 0))
 
 // --- The person's view (/flow inbox) and the commands behind it (/flow ok, no, answer). ---
 // Everything that decides what is grouped, collapsed or refused is a pure function here, so the Flow pane can reuse it.
@@ -398,7 +419,8 @@ export type PaneGroup = {
 
 export const FOLD_KEY = 'fold'
 
-// Decisions that are routine by their topic: sizing calls nobody needs to weigh one by one.
+// Decisions that are routine by their topic: sizing calls nobody needs to weigh one by one. New ones are filed
+// kept by default and never open; this folds those an inbox written before that still holds open.
 export const ROUTINE_TOPICS = ['worker-size', 'manager-size']
 const isRoutine = (q: Question): boolean => q.topic !== undefined && ROUTINE_TOPICS.includes(q.topic.toLowerCase())
 
@@ -524,9 +546,16 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?:
     `Kept by the decision API (last 24 h, ${kept.length}; undo: /flow no <id> <what instead>):`,
     ...kept.slice(0, 10).map(q => `  ${q.id} ${q.owner}: ${clip(q.question)} -> kept by ${autoWho(q)}`),
   ]
+  // Only the full decisions view lists the size decisions kept by default: they wait for nobody.
+  const byDefault = opts.all === true ? keptByDefault(inbox) : []
+  const defaultLines = byDefault.length === 0 ? [] : [
+    '',
+    `Size decisions kept by default (${byDefault.length}${byDefault.length > KEPT_DEFAULT_SHOWN ? `, newest ${KEPT_DEFAULT_SHOWN} shown` : ''}; undo: /flow no <id> <what instead>):`,
+    ...byDefault.slice(0, KEPT_DEFAULT_SHOWN).map(q => `  ${q.id} ${q.owner}: ${clip(q.question)} (${age(now - (q.answeredAt ?? q.askedAt))} ago)`),
+  ]
   const archived = archiveOf(inbox).length
   const archiveLine = archived === 0 ? [] : [`Archive: ${plural(archived, 'answered item')} (/flow inbox archive).`]
-  if (open.length === 0 && allDecisions.length === 0) return ['No open questions.', ...archiveLine, ...autoLines, ...keptLines].join('\n')
+  if (open.length === 0 && allDecisions.length === 0) return ['No open questions.', ...archiveLine, ...autoLines, ...keptLines, ...defaultLines].join('\n')
   const lines = [summary(inbox)]
   if (open.length > 0) {
     lines.push('', 'Questions')
@@ -543,7 +572,7 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?:
     ...(open.length > 0 ? ['Answer a question: /flow answer q1 <letter or your own words>; its default: /flow ok q1 (not for NEEDS YOU items).'] : []),
   ]
   lines.push('', ...cmds, ...archiveLine)
-  return [...lines, ...autoLines, ...keptLines].join('\n')
+  return [...lines, ...autoLines, ...keptLines, ...defaultLines].join('\n')
 }
 
 // The archive: answered questions and kept or undone decisions, newest answer first.
@@ -553,8 +582,8 @@ export const archiveOf = (inbox: Inbox | undefined): Question[] =>
 export const ARCHIVE_SHOWN = 50
 
 export const archiveWho = (q: Question): string => (q.rule !== undefined ? `standing answer ${q.rule}` : q.auto !== undefined ? autoWho(q) : q.answeredBy ?? '?')
-// "jev (0.93)": the decision API that kept it and how sure it was.
-export const autoWho = (q: Question): string => `${q.auto?.by ?? '?'} (${(q.auto?.confidence ?? 0).toFixed(2)})`
+// "jev (0.93)": the decision API that kept it and how sure it was; "default" for a size decision kept at filing.
+export const autoWho = (q: Question): string => q.auto?.by === DEFAULT_BY ? DEFAULT_BY : `${q.auto?.by ?? '?'} (${(q.auto?.confidence ?? 0).toFixed(2)})`
 
 // One archived item as a line: id, answer, who and when, then the question.
 // A decision's answer read as a statement: Keep (or its default) is kept, anything else is what to do instead.
@@ -599,7 +628,7 @@ export function renderItem(inbox: Inbox | undefined, id: string, now: number): s
     '',
     ...optionLines(q, '  '),
   ]
-  if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`)
+  if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`, ...(undoable(q) ? [`Undo: /flow no ${q.id} <what instead>.`] : []))
   else {
     lines.push('', isFyi(q) ? `Keep: /flow ok ${q.id}. Undo: /flow no ${q.id} <what instead>.` : `Answer: /flow answer ${q.id} <letter or your own words>${needsExplicitAnswer(q) ? '' : `, or /flow ok ${q.id} for the default`}.`)
     if (overridesManager(q)) lines.push(`It is for ${q.addressee}; answering it overrides ${q.addressee}, who is told.`)

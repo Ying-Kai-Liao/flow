@@ -3,7 +3,8 @@ import { test } from './support'
 import {
   addQuestions, answerMessage, askingNames, EMPTY_INBOX, fyiAsked, inboxHead, markAnswered, needsMessage, normalizeInbox,
   openAll, openFor, parseAsk, parseChoice, parseFyi, renderInbox, renderItem, expandOk, stillOpen, clip, findItem, DECISIONS_SHOWN, overridesManager, needsExplicitAnswer, paneRows, paneRowText, groupTitle, groupHint, groupExpanded, protectedWhy,
-  endedOwners, foldedOf, tagsOf, hiddenByLink, archiveOf, renderArchive, FOLD_KEY,
+  endedOwners, foldedOf, tagsOf, hiddenByLink, archiveOf, renderArchive, FOLD_KEY, keepByDefault, keptByDefault, isKeptByDefault, KEPT_DEFAULT_SHOWN,
+  archiveRowText, recentKept,
 } from '../hooks/inbox'
 import type { AskedQuestion, Inbox } from '../hooks/inbox'
 
@@ -563,4 +564,58 @@ test('an escalated pair is one item: the worker question is hidden while the man
   // once the manager's question is answered the pair is closed; an open worker question would show again
   const m = markAnswered(box, 'q2', 'Yes', 'main', 2000, undefined, true)
   expect(m.kind === 'ok' && hiddenByLink(m.inbox, w)).toBe(false)
+})
+
+// Size decisions as spawn.ts files them: added, then kept by default at once.
+const keptSizes = (box: Inbox, owner: string, texts: string[], topic: string, now: number): Inbox => {
+  const r = addQuestions(box, { name: owner, id: owner, isManager: true }, 'main', texts.map(t => fyiAsked({ decision: t, why: 'size', topic })), now, 'fyi')
+  return r.added.reduce((b, a) => keepByDefault(b, a.q.id, now), r.inbox)
+}
+
+test('a size decision kept by default counts nowhere as open, stays listed under decisions and undoable', () => {
+  let box = keptSizes(EMPTY_INBOX, 'mgr-a', ['w1 runs small -> haiku: docs', 'w2 runs normal -> sonnet: x'], 'worker-size', 10)
+  box = keptSizes(box, 'mgr-b', ['mgr-b runs small -> sonnet: docs'], 'manager-size', 20)
+  expect(box.items.every(isKeptByDefault)).toBe(true)
+  expect(box.items[0]).toMatchObject({ state: 'answered', answer: 'Keep', answeredBy: 'default', delivered: true, auto: { by: 'default' } })
+  expect(openAll(box)).toEqual([])
+  expect(stillOpen(box)).toBe('Nothing is left open.')
+  expect(inboxHead(box, H)).toEqual([])
+  expect(recentKept(box, H)).toEqual([])
+  expect(expandOk(box, []).ids).toEqual([])
+  expect(expandOk(box, ['mgr-a']).ids).toEqual([])
+  expect(paneRows(box)).toEqual([])
+  expect(foldedOf(box, undefined).folded).toEqual([])
+  expect(renderInbox(box, H)).not.toContain('runs small')
+  const all = renderInbox(box, H, { all: true })
+  expect(all).toContain('Size decisions kept by default (3; undo: /flow no <id> <what instead>):')
+  // Newest first.
+  expect(all.indexOf('d3 mgr-b')).toBeLessThan(all.indexOf('d1 mgr-a'))
+  expect(archiveRowText(box.items[0]!, H)).toContain('Kept by default')
+  expect(renderItem(box, 'd1', H)).toContain('Undo: /flow no d1 <what instead>.')
+  // Keep changes nothing; anything else undoes it, and it leaves the kept list.
+  expect(markAnswered(box, 'd1', 'Keep', 'main', 30).kind).toBe('answered')
+  const undone = markAnswered(box, 'd1', 'run it normal', 'main', 30, undefined, true)
+  expect(undone.kind).toBe('ok')
+  if (undone.kind === 'ok') {
+    expect(undone.q).toMatchObject({ answer: 'run it normal', answeredBy: 'main' })
+    expect(undone.q.auto).toBeUndefined()
+    expect(needsMessage(undone.q, undone.isDefault)).toBe(true)
+    expect(keptByDefault(undone.inbox).map(q => q.id)).toEqual(['d3', 'd2'])
+  }
+})
+
+test('the kept-by-default list is capped, newest first', () => {
+  let box = EMPTY_INBOX
+  for (let i = 0; i < KEPT_DEFAULT_SHOWN + 3; i++) box = keptSizes(box, 'mgr', [`w${i} runs small -> haiku: x`], 'worker-size', i)
+  const all = renderInbox(box, H, { all: true })
+  expect(all).toContain(`(${KEPT_DEFAULT_SHOWN + 3}, newest ${KEPT_DEFAULT_SHOWN} shown;`)
+  expect(all).toContain(`w${KEPT_DEFAULT_SHOWN + 2} runs small`)
+  expect(all).not.toContain('w0 runs small')
+})
+
+test('a decision the decision API kept is still listed apart from those kept by default', () => {
+  const box = fyis(EMPTY_INBOX, 'mgr', ['use 30 s'], 'timeout', 0)
+  const jev: Inbox = { ...box, items: box.items.map(q => ({ ...q, state: 'answered' as const, answer: 'Keep', answeredBy: 'jev', answeredAt: 5, delivered: true, auto: { by: 'jev', confidence: 0.9 } })) }
+  expect(recentKept(jev, H).map(q => q.id)).toEqual(['d1'])
+  expect(keptByDefault(jev)).toEqual([])
 })

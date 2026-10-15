@@ -8,11 +8,8 @@ import {
   release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
 } from './deploy'
 import type { Deploys, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
-import { AUTO, matchRule } from './standing'
-import type { Resolved } from './standing'
 import { openOf, sendCards } from './askcards'
 import type { CardsIo } from './askcards'
-import { markAnswered, notesOwner } from './inbox'
 import type { Inbox, Question } from './inbox'
 import type { QueueWhy } from './reviewer-run'
 
@@ -36,7 +33,6 @@ export type DeployIo = {
   inbox: () => Promise<Inbox>
   withInbox: <T>(fn: (cur: Inbox) => { inbox: Inbox; out: T }) => Promise<T>
   ensureQueue: (why?: QueueWhy) => Promise<string>
-  loadRules: (options: Record<string, unknown>) => Promise<{ rules: Resolved[] }>
   appendNote: (name: string, line: string) => Promise<boolean>
   appendLog: (event: Omit<LogEvent, 'ts'>) => Promise<void>
   today: () => Promise<string>
@@ -214,7 +210,7 @@ export async function deployTool(io: DeployIo, options: Record<string, unknown>,
     await refreshBehind(io)
     return input.ok === true ? `${target}: recorded as deployed at ${sha}.` : `${target}: failure noted; the last good deploy stays recorded.`
   }
-  return runGate(io, options, info, sha, at, false)
+  return runGate(io, options, info, sha, at)
 }
 
 // What the gate needs to know about a target's env changes now: the pending ones and the user's answers.
@@ -226,8 +222,8 @@ function envInputFor(info: TargetInfo, ts: TargetState | undefined, hs: Handover
 
 const skipText = (target: string) => `Skip ${target} for this batch and go on with the next target.`
 
-// One pass of the gate; `again` is set on the second pass, after a standing rule approved the fresh item.
-async function runGate(io: DeployIo, options: Record<string, unknown>, info: TargetInfo, sha: string, at: number, again: boolean): Promise<string> {
+// One pass of the gate.
+async function runGate(io: DeployIo, options: Record<string, unknown>, info: TargetInfo, sha: string, at: number): Promise<string> {
   const target = info.name
   const hs = Object.values(await io.handovers())
   const ib = await io.inbox()
@@ -295,24 +291,7 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
     return { inbox: r.inbox, out: r.q }
   })
   await withDeploys(io, cur => ({ deploys: setTarget(cur, target, withApproval(cur.targets[target], q.id, sha, at)), out: undefined }))
-  // A standing rule answers the fresh item only if it names the deploy kind (matchRule skips it otherwise).
-  const { rules } = await io.loadRules(options)
-  const m = matchRule(rules, q)
-  if (m !== undefined) {
-    const marked = await io.withInbox(cur => {
-      const r = markAnswered(cur, q.id, m.answer, AUTO, at, m.rule.rid)
-      return { inbox: r.kind === 'ok' ? r.inbox : cur, out: r }
-    })
-    if (marked.kind === 'ok') {
-      await withDeploys(io, cur => ({ deploys: setTarget(cur, target, applyAnswer(cur.targets[target], marked.answer)), out: undefined }))
-      await io.appendNote(notesOwner(marked.q), `- ${await io.today()} decision: "${q.id} ${q.question}: ${marked.answer}" (standing answer ${m.rule.rid})`)
-      await io.best('logging an auto-answer', () => io.appendLog({ event: 'auto-answer', owner: 'main', text: `${q.id} rule ${m.rule.rid}: ${marked.answer}` }))
-      // Approved: the gate runs once more, so the env commands (if any) come with the Go.
-      if (isApprove(marked.answer) && !again) return runGate(io, options, info, sha, at, true)
-      if (isApprove(marked.answer)) return 'Go'
-      return `Held: standing answer ${m.rule.rid} said "${marked.answer}". ${skipText(target)}`
-    }
-  }
+  // No standing rule answers a deploy approval: it always waits for the user.
   io.toast(`Deploy ${target} awaits your approval: /flow inbox (${q.id})`)
   await sendCards(cardsOf(io), options, () => `Deploy ${target} awaits the user's approval`, [q.id])
   return `Awaits approval: ${q.id}. ${skipText(target)}`
@@ -370,19 +349,6 @@ export async function openHandoverEnv(
   if (changes.length > 0) h.env = changes
   else delete h.env
   if (fresh.length > 0) {
-    const { rules } = await io.loadRules(options)
-    for (const q of fresh) {
-      const m = matchRule(rules, q)
-      if (m === undefined) continue
-      const marked = await io.withInbox(cur => {
-        const r = markAnswered(cur, q.id, m.answer, AUTO, at, m.rule.rid)
-        return { inbox: r.kind === 'ok' ? r.inbox : cur, out: r }
-      })
-      if (marked.kind !== 'ok') continue
-      await onEnvAnswer(io, marked.q, marked.answer)
-      await io.appendNote(notesOwner(marked.q), `- ${await io.today()} decision: "${q.id} ${io.noteText(marked.q)}: ${marked.answer}" (standing answer ${m.rule.rid})`)
-      await io.best('logging an auto-answer', () => io.appendLog({ event: 'auto-answer', owner: 'main', text: `${q.id} rule ${m.rule.rid}: ${marked.answer}` }))
-    }
     const ib = await io.inbox()
     const stillOpen = fresh.filter(q => ib.items.find(x => x.id === q.id)?.state === 'open')
     if (stillOpen.length > 0) io.toast(`PR #${h.pr} has ${stillOpen.length} env item${stillOpen.length === 1 ? '' : 's'} for you: /flow inbox`)

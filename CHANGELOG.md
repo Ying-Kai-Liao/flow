@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Size decisions are kept by default (part of #222): the plugin's `worker-size` and `manager-size` decisions are filed already kept (answered `Keep` by `default`, the same `auto` marker the decision API leaves), so they never count as open in `/flow inbox`, `mcp__flow__status`, the pane's counts or `/flow ok`. `/flow inbox decisions` lists them under "Size decisions kept by default" (newest first, 15 shown) and the archive shows "Kept by default". An undo still works as before (`/flow no dN`, `mcp__flow__answer`, and now `n` or the "what instead" input on the pane's archive card for any decision kept without anyone looking): the manager restarts the package at the chosen size, or hands off for `manager-size`. No standing rule reaches them. An inbox written before keeps its open size decisions as they were (open, folded as routine).
+- The `conservative` standing answer is built in and on by default: a non-blocking ordinary question takes its own default at once, recorded as answered by rule `conservative` (named in the ask result, the notes and `log.jsonl`). It never answers a blocking question, a decision, a deploy, env, push, reviewer or guard item, an escalated question, a manager's escalation of a worker's question or a pre-flight question, and every rule of your own comes first. `standing list` shows it as `conservative [built-in]` with its turn-off; the new setting `conservative_default` (default `true`) turns it off, and so does `mcp__flow__standing {"action":"remove","id":"conservative"}`, which writes `conservative_default: false` to the personal file. It is no longer offered as a seed.
+- A suggested standing rule (3 same answers by main) is offered once, in whichever answer makes it 3: the `mcp__flow__answer` result, the `/flow answer|ok|no` output or the pane's answer note, else the head of main's next `mcp__flow__status`. All share `suggest-offered.json`, so each is shown once in all. Size decisions kept by default are not main's answers and suggest nothing.
+
+### Fixed
+
+- Standing rules never answer env items, deploy approvals, pushes or reviewer retries: `standing add` refuses a rule whose `kinds` names `deploy`, `env`, `push` or `reviewer`, a rule like that already in a settings file is ignored (with a warning, and marked IGNORED in `standing list`), and the deploy gate and env handover no longer look up rules, so those items always wait for the user.
+- A rule without `kinds` is for ordinary questions wherever it is checked: before, the spawn path passed every rule to the size decision, so a rule like `{"topic":"worker-size","answer":"Undo"}` could undo a decision.
+
 ## [0.6.118] - 2026-10-14
 
 ### Fixed

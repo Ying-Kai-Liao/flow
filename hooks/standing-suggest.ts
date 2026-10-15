@@ -1,5 +1,6 @@
 // Pushed suggestions of standing rules: when main has answered a topic (or, without one, an exact text) the
-// same way 3+ times and no rule covers it, the answer result and the Flow pane offer the rule. Nothing is
+// same way 3+ times and no rule covers it, the next answer result (tool, /flow command or pane), else main's
+// next status, offers the rule. Nothing is
 // ever added here: the rule exists only once main calls mcp__flow__standing add. Each (group, answer) is
 // offered once; a dismissed one is not offered or shown again. The record is a small file in the state dir.
 import type { StandingIo } from './standing-run'
@@ -44,8 +45,9 @@ export const suggestionLine = (s: Suggestion): string =>
 // The pane's row: shorter, it has no tool call (main adds the rule when the user says so).
 export const paneText = (s: Suggestion): string => `rule? ${s.label} answered "${s.answer}" ${s.times}x: tell main to add it as a standing answer`
 
-// The suggestions not offered before, as one line each, recorded as offered so they come once.
-export async function offerNewSuggestions(io: StandingIo, rules: Resolved[]): Promise<string[]> {
+// The suggestions not offered before, as one line each, recorded as offered so they come once. Every place main
+// answers (the answer tool, /flow answer|ok|no, the pane, and main's next status) shares this one record.
+export async function offerNewSuggestions(io: StandingIo, rules: Resolved[], line: (s: Suggestion) => string = suggestionLine): Promise<string[]> {
   const dir = await io.stateDir()
   if (dir === undefined) return []
   const seen = await readSeen(io, dir)
@@ -54,7 +56,7 @@ export async function offerNewSuggestions(io: StandingIo, rules: Resolved[]): Pr
   const at = await io.now()
   for (const s of fresh) seen[s.id] = { at }
   await writeSeen(io, dir, seen)
-  return fresh.map(suggestionLine)
+  return fresh.map(line)
 }
 
 // Dismisses one open suggestion by its id, or every open one with "all". Returns the ids dismissed.

@@ -125,7 +125,7 @@ async function startManagerSession(io: SpawnHookIo, e: AgentSpawnInput, ctx: { r
   if (ctx.liteMode) await io.best('recording a lite manager', async () => { const at = await io.now(); await io.withLite(cur => ({ state: recordLite(cur, name, at), out: undefined })) })
   if (ctx.routed !== undefined && !ctx.liteMode) {
     const routed = ctx.routed
-    await io.best('filing a manager-size decision', () => fileManagerSizeFyi(io.spawn, io.options(), name, id, routed))
+    await io.best('filing a manager-size decision', () => fileManagerSizeFyi(io.spawn, name, id, routed))
   }
   return { deny: `flow: started manager ${name} in ${r.session.host} (${r.session.handle}); it runs as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
 }
@@ -313,8 +313,8 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
     const liteOwner = e.subagentType === WORKER && routed !== undefined && isLiteName(await io.lite(), (await io.agentList()).find(a => a.id === e.parentAgentId)?.name)
     if (routed !== undefined && !liteMode && !liteOwner) {
       const r = routed
-      if (e.subagentType === MANAGER) await io.best('filing a manager-size decision', () => fileManagerSizeFyi(io.spawn, io.options(), (e as { name?: string }).name ?? e.description, id, r))
-      else await io.best('filing a worker-size decision', () => fileSizeFyi(io.spawn, io.options(), (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
+      if (e.subagentType === MANAGER) await io.best('filing a manager-size decision', () => fileManagerSizeFyi(io.spawn, (e as { name?: string }).name ?? e.description, id, r))
+      else await io.best('filing a worker-size decision', () => fileSizeFyi(io.spawn, (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
     }
     if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
       await io.best('recording a pre-flight', () => recordManager(io, (e as { name?: string }).name ?? e.description, e.prompt, liteMode))

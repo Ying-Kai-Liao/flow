@@ -138,18 +138,23 @@ test('the approval item is a blocking deploy item for main, with the sha and com
   expect(moved.items[0]).toMatchObject({ id: 'q1', question: 'Deploy production at 99999999?', context: 'ctx2' })
 })
 
-test('standing answers skip a deploy approval unless a rule names the kind', () => {
+test('standing answers never answer a deploy approval: a rule naming the kind is refused, and one in a file is ignored', () => {
   const { inbox, q } = openApprovalItem(EMPTY_INBOX, 'production', 'abcdef1234', 'c', 10)
   void inbox
   const plain = parseRules([{ match: 'Deploy', answer: 'deploy', blocking: true }], 'personal', 'f', [])
   expect(matchRule(plain, q)).toBeUndefined()
-  const opted = parseRules([{ match: 'Deploy', answer: 'deploy', blocking: true, kinds: ['deploy'] }], 'personal', 'f', [])
-  expect(matchRule(opted, q)?.answer).toBe('deploy')
-  // A rule limited to deploy items does not answer ordinary questions.
+  const warnings: string[] = []
+  const opted = parseRules([{ match: 'Deploy', answer: 'deploy', blocking: true, kinds: ['deploy', 'ask'] }], 'personal', 'f', warnings)
+  expect(opted[0]).toMatchObject({ rid: 'personal:1', rule: { kinds: ['deploy', 'ask'] } })
+  expect(opted[0]!.ignored).toContain('always waits for the user')
+  expect(warnings[0]).toContain('standing_answers[0] ignored')
+  expect(matchRule(opted, q)).toBeUndefined()
+  // An ignored rule answers nothing, also the ordinary questions it named.
   const ordinary = { question: 'Deploy now?', options: ['deploy', 'not now'], default: 'not now', blocking: true, owner: 'w' }
   expect(matchRule(opted, ordinary)).toBeUndefined()
   expect('error' in validateRule({ topic: 't', answer: 'a', kinds: 5 })).toBe(true)
-  expect(validateRule({ topic: 't', answer: 'a', kinds: 'deploy' })).toMatchObject({ rule: { kinds: ['deploy'] } })
+  for (const kinds of ['deploy', ['env'], ['ask', 'push'], ['Reviewer']]) expect(validateRule({ topic: 't', answer: 'a', kinds })).toMatchObject({ error: expect.stringContaining('kinds may not name') })
+  expect(validateRule({ topic: 't', answer: 'a', kinds: 'ask' })).toMatchObject({ rule: { kinds: ['ask'] } })
 })
 
 // ---- plugin half ----
@@ -331,13 +336,11 @@ test('a newer pending approval supersedes an approved one: due goes with it', ()
 const RULE_DEPLOY = [{ id: 'r1', match: '^Deploy production', answer: 'deploy', blocking: true, kinds: ['deploy'] }]
 const RULE_PLAIN = [{ id: 'r2', match: '^Deploy production', answer: 'deploy', blocking: true }]
 
-test('a standing rule naming the deploy kind answers the fresh approval item and the gate goes', { options: { deploy_targets: JSON.stringify(TARGETS), standing_answers: JSON.stringify(RULE_DEPLOY) } }, async ($, on) => {
+test('a standing rule naming the deploy kind is ignored: the approval waits for the user', { options: { deploy_targets: JSON.stringify(TARGETS), standing_answers: JSON.stringify(RULE_DEPLOY) } }, async ($, on) => {
   const w = world(on)
-  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')).toBe('Go')
-  expect(inboxOf(w.files).items[0]).toMatchObject({ kind: 'deploy', state: 'answered', answer: 'deploy', answeredBy: 'standing answer', rule: 'r1' })
-  expect(stored(w.files).targets.production).toMatchObject({ approval: { state: 'approved', sha: 'abc1234' } })
-  await deploy($, { action: 'deployed', target: 'production', sha: 'abc1234', ok: true }, 'q1')
-  expect(stored(w.files).targets.production!.due).toBeUndefined()
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc1234' }, 'q1')).toContain('Awaits approval: q1')
+  expect(inboxOf(w.files).items[0]).toMatchObject({ kind: 'deploy', state: 'open' })
+  expect(inboxOf(w.files).items[0]!.rule).toBeUndefined()
 })
 
 test('a standing rule without kinds never answers a deploy approval', { options: { deploy_targets: JSON.stringify(TARGETS), standing_answers: JSON.stringify(RULE_PLAIN) } }, async ($, on) => {

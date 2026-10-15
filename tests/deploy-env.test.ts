@@ -84,14 +84,14 @@ test('decideEnv: declined wins, then open items, then apply items; clear lists c
   expect(both).toEqual({ kind: 'clear', apply: [b], record: [{ entry: a, how: 'superseded' }] })
 })
 
-test('standing answers skip an env item unless a rule names the env kind', () => {
+test('standing answers never answer an env item, also a rule that names the env kind', () => {
   const { fresh } = openEnvItems(EMPTY_INBOX, 7, { target: 'demo', name: 'MAIL', value: 'Ops', why: 'sender' }, undefined, 5)
   const q = fresh[0]!
   const plain = parseRules([{ match: 'Set MAIL', answer: 'yes', blocking: true }], 'personal', 'f', [])
   expect(matchRule(plain, q)).toBeUndefined()
   const opted = parseRules([{ match: 'Set MAIL', answer: 'yes', blocking: true, kinds: ['env'] }], 'personal', 'f', [])
-  expect(matchRule(opted, q)?.answer).toBe('yes')
-  // A rule for deploy items does not answer an env item.
+  expect(opted[0]!.ignored).toBeDefined()
+  expect(matchRule(opted, q)).toBeUndefined()
   expect(matchRule(parseRules([{ match: 'Set MAIL', answer: 'yes', blocking: true, kinds: ['deploy'] }], 'personal', 'f', []), q)).toBeUndefined()
 })
 
@@ -289,12 +289,11 @@ test('standing answers: only a rule naming env answers an env item; always makes
   expect(res).toContain('no rule made, an env change is the user\'s call every time')
 })
 
-test('standing answers: a rule that names the env kind answers the item at handover', { options: { ...OPTS, standing_answers: JSON.stringify([{ id: 'r1', match: '^Set MAIL', answer: 'yes', blocking: true, kinds: ['env'] }]) } }, async ($, on) => {
+test('standing answers: a rule that names the env kind is ignored, the item waits for the user', { options: { ...OPTS, standing_answers: JSON.stringify([{ id: 'r1', match: '^Set MAIL', answer: 'yes', blocking: true, kinds: ['env'] }]) } }, async ($, on) => {
   const w = world(on)
   await handover($, 3, [MAIL])
-  expect(items(w.files)[0]).toMatchObject({ state: 'answered', answer: 'yes', answeredBy: 'standing answer', rule: 'r1' })
-  await queue($, 'take', 3)
-  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Go, first apply env:')
+  expect(items(w.files)[0]).toMatchObject({ state: 'open' })
+  expect(items(w.files)[0]!.rule).toBeUndefined()
 })
 
 test('queue list shows each handover\'s env changes by name, secret or not, with their state', { options: OPTS }, async ($, on) => {

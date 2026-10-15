@@ -10,10 +10,9 @@ import type { DeliverOptions } from './deliver'
 import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, KEEP, linkEscalations, markAnswered, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
 import { followUp, FILE_HELP, parseFiling, recordFiling, renderFollowUp } from './preflight'
 import type { Preflight } from './preflight'
-import { alwaysRule, autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
+import { alwaysRule, autoAnswer, loadRules, offerSuggestionsOnce, recordAutoAnswers } from './standing-run'
 import type { AutoHits, StandingIo } from './standing-run'
 import { AUTO, fyiRules, matchRule } from './standing'
-import { offerNewSuggestions } from './standing-suggest'
 import { noteKey } from './state'
 
 export type InboxIo = {
@@ -107,7 +106,7 @@ export async function fyiTool(io: InboxIo, input: Record<string, unknown>, agent
   // A standing rule naming kind "fyi" keeps a fresh routine decision (before the decision API, which then skips it).
   // Only Keep: a rule never undoes a decision. Hard kinds are not autoKeepable, so no rule reaches them.
   const { rules } = await loadRules(io.standing, options)
-  const kept = rules.length === 0 ? new Map<string, string>() : await io.standing.withInbox(cur => {
+  const kept = fyiRules(rules).length === 0 ? new Map<string, string>() : await io.standing.withInbox(cur => {
     let next = cur
     const out = new Map<string, string>()
     for (const a of added) {
@@ -137,8 +136,9 @@ export async function preflightTool(io: InboxIo, options: Record<string, unknown
   const name = me.name ?? (String(input.from ?? '').trim() || 'unknown')
   const at = await io.standing.now()
   // Same standing-answer check as ask: a fresh question a rule matches is answered at once, so it is not
-  // open, never gates the manager and stays out of the round.
-  const { rules } = await loadRules(io.standing, options)
+  // open, never gates the manager and stays out of the round. The built-in conservative rule stays out of the
+  // round: main weighs the managers' questions together there.
+  const rules = (await loadRules(io.standing, options)).rules.filter(r => r.source !== 'builtin')
   // A filing is often sent again whole, and an answered question no longer dedupes in addQuestions: one
   // already answered for this manager (by a rule or by main) is reported again, not stored again, so it
   // neither re-gates the manager nor asks the user twice.
@@ -203,7 +203,7 @@ export async function answerTool(io: InboxIo, options: Record<string, unknown>, 
   }
   // Pushed suggestion: main's answers may have made a topic a candidate for a standing rule (offered once each).
   if (agentId === undefined && todo.size > 0) {
-    const offer = await offerNewSuggestions(io.standing, (await loadRules(io.standing, options)).rules).catch(() => [])
+    const offer = await offerSuggestionsOnce(io.standing, options).catch(() => [])
     lines.push(...offer)
   }
   return { result: lines.join('\n') }

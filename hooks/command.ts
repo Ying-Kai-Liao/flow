@@ -31,6 +31,8 @@ export type CommandIo = {
   endedOwners?: () => Promise<Set<string>>
   checks: () => Promise<Checks>
   answerQuestion: (wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user: boolean) => Promise<string>
+  // Standing-rule suggestions the answers just completed, each offered once (standing-suggest.ts).
+  offerSuggestions?: (options: Record<string, unknown>) => Promise<string[]>
   withChecks: <T>(fn: (cur: Checks) => { checks: Checks; out: T }) => Promise<T>
   costLines: (prs: { pr: number; branch: string }[]) => Promise<string[]>
   handovers: () => Promise<Record<string, Handover>>
@@ -111,6 +113,8 @@ export async function flowCommand(
         lines.push(await io.answerQuestion(m[1]!.toLowerCase(), m[2]!, 'main', options, true))
       }
       lines.push(stillOpen(await io.inbox()))
+      const offer = await io.offerSuggestions?.(options).catch(() => [])
+      lines.push(...(offer ?? []))
       return { text: lines.join('\n') }
     }
     if (arg === 'checks' || arg.startsWith('checks ')) {

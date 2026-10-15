@@ -6,16 +6,14 @@ import type { HandoffRecord, LogEvent, Ledger } from '../types'
 import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
 import { dirtyFiles, isLive } from './clean'
 import { baseName } from './cost'
-import { addQuestions, fyiAsked, isFyi } from './inbox'
-import type { Question } from './inbox'
+import { addQuestions, fyiAsked, isFyi, keepByDefault } from './inbox'
 import { effectiveSize, floorFrom, generation, isSuccessorName, managerDecision, managerModelFor, MANAGER_FYI_WHY, modelFor, parseSize } from './routing'
 import { isSize } from './routing'
 import type { Size, SizeModels } from './routing'
 import type { Decision, Question as DecideQuestion } from './decide'
 import { isFable } from './settings'
 import { sizeDigest, withDigest } from './sizefeedback'
-import { autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
-import type { AutoHits, StandingIo } from './standing-run'
+import type { StandingIo } from './standing-run'
 import { findWorktree } from './state'
 import { CONTINUE, MANAGER, QUEUE, REVIEWER } from './core'
 
@@ -214,25 +212,22 @@ export async function routeWorker(io: SpawnIo, e: AgentSpawnInput, models: SizeM
 }
 
 // The downgrade decision: below large the user can undo the manager's size. Filed by the plugin, owned by the
-// spawning manager and addressed to main like the manager's own decisions; a standing rule can keep or undo it.
-// A decision for the same worker is never filed twice.
-export async function fileSizeFyi(io: SpawnIo, options: Record<string, unknown>, name: string, parentId: string | undefined, routed: Routed): Promise<void> {
+// spawning manager and addressed to main like the manager's own decisions, and kept by default at once (it was
+// always kept), so it waits for nobody; /flow inbox decisions lists it and an undo still restarts the worker.
+// No standing rule reaches it. A decision for the same worker is never filed twice.
+export async function fileSizeFyi(io: SpawnIo, name: string, parentId: string | undefined, routed: Routed): Promise<void> {
   if (routed.size === 'large' || parentId === undefined) return
   const parent = (await io.agents()).find(a => a.id === parentId)
   if (parent === undefined || parent.type !== MANAGER || parent.name === undefined) return
   const owner = parent.name
   const decision = `${name} runs ${routed.size} -> ${routed.model}${routed.escalated ? ' (one size up after an earlier worker on this package)' : ''}${routed.jev === undefined ? '' : ` (${routed.jev})`}: ${routed.reason === '' ? 'no reason given' : routed.reason}`
   const at = await io.standing.now()
-  const { rules } = await loadRules(io.standing, options)
-  const { added, auto } = await io.standing.withInbox(cur => {
-    if (cur.items.some(x => x.owner === owner && isFyi(x) && x.topic === 'worker-size' && x.question.startsWith(`${name} runs `))) {
-      return { inbox: cur, out: { added: [] as Array<{ q: Question }>, auto: new Map() as AutoHits } }
-    }
+  await io.standing.withInbox(cur => {
+    if (cur.items.some(x => x.owner === owner && isFyi(x) && x.topic === 'worker-size' && x.question.startsWith(`${name} runs `))) return { inbox: cur, out: undefined }
     const asked = fyiAsked({ decision, why: 'The plugin routes the worker model by the size on its brief; below large a harder package may need a rerun. Undo it to restart the worker at the size you choose.', topic: 'worker-size' })
-    const r = autoAnswer(cur, addQuestions(cur, { name: owner, id: parentId, isManager: true }, 'main', [asked], at, 'fyi'), rules, at)
-    return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
+    const r = addQuestions(cur, { name: owner, id: parentId, isManager: true }, 'main', [asked], at, 'fyi')
+    return { inbox: keepByDefault(r.inbox, r.added[0]!.q.id, at), out: undefined }
   })
-  await recordAutoAnswers(io.standing, added, auto, owner)
 }
 
 // A manager's model by the Size line main put on its prompt; a successor (`x-2`) runs one size up from the largest
@@ -253,21 +248,17 @@ export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: strin
   return { e: { ...e, model }, routed: { size, reason: declared?.reason ?? '', model, escalated: declared === undefined || declared.size !== size, ...(tag !== undefined && { jev: tag }) } }
 }
 
-// The manager's own downgrade decision: owned by the manager (so an overturn messages it), addressed to main.
-// Filed once per manager name.
-export async function fileManagerSizeFyi(io: SpawnIo, options: Record<string, unknown>, name: string, id: string, routed: Routed): Promise<void> {
+// The manager's own downgrade decision: owned by the manager (so an overturn messages it), addressed to main,
+// kept by default like the worker's. Filed once per manager name.
+export async function fileManagerSizeFyi(io: SpawnIo, name: string, id: string, routed: Routed): Promise<void> {
   if (routed.size === 'large') return
   const at = await io.standing.now()
-  const { rules } = await loadRules(io.standing, options)
-  const { added, auto } = await io.standing.withInbox(cur => {
-    if (cur.items.some(x => x.owner === name && isFyi(x) && x.topic === 'manager-size' && x.question.startsWith(`${name} runs `))) {
-      return { inbox: cur, out: { added: [] as Array<{ q: Question }>, auto: new Map() as AutoHits } }
-    }
+  await io.standing.withInbox(cur => {
+    if (cur.items.some(x => x.owner === name && isFyi(x) && x.topic === 'manager-size' && x.question.startsWith(`${name} runs `))) return { inbox: cur, out: undefined }
     const asked = fyiAsked({ decision: managerDecision(name, routed.size, routed.model, routed.reason, routed.escalated, routed.jev), why: MANAGER_FYI_WHY.replace('<name>', name), topic: 'manager-size' })
-    const r = autoAnswer(cur, addQuestions(cur, { name, id, isManager: true }, 'main', [asked], at, 'fyi'), rules, at)
-    return { inbox: r.inbox, out: { added: r.added, auto: r.hits } }
+    const r = addQuestions(cur, { name, id, isManager: true }, 'main', [asked], at, 'fyi')
+    return { inbox: keepByDefault(r.inbox, r.added[0]!.q.id, at), out: undefined }
   })
-  await recordAutoAnswers(io.standing, added, auto, name)
 }
 
 export const FABLE_DENY = "flow: sub-agents don't run on Fable; use sonnet or opus (set worker_model / manager_model / reviewer_model)."

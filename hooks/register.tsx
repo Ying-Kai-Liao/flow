@@ -56,7 +56,7 @@ import {
 } from './checks'
 import type { Check, Checks } from './checks'
 import type { Inbox, Marked, Question } from './inbox'
-import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, paneSuggestions, standingTool, suggestGuardTests } from './standing-run'
+import { addGuardTest, dismissSuggestionIds, offerOnStatus, offerSuggestionsOnce, paneSuggestions, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
 import { decideEvalTool } from './decide-eval-run'
 import { sizeAbTool } from './size-ab'
@@ -542,7 +542,7 @@ function statusIoOf($: EngineInterface, options: Record<string, unknown>, base: 
     plans: () => read($, plan),
     slots: () => read($, testSlots),
     typecheckSlots: () => read($, typecheckSlots),
-    offerSeeds: () => offerSeedsOnce(standingIoOf($), options),
+    offers: () => offerOnStatus(standingIoOf($), options),
     pushState: () => read($, pushState),
     breaker: () => read($, reviewerBreaker),
     deploys: () => read($, deploys),
@@ -558,6 +558,7 @@ function commandIoOf($: EngineInterface): CommandIo {
     inbox: () => read($, inbox),
     checks: () => read($, checks),
     answerQuestion: (wanted, choice, by, options, user) => answerQuestion($, wanted, choice, by, options, user),
+    offerSuggestions: options => offerSuggestionsOnce(standingIoOf($), options),
     withChecks: fn => withChecks($, fn),
     costLines: prs => costLines($, prs),
     handovers: () => read($, handovers),
@@ -1071,7 +1072,6 @@ function deployIoOf($: EngineInterface): DeployIo {
     inbox: () => read($, inbox),
     withInbox: fn => withInbox($, fn),
     ensureQueue: why => ensureQueue($, why),
-    loadRules: options => loadRules(standingIoOf($), options),
     appendNote: (name, line) => appendNote($, name, line),
     appendLog: event => appendLog($, event),
     today: () => today($),
@@ -2367,6 +2367,14 @@ function paneSuggestionsOf($: EngineInterface, options: Record<string, unknown>)
   return paneSuggestions(io, options)
 }
 
+// A pane answer is main's too: a standing-rule suggestion it completes is offered once, in the pane's words.
+async function paneAnswer($: EngineInterface, options: Record<string, unknown>, id: string, choice: string | null): Promise<string> {
+  const line = await answerQuestion($, id, choice, 'main', {}, true)
+  const io = standingIoOf($)
+  const offer = await offerSuggestionsOnce(io, options, true)
+  return [line, ...offer].join(' ')
+}
+
 function paneDismiss($: EngineInterface, options: Record<string, unknown>, ids: string[]): Promise<void> {
   const io = standingIoOf($)
   return dismissSuggestionIds(io, options, ids)
@@ -2876,7 +2884,7 @@ export const register: Register = (on, options) => {
       paneInboxRows: () => paneInboxRows($),
       suggestions: () => paneSuggestionsOf($, options),
       dismiss: ids => paneDismiss($, options, ids),
-      answer: (id, choice) => answerQuestion($, id, choice, 'main', {}, true),
+      answer: (id, choice) => paneAnswer($, options, id, choice),
       sessionTool: input => paneSessionTool($, input, kept.settings),
     }
     return paneDraw(io, e)

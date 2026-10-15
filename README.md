@@ -33,7 +33,7 @@ you ── main session
 - **One round of questions up front.** Managers look at their tasks first and ask what they need.
   After you answer, you can walk away.
 - **Small choices don't block you.** Agents decide them, log them, and you can undo any of them.
-- **Answer a question once.** Standing answers handle the ones that keep coming back.
+- **Answer a question once.** Standing answers handle the ones that keep coming back; a non-blocking question takes its own default by itself (the built-in `conservative` rule), and size decisions are kept by default. Flow offers a rule the moment you have answered something the same way three times.
 - **Every PR shows how it was checked.** A PR without a verification section is turned away.
 - **Risky things wait for you.** You can require approval before a merge, and before a deploy to
   production.
@@ -99,7 +99,7 @@ fix X" is enough.
 |---|---|
 | `/flow init` | A walkthrough, a demo and your settings. `/flow init settings` and `/flow init demo` jump to a part (the replay is free; `/flow init demo live` runs it for real and uses tokens). |
 | `/flow` | Opens the pane: managers, workers, and what needs you first. |
-| `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the decisions agents made as one flat table (newest 15; routine `worker-size` / `manager-size` decisions and those of finished agents are folded into one line; `/flow inbox decisions` lists all, `/flow inbox d12` one item in full) and what standing answers did. `/flow inbox archive` lists the answered questions and kept or undone decisions, newest first (50; `/flow inbox archive all` lists every one). |
+| `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the decisions agents made as one flat table (newest 15; decisions of finished agents are folded into one line; `/flow inbox decisions` lists all, with the size decisions kept by default, `/flow inbox d12` one item in full) and what standing answers did. `/flow inbox archive` lists the answered questions and kept or undone decisions, newest first (50; `/flow inbox archive all` lists every one). |
 | `/flow ok [d10 d11 \| owner \| topic]` | Keeps decisions (no words: every open decision) or takes the default of an ordinary question. Never answers a deploy, push, env or guard item. |
 | `/flow no d12 [what instead]` | Undoes a decision; the agent is told what to do instead. |
 | `/flow answer q3 <choice>` | Answers any question addressed to main (option letter, number, text, or your own words), deploy, push and env items included. |
@@ -235,7 +235,8 @@ flow writes these files on purpose:
   [reference](docs/reference.md#state-on-disk).
 - `.git/flow/config.json`, your personal settings: flow adds to it when you keep a standing
   answer (`always`) or accept a suggested guard-test mapping. It removes a standing answer from
-  `.claude/flow.json` only when you ask it to remove that rule. It never writes other settings.
+  `.claude/flow.json` only when you ask it to remove that rule, and sets `conservative_default: false`
+  when you remove the built-in `conservative` rule. It never writes other settings by itself.
 - Worktrees under `.claude/worktrees/` for session workers. In-session workers and the reviewer
   get theirs from Claude Code.
 - At a release (only with `release` on, done by the reviewer through `mcp__flow__release`): the

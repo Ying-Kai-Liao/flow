@@ -6,6 +6,8 @@ import type { Inbox, Question } from './inbox'
 // Pure half: parse and validate the rules, match a question, suggest new rules, render the list. The
 // disk half (reading both settings files, writing the personal one) is in register.tsx.
 // SEEDS are a few common rules offered once when no rules exist; they are suggestions, never applied unasked.
+// CONSERVATIVE is the one built-in rule: on unless conservative_default is false, it takes a non-blocking
+// ordinary question's own default. It comes last, so every rule of your own wins over it.
 //
 // A rule: { id?, topic?, match?, answer, blocking?, from?, note? } or { id?, topic?, match?, escalate: true, from?, note? }.
 //   topic    equals the question's topic (trimmed, any case)
@@ -20,10 +22,9 @@ import type { Inbox, Question } from './inbox'
 //            A rule with both `escalate` and an `answer` is invalid (dropped with a warning).
 //   from     the asker's name (a manager's continuation `foo-2` counts as `foo`)
 //   kinds    the kinds of inbox item it may answer ("ask" for an ordinary question, "fyi" for a recorded
-//            decision (answered "Keep"), "deploy" for a deploy approval, "env" for an env/secret change or a
-//            step the user does themselves). Absent: ordinary questions only. A decision, a deploy approval or
-//            an env item is answered only by a rule that names its kind.
-//            A push item (the ready batch awaiting /flow push) is never answered by a rule.
+//            decision (answered "Keep")). Absent: ordinary questions only. A decision is answered only by a rule
+//            that names "fyi". A deploy approval, an env item, a push and a reviewer retry always wait for the
+//            user: a rule naming one of those kinds is refused, and one already in a settings file is ignored.
 //   options  the option set of the question the rule was made from (a topic-less rule): a question matches
 //            only if its options are the same set, besides its text matching `match`.
 // Topics compare normalized (any case, `_`/space/`-` alike, one trailing "s" ignored).
@@ -31,12 +32,17 @@ import type { Inbox, Question } from './inbox'
 // `personal:1`, `repo:2`, `config:1`. Positions count every entry, valid or not, so they stay stable.
 
 export type Rule = { id?: string; topic?: string; match?: string; answer?: string; escalate?: boolean; blocking?: boolean; from?: string; note?: string; kinds?: string[]; options?: string[] }
-export type Source = 'personal' | 'repo' | 'config'
-export type Resolved = { rid: string; source: Source; pos: number; rule: Rule; re?: RegExp }
+export type Source = 'personal' | 'repo' | 'config' | 'builtin'
+// ignored: why the rule never applies (it names a kind only the user answers); standing list shows it.
+export type Resolved = { rid: string; source: Source; pos: number; rule: Rule; re?: RegExp; ignored?: string }
 
 export const AUTO = 'standing answer'
 // The answer word that takes the question's own default.
 export const DEFAULT_WORD = 'default'
+
+// The kinds no rule may name: each item of these is the user's call every time.
+export const USER_ONLY_KINDS = ['deploy', 'env', 'push', 'reviewer']
+const USER_ONLY = 'a deploy approval, an env change, a push or a reviewer retry always waits for the user'
 
 const norm = (s: string) => s.trim().replace(/\s+/g, ' ')
 const lower = (s: string) => norm(s).toLowerCase()
@@ -59,6 +65,7 @@ export function validateRule(raw: unknown): { rule: Rule; re?: RegExp } | { erro
   if (r.blocking !== undefined && typeof r.blocking !== 'boolean') return { error: 'blocking must be true or false' }
   const kinds = Array.isArray(r.kinds) ? r.kinds.map(text).filter(k => k !== '') : typeof r.kinds === 'string' && text(r.kinds) !== '' ? [text(r.kinds)] : undefined
   if (r.kinds !== undefined && (kinds === undefined || kinds.length === 0)) return { error: 'kinds must be a list of kind names' }
+  if (kinds?.some(k => USER_ONLY_KINDS.includes(k.toLowerCase())) === true) return { error: `kinds may not name ${USER_ONLY_KINDS.join(', ')}: ${USER_ONLY}` }
   const options = Array.isArray(r.options) ? r.options.map(text).filter(o => o !== '') : undefined
   if (r.options !== undefined && (options === undefined || options.length === 0)) return { error: 'options must be a list of option texts' }
   // A rule never undoes a decision: for kind "fyi" the only answer is Keep.
@@ -105,6 +112,13 @@ export function parseRules(value: unknown, source: Source, label: string, warnin
   const out: Resolved[] = []
   for (const [i, raw] of list.entries()) {
     const v = validateRule(raw)
+    // A rule written before such kinds were refused stays listed, so the list can say why it does nothing.
+    const old = 'error' in v ? userOnlyRule(raw) : undefined
+    if (old !== undefined) {
+      warnings.push(`${label}: standing_answers[${i}] ignored: ${USER_ONLY}`)
+      out.push({ ...old, rid: old.rule.id ?? `${source}:${i + 1}`, source, pos: i + 1, ignored: USER_ONLY })
+      continue
+    }
     if ('error' in v) {
       warnings.push(`${label}: standing_answers[${i}] dropped: ${v.error}`)
       continue
@@ -114,11 +128,23 @@ export function parseRules(value: unknown, source: Source, label: string, warnin
   return out
 }
 
-export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner' | 'default' | 'kind'> & { topic?: string }
+// A rule that is valid but for naming a user-only kind: as validated without those kinds.
+function userOnlyRule(raw: unknown): { rule: Rule; re?: RegExp } | undefined {
+  const kinds = (raw as { kinds?: unknown } | null)?.kinds
+  const list = Array.isArray(kinds) ? kinds.map(text) : typeof kinds === 'string' ? [text(kinds)] : []
+  if (!list.some(k => USER_ONLY_KINDS.includes(k.toLowerCase()))) return undefined
+  const rest = list.filter(k => k !== '' && !USER_ONLY_KINDS.includes(k.toLowerCase()))
+  const v = validateRule({ ...(raw as Record<string, unknown>), kinds: rest.length > 0 ? rest : undefined })
+  return 'error' in v ? undefined : { rule: { ...v.rule, kinds: list.filter(k => k !== '') }, ...(v.re !== undefined ? { re: v.re } : {}) }
+}
 
-// Topic, match and asker filters of a rule against a question.
+export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner' | 'default' | 'kind'> &
+  Partial<Pick<Question, 'guard' | 'escalated' | 'forQ' | 'viaQ'>> & { topic?: string }
+
+// Topic, match and asker filters of a rule against a question. An ignored rule applies to nothing.
 function applies(r: Resolved, q: Askable): boolean {
   const { rule } = r
+  if (r.ignored !== undefined) return false
   if (rule.topic !== undefined && (q.topic === undefined || normTopic(q.topic) !== normTopic(rule.topic))) return false
   if (r.re !== undefined && !r.re.test(norm(q.question))) return false
   if (rule.options !== undefined && optionSet(rule.options) !== optionSet(q.options)) return false
@@ -137,12 +163,13 @@ export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answ
   for (const r of rules) {
     const { rule } = r
     if (rule.escalate === true || !applies(r, q)) continue
-    // A deploy approval or an env change is the user's call: only a rule that names the kind may answer it.
+    // A deploy approval, an env change, a push or a reviewer retry is the user's call, whatever the rule says.
     const kind = q.kind === undefined || q.kind === 'question' ? 'ask' : q.kind
-    if ((kind === 'deploy' || kind === 'env') && rule.kinds?.includes(kind) !== true) continue
-    // Pushing a checked batch is the user's call, whatever the rule says: no rule can name this kind.
-    if (kind === 'push' || kind === 'reviewer') continue
-    if (rule.kinds !== undefined && !rule.kinds.includes(kind)) continue
+    if (USER_ONLY_KINDS.includes(kind)) continue
+    // No kinds means ordinary questions only: a decision is reached only by a rule naming "fyi".
+    if (!(rule.kinds ?? ['ask']).includes(kind)) continue
+    // The built-in rule never settles a guard suggestion or a question linked to another.
+    if (r.source === 'builtin' && (q.guard !== undefined || q.escalated !== undefined || q.forQ !== undefined || q.viaQ !== undefined)) continue
     if (rule.answer === DEFAULT_WORD) {
       if (q.blocking) continue
       return { rule: r, answer: q.default }
@@ -201,8 +228,8 @@ export type Suggestion = { key: string; id: string; fyi: boolean; label: string;
 
 const SUGGEST_AT = 3
 
-// Anything a rule must never settle: a deploy, env, push, reviewer or person-check item, a guard suggestion,
-// an escalation, or a question linked to another. A group holding one is never suggested.
+// Anything a rule must never settle: a deploy, env, push or reviewer item, a guard suggestion, an escalation,
+// or a question linked to another. A group holding one is never suggested.
 const hardItem = (q: Question): boolean =>
   (q.kind !== undefined && q.kind !== 'question' && q.kind !== 'fyi') || q.guard !== undefined || q.env !== undefined ||
   q.escalated !== undefined || q.forQ !== undefined || q.viaQ !== undefined
@@ -218,6 +245,7 @@ export function suggest(inbox: Inbox, rules: Resolved[]): Suggestion[] {
     if (q.state !== 'answered' || q.answeredBy !== 'main' || q.answer === undefined) continue
     groups.set(keyOf(q), [...(groups.get(keyOf(q)) ?? []), q])
   }
+  const own = rules.filter(r => r.source !== 'builtin')
   const out: Suggestion[] = []
   for (const [key, items] of groups) {
     if (tainted.has(key)) continue
@@ -226,7 +254,8 @@ export function suggest(inbox: Inbox, rules: Resolved[]): Suggestion[] {
     for (const same of byAnswer.values()) {
       if (same.length < SUGGEST_AT) continue
       const last = same[same.length - 1]!
-      if (same.some(q => matchRule(q.kind === 'fyi' ? fyiRules(rules) : rules, q) !== undefined)) continue
+      // The built-in rule does not count as covering: a rule of your own wins over it.
+      if (same.some(q => matchRule(q.kind === 'fyi' ? fyiRules(own) : own, q) !== undefined)) continue
       const fyi = last.kind === 'fyi'
       const rule = ruleFromQuestion(last, last.answer!, '')
       const body: Record<string, unknown> = {
@@ -246,7 +275,7 @@ export function suggest(inbox: Inbox, rules: Resolved[]): Suggestion[] {
 
 const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-const SOURCE_NAME: Record<Source, string> = { personal: 'personal file', repo: 'repo file (committed)', config: '/config' }
+const SOURCE_NAME: Record<Source, string> = { personal: 'personal file', repo: 'repo file (committed)', config: '/config', builtin: 'built-in' }
 
 export function describeRule(r: Resolved): string {
   const parts = [
@@ -277,19 +306,26 @@ export const SEEDS: Seed[] = [
     rule: { topic: 'prod-env-change', escalate: true },
     why: 'A changed production variable or secret affects live users at once.',
   },
-  {
-    id: 'conservative', label: 'Reversible choices: pick the conservative option, mark it, don\'t block',
-    rule: { match: '.', answer: DEFAULT_WORD },
-    why: 'Workers recommend a default for every question; this takes it for non-blocking ones and you only see what is blocking.',
-  },
 ]
+
+// The built-in rule, on by default: a non-blocking ordinary question takes its own default, which the asker
+// already went on, so it only keeps the inbox quiet. Never a blocking one, a decision, a user-only kind, a guard
+// suggestion, an escalation or a linked question (matchRule). Off: conservative_default false.
+export const CONSERVATIVE_ID = 'conservative'
+export const CONSERVATIVE_OFF = 'mcp__flow__settings {"action":"write","layer":"personal","values":{"conservative_default":false}}'
+export const CONSERVATIVE: Resolved = {
+  rid: CONSERVATIVE_ID, source: 'builtin', pos: 1, rule: { id: CONSERVATIVE_ID, match: '.', answer: DEFAULT_WORD, note: `on by default; turn off: ${CONSERVATIVE_OFF}` }, re: /./i,
+}
+// It is in the rules unless the merged settings say conservative_default false.
+export const withBuiltin = (rules: Resolved[], settings: Record<string, unknown>): Resolved[] =>
+  settings.conservative_default === false ? rules : [...rules, CONSERVATIVE]
 
 export const seedIds = (): string[] => SEEDS.map(s => s.id)
 
 // The seeds worth offering: none once a rule of your own exists. Rules that are only accepted seeds do not
 // count as your own, so a partly accepted set still shows the rest.
 export function seedsToOffer(rules: Resolved[]): Seed[] {
-  if (rules.some(r => !SEEDS.some(s => sameRule(s.rule, r.rule)))) return []
+  if (rules.some(r => r.source !== 'builtin' && !SEEDS.some(s => sameRule(s.rule, r.rule)))) return []
   return SEEDS.filter(s => !rules.some(r => sameRule(s.rule, r.rule)))
 }
 
@@ -306,10 +342,10 @@ export function renderRules(rules: Resolved[], inbox: Inbox, suggestions: Sugges
   const lines: string[] = []
   if (rules.length === 0) lines.push('No standing answers.')
   else {
-    lines.push(`Standing answers (${rules.length}; first match wins):`)
+    lines.push(`Standing answers (${rules.length}; first match wins; active unless marked IGNORED):`)
     for (const r of rules) {
       const times = inbox.items.filter(q => q.rule === r.rid).length
-      lines.push(`  ${r.rid} [${SOURCE_NAME[r.source]}] ${describeRule(r)} -> ${outcome(r.rule)}, answered ${times}x${r.rule.note ? ` (${r.rule.note})` : ''}`)
+      lines.push(`  ${r.rid} [${SOURCE_NAME[r.source]}] ${describeRule(r)} -> ${outcome(r.rule)}, answered ${times}x${r.rule.note ? ` (${r.rule.note})` : ''}${r.ignored === undefined ? '' : ` IGNORED: names kinds ${(r.rule.kinds ?? []).join(', ')}; ${r.ignored}. Remove it.`}`)
     }
     lines.push('Remove with mcp__flow__standing {"action":"remove","id":"<id>"}.')
   }

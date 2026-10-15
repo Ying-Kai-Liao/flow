@@ -80,6 +80,8 @@ export const KEYS: Record<string, Kind> = {
   verify_paths: 'list',
   deploy_targets: 'objects',
   standing_answers: 'objects',
+  // The built-in conservative standing answer (standing.ts CONSERVATIVE); absent means on.
+  conservative_default: 'boolean',
   state_file: 'object',
   test_slots: 'number',
   test_slot_commands: 'list',

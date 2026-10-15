@@ -3,7 +3,7 @@
 // register.tsx (the engine refuses `$` across an import).
 import type { LogEvent } from '../types'
 import { mergeLayers } from './settings'
-import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
+import { AUTO, CONSERVATIVE_ID, CONSERVATIVE_OFF, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule, withBuiltin } from './standing'
 import type { Resolved, Rule } from './standing'
 import { addMapping, parseGuardTests, suggestionQuestion, suggestionsFor } from './guardtests'
 import type { GuardMap } from './guardtests'
@@ -12,7 +12,7 @@ import type { Inbox, Question } from './inbox'
 import { noteKey } from './state'
 import { ENV_KIND } from './deploy'
 import { PUSH_KIND } from './pushgate'
-import { dismissSuggestions, paneText, pendingSuggestions } from './standing-suggest'
+import { dismissSuggestions, offerNewSuggestions, paneText, pendingSuggestions, suggestionLine } from './standing-suggest'
 
 export type StandingIo = {
   locate: () => Promise<string[]>
@@ -32,12 +32,14 @@ export type StandingIo = {
 }
 
 // Standing answers (standing.ts): the rules of both settings files, read fresh so a rule made a moment ago
-// applies to the next ask. A bad rule is dropped by mergeLayers; the others stand.
+// applies to the next ask. A bad rule is dropped by mergeLayers; the others stand. The built-in conservative
+// rule comes last unless conservative_default is false.
 export async function loadRules(io: StandingIo, options: Record<string, unknown>): Promise<{ rules: Resolved[]; paths: string[] }> {
   const paths = await io.locate()
   const layers = await Promise.all(paths.map(async path => ({ path, text: path === '' ? undefined : await io.readFile(path) })))
-  const raw = mergeLayers(options, layers).raw.standing_answers
-  return { rules: Array.isArray(raw) ? raw as Resolved[] : [], paths }
+  const merged = mergeLayers(options, layers).raw
+  const raw = merged.standing_answers
+  return { rules: withBuiltin(Array.isArray(raw) ? raw as Resolved[] : [], merged), paths }
 }
 
 export type AutoHits = Map<string, { answer: string; rid: string }>
@@ -86,21 +88,26 @@ function inRulesChain<T>(fn: () => Promise<T>): Promise<T> {
   return result
 }
 
-// Read-modify-write one settings file's standing_answers, keeping every other key. fn gets the raw list and
-// returns the new one (undefined: no change). A file that is not a JSON object is never rewritten.
-async function editRuleFile<T>(io: StandingIo, path: string, fn: (list: unknown[]) => Promise<{ list?: unknown[]; out: T }>): Promise<{ out: T } | { error: string }> {
-  let obj: Record<string, unknown> = {}
+// One settings file as an object; a file that is not a JSON object is never rewritten.
+async function readSettingsObject(io: StandingIo, path: string): Promise<{ obj: Record<string, unknown> } | { error: string }> {
   const text = await io.readFile(path)
-  if (text !== undefined && text.trim() !== '') {
-    let data: unknown
-    try {
-      data = JSON.parse(text)
-    } catch {
-      return { error: `${path} is not valid JSON; fix it first, flow does not rewrite it.` }
-    }
-    if (typeof data !== 'object' || data === null || Array.isArray(data)) return { error: `${path} is not a JSON object; flow does not rewrite it.` }
-    obj = data as Record<string, unknown>
+  if (text === undefined || text.trim() === '') return { obj: {} }
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return { error: `${path} is not valid JSON; fix it first, flow does not rewrite it.` }
   }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return { error: `${path} is not a JSON object; flow does not rewrite it.` }
+  return { obj: data as Record<string, unknown> }
+}
+
+// Read-modify-write one settings file's standing_answers, keeping every other key. fn gets the raw list and
+// returns the new one (undefined: no change).
+async function editRuleFile<T>(io: StandingIo, path: string, fn: (list: unknown[]) => Promise<{ list?: unknown[]; out: T }>): Promise<{ out: T } | { error: string }> {
+  const file = await readSettingsObject(io, path)
+  if ('error' in file) return file
+  const { obj } = file
   let list: unknown = obj.standing_answers
   if (typeof list === 'string') {
     try { list = JSON.parse(list) } catch { return { error: `${path}: "standing_answers" is not valid JSON; fix it first.` } }
@@ -180,6 +187,7 @@ export function dropRule(io: StandingIo, options: Record<string, unknown>, rid: 
   return inRulesChain(async () => {
     const { rules, paths } = await loadRules(io, options)
     const hit = rules.find(r => r.rid === rid)
+    if (rid === CONSERVATIVE_ID && (hit === undefined || hit.source === 'builtin')) return turnOffConservative(io, paths[1] ?? '', hit !== undefined)
     if (hit === undefined) return `${rid}: no such rule. mcp__flow__standing {"action":"list"} shows them.`
     if (hit.source === 'config') return `${rid}: set in /config, remove it there.`
     const path = (hit.source === 'repo' ? paths[0] : paths[1]) ?? ''
@@ -193,6 +201,17 @@ export function dropRule(io: StandingIo, options: Record<string, unknown>, rid: 
   })
 }
 
+// Removing the built-in rule turns it off: conservative_default false in the personal file, every other key kept.
+async function turnOffConservative(io: StandingIo, path: string, on: boolean): Promise<string> {
+  if (!on) return `${CONSERVATIVE_ID}: already off (conservative_default is false).`
+  if (path === '') return `${CONSERVATIVE_ID}: not turned off, the personal file needs a repo. Or: ${CONSERVATIVE_OFF}`
+  const file = await readSettingsObject(io, path)
+  if ('error' in file) return `${CONSERVATIVE_ID}: not turned off, ${file.error}`
+  await io.mkdirp(path.replace(/\/[^/]*$/, ''))
+  if (!await io.writeJson(path, { ...file.obj, conservative_default: false })) return `${CONSERVATIVE_ID}: not turned off, could not write ${path}.`
+  return `${CONSERVATIVE_ID}: the built-in rule is off (conservative_default false in ${path}). Non-blocking questions wait in the inbox again. On again: remove that key, or set it true.`
+}
+
 // The suggested starting rules, for main's first status call when no rule exists anywhere. The flag is
 // written before returning; two calls at once may both show it, none may miss it.
 export async function offerSeedsOnce(io: StandingIo, options: Record<string, unknown>): Promise<string[]> {
@@ -201,11 +220,25 @@ export async function offerSeedsOnce(io: StandingIo, options: Record<string, unk
   const flag = `${dir}/seeds-offered.json`
   if (await io.readJson(flag) !== undefined) return []
   const { rules } = await loadRules(io, options)
-  const offer = rules.length === 0 ? seedsToOffer(rules) : []
+  const offer = rules.every(r => r.source === 'builtin') ? seedsToOffer(rules) : []
   if (offer.length === 0) return []
   await io.mkdirp(dir)
   await io.writeJson(flag, { offeredAt: await io.now() })
   return renderSeeds(offer)
+}
+
+// Standing-rule suggestions main has not seen yet, recorded as offered (standing-suggest.ts): for an answer result.
+// pane: the pane's shorter text, which names no tool call.
+export async function offerSuggestionsOnce(io: StandingIo, options: Record<string, unknown>, pane = false): Promise<string[]> {
+  const { rules } = await loadRules(io, options)
+  return offerNewSuggestions(io, rules, pane ? s => `Standing ${paneText(s)}` : suggestionLine)
+}
+
+// What main's status adds below the inbox: the starting rules once, and any suggestion no answer result showed yet.
+export async function offerOnStatus(io: StandingIo, options: Record<string, unknown>): Promise<string[]> {
+  const seeds = await offerSeedsOnce(io, options)
+  const offer = await offerSuggestionsOnce(io, options).catch(() => [])
+  return [...seeds, ...offer]
 }
 
 // The Flow pane's suggestion rows: pending ones, each as id and one line of text.
@@ -252,6 +285,7 @@ export async function standingTool(io: StandingIo, options: Record<string, unkno
   }
   if (action === 'add' && (input.seed !== undefined || input.seeds !== undefined)) {
     const want = [...new Set([...(typeof input.seed === 'string' ? [input.seed] : []), ...(Array.isArray(input.seeds) ? input.seeds.map(String) : [])].map(s => s.trim()))]
+    if (want.includes(CONSERVATIVE_ID)) return { result: `Refused: "${CONSERVATIVE_ID}" is built in and on by default (conservative_default); nothing added. Off: ${CONSERVATIVE_OFF}` }
     const bad = want.filter(id => !SEEDS.some(s => s.id === id))
     if (bad.length > 0 || want.length === 0) return { result: `Refused: unknown seed ${bad.map(b => `"${b}"`).join(', ') || '(none given)'}. The ids are ${seedIds().join(', ')}; nothing added.` }
     const date = await io.today()

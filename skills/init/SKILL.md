@@ -82,7 +82,8 @@ If the user skips the demo, go on to settings.
 6. Mention, one line each and without asking, the advanced settings and where they are documented in
    `docs/reference.md`: `size_model` and the decision API (its keys live in env, never in settings),
    `deploy_targets` (several deploy targets with gates), `guard_tests` (tests required for matching files),
-   standing answers (`/flow inbox` suggests rules for questions you keep answering the same way).
+   standing answers (flow offers a rule once you answer something the same way 3 times; the built-in
+   `conservative` rule takes the default of non-blocking questions, off with `conservative_default: false`).
    Suggest `decision_api` `jev` for worker model sizing: it halved under-sized spawns in flow's own history, and it
    sends the brief text to the provider (api.typesafe.ai).
 
@@ -109,7 +110,7 @@ no PR is opened, nothing is merged, and your base branch is not touched. Confirm
    then report to main. Do NOT call mcp__flow__handover or open or merge a PR: this demo has no reviewer step.
    ```
 3. While it runs, point the user at the pane (`/flow`) where flow-demo and flow-demo-hello appear like any agents.
-   The inbox may get a worker-size decision; that is normal.
+   The archive may get a worker-size decision, kept by default; that is normal and needs nothing.
 4. When the manager reports, show the diff summary, then explain what the reviewer would do next without doing it:
    merge the PR, run `full_check_command` once for the batch, cut the release, push (or wait for `/flow push`),
    and deploy.

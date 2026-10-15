@@ -8,8 +8,9 @@ import type { TestRest } from 'claude-code/testing'
 export const TEST_TIMEOUT_MS = 60_000
 
 // reviewer_delay defaults to 0 here, so a handover starts the reviewer at once as the tests were written for; a
-// test of the delay sets it in its own options.
+// test of the delay sets it in its own options. conservative_default is false here for the same reason: the tests
+// were written for non-blocking questions that stay open; a test of the built-in rule sets it true.
 export const test = (name: string, ...rest: TestRest): void => {
   const [options, body] = rest.length === 1 ? [{}, rest[0]] : rest
-  kitTest(name, { timeoutMs: TEST_TIMEOUT_MS, ...options, options: { reviewer_delay: 0, ...(options as { options?: Record<string, unknown> }).options } }, body)
+  kitTest(name, { timeoutMs: TEST_TIMEOUT_MS, ...options, options: { reviewer_delay: 0, conservative_default: false, ...(options as { options?: Record<string, unknown> }).options } }, body)
 }
