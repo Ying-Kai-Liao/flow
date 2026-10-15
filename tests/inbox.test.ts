@@ -159,15 +159,12 @@ test('env items: "not yet" on a step keeps it open, an explicit answer replaces 
   expect(markAnswered(closed, 'q1', 'done', 'main', 5, undefined, true).kind).toBe('answered')
 })
 
-test('normalizeInbox opens an env step answered "not yet" before steps stayed open; done, flow-closed and changes stay answered', () => {
+test('normalizeInbox leaves env items as stored: the gate (tidyEnvItems) decides which old "not yet" opens again', () => {
   const base = { owner: 'env', addressee: 'main', question: 'Q', options: ['done', 'not yet'], default: 'not yet', blocking: true, kind: 'env', askedAt: 1, delivered: true }
   const box = normalizeInbox({ next: 5, items: [
     { ...base, id: 'q1', env: { role: 'secret', target: 'd', name: 'A', pr: 1 }, state: 'answered', answer: 'not yet', answeredBy: 'main' },
-    { ...base, id: 'q2', env: { role: 'login', target: 'd', name: 'A', pr: 1 }, state: 'answered', answer: 'done', answeredBy: 'main' },
-    { ...base, id: 'q3', env: { role: 'apply', target: 'd', name: 'A', pr: 1 }, state: 'answered', answer: 'dropped: the PR was returned', answeredBy: 'flow' },
-    { ...base, id: 'q4', options: ['yes', 'no'], env: { role: 'change', target: 'd', name: 'B', pr: 1 }, state: 'answered', answer: 'no', answeredBy: 'main' },
   ] })
-  expect(box.items.map(x => x.state)).toEqual(['open', 'answered', 'answered', 'answered'])
+  expect(box.items[0]).toMatchObject({ state: 'answered', answer: 'not yet' })
   expect(box.items[0]!.via).toBeUndefined()
 })
 

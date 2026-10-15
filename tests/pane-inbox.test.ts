@@ -354,6 +354,28 @@ test('a card for an item answered meanwhile shows the answer and answers nothing
   await ui.unmount()
 })
 
+test('an answered env card takes another option (the gate follows the latest answer); one closed by flow stays read-only', async ($, on) => {
+  const w = world(on)
+  const base = { owner: 'env', addressee: 'main', options: ['yes', 'no'], default: 'no', blocking: true, askedAt: 1_000_000, kind: 'env', delivered: true, state: 'answered', answeredBy: 'main', answeredAt: 1_000_000 }
+  w.files.set(`${DIR}/inbox.json`, JSON.stringify({ next: 3, items: [
+    { ...base, id: 'q1', question: 'Set X=1 on demo?', answer: 'no', env: { target: 'demo', name: 'X', role: 'change', pr: 1 } },
+    { ...base, id: 'q2', question: 'Set Y=1 on demo?', answer: 'dropped: the PR was returned', answeredBy: 'flow', env: { target: 'demo', name: 'Y', role: 'change', pr: 1 } },
+  ] }))
+  await fyi($, 'w1', [F(1)])
+  const ui = await mount($)
+  await open(ui)
+  await ui.press({ key: 'inbox-archive' })
+  await ui.press({ key: 'arch-q2' })
+  expect(await ui.find({ text: /Nothing more to answer\./ })).toBeDefined()
+  expect(await ui.find({ key: 'card-opt-0' })).toBeUndefined()
+  await ui.press({ key: 'card-back' })
+  await ui.press({ key: 'arch-q1' })
+  expect(await ui.find({ text: /Answered: no \(by main.*Press another option to change it\./ })).toBeDefined()
+  await ui.press({ key: 'card-opt-0' })
+  expect(stateOf(w.files, 'q1')).toMatchObject({ state: 'answered', answer: 'yes' })
+  await ui.unmount()
+})
+
 test('a protected card: y never answers it, an option press does', async ($, on) => {
   const w = world(on)
   protectedItems(w.files)

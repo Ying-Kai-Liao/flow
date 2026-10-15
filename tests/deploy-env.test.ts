@@ -1,7 +1,8 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
-import { decideEnv, envCommandFor, openEnvItems, parseEnvInput, shellQuote } from '../hooks/deploy'
+import { currentEnvItem, decideEnv, envCommandFor, envRefusal, openEnvItems, parseEnvInput, shellQuote, tidyEnvItems } from '../hooks/deploy'
+import type { Handover, Question } from '../types'
 import { EMPTY_INBOX, renderInbox } from '../hooks/inbox'
 import { deployTargetsOf } from '../hooks/prompts'
 import { matchRule, parseRules } from '../hooks/standing'
@@ -82,6 +83,29 @@ test('decideEnv: declined wins, then open items, then apply items; clear lists c
   const b = { pr: 2, change: change('A', { qid: 'q-B', value: 'w' }) }
   const both = decideEnv({ ...base, pending: [a, b], item: item({ 'q-A': { open: false, answer: 'yes' }, 'q-B': { open: false, answer: 'yes' } }) })
   expect(both).toEqual({ kind: 'clear', apply: [b], record: [{ entry: a, how: 'superseded' }] })
+})
+
+test('tidyEnvItems: an old "not yet" the handover still names opens again, a replaced copy and an orphaned apply item close by flow; envRefusal names the current item', () => {
+  const item = (id: string, role: 'secret' | 'apply', extra: Partial<Question> = {}): Question => ({
+    id, owner: 'env', addressee: 'main', question: 'Q', options: ['done', 'not yet'], default: 'not yet', blocking: true, kind: 'env',
+    env: { role, target: 'demo', name: role === 'apply' ? 'REGION' : 'KEY', pr: 3 }, askedAt: 1, state: 'answered', answer: 'not yet', answeredBy: 'main', delivered: true, ...extra,
+  })
+  const h = (env: Handover['env'], status: Handover['status'] = 'taken') => ({ pr: 3, status, env } as Handover)
+  const hs = [h([{ target: 'demo', name: 'KEY', secret: true, why: 'w', qid: 'q4' }, { target: 'demo', name: 'REGION', value: 'eu', why: 'w', qid: 'q1' }])]
+  // q2: the old gate's original "not yet"; q4 the copy the handover names. q3: an old apply "not yet", q5 the newer apply item.
+  const box = { next: 6, items: [item('q2', 'secret'), item('q3', 'apply'), item('q4', 'secret'), item('q5', 'apply', { state: 'open', answer: undefined, answeredBy: undefined })] }
+  expect(currentEnvItem(box.items[0]!, hs, box)).toBe('q4')
+  expect(currentEnvItem(box.items[1]!, hs, box)).toBe('q5')
+  const tidy = tidyEnvItems(box, hs, 'demo', 9)
+  expect(tidy.items.map(x => [x.id, x.state, x.answeredBy])).toEqual([['q2', 'answered', 'flow'], ['q3', 'answered', 'flow'], ['q4', 'open', 'main'], ['q5', 'open', undefined]])
+  // Nothing to do: the same object; another target is left alone.
+  expect(tidyEnvItems(tidy, hs, 'demo', 10)).toBe(tidy)
+  expect(tidyEnvItems(box, hs, 'production', 9)).toBe(box)
+  expect(envRefusal(box.items[0]!, hs, box, undefined)?.line).toBe('q2: refused, no handover asks for this item any more; q4 asks for KEY on demo (PR #3) now, answer that one.')
+  expect(envRefusal(box.items[2]!, hs, box, undefined)).toBeUndefined()
+  // A returned PR: nothing asks for its items.
+  expect(envRefusal(box.items[2]!, [h(hs[0]!.env, 'returned')], box, undefined)?.line).toContain('PR #3 was returned or handed over again without KEY')
+  expect(envRefusal(box.items[2]!, hs, box, { envDone: [{ pr: 3, name: 'KEY', how: 'secret', at: 1 }] })?.line).toContain('already settled (secret set by user)')
 })
 
 test('standing answers skip an env item unless a rule names the env kind', () => {
@@ -402,6 +426,69 @@ test('an answered env item takes a later explicit answer and the gate follows it
   // Applied: the change is settled and a later answer says so.
   await deploy($, { action: 'env-applied', target: 'demo', names: ['MAIL_SENDER'] })
   expect(await answer($, { answers: [{ id: 'q1', choice: 'no' }] })).toContain('q1: MAIL_SENDER on demo (PR #3) is already settled (applied by command); this answer changes nothing.')
+  expect(items(w.files)[0]).toMatchObject({ answer: 'yes' })
+})
+
+// The inbox as the old gate left it, written straight to disk (every inbox change reads the file first).
+const editItems = (files: Map<string, string>, fn: (xs: Array<Record<string, any>>) => Array<Record<string, any>>) => {
+  const box = read(files, 'inbox.json')
+  files.set(`${DIR}/inbox.json`, JSON.stringify({ ...box, next: Math.max(box.next, 10), items: fn(box.items) }))
+}
+
+test('old data: a "not yet" the handover still names opens again at the gate; a replaced original is closed and refused', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [{ target: 'demo', name: 'API_KEY', secret: true, why: 'key' }])
+  await queue($, 'take', 3)
+  // Stored by the old code: q1 answered "not yet" and closed.
+  editItems(w.files, xs => xs.map(x => (x.id === 'q1' ? { ...x, state: 'answered', answer: 'not yet', answeredBy: 'main' } : x)))
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Awaits env: q1')
+  expect(items(w.files)[0]).toMatchObject({ state: 'open', answer: 'not yet' })
+  expect(await answer($, { answers: [{ id: 'q1', choice: 'done' }] })).toContain('q1: done')
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toBe('Go')
+})
+
+test('old data: the old gate\'s replaced pair (q1 "not yet", the handover on q2) leaves one open item; answering the original is refused', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  const KEY = { target: 'demo', name: 'API_KEY', secret: true, why: 'key' }
+  await handover($, 3, [KEY])
+  editItems(w.files, xs => xs.map(x => (x.id === 'q1' ? { ...x, state: 'answered', answer: 'not yet', answeredBy: 'main' } : x)))
+  // Sent again: the answered "not yet" is not kept, so the handover names a fresh q10 (as the old reopen did).
+  await handover($, 3, [KEY])
+  expect(read(w.files, 'handovers/3.json').env[0].qid).toBe('q10')
+  await queue($, 'take', 3)
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Awaits env: q10')
+  expect(items(w.files).filter(i => i.state === 'open').map(i => i.id)).toEqual(['q10'])
+  expect(items(w.files)[0]).toMatchObject({ state: 'answered', answeredBy: 'flow', answer: 'replaced: no handover asks for it any more' })
+  expect(await answer($, { answers: [{ id: 'q1', choice: 'done' }] })).toContain('q1: closed by flow')
+  expect(await answer($, { answers: [{ id: 'q10', choice: 'done' }] })).toContain('q10: done')
+})
+
+test('old data: an orphaned apply item (the old gate opened a second one) is closed, the newest is the one the gate reads; the auto run is not held by it', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  // production has no env_command: an approved value needs an apply item.
+  await handover($, 4, [{ target: 'production', name: 'REGION', value: 'eu', why: 'region' }])
+  await queue($, 'take', 4)
+  await answer($, { answers: [{ id: 'q1', choice: 'yes' }] })
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q2')
+  // The old code: q2 answered "not yet", then a second apply item q10 for the same change.
+  editItems(w.files, xs => [...xs.map(x => (x.id === 'q2' ? { ...x, state: 'answered', answer: 'not yet', answeredBy: 'main' } : x)), { ...xs[1]!, id: 'q10', askedAt: 2_000_000 }])
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q10')
+  expect(items(w.files).find(i => i.id === 'q2')).toMatchObject({ state: 'answered', answeredBy: 'flow' })
+  expect(await answer($, { answers: [{ id: 'q2', choice: 'done' }] })).toContain('q2: closed by flow')
+  expect(await answer($, { answers: [{ id: 'q10', choice: 'done' }] })).toContain('q10: done')
+  expect(read(w.files, 'deploys.json').targets.production.envDone.map((d: any) => [d.name, d.how])).toEqual([['REGION', 'user']])
+})
+
+test('an env item a re-handover replaced is refused, not answered: no "held" reply for a qid the gate does not read', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [MAIL])
+  await queue($, 'take', 3)
+  await answer($, { answers: [{ id: 'q1', choice: 'yes' }] })
+  // A new value: q1 is not kept, q2 asks again.
+  await handover($, 3, [{ ...MAIL, value: 'Ops 2' }])
+  expect(read(w.files, 'handovers/3.json').env[0].qid).toBe('q2')
+  const res = await answer($, { answers: [{ id: 'q1', choice: 'no' }] })
+  expect(res).toBe('q1: refused, no handover asks for this item any more; q2 asks for MAIL_SENDER on demo (PR #3) now, answer that one.')
   expect(items(w.files)[0]).toMatchObject({ answer: 'yes' })
 })
 

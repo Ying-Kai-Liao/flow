@@ -171,6 +171,10 @@ export function parseChoice(options: string[], choice: string): Choice {
 export const envOwed = (q: Question, answer: string | undefined): boolean =>
   q.kind === 'env' && q.env !== undefined && q.env.role !== 'change' && (answer ?? '').trim().toLowerCase() !== 'done'
 
+// An answered env item flow did not close itself: an explicit answer may replace its answer (the deploy gate
+// still refuses one whose change is settled or that no handover asks for any more).
+export const envReanswerable = (q: Question): boolean => q.kind === 'env' && q.state === 'answered' && q.answeredBy !== 'flow'
+
 export type Marked =
   | { kind: 'ok'; inbox: Inbox; q: Question; answer: string; isDefault: boolean }
   | { kind: 'unknown' }
@@ -190,7 +194,7 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   const retake = q.state === 'answered' && (q.auto !== undefined || q.rule !== undefined) && isFyi(q) && choice !== null && parseChoice(q.options, choice).text !== KEEP
   // An env item stays answerable: a later explicit answer (the person's, or main relaying one) replaces the
   // earlier one and the gate follows it. One the plugin closed itself (answeredBy "flow") stays closed.
-  const reanswer = q.state === 'answered' && q.kind === 'env' && q.answeredBy !== 'flow' && choice !== null && rule === undefined && (user || by === 'main') &&
+  const reanswer = envReanswerable(q) && choice !== null && rule === undefined && (user || by === 'main') &&
     parseChoice(q.options, choice).text !== q.answer
   if (q.state === 'answered' && !retake && !reanswer) return { kind: 'answered', q }
   // Main may also answer any decision: the user overrides what a manager has not looked at.
@@ -665,8 +669,6 @@ export function normalizeInbox(raw: unknown): Inbox {
     const moved = new Map(old.map(x => [x, { ...x, id: `d${nextD++}`, alias: x.id }]))
     items = items.map(x => moved.get(x) ?? x)
   }
-  // An env step answered "not yet" before such items stayed open: open again, so it can be answered done.
-  items = items.map(x => (x.state === 'answered' && x.answeredBy !== 'flow' && envOwed(x, x.answer) ? { ...x, state: 'open' as const } : x))
   const top = Math.max(0, ...items.map(x => Math.max(num(x.id, /^q(\d+)$/), num(x.alias, /^q(\d+)$/))))
   return {
     next: Math.max(top + 1, typeof r?.next === 'number' ? r.next : 1),

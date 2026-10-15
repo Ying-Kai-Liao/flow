@@ -5,7 +5,7 @@ import type { EnvChange, Handover, LogEvent } from '../types'
 import {
   applyAnswer, applyViewOf, approvalContext, closeEnvItems, declinedEntries, decideEnv, decideGate, ENV_KIND, envCommandFor, envListLine,
   isApprove, normalizeDeploys, openApplyItem, openApprovalItem, openDeployIds, openEnvItems, pendingEnv, recordDeployed,
-  envSettledLine, release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
+  currentEnvItem, envRefusal, release, renderList, retargetItem, tidyEnvItems, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
 } from './deploy'
 import type { Deploys, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
 import { AUTO, matchRule } from './standing'
@@ -134,15 +134,28 @@ export async function onEnvAnswer(io: DeployIo, q: Question, answer: string): Pr
       : ` Not yet: ${q.id} stays open and ${e.target} keeps waiting; answer done on ${q.id} when it is.`
   }
   const ib = await io.inbox()
-  const stillOpen = ib.items.some(x => x.state === 'open' && x.kind === ENV_KIND && x.env?.target === e.target)
+  // Only the items the gate reads count: an orphan left by the old gate never holds the run.
+  const stillOpen = ib.items.some(x => x.state === 'open' && x.kind === ENV_KIND && x.env?.target === e.target && (currentEnvItem(x, hs, ib) === x.id || !hs.some(h => h.pr === x.env?.pr)))
   if (!waiting || stillOpen || info === undefined || info.mode !== 'auto') return ''
   await withDeploys(io, cur => ({ deploys: setTarget(cur, e.target, { ...(cur.targets[e.target] ?? {}), due: true }), out: undefined }))
   return ` ${e.target} has its env answers. ${await io.ensureQueue('approval')}`
 }
 
-// The refusal for an answer to an env item whose change is already recorded for its target, else undefined.
+// The refusal for an answer to an env item that can change nothing (its change is recorded for the target, or no
+// handover asks for the item any more), else undefined. Such an item still open is closed by flow, so it stops
+// showing as open and holding the target.
 export async function envSettled(io: DeployIo, q: Question): Promise<string | undefined> {
-  return q.env === undefined ? undefined : envSettledLine(q, (await io.deploys()).targets[q.env.target])
+  const e = q.env
+  if (e === undefined) return undefined
+  const ts = await withDeploys(io, cur => ({ deploys: cur, out: cur.targets[e.target] }))
+  const hs = Object.values(await io.handovers())
+  const at = await io.now()
+  return io.withInbox(cur => {
+    const x = cur.items.find(i => i.id === q.id)
+    const r = x === undefined || x.answeredBy === 'flow' ? undefined : envRefusal(x, hs, cur, ts)
+    if (r === undefined) return { inbox: cur, out: undefined }
+    return { inbox: x!.state === 'open' ? closeEnvItems(cur, [x!.id], r.note, at) : cur, out: r.line }
+  })
 }
 
 // A person's (or main's) hold on a target.
@@ -235,6 +248,8 @@ const skipText = (target: string) => `Skip ${target} for this batch and go on wi
 async function runGate(io: DeployIo, options: Record<string, unknown>, info: TargetInfo, sha: string, at: number, again: boolean): Promise<string> {
   const target = info.name
   const hs = Object.values(await io.handovers())
+  // Items the old gate left behind: a current "not yet" opens again, an orphan is closed by flow.
+  await io.withInbox(cur => ({ inbox: tidyEnvItems(cur, hs, target, at), out: undefined }))
   const ib = await io.inbox()
   const open = openDeployIds(ib)
   const decided = await withDeploys(io, cur => {
