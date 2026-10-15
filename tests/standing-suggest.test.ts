@@ -174,8 +174,10 @@ const stored = (files: Map<string, string>) => (JSON.parse(files.get(`${DIR}/inb
 const personalRules = (files: Map<string, string>) => (JSON.parse(files.get(PERSONAL) ?? '{}') as { standing_answers?: Array<Record<string, unknown>> }).standing_answers ?? []
 
 const BUMP = (n: number) => ({ question: `Which bump ${n}?`, options: ['patch', 'minor'], default: 'patch', blocking: false, topic: 'Version_Bumps' })
+// The conservative rule is on by default and answers non-blocking asks; tests of other rules turn it off.
+const OFF = { options: { conservative_default: false } }
 
-test('the third same answer by main offers the rule once, with the exact add call, and writes nothing', async ($, on) => {
+test('the third same answer by main offers the rule once, with the exact add call, and writes nothing', OFF, async ($, on) => {
   const w = world(on)
   await ask($, 'm1', [BUMP(1), BUMP(2), BUMP(3), BUMP(4)])
   const one = await answer($, null, { answers: [{ id: 'q1', choice: 'minor' }, { id: 'q2', choice: 'minor' }] })
@@ -191,7 +193,7 @@ test('the third same answer by main offers the rule once, with the exact add cal
   expect(w.files.get(`${DIR}/suggest-offered.json`)).toContain('minor')
 })
 
-test('a dismissed suggestion is not offered again; a corrupt state file means nothing offered yet', async ($, on) => {
+test('a dismissed suggestion is not offered again; a corrupt state file means nothing offered yet', OFF, async ($, on) => {
   const w = world(on)
   await ask($, 'm1', [BUMP(1), BUMP(2), BUMP(3)])
   await answer($, null, { answers: [{ id: 'q1', choice: 'minor' }, { id: 'q2', choice: 'minor' }] })
@@ -253,7 +255,7 @@ test('kept decisions: the third keep offers an fyi rule; once added, a fresh dec
   expect(w.sent.some(m => m.text.includes('undid your decision d4'))).toBe(true)
 })
 
-test('an ordinary rule never keeps a decision, and a fyi rule never answers a question', async ($, on) => {
+test('an ordinary rule never keeps a decision, and a fyi rule never answers a question', OFF, async ($, on) => {
   const w = world(on)
   await standing($, null, { action: 'add', topic: 'worker-size', answer: 'Keep' })
   await standing($, null, { action: 'add', topic: 'sized', answer: 'Keep', kinds: ['fyi'] })
@@ -270,4 +272,31 @@ test('an escalate rule keeps a decision open even with a fyi rule', async ($, on
   await standing($, null, { action: 'add', topic: 'worker-size', escalate: true })
   await fyi($, 'w1', [{ decision: 'one', why: 'x', topic: 'worker-size' }])
   expect(stored(w.files)[0]!.state).toBe('open')
+})
+
+test('size decisions kept by default never count toward a suggestion', () => {
+  const box: Inbox = { next: 1, items: many(5, i => ({ id: `d${i + 1}`, kind: 'fyi', topic: 'worker-size', owner: 'm', state: 'answered' as const, answer: 'Keep', answeredBy: 'default' })) }
+  expect(suggest(box, [])).toEqual([])
+})
+
+const statusText = ($: Dollar) => $.tool.call({ tool: 'mcp__flow__status' } as never).then(r => String(r.result))
+const flow = ($: Dollar, args: string) => $.command.run({ command: 'flow', args } as never).then(r => r.text ?? '')
+
+test('status offers a new suggestion once when the user answered in /flow, and the next answer does not repeat it', OFF, async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [BUMP(1), BUMP(2), BUMP(3), BUMP(4)])
+  for (const id of ['q1', 'q2', 'q3']) await flow($, `answer ${id} minor`)
+  const first = await statusText($)
+  expect(first).toContain('Standing answer? topic Version_Bumps answered "minor" 3 times')
+  expect(await statusText($)).not.toContain('Standing answer?')
+  expect(await answer($, null, { answers: [{ id: 'q4', choice: 'minor' }] })).not.toContain('Standing answer?')
+  expect(personalRules(w.files)).toEqual([])
+})
+
+test('defaults: true offers the suggestion its answers made, once', OFF, async ($, on) => {
+  world(on)
+  await ask($, 'm1', [BUMP(1), BUMP(2), BUMP(3)])
+  const r = await answer($, null, { defaults: true })
+  expect(r).toContain('Standing answer? topic Version_Bumps answered "patch" 3 times')
+  expect(await statusText($)).not.toContain('Standing answer?')
 })

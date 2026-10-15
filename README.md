@@ -99,7 +99,7 @@ fix X" is enough.
 |---|---|
 | `/flow init` | A walkthrough, a demo and your settings. `/flow init settings` and `/flow init demo` jump to a part (the replay is free; `/flow init demo live` runs it for real and uses tokens). |
 | `/flow` | Opens the pane: managers, workers, and what needs you first. |
-| `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the decisions agents made as one flat table (newest 15; routine `worker-size` / `manager-size` decisions and those of finished agents are folded into one line; `/flow inbox decisions` lists all, `/flow inbox d12` one item in full) and what standing answers did. `/flow inbox archive` lists the answered questions and kept or undone decisions, newest first (50; `/flow inbox archive all` lists every one). |
+| `/flow inbox` | Lists what waits for you: a summary line, the questions (blocking first, deploy/push/env marked NEEDS YOU), the decisions agents made as one flat table (newest 15; `worker-size` / `manager-size` decisions are filed already kept and only show in the archive, and those of finished agents are folded into one line; `/flow inbox decisions` lists all, `/flow inbox d12` one item in full) and what standing answers did. `/flow inbox archive` lists the answered questions and kept or undone decisions, newest first (50; `/flow inbox archive all` lists every one). |
 | `/flow ok [d10 d11 \| owner \| topic]` | Keeps decisions (no words: every open decision) or takes the default of an ordinary question. Never answers a deploy, push, env or guard item. |
 | `/flow no d12 [what instead]` | Undoes a decision; the agent is told what to do instead. |
 | `/flow answer q3 <choice>` | Answers any question addressed to main (option letter, number, text, or your own words), deploy, push and env items included. |
@@ -234,7 +234,7 @@ flow writes these files on purpose:
   test-slot grant files and session worker prompt and report files. The full list is in the
   [reference](docs/reference.md#state-on-disk).
 - `.git/flow/config.json`, your personal settings: flow adds to it when you keep a standing
-  answer (`always`) or accept a suggested guard-test mapping. It removes a standing answer from
+  answer (`always`), accept a seed or accept a suggested guard-test mapping. It removes a standing answer from
   `.claude/flow.json` only when you ask it to remove that rule. It never writes other settings.
 - Worktrees under `.claude/worktrees/` for session workers. In-session workers and the reviewer
   get theirs from Claude Code.

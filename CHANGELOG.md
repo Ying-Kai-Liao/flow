@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Defaults ask less (#222, item 5). `worker-size` and `manager-size` decisions are filed already kept (`answeredBy: "default"`): they no longer wait in the inbox, the Flow pane, `/flow ok` or `defaults: true`, stay in the archive as "Kept (by default)", and are undone by id exactly as before (the owner is messaged, a `manager-size` undo still makes the manager hand off). A standing rule that applies still answers one first, and an escalate rule for the topic keeps it open. Size decisions kept by default never count toward a suggested rule. Open size decisions filed by older versions are left as they are.
+- The `conservative` standing rule is on by default (#222): an implicit rule with id `conservative`, after all of yours, gives a fresh non-blocking ordinary question its own default at once; the ask result and the inbox name the rule. It never answers a blocking question, a decision, a deploy, env, push, reviewer or guard item, nor an escalated or linked question. The new setting `conservative_default: false` turns it off. The seed is no longer offered while it is on, and the other seeds are still offered beside it.
+- A suggested standing rule is offered once in main's next `mcp__flow__status` too, not only in an `mcp__flow__answer` result (#222).
+
 ## [0.6.118] - 2026-10-14
 
 ### Fixed
