@@ -565,6 +565,7 @@ function commandIoOf($: EngineInterface): CommandIo {
     inbox: () => read($, inbox),
     checks: () => read($, checks),
     answerQuestion: (wanted, choice, by, options, user) => answerQuestion($, wanted, choice, by, options, user),
+    offerSuggestions: options => offerSuggestionsOnce(standingIoOf($), options),
     withChecks: fn => withChecks($, fn),
     costLines: prs => costLines($, prs),
     handovers: () => read($, handovers),

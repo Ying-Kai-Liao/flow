@@ -9,7 +9,7 @@ import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELL
 import { askBright, COLOR, FINISHED_KEY, GLYPH, handoffOf, ICON, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
-import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, groupTitle, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
+import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, groupTitle, paneRowText, plural, protectedWhy, tagsOf, undoable } from './inbox'
 import { dupAskers, dupHidden, dupMark } from './inbox-dups'
 import type { Inbox, PaneGroup, PaneRow, Question } from './inbox'
 import { MANAGER } from './core'
@@ -1011,6 +1011,8 @@ export function cardView(x: InboxCtx & { id: string | null }) {
     )
   }
   const open = q.state === 'open'
+  // A decision kept by default, by the decision API or by a rule: its card keeps the undo input and n.
+  const retake = undoable(q)
   const linked = q.forQ === undefined ? undefined : findItem(x.ibox, q.forQ)
   const agent = list.find(a => a.name !== undefined && noteKey(a.name) === noteKey(q.owner))
   // Where the next card comes from: the rows as they are after the answer, from this one on.
@@ -1019,7 +1021,8 @@ export function cardView(x: InboxCtx & { id: string | null }) {
     const before = (await io.rows()).filter(r => r.q !== undefined).map(r => r.q!.id)
     const fresh = findItem(await io.readInbox(), q.id)
     if (fresh === undefined) return
-    if (fresh.state === 'answered') {
+    // A kept decision nobody looked at can still be undone from its card; anything else answered is done.
+    if (fresh.state === 'answered' && !(undoable(fresh) && choice !== null)) {
       const text = `${fresh.id} is already answered: ${fresh.answer ?? ''} (by ${archiveWho(fresh)}).`
       await io.setNote(text)
       io.toast(clip(text, 120))
@@ -1073,7 +1076,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
   const rowsOf = (t: string | undefined) => (t === undefined || t === '' ? 0 : textRows(t, x.columns))
   const head = 5 + (tags !== '' ? 1 : 0) + (isFyi(q) && q.topic ? 1 : 0) + (isFyi(q) ? 0 : 1) + (linked !== undefined ? 1 : 0) + (q.env !== undefined ? 1 : 0) + rowsOf(overrideText)
   const foot = 1 + (isFyi(q) ? 0 : q.options.reduce((n, o, k) => n + rowsOf(`${open ? '' : '  '}${optText(o, k)}`), 0)) + rowsOf(doneText) + rowsOf(protectedText)
-    + rowsOf(note) + (open && Input !== undefined ? rowsOf(`${inputLabel}${draft === '' ? inputHint : draft}`) : 0) + (open ? 1 : 0)
+    + rowsOf(note) + ((open || retake) && Input !== undefined ? rowsOf(`${inputLabel}${draft === '' ? inputHint : draft}`) : 0) + (open || retake ? 1 : 0)
   const w = scrollWindow(lines, Math.max(3, rows - head - foot), `q:${q.id}`, x.scroll)
   return (
     <Box flexDirection="column" height={rows}>
@@ -1117,7 +1120,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
       </Box>
       <Box flexDirection="column" flexShrink={0}>
       {note !== '' && <Text color="suggestion">{note}</Text>}
-      {open && Input !== undefined && <Input key="card-answer" label={inputLabel} placeholder={inputHint} value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
+      {(open || retake) && Input !== undefined && <Input key="card-answer" label={inputLabel} placeholder={inputHint} value={draft} onInput={(v: string) => void io.setDraft(v)} onSubmit={submit} />}
       {open && (
         <Box flexDirection="row" gap={1}>
           <Button key="card-yes" plain dimColor hotkey="y" onPress={() => void answerWith(null)}>{isFyi(q) ? 'y Keep' : 'y default'}</Button>
@@ -1126,6 +1129,12 @@ export function cardView(x: InboxCtx & { id: string | null }) {
           {Array.from({ length: isFyi(q) ? 0 : Math.min(q.options.length, 8) }, (_, k) => String.fromCharCode(97 + k)).filter(l => l !== 'b').map(l => (
             <Button key={`card-pick-${l}`} plain dimColor hotkey={l} onPress={pick(l.charCodeAt(0) - 97)}>{l}</Button>
           ))}
+          {Input !== undefined && <Button key="card-reply" plain dimColor hotkey="r" onPress={() => void io.focus('card-answer')}>r reply</Button>}
+        </Box>
+      )}
+      {retake && (
+        <Box flexDirection="row" gap={1}>
+          <Button key="card-no" plain dimColor hotkey="n" onPress={undo}>n Undo (say what instead)</Button>
           {Input !== undefined && <Button key="card-reply" plain dimColor hotkey="r" onPress={() => void io.focus('card-answer')}>r reply</Button>}
         </Box>
       )}
