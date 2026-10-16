@@ -56,7 +56,7 @@ import {
 } from './checks'
 import type { Check, Checks } from './checks'
 import type { Inbox, Marked, Question } from './inbox'
-import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, paneSuggestions, standingTool, suggestGuardTests } from './standing-run'
+import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, offerSuggestionsOnce, paneSuggestions, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
 import { decideEvalTool } from './decide-eval-run'
 import { sizeAbTool } from './size-ab'
@@ -549,6 +549,7 @@ function statusIoOf($: EngineInterface, options: Record<string, unknown>, base: 
     slots: () => read($, testSlots),
     typecheckSlots: () => read($, typecheckSlots),
     offerSeeds: () => offerSeedsOnce(standingIoOf($), options),
+    offerSuggestions: () => offerSuggestionsOnce(standingIoOf($), options),
     pushState: () => read($, pushState),
     breaker: () => read($, reviewerBreaker),
     deploys: () => read($, deploys),

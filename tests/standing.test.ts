@@ -5,7 +5,7 @@ import type { TestBody } from 'claude-code/testing'
 import { addQuestions, EMPTY_INBOX, inboxHead, markAnswered, renderInbox } from '../hooks/inbox'
 import type { AskedQuestion, Inbox, Question } from '../hooks/inbox'
 import { mergeLayers } from '../hooks/settings'
-import { escalation, matchRule, nextRuleId, parseRules, removeRule, renderRules, ruleFromQuestion, sameRule, SEEDS, seedsToOffer, suggest, validateRule } from '../hooks/standing'
+import { escalation, matchRule, nextRuleId, parseRules, removeRule, renderRules, ruleFromQuestion, sameRule, SEEDS, seedsToOffer, suggest, validateRule, withDefaults } from '../hooks/standing'
 import type { Resolved } from '../hooks/standing'
 
 type Dollar = Parameters<TestBody>[0]
@@ -206,6 +206,8 @@ const stored = (files: Map<string, string>) => (JSON.parse(files.get(`${DIR}/inb
 
 const BUMP = { question: 'Which bump?', options: ['patch', 'minor'], default: 'patch', blocking: false, topic: 'version-bump' }
 const BLOCK = { question: 'Which format?', options: ['csv', 'tsv'], default: 'csv', blocking: true, topic: 'format' }
+// The conservative rule is on by default and answers non-blocking asks; tests of other rules turn it off.
+const OFF = { options: { conservative_default: false } }
 const personalRules = (files: Map<string, string>) => (JSON.parse(files.get(PERSONAL) ?? '{}') as { standing_answers?: Array<Record<string, unknown>> }).standing_answers ?? []
 
 test('a repo-file rule answers a fresh ask at once: stored and answered, no message, note and log', async ($, on) => {
@@ -254,7 +256,7 @@ test('a rule whose answer is not an option of the question leaves it in the inbo
   expect(w.sent.length).toBe(1)
 })
 
-test('a duplicate ask is not re-answered', async ($, on) => {
+test('a duplicate ask is not re-answered', OFF, async ($, on) => {
   const w = world(on)
   await ask($, 'w1', [BUMP])
   await standing($, null, { action: 'add', topic: 'version-bump', answer: 'minor' })
@@ -263,7 +265,7 @@ test('a duplicate ask is not re-answered', async ($, on) => {
   expect(stored(w.files)[0]!.state).toBe('open')
 })
 
-test('always:true by main answers, writes the personal file keeping other keys, and the next ask is auto-answered', async ($, on) => {
+test('always:true by main answers, writes the personal file keeping other keys, and the next ask is auto-answered', OFF, async ($, on) => {
   const w = world(on, new Map([[PERSONAL, JSON.stringify({ language: 'German', standing_answers: [{ id: 's7', topic: 'zzz', answer: 'a' }] })]]))
   await ask($, 'm1', [BUMP])
   const r = await answer($, null, { answers: [{ id: 'q1', choice: 'b', always: true }] })
@@ -291,7 +293,7 @@ test('always on a topicless question makes an anchored exact match; a blocking o
   expect(await ask($, 'w1', [{ question: ' use  tabs (y/n)? ', options: ['yes', 'no'], default: 'yes', blocking: true }])).toContain('answered by standing answer s1: no')
 })
 
-test('always: a manager gets the answer but no rule; free text and an answered question make no rule; the same rule is not added twice', async ($, on) => {
+test('always: a manager gets the answer but no rule; free text and an answered question make no rule; the same rule is not added twice', OFF, async ($, on) => {
   const w = world(on)
   await ask($, 'w1', [BUMP])
   const m = await answer($, 'm1', { answers: [{ id: 'q1', choice: 'minor', always: true }] })
@@ -316,7 +318,7 @@ test('always: a manager gets the answer but no rule; free text and an answered q
   expect(personalRules(w.files).length).toBe(2)
 })
 
-test('two always answers at once keep both rules', async ($, on) => {
+test('two always answers at once keep both rules', OFF, async ($, on) => {
   const w = world(on)
   await ask($, 'm1', [{ ...BUMP, topic: 'a' }, { ...BUMP, question: 'Second?', topic: 'b' }])
   const [x, y] = await Promise.all([
@@ -328,7 +330,7 @@ test('two always answers at once keep both rules', async ($, on) => {
   expect(new Set(personalRules(w.files).map(r => r.id)).size).toBe(2)
 })
 
-test('an invalid personal config.json is never rewritten', async ($, on) => {
+test('an invalid personal config.json is never rewritten', OFF, async ($, on) => {
   const w = world(on, new Map([[PERSONAL, '{oops']]))
   await ask($, 'm1', [BUMP])
   const r = await answer($, null, { answers: [{ id: 'q1', choice: 'patch', always: true }] })
@@ -337,7 +339,7 @@ test('an invalid personal config.json is never rewritten', async ($, on) => {
   expect(w.files.get(PERSONAL)).toBe('{oops')
 })
 
-test('standing: refused for agents; list shows rules with counts and suggestions; add, remove (personal and repo)', async ($, on) => {
+test('standing: refused for agents; list shows rules with counts and suggestions; add, remove (personal and repo)', OFF, async ($, on) => {
   const w = world(on, new Map([[REPO, JSON.stringify({ language: 'x', standing_answers: [{ topic: 'format', answer: 'csv' }] })]]))
   expect(await standing($, 'm1', { action: 'list' })).toContain('only main')
   expect(await standing($, 'w1', { action: 'add', topic: 'a', answer: 'b' })).toContain('only main')
@@ -497,4 +499,64 @@ test('the conservative seed ("default") auto-answers a non-blocking ask and leav
   expect(await ask($, 'w1', [BUMP])).toBe('q1: answered by standing answer s1: patch. Carry on from it.')
   expect(await ask($, 'w1', [BLOCK])).toContain('q2: end your turn now')
   expect(stored(w.files).map(i => i.state)).toEqual(['answered', 'open'])
+})
+
+// ---- the conservative rule, on by default (#222) ----
+
+test('withDefaults: the conservative rule comes last, is off by setting, and an accepted seed is not doubled', () => {
+  const own = rules([{ topic: 'version-bump', answer: 'minor' }])
+  const on = withDefaults(own, true)
+  expect(on.map(r => `${r.rid}:${r.source}`)).toEqual(['personal:1:personal', 'conservative:default'])
+  expect(on[1]!.rule).toMatchObject({ match: '.', answer: 'default' })
+  expect(withDefaults(own, false)).toEqual(own)
+  const seeded = rules([SEEDS.find(s => s.id === 'conservative')!.rule])
+  expect(withDefaults(seeded, true)).toEqual(seeded)
+  // Your own rule wins over it.
+  expect(matchRule(on, q('Which bump?', { topic: 'version-bump' }))).toMatchObject({ rule: { rid: 'personal:1' }, answer: 'minor' })
+  // It does not count as a rule of your own: the other seeds are still offered, it is not.
+  expect(seedsToOffer(withDefaults([], true)).map(s => s.id)).toEqual(['tracker', 'prod-env'])
+})
+
+test('the default rule answers a plain non-blocking question only: never a decision, a hard, linked, escalated or blocking item', () => {
+  const on = withDefaults([], true)
+  const plain = q('Which bump?')
+  expect(matchRule(on, plain)).toMatchObject({ rule: { rid: 'conservative' }, answer: 'patch' })
+  expect(matchRule(on, { ...plain, blocking: true })).toBeUndefined()
+  for (const kind of ['fyi', 'deploy', 'env', 'push', 'reviewer'] as const) expect(matchRule(on, { ...plain, kind })).toBeUndefined()
+  expect(matchRule(on, { ...plain, guard: { glob: 'src/**', test: 't.test.ts' } })).toBeUndefined()
+  expect(matchRule(on, { ...plain, env: { role: 'change', target: 'prod', name: 'X', pr: 1 } })).toBeUndefined()
+  expect(matchRule(on, { ...plain, escalated: 's1' })).toBeUndefined()
+  expect(matchRule(on, { ...plain, forQ: 'q9' })).toBeUndefined()
+  expect(matchRule(on, { ...plain, viaQ: 'q9' })).toBeUndefined()
+  // An escalate rule still holds what it matches.
+  expect(matchRule(withDefaults(rules([{ topic: 'external-tracker', escalate: true }]), true), q('Comment?', { topic: 'external-tracker' }))).toBeUndefined()
+})
+
+test('on by default: a non-blocking ask is answered by rule conservative and says so; a blocking one waits; your rule wins', async ($, on) => {
+  const w = world(on, new Map([[REPO, JSON.stringify({ standing_answers: [{ id: 'r1', topic: 'format', answer: 'tsv', blocking: true }] })]]))
+  expect(await ask($, 'w1', [BUMP])).toBe('q1: answered by standing answer conservative: patch. Carry on from it.')
+  expect(stored(w.files)[0]).toMatchObject({ state: 'answered', answer: 'patch', answeredBy: 'standing answer', rule: 'conservative' })
+  expect(await ask($, 'w1', [{ ...BUMP, question: 'Lock it?', blocking: true }])).toContain('q2: end your turn now')
+  expect(await ask($, 'w1', [BLOCK])).toBe('q3: answered by standing answer r1: tsv. Carry on from it.')
+  // Only the blocking ask reaches the manager.
+  expect(w.sent.map(m => /asks (q\d+)/.exec(m.text)?.[1])).toEqual(['q2'])
+  expect(await inbox($)).toContain('(rule conservative)')
+  const list = await standing($, null, { action: 'list' })
+  expect(list).toContain('conservative [on by default; off with the setting conservative_default: false]')
+  expect(list).toContain('answered 1x')
+  expect(await standing($, null, { action: 'remove', id: 'conservative' })).toContain('conservative_default: false')
+})
+
+test('conservative_default false: the ask stays open for the manager, and the seed is offered again', { options: { conservative_default: false } }, async ($, on) => {
+  const w = world(on)
+  expect(await ask($, 'w1', [BUMP])).toContain('q1: proceed on the default (patch)')
+  expect(stored(w.files)[0]!.state).toBe('open')
+  expect(await standing($, null, { action: 'list' })).toContain('"seed":"conservative"')
+})
+
+test('status offers the other seeds beside the default rule, never the conservative one while it is on', async ($, on) => {
+  world(on)
+  const text = await statusText($)
+  expect(text).toContain('"seed":"tracker"')
+  expect(text).not.toContain('"seed":"conservative"')
 })

@@ -80,6 +80,7 @@ export const KEYS: Record<string, Kind> = {
   verify_paths: 'list',
   deploy_targets: 'objects',
   standing_answers: 'objects',
+  conservative_default: 'boolean',
   state_file: 'object',
   test_slots: 'number',
   test_slot_commands: 'list',
