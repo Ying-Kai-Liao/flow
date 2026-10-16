@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.119] - 2026-10-16
+
 ### Fixed
 
 - `/flow answer q84 done /flow answer q85 done` answers both questions, one result line each, instead of recording q84 as `done /flow answer q85 done`. The line splits only on the literal `/flow answer`; if any piece lacks an id or a choice, nothing is recorded and the reply is "One answer per command" with the usage line. Part of #222.
