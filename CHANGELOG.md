@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.121] - 2026-10-16
+
+### Changed
+
+- Sweep every flow worktree, wherever it lives, and sweep occasionally between merges (#234)
+
 ## [0.6.120] - 2026-10-16
 
 ### Fixed
