@@ -217,6 +217,10 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   return { kind: 'ok', inbox: { ...inbox, items: inbox.items.map(x => (x.id === id ? done : x)) }, q: done, answer, isDefault }
 }
 
+// A decision kept without anyone looking (by default, the decision API or a rule): still undoable by main.
+export const undoable = (q: Question): boolean =>
+  q.state === 'answered' && isFyi(q) && (q.auto !== undefined || q.rule !== undefined || q.answeredBy === DEFAULT_KEEP)
+
 // A decision stored already kept by DEFAULT_KEEP: recorded, never open, undoable by id like one a rule kept.
 export const keepByDefault = (inbox: Inbox, id: string, now: number): Inbox => ({
   ...inbox, items: inbox.items.map(x => (x.id === id && x.state === 'open' && isFyi(x) ? { ...x, state: 'answered' as const, answer: KEEP, answeredBy: DEFAULT_KEEP, answeredAt: now, delivered: true } : x)),

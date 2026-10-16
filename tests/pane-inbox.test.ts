@@ -1141,3 +1141,40 @@ test('a duplicate question group is one row with its count and askers; a pick an
   expect(stored(w.files).map(x => `${x.id}:${x.state}:${x.answer}`)).toEqual(['q1:answered:tsv', 'q2:answered:tsv'])
   await ui.unmount()
 })
+
+// A worker-size decision as the plugin files it now: kept by default, owned by the manager.
+const keptSize = (files: Map<string, string>) => files.set(`${DIR}/inbox.json`, JSON.stringify({ next: 1, nextD: 2, items: [{
+  id: 'd1', kind: 'fyi', owner: 'csv-export', addressee: 'main', askerId: 'm1', askerIsManager: true, topic: 'worker-size',
+  question: 'csv-worker runs small -> haiku: docs only', context: 'size', options: ['Keep', 'Undo'], default: 'Keep', blocking: false,
+  askedAt: 1_000_000, state: 'answered', answer: 'Keep', answeredBy: 'default', answeredAt: 1_000_000, delivered: true,
+}] }))
+
+test('a size decision kept by default is not open in the pane; its archive card undoes it and tells the manager', async ($, on) => {
+  const w = world(on)
+  keptSize(w.files)
+  // An inbox write loads the file: a decision of the worker's, kept at once.
+  await fyi($, 'w1', [F(1)])
+  await cmd($, 'ok d2')
+  const ui = await mount($)
+  await open(ui)
+  expect(await ui.find({ text: /Nothing open/ })).toBeDefined()
+  await ui.press({ key: 'inbox-archive' })
+  await ui.press({ key: 'arch-d1' })
+  expect(await ui.find({ key: 'card-no' })).toBeDefined()
+  expect(await ui.find({ key: 'card-yes' })).toBeUndefined()
+  await ui.input({ key: 'card-answer', text: 'run it normal' })
+  expect(stateOf(w.files, 'd1')).toMatchObject({ state: 'answered', answer: 'run it normal' })
+  expect(w.sent.some(s => s.to === 'm1' && s.text.includes('undid your decision d1') && s.text.includes('Instead: run it normal'))).toBe(true)
+  await ui.unmount()
+})
+
+test('/flow answer offers the standing rule on the 3rd same answer, and not again on the 4th', async ($, on) => {
+  const w = world(on)
+  const T = (n: number) => ({ ...SOFT, question: `Quote fields ${n}?`, topic: 'quoting' })
+  await ask($, 'm1', [T(1), T(2), T(3), T(4)])
+  expect(await cmd($, 'answer q1 no')).not.toContain('Standing')
+  expect(await cmd($, 'answer q2 no')).not.toContain('Standing')
+  expect(await cmd($, 'answer q3 no')).toContain('Standing answer? topic quoting answered "no" 3 times')
+  expect(w.files.get(`${DIR}/suggest-offered.json`)).toContain('quoting')
+  expect(await cmd($, 'answer q4 no')).not.toContain('Standing')
+})

@@ -31,6 +31,8 @@ export type CommandIo = {
   endedOwners?: () => Promise<Set<string>>
   checks: () => Promise<Checks>
   answerQuestion: (wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user: boolean) => Promise<string>
+  // Standing-rule suggestions the answers just completed, each offered once (standing-run.ts).
+  offerSuggestions?: (options: Record<string, unknown>) => Promise<string[]>
   withChecks: <T>(fn: (cur: Checks) => { checks: Checks; out: T }) => Promise<T>
   costLines: (prs: { pr: number; branch: string }[]) => Promise<string[]>
   handovers: () => Promise<Record<string, Handover>>
@@ -114,7 +116,12 @@ export async function flowCommand(
         for (const m of pieces) lines.push(await io.answerQuestion(m![1]!.toLowerCase(), m![2]!.trim(), 'main', options, true))
       }
       lines.push(stillOpen(await io.inbox()))
-      return { text: lines.join('\n') }
+      // The offer is recorded as made here, so status and the answer tool do not repeat it: main gets the lines
+      // as hidden context (it adds the rule when the user says so), the user sees them with how to take one.
+      const offer = (await io.offerSuggestions?.(options).catch(() => [])) ?? []
+      if (offer.length === 0) return { text: lines.join('\n') }
+      lines.push(...offer, 'To make one a rule, tell main to add it; main has these lines.')
+      return { text: lines.join('\n'), context: offer }
     }
     if (arg === 'checks' || arg.startsWith('checks ')) {
       const w = arg.split(/\s+/).slice(1)

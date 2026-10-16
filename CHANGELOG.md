@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Flow pane's card for a decision kept without anyone looking (by default, a rule or the decision API) now shows the answer input and `n Undo (say what instead)`, so it can be undone from the pane (part of #222).
+- `/flow ok|no|answer` now offers a standing rule once when the answer completes a suggestion, as the answer tool already did (part of #222). The lines also reach main as hidden context, so the user tells main to add the rule; it counts as the one offer, and `mcp__flow__status` and the answer tool do not repeat it.
+
 ## [0.6.122] - 2026-10-16
 
 ### Added

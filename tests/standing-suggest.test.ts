@@ -282,12 +282,26 @@ test('size decisions kept by default never count toward a suggestion', () => {
 const statusText = ($: Dollar) => $.tool.call({ tool: 'mcp__flow__status' } as never).then(r => String(r.result))
 const flow = ($: Dollar, args: string) => $.command.run({ command: 'flow', args } as never).then(r => r.text ?? '')
 
-test('status offers a new suggestion once when the user answered in /flow, and the next answer does not repeat it', OFF, async ($, on) => {
+test('the 3rd /flow answer offers a new suggestion, to the user and as context for main; status and the next answer do not repeat it', OFF, async ($, on) => {
+  const w = world(on)
+  await ask($, 'm1', [BUMP(1), BUMP(2), BUMP(3), BUMP(4)])
+  for (const id of ['q1', 'q2']) expect(await flow($, `answer ${id} minor`)).not.toContain('Standing answer?')
+  const r = await $.command.run({ command: 'flow', args: 'answer q3 minor' } as never) as { text?: string; context?: string[] }
+  expect(r.text).toContain('Standing answer? topic Version_Bumps answered "minor" 3 times')
+  expect(r.text).toContain('tell main to add it')
+  expect(r.context?.join('\n')).toContain('Standing answer? topic Version_Bumps answered "minor" 3 times')
+  expect(await statusText($)).not.toContain('Standing answer?')
+  expect(await flow($, 'answer q4 minor')).not.toContain('Standing answer?')
+  expect(personalRules(w.files)).toEqual([])
+})
+
+test('status offers a suggestion the /flow answers earned when /flow could not record it, and only once', OFF, async ($, on) => {
   const w = world(on)
   await ask($, 'm1', [BUMP(1), BUMP(2), BUMP(3), BUMP(4)])
   for (const id of ['q1', 'q2', 'q3']) await flow($, `answer ${id} minor`)
-  const first = await statusText($)
-  expect(first).toContain('Standing answer? topic Version_Bumps answered "minor" 3 times')
+  // An offer file written before /flow offered (or lost): status is the first place left to offer it.
+  w.files.delete(`${DIR}/suggest-offered.json`)
+  expect(await statusText($)).toContain('Standing answer? topic Version_Bumps answered "minor" 3 times')
   expect(await statusText($)).not.toContain('Standing answer?')
   expect(await answer($, null, { answers: [{ id: 'q4', choice: 'minor' }] })).not.toContain('Standing answer?')
   expect(personalRules(w.files)).toEqual([])
