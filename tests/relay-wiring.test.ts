@@ -98,6 +98,34 @@ test('a worker session\'s copy is passive: no tools, no slot wipe, calls pass st
   expect(w.runs.some(a => a[0] === 'gh')).toBe(false)
 })
 
+test('a claude worker\'s copy with FLOW_RELAY shows only the worker\'s tools and relays them; no state, no timers', async ($, on) => {
+  const WRELAY = `${DIR}/sessions/w1/relay`
+  const w = world(on, { FLOW_ROLE: 'worker', FLOW_NAME: 'w1', FLOW_RELAY: WRELAY })
+  on('tool.call', () => ({ result: 'ran' }))
+  await start($)
+  const tools = w.registered.filter(r => r.startsWith('tool:')).sort()
+  expect(tools).toEqual(['tool:ask', 'tool:fyi', 'tool:guard_tests', 'tool:note', 'tool:status', 'tool:test_slot'])
+  expect(w.registered).toContain('command:flow')
+  // Never main's slot wipe or its timers.
+  expect(w.runs.some(a => a.join(' ').includes('rm -rf'))).toBe(false)
+  await w.clock.advance(5000)
+  expect(w.runs.some(a => a[0] === 'gh')).toBe(false)
+
+  w.wait.answer = () => ({ result: 'Test slot granted (1/1).' })
+  expect((await $.tool.call({ tool: 'mcp__flow__test_slot', action: 'acquire', label: 'tests' } as never)).result).toBe('Test slot granted (1/1).')
+  expect(calls(w, WRELAY)[0]).toMatchObject({ tool: 'mcp__flow__test_slot', input: { action: 'acquire', label: 'tests' }, from: 'session:w1', role: 'worker', by: 'w1' })
+
+  // Bash: a whole-suite run and a typecheck ask main; kills and remote deletes are refused here; code edits pass.
+  w.wait.answer = () => ({ deny: 'flow: `claude plugin test .` runs the whole suite, which only the reviewer\'s full check does.' })
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'claude plugin test .' } as never))).toContain('only the reviewer')
+  w.wait.answer = () => ({ result: 'ok' })
+  expect((await $.tool.call({ tool: 'Bash', command: 'npm run typecheck' } as never)).result).toBe('ran')
+  expect(calls(w, WRELAY).slice(1).map(c => Object.keys(c.input as object)[0])).toEqual(['suite', 'typecheck'])
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'pkill -f node' } as never))).toContain('flow')
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'git push origin --delete flow/x' } as never))).toContain('flow')
+  expect((await $.tool.call({ tool: 'Edit', file_path: '/r/a.ts', old_string: 'a', new_string: 'b' } as never)).result).toBe('ran')
+})
+
 test('a manager session\'s copy shows the tools and /flow stub, relays flow tools to main and refuses code edits', async ($, on) => {
   const w = world(on, { FLOW_ROLE: 'manager', FLOW_NAME: 'm1', FLOW_RELAY: RELAY })
   on('tool.call', () => ({ result: 'ran' }))
@@ -189,6 +217,63 @@ test('main pumps a role session\'s calls and runs them as that session: a note, 
   expect(answerOf(w, 'a4', 'gone')?.deny).toContain('not running')
   // Claimed files are gone.
   expect([...w.files.keys()].some(k => k.includes('/taken-'))).toBe(false)
+})
+
+// A claude worker session started by terminal manager m1, relaying its flow tools.
+const WORKER = (name: string) => ({
+  ...SESSION, name, handle: `flow-${name}`, worktree: `/r/.claude/worktrees/${name}`, branch: `flow/${name}`, promptFile: `${DIR}/sessions/${name}/prompt.md`,
+  reportFile: `${DIR}/sessions/${name}/report.md`, relayDir: `${DIR}/sessions/${name}/relay`, owner: 'session:m1', ownerName: 'm1',
+})
+const typedText = (w: { runs: string[][]; files: Map<string, string> }) => [...w.runs.map(r => r.join(' ')), ...w.files.values()].join('\n')
+
+test('main pumps a claude worker\'s calls as that session, owned by its manager: test_slot holds and grants, ask, whole-suite refusal', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER, w1: WORKER('w1'), w2: WORKER('w2') }))
+  await start($)
+
+  leave(w, 't1', 'mcp__flow__test_slot', { action: 'acquire', label: 'tests' }, 'w1')
+  await w.clock.advance(1200)
+  expect(answerOf(w, 't1', 'w1')?.result).toContain('Test slot granted')
+  leave(w, 't2', 'mcp__flow__test_slot', { action: 'acquire', label: 'more', wait_s: 0 }, 'w2')
+  await w.clock.advance(1200)
+  expect(answerOf(w, 't2', 'w2')?.result).toContain('queued, position 1')
+  expect(answerOf(w, 't2', 'w2')?.result).toContain('Held by w1')
+  // w1 releases: the grant reaches w2 typed into its terminal.
+  leave(w, 't3', 'mcp__flow__test_slot', { action: 'release', result: 'pass' }, 'w1')
+  await w.clock.advance(1200)
+  expect(answerOf(w, 't3', 'w1')?.result).toContain('Released your test slot.')
+  expect(typedText(w)).toContain('your test slot is granted (more)')
+
+  // A blocking ask goes to its manager m1, typed into m1's terminal, and sits in the inbox as w1's.
+  leave(w, 'a1', 'mcp__flow__ask', { from: 'w1', questions: [{ question: 'Which format?', options: ['csv', 'tsv'], default: 'csv', blocking: true }] }, 'w1')
+  await w.clock.advance(1200)
+  expect(answerOf(w, 'a1', 'w1')?.result).toContain('end your turn now and wait')
+  const items = (JSON.parse(w.files.get(`${DIR}/inbox.json`) ?? '{"items":[]}') as { items: { owner: string; addressee: string; askerId: string }[] }).items
+  expect(items[0]).toMatchObject({ owner: 'w1', addressee: 'm1', askerId: 'session:w1' })
+  expect(typedText(w)).toContain('w1 asks q1')
+
+  // A whole-suite run from a worker is refused as an agent worker's is, even with no slot question.
+  leave(w, 's1', 'slot-check', { suite: 'claude plugin test .' }, 'w1')
+  await w.clock.advance(1200)
+  expect(answerOf(w, 's1', 'w1')?.deny).toContain('only the reviewer\'s full check does')
+})
+
+test('main refuses a manager\'s or the reviewer\'s tool from a worker session; an old worker without a relay dir is not pumped', async ($, on) => {
+  const w = world(on)
+  const old = { ...WORKER('w0'), relayDir: undefined }
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ m1: MANAGER, w1: WORKER('w1'), w0: old }))
+  await start($)
+  for (const [id, tool, input] of [
+    ['h1', 'mcp__flow__handover', { pr: 3 }], ['r1', 'mcp__flow__release', { prs: [3] }], ['q1', 'mcp__flow__reviewer', { action: 'take', pr: 3 }],
+    ['d1', 'mcp__flow__deploy', { action: 'list' }], ['x1', 'mcp__flow__session', { action: 'list' }], ['p1', 'mcp__flow__plan', { action: 'list' }],
+  ] as const) leave(w, id, tool, input, 'w1')
+  leave(w, 'n1', 'mcp__flow__note', { manager: 'w1', text: 'progress' }, 'w1')
+  w.files.set(`${DIR}/sessions/w0/relay/call-o1.json`, JSON.stringify({ id: 'o1', tool: 'mcp__flow__note', input: {}, from: 'session:w0', role: 'worker', by: 'w0', at: 1 }))
+  await w.clock.advance(1200)
+  for (const id of ['h1', 'r1', 'q1', 'd1', 'x1', 'p1']) expect(answerOf(w, id, 'w1')?.deny).toContain('flow: worker w1 cannot call')
+  expect(answerOf(w, 'n1', 'w1')?.result).toContain('Noted in')
+  expect(w.files.has(`${DIR}/sessions/w0/relay/call-o1.json`)).toBe(true)
+  expect(answerOf(w, 'o1', 'w0')).toBeNull()
 })
 
 test('a relayed release runs the inline case in runFlowTool: a manager session that is not lite is refused by its access check', async ($, on) => {

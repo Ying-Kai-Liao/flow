@@ -3,6 +3,7 @@ import type { Activity, Session } from '../types'
 
 import { sendToSession, sessionTool, startRoleSession, watchSessions, withClaudeFlags } from '../hooks/session-run'
 import type { Ran, SessionIo, SessionSettings } from '../hooks/session-run'
+import { SESSION_NO_TOOLS, SESSION_RELAYED_TOOLS } from '../hooks/prompts'
 import { harnessesOf } from '../hooks/sessions'
 import { settingsOf } from '../hooks/settings'
 
@@ -150,6 +151,49 @@ test('a worker session gets the worker marker in front of its command line', asy
   const typed = w.runs.find(a => a[0] === 'tmux' && a.includes('-l'))!.at(-1)!
   expect(typed).toContain("unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; FLOW_ROLE=worker FLOW_NAME='w1' codex ")
   expect(w.sessions().w1!.role).toBeUndefined()
+  // Codex loads no plugin: no relay dir, no owner main, and its prompt keeps the "no flow tools" line.
+  expect(typed).not.toContain('FLOW_RELAY')
+  expect(w.sessions().w1!.relayDir).toBeUndefined()
+  expect(w.sessions().w1!.mainOwner).toBeUndefined()
+  expect(w.runs).not.toContainEqual(['mkdir', '-p', '/r/.git/flow/sessions/w1/relay'])
+  const prompt = w.files.get('/r/.git/flow/sessions/w1/prompt.md')!
+  expect(prompt).toContain(SESSION_NO_TOOLS)
+  expect(prompt).not.toContain('{{FLOW_TOOLS_RULE}}')
+})
+
+test('a claude worker session relays its flow tools: relay dir, FLOW_RELAY, owner main, kept on restart (tmux and Orca)', async () => {
+  for (const [settings, o] of [[SETTINGS, {}], [ORCA, { orca: true }]] as const) {
+    const w = world(o)
+    w.io.identity = async () => ({ session: 's-main', pid: 42 })
+    await sessionTool(w.io, { action: 'start', name: 'w1', harness: 'claude', brief: 'do it' }, { id: 'session:m1', name: 'm1' }, settings)
+    const line = "FLOW_ROLE=worker FLOW_NAME='w1' FLOW_RELAY='/r/.git/flow/sessions/w1/relay' claude "
+    const started = settings === ORCA
+      ? w.runs.find(a => a[0] === 'orca' && a[2] === 'create' && a[1] === 'terminal')!
+      : w.runs.find(a => a[0] === 'tmux' && a.includes('-l'))!
+    expect(started.join(' ')).toContain(line)
+    expect(w.runs).toContainEqual(['mkdir', '-p', '/r/.git/flow/sessions/w1/relay'])
+    // Still a worker: no role, so it never counts as a manager or the reviewer.
+    expect(w.sessions().w1).toMatchObject({ relayDir: '/r/.git/flow/sessions/w1/relay', mainOwner: { session: 's-main', pid: 42 }, owner: 'session:m1', ownerName: 'm1' })
+    expect(w.sessions().w1!.role).toBeUndefined()
+    const prompt = w.files.get('/r/.git/flow/sessions/w1/prompt.md')!
+    expect(prompt).toContain(SESSION_RELAYED_TOOLS)
+    expect(prompt).not.toContain(SESSION_NO_TOOLS)
+    w.runs.length = 0
+    expect(await sessionTool(w.io, { action: 'restart', name: 'w1' }, OWNER, settings)).toContain('Restarted w1')
+    expect(w.runs.some(a => a.join(' ').includes(line.replace(' claude ', ' claude --continue')))).toBe(true)
+  }
+})
+
+test('a worker started before workers had a relay dir restarts with the passive marker only', async () => {
+  const old: Session = {
+    name: 'w0', harness: 'claude', host: 'tmux', handle: 'flow-w0', worktree: '/r/.claude/worktrees/w0', branch: 'flow/w0', promptFile: '/p', reportFile: '/rep',
+    start: 'claude {prompt}', resume: 'claude --continue', owner: 'main', ownerName: 'main', status: 'running', startedAt: 1,
+  }
+  const w = world({ sessions: { w0: old } })
+  await sessionTool(w.io, { action: 'restart', name: 'w0' }, OWNER, SETTINGS)
+  const typed = w.runs.filter(a => a[0] === 'tmux' && a.includes('-l')).map(a => a.at(-1)!).join('\n')
+  expect(typed).toContain("FLOW_ROLE=worker FLOW_NAME='w0' claude --continue")
+  expect(typed).not.toContain('FLOW_RELAY')
 })
 
 test('a worker started by a role session defaults to claude, or to worker_harness when that is set', async () => {

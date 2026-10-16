@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { NO_ANSWER, NO_PICKUP, ownerVerdict, pumpRelay, subagentRefusal, relayCall, resetRelay, RELAY_STALE_MS, stripEngineFields } from '../hooks/relay'
+import { NO_ANSWER, NO_PICKUP, ownerVerdict, pumpRelay, subagentRefusal, relayCall, resetRelay, RELAY_STALE_MS, stripEngineFields, workerToolRefusal } from '../hooks/relay'
 import type { PumpIo, RelayCall } from '../hooks/relay'
 
 const DIR = '/r/.git/flow/sessions/m1/relay'
@@ -165,5 +165,12 @@ test('subagentRefusal: reads pass, writes are refused with the manager named', (
   expect(subagentRefusal('mcp__flow__note', { manager: 'm1' }, 'm1')).toBeUndefined()
   for (const [t, i] of [['handover', {}], ['ask', {}], ['fyi', {}], ['answer', {}], ['session', {}], ['preflight', {}], ['settings', {}], ['plan', { action: 'add' }], ['note', { text: 'x' }], ['deploy', { action: 'hold' }], ['release', {}]] as const) {
     expect(subagentRefusal(`mcp__flow__${t}`, { ...i }, 'm1')).toBe(`flow: a subagent of terminal manager m1 cannot call ${t}; report back to your manager and let it make the call.`)
+  }
+})
+
+test('workerToolRefusal: the worker rules\' tools pass, every manager or reviewer tool is refused with the worker named', () => {
+  for (const t of ['test_slot', 'guard_tests', 'ask', 'fyi', 'note', 'status']) expect(workerToolRefusal(`mcp__flow__${t}`, 'w1')).toBeUndefined()
+  for (const t of ['handover', 'release', 'reviewer', 'queue', 'deploy', 'push', 'session', 'settings', 'clean', 'answer', 'standing', 'check', 'preflight', 'plan', 'migrations']) {
+    expect(workerToolRefusal(`mcp__flow__${t}`, 'w1')).toBe(`flow: worker w1 cannot call ${t}; that is your manager's or the reviewer's. Put it in your report.`)
   }
 })

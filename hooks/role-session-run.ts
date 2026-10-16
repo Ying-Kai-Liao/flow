@@ -115,14 +115,15 @@ export async function pidAliveTo(io: RoleIo, pid: number): Promise<boolean> {
   return ok
 }
 
-// A role session this main owns; a worker's record has no owner and is nobody's concern here.
+// A role session, or a worker that relays its flow tools, this main owns; any other worker's record has no
+// owner and is nobody's concern here.
 export async function ownsSessionTo(io: RoleIo, s: Session): Promise<boolean> {
-  if (s.role === undefined) return true
+  if (s.role === undefined && s.relayDir === undefined) return true
   const me = await identityTo(io)
   return me === undefined || s.mainOwner?.session === me.session
 }
 
-// Settles every role session on record, in memory and on disk, against this main: one whose owner is gone
+// Settles every role session and relaying worker on record, in memory and on disk, against this main: one whose owner is gone
 // (or never recorded) is taken over and saved; one a live main owns stays untouched (ownsSession filters it
 // out of pumping and watching). Run at load and on the roster poll, so a restarted main takes its terminals back and a
 // running one picks up an orphan.
@@ -138,7 +139,7 @@ export async function adoptSessionsTo(io: RoleIo): Promise<void> {
     const judged = new Map<string, Session>()
     for (const name of new Set([...Object.keys(mem), ...Object.keys(disk)])) {
       const rec = mem[name] ?? disk[name]
-      if (rec?.role === undefined || !sessionLive(rec)) continue
+      if (rec === undefined || (rec.role === undefined && rec.relayDir === undefined) || !sessionLive(rec)) continue
       // The file is the later word on the owner: another main may have taken it over since this one loaded it.
       const owner = disk[name]?.mainOwner ?? mem[name]?.mainOwner
       judged.set(name, { ...rec, ...(owner !== undefined && { mainOwner: owner }) })
@@ -164,10 +165,13 @@ export async function adoptSessionsTo(io: RoleIo): Promise<void> {
   }
 }
 
-// The role sessions this main owns: the live ones, or with `ended` the ended ones too (their relay still answers).
-export async function myRoleSessionsTo(io: RoleIo, ended = false): Promise<Session[]> {
+// The sessions this main pumps a relay dir for: its role sessions and its workers that relay their flow tools (a
+// claude worker), the live ones, or with `ended` the ended ones too (their relay still answers, with a refusal).
+export async function myRelaySessionsTo(io: RoleIo, ended = false): Promise<Session[]> {
   const mine: Session[] = []
-  for (const s of Object.values(await io.sessions())) if (s.role !== undefined && (ended || sessionLive(s)) && await ownsSessionTo(io, s)) mine.push(s)
+  for (const s of Object.values(await io.sessions())) {
+    if ((s.role !== undefined || s.relayDir !== undefined) && (ended || sessionLive(s)) && await ownsSessionTo(io, s)) mine.push(s)
+  }
   return mine
 }
 

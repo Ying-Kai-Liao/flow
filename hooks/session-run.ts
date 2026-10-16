@@ -1,13 +1,13 @@
 import type { Activity, LogEvent, Session } from '../types'
 import { restoreWorktree } from './clean'
 import { ENDED } from './deliver'
-import { fill, SESSION_PROMPT } from './prompts'
+import { fill, SESSION_NO_TOOLS, SESSION_PROMPT, SESSION_RELAYED_TOOLS } from './prompts'
 import type { Settings } from './prompts'
 import { effortFor, parseSize } from './routing'
 import { EFFORT_LEVELS } from './settings'
 import {
   ago, claudeProjectDir, codexLimits, codexRemaining, commandFor, findHandle, findWorktreePath, goneMessage,
-  idleMessage, keysOf, NAME_RULE, parseClaudeTranscript, parseCodexRollout, percentOf, pickHost, programOf, reportMessage,
+  idleMessage, keysOf, loadsPlugin, NAME_RULE, parseClaudeTranscript, parseCodexRollout, percentOf, pickHost, programOf, reportMessage,
   relayEnv, screenHash, sessionKey, sessionLine, sessionLive, shellQuote, tmuxName,
 } from './sessions'
 import type { Digest, HarnessSpec, Limit } from './sessions'
@@ -124,9 +124,10 @@ export function withClaudeFlags(harness: string, template: string, flags: { mode
 }
 
 // The environment prefix of a session's command line: its role for a role session, else the worker
-// marker that makes a worker's own plugin copy passive.
+// marker. A worker with a relay dir (a claude one) relays its flow tools to main; one without (another
+// harness, or a worker started before workers had one) keeps its own plugin copy passive.
 export const envPrefixOf = (s: Pick<Session, 'name' | 'role' | 'relayDir'>): string =>
-  s.role !== undefined ? relayEnv(s.role, s.name, s.relayDir) : relayEnv('worker', s.name)
+  relayEnv(s.role ?? 'worker', s.name, s.relayDir)
 
 // An Orca terminal for a session. A manager runs in the main checkout: Orca is asked for a terminal
 // there; if it refuses, a detached Orca worktree hosts the terminal and the line starts with `cd`.
@@ -195,7 +196,8 @@ async function launch(io: SessionIo, l: Launch, s: SessionSettings): Promise<{ e
   const sdir = `${dir}/sessions/${name}`
   const promptFile = `${sdir}/prompt.md`
   const reportFile = `${sdir}/report.md`
-  const relayDir = role === undefined ? undefined : `${sdir}/relay`
+  // Every claude relays its flow tools to main; another harness has no plugin copy to relay from.
+  const relayDir = role !== undefined || loadsPlugin(harness) ? `${sdir}/relay` : undefined
   // A report left by an earlier session of this name would read as this one's.
   await io.run(['rm', '-f', reportFile])
   if (relayDir !== undefined) await io.run(['mkdir', '-p', relayDir])
@@ -219,7 +221,8 @@ async function launch(io: SessionIo, l: Launch, s: SessionSettings): Promise<{ e
   }
 
   const t = await io.now()
-  const mainOwner = role === undefined ? undefined : await io.identity?.().catch(() => undefined)
+  // The main that pumps its relay dir (relay.ts, ownerVerdict).
+  const mainOwner = relayDir === undefined ? undefined : await io.identity?.().catch(() => undefined)
   const session: Session = {
     name, harness, host, handle, worktree, branch, promptFile, reportFile, start: template,
     ...(spec.resume !== undefined && { resume: spec.resume }),
@@ -268,6 +271,7 @@ async function startSession(io: SessionIo, input: Record<string, unknown>, calle
     ...(effort !== undefined && { effort }),
     promptOf: ({ reportFile, branch }) => {
       const prompt = fill(SESSION_PROMPT, s)
+        .replaceAll('{{FLOW_TOOLS_RULE}}', loadsPlugin(harness) ? SESSION_RELAYED_TOOLS : SESSION_NO_TOOLS)
         .replaceAll('{{HARNESS}}', harness === 'command' ? 'a coding agent' : harness)
         .replaceAll('{{OWNER}}', caller.name).replaceAll('{{NAME}}', name)
         .replaceAll('{{BRANCH}}', branch).replaceAll('{{REPORT}}', reportFile)
