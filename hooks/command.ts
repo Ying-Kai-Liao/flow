@@ -6,7 +6,7 @@ import { termWidth } from './table'
 import { CHECKS_USAGE, closeChecks, inboxChecksSection, renderCheckDetail, renderChecksTable, resumeChecksLines } from './checks'
 import type { Checks } from './checks'
 import { renderStatus } from './preflight'
-import type { Preflight } from './preflight'
+import type { Done, Preflight } from './preflight'
 import { resumeInstructions } from './resume'
 import type { Gathered, Leftover, OwnerNotes } from './resume'
 import { pushLines } from './pushgate-run'
@@ -36,7 +36,7 @@ export type CommandIo = {
   handovers: () => Promise<Record<string, Handover>>
   preflight: () => Promise<Preflight>
   roster: () => Promise<AgentRow[]>
-  endedManagers: (rows: AgentRow[]) => Set<string>
+  endedManagers: (state: Preflight, rows: AgentRow[], handovers: Handover[]) => Done
   panes: () => Promise<Array<{ id: string }>>
   close: () => Promise<unknown>
   home: () => Promise<void>
@@ -151,7 +151,9 @@ export async function flowCommand(
       return { text: lines.length > 0 ? lines.join('\n') : 'No agent steps counted yet.' }
     }
     if (arg === 'preflight') {
-      return { text: renderStatus(await io.preflight(), await io.inbox(), io.endedManagers(await io.roster()), await io.now(), mirror.preflightWaitMs) }
+      const state = await io.preflight()
+      const done = io.endedManagers(state, await io.roster(), Object.values(await io.handovers()))
+      return { text: renderStatus(state, await io.inbox(), done, await io.now(), mirror.preflightWaitMs) }
     }
     // What Esc does in the pane, for when the key is out of reach.
     if (arg === 'home') {

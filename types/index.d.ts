@@ -438,7 +438,13 @@ export type Round = {
   reported: string[]
 }
 
-export type Preflight = { next: number; entries: Record<string, Entry>; rounds: Round[] }
+export type Preflight = {
+  next: number
+  entries: Record<string, Entry>
+  rounds: Round[]
+  // What main was last told of each member (preflight.ts said()): a message telling nothing new is not sent.
+  said?: Record<string, string>
+}
 
 declare module 'claude-code' {
   interface PluginState {
