@@ -2180,6 +2180,7 @@ function toolCallIoOf($: EngineInterface, held: Pick<ToolCallIo, 'settings' | 'e
     alreadyForwarded: (id, text) => alreadyForwarded($, id, text),
     deliverToSession: (fromId, target, text) => deliverToSession($, fromId, target, text),
     holdForReviewer: id => holdForReviewer($, id),
+    startReviewer: () => ensureQueue($),
   }
 }
 

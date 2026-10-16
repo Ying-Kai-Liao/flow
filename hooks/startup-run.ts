@@ -238,8 +238,6 @@ export async function startSession(io: StartupIo): Promise<void> {
     await io.mergeHandovers(disk)
     queueDue = Object.values(disk).some(ho => ho.status === 'pending')
   })
-  // Reviewer worktrees left over from before a restart or reload.
-  io.autoSweep()
   await loadState(io, 'loading the inbox', 'inbox.json', raw => io.setInbox(normalizeInbox(raw)))
   // A fresh session is a fresh attempt: the halt and the wait end, the failure history stays.
   await loadState(io, 'loading the reviewer breaker', 'reviewer-breaker.json', async raw => {
@@ -310,6 +308,10 @@ export async function startSession(io: StartupIo): Promise<void> {
   } catch {
     // Keep the settings from /config alone.
   }
+  // Reviewer worktrees left over from before a restart or reload. Only now: the sessions loaded and
+  // adopted above are what keeps a terminal reviewer's or worker's worktree from the sweep (swept
+  // before, a resumed reviewer found its worktree gone, #222), and the settings say whether to sweep.
+  io.autoSweep()
 
   // Grant files of a previous session would read as grants; start from an empty directory.
   try {

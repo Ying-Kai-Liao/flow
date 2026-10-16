@@ -1,4 +1,5 @@
 import type { Activity, LogEvent, Session } from '../types'
+import { restoreWorktree } from './clean'
 import { ENDED } from './deliver'
 import { fill, SESSION_PROMPT } from './prompts'
 import type { Settings } from './prompts'
@@ -412,11 +413,26 @@ async function typeInto(io: SessionIo, s: Session, text: string): Promise<Ran> {
   return r
 }
 
+// A reviewer session's worktree, made again when it is gone (#222): a sweep that ran before the
+// sessions were loaded, or a person, may have removed it, and its claude (or a restart of it) would run
+// in a missing directory and could not merge. Launch made it detached at origin/<base>, which its branch
+// field records; so is the new one. Undefined when it is there (or the session is not a reviewer), else why not.
+async function ensureReviewerWorktree(io: SessionIo, ss: Session): Promise<string | undefined> {
+  const base = /^\(detached origin\/(.+)\)$/.exec(ss.branch)?.[1]
+  if (ss.role !== 'reviewer' || base === undefined) return undefined
+  const r = await restoreWorktree((argv, ms) => io.run(argv, ms), ss.worktree, base)
+  if ('error' in r) return `its worktree ${ss.worktree} is gone and could not be made again: ${r.error}`
+  if (r.restored) await noteSession(io, ss.name, await io.now(), `worktree made again at origin/${base}`)
+  return undefined
+}
+
 // A message into a session's terminal: one short line is typed as it is; anything longer or with
 // several lines goes to a file the session reads (a TUI takes a long paste badly), and a line points at it.
 // A session that was waiting is running again.
 const LINE_MAX = 800
 export async function sendToSession(io: SessionIo, s: Session, text: string, sender = 'main'): Promise<Ran> {
+  const gone = await ensureReviewerWorktree(io, s)
+  if (gone !== undefined) return { exitCode: 1, stdout: '', stderr: gone }
   let typed = text
   if (text.includes('\n') || text.length >= LINE_MAX) {
     const t = await io.now()
@@ -553,6 +569,8 @@ export async function sessionTool(io: SessionIo, input: Record<string, unknown>,
     const keys = String(input.keys ?? '').trim()
     if (keys === '') return 'Refused: keys is empty. Named keys: enter, escape, interrupt, tab, up, down, left, right, backspace, space; any other word is typed as it is.'
     if (ss.status === 'stopped' || ss.status === 'exited') return `Refused: ${name} has ${ss.status}.`
+    const gone = await ensureReviewerWorktree(io, ss)
+    if (gone !== undefined) return `Could not press keys in ${name}: ${gone}`
     const k = keysOf(keys)
     const r = ss.host === 'tmux'
       ? await io.run(['tmux', 'send-keys', '-t', ss.handle, ...k.tmux])
@@ -566,6 +584,13 @@ export async function sessionTool(io: SessionIo, input: Record<string, unknown>,
     // In the same terminal: the harness is stopped if it still runs, then its resume line (or its
     // start line with the same prompt) is typed into the shell left behind.
     const line = `${envPrefixOf(ss)} ${ss.resume !== undefined ? ss.resume : commandFor(ss.start, ss.promptFile)}`
+    // The harness starts in its worktree: a reviewer's is made again, a worker's gone one holds its branch's
+    // work and is not the plugin's to remake, so the restart is refused rather than run in a missing directory.
+    const gone = await ensureReviewerWorktree(io, ss)
+    if (gone !== undefined) return `Could not restart ${name}: ${gone}`
+    if (ss.role === undefined && (await io.run(['test', '-d', ss.worktree], 10_000)).exitCode !== 0) {
+      return `Refused: ${name}'s worktree ${ss.worktree} is gone, so a restart would run in a missing directory. Start a new session (a new name) on its branch ${ss.branch} to go on.`
+    }
     if (ss.host === 'tmux') {
       const alive = await io.run(['tmux', 'has-session', '-t', ss.handle], 10_000)
       if (alive.exitCode !== 0) return `Refused: ${name}'s tmux session is gone. Start a new session (a new name) to go on.`
