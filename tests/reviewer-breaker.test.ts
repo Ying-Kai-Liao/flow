@@ -203,8 +203,11 @@ const status = ($: Dollar) => $.tool.call({ tool: 'mcp__flow__status' } as never
 const stored = (w: W, name: string) => JSON.parse(w.files.get(`${DIR}/${name}.json`) ?? 'null')
 const haltItems = (w: W) => ((stored(w, 'inbox') ?? { items: [] }).items as Array<Record<string, unknown>>).filter(x => x.kind === 'reviewer')
 
-// The reviewer `id` ends `afterMs` after it started, with `answer` ('' is the host's failed end).
+// The reviewer `id` ends `afterMs` after it started, with `answer` ('' is the host's failed end). One that answers
+// listed the deploys first, as a real reviewer does: an answer with no flow tool call is a reviewer whose tools never
+// reached the plugin (tests/reviewer-wake.test.ts).
 async function end($: Dollar, w: W, id: string, afterMs: number, answer = '') {
+  if (answer !== '') await $.tool.call({ tool: 'mcp__flow__deploy', action: 'list', agentId: id } as never)
   await w.clock.advance(afterMs)
   w.agents.find(a => a.id === id)!.status = answer === '' ? 'failed' : 'completed'
   await $.turn.complete({ answer, agentId: id, durationMs: afterMs, isAborted: false, turnId: `t-${id}`, reason: answer === '' ? 'error' : 'answer' } as never)
@@ -336,7 +339,8 @@ test('a long successful reviewer resets the breaker', async ($, on) => {
   expect(w.spawns).toHaveLength(3)
 })
 
-test('the hourly start cap halts the queue even when every run is healthy; one item; retry keeps the start history', async ($, on) => {
+// 21 reviewer runs, each with a flow tool call: past the 60 s floor on a loaded machine.
+test('the hourly start cap halts the queue even when every run is healthy; one item; retry keeps the start history', { timeoutMs: 180_000 }, async ($, on) => {
   const w = world(on)
   await start($)
   await handover($, 7)

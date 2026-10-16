@@ -167,12 +167,14 @@ test('reviewer in a terminal, auto: a report keeps the terminal and a gone termi
   const w = world(on)
   await start($)
   await handover($, 7)
+  await $.tool.call({ tool: 'mcp__flow__reviewer', agentId: 'session:reviewer-1', action: 'list' } as never)
   await w.clock.advance(40_000)
   await report(w, 'reviewer-1', 'Held: PR #7 awaits approval.')
   expect(w.runs.some(a => a[0] === 'tmux' && a[1] === 'kill-session')).toBe(false)
-  expect(stored(w, 'sessions')['reviewer-1']).toMatchObject({ status: 'reported' })
   expect(newSessions(w)).toEqual(['flow-reviewer-1'])
-  expect(typed(w)).toEqual([])
+  // #7 is still pending after the report: it is told again, once, which sets the terminal running again.
+  expect(typed(w)).toEqual(['still pending: #7'])
+  expect(stored(w, 'sessions')['reviewer-1']).toMatchObject({ status: 'running' })
   // The terminal goes away: the breaker closes the run and the queue starts reviewer-2 for the pending PR.
   w.state.alive = false
   await w.clock.advance(35_000)
