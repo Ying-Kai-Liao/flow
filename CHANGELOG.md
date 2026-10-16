@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.123] - 2026-10-17
+
 ### Added
 
 - The Flow pane's card for a decision kept without anyone looking (by default, a rule or the decision API) now shows the answer input and `n Undo (say what instead)`, so it can be undone from the pane (part of #222).
