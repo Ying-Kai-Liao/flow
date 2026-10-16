@@ -124,7 +124,7 @@ import { relayCall } from './relay'
 import type { MainIdentity, PumpIo, RelayIo } from './relay'
 import { alreadyForwardedTo, deliverToSessionTo, pumpOnceTo, relayToolCallTo } from './relay-run'
 import type { RelayExecIo, RelayMode, RelayRunIo } from './relay-run'
-import { adoptSessionsTo, durableSessions, identityTo, myRoleSessionsTo, normalizeSessions, onRoleGoneTo, onRoleReportTo, ownsSessionTo, persistSessionsTo, roleState } from './role-session-run'
+import { adoptSessionsTo, durableSessions, identityTo, myRelaySessionsTo, normalizeSessions, onRoleGoneTo, onRoleReportTo, ownsSessionTo, persistSessionsTo, roleState } from './role-session-run'
 import type { RoleIo } from './role-session-run'
 
 import type { Caller, Ran, SessionIo } from './session-run'
@@ -997,6 +997,11 @@ async function liteManagerOf($: EngineInterface, agentId: string | undefined): P
 async function toolCallerOf($: EngineInterface, agentId: string | undefined): Promise<ToolCaller> {
   if (agentId === undefined) return { kind: 'main' }
   const me = (await agentsOf($)).find(a => a.id === agentId)
+  // A worker session is not on that roster; it is a worker, never the reviewer an unlisted id is taken for.
+  if (me === undefined) {
+    const named = await sessionOfId($, agentId)
+    if (named !== undefined && named.role === undefined) return { kind: 'other' }
+  }
   // Only a manager or a worker is refused. An id the roster no longer lists (the host drops agents) is a reviewer's, as before.
   if (me === undefined || isReviewer(me.type)) return { kind: 'reviewer' }
   const name = await liteManagerOf($, agentId)
@@ -1995,7 +2000,7 @@ function watchSessions($: EngineInterface) {
 function identityOf($: EngineInterface): Promise<MainIdentity | undefined> { return identityTo(roleIoOf($)) }
 function ownsSession($: EngineInterface, s: Session): Promise<boolean> { return ownsSessionTo(roleIoOf($), s) }
 function adoptSessions($: EngineInterface): Promise<void> { return adoptSessionsTo(roleIoOf($)) }
-function myRoleSessions($: EngineInterface, ended = false): Promise<Session[]> { return myRoleSessionsTo(roleIoOf($), ended) }
+function myRelaySessions($: EngineInterface, ended = false): Promise<Session[]> { return myRelaySessionsTo(roleIoOf($), ended) }
 
 // The io of the terminal role sessions' ownership, sessions file and reports (bodies in role-session-run.ts).
 function roleIoOf($: EngineInterface): RoleIo {
@@ -2063,14 +2068,14 @@ function relayIoOf($: EngineInterface): RelayIo {
   }
 }
 
-// Main's pump io: the relay directories of the role sessions it knows; an ended one is listed dead,
+// Main's pump io: the relay directories of the role sessions and relaying workers it owns; an ended one is listed dead,
 // so a call it left behind is refused instead of waiting for a pickup.
 function pumpIoOf($: EngineInterface): PumpIo {
   // Bound first, then spread: the plugin directory flags a call passing $ spread into an object.
   const relay = relayIoOf($)
   return {
     ...relay,
-    dirs: async () => (await myRoleSessions($, true))
+    dirs: async () => (await myRelaySessions($, true))
       .filter(s => s.relayDir !== undefined)
       .map(s => ({ name: s.name, dir: s.relayDir!, live: sessionLive(s) })),
   }
@@ -2130,6 +2135,15 @@ async function registerTools($: EngineInterface): Promise<void> {
   await $.tool.register(ARMS_TOOL)
 }
 
+// A claude worker's copy in a terminal: only the tools the worker rules use (relay.ts, WORKER_TOOLS), relayed to main.
+async function registerWorkerTools($: EngineInterface): Promise<void> {
+  await $.tool.register(TEST_SLOT_TOOL)
+  await $.tool.register(GUARD_TESTS_TOOL)
+  await $.tool.register(ASK_TOOL)
+  await $.tool.register(FYI_TOOL)
+  await $.tool.register(NOTE_TOOL)
+  await $.tool.register(STATUS_TOOL)
+}
 
 function alreadyForwarded($: EngineInterface, rid: string, text: string): Promise<boolean> { return alreadyForwardedTo(relayRunIoOf($), rid, text) }
 function pumpOnce($: EngineInterface, c: FlowCtx): Promise<void> { return pumpOnceTo(relayExecIoOf($, c)) }
@@ -2153,7 +2167,7 @@ function relayRunIoOf($: EngineInterface): RelayRunIo {
     deliverTerminal: (from, key, text) => deliverTo(ioOf($, from), key, text),
     deliver: (id, text) => deliver($, id, text),
     warn: (what, err) => warn($, what, err),
-    myRoleSessions: () => myRoleSessions($),
+    myRelaySessions: () => myRelaySessions($),
     pumpIo: pumpIoOf($),
   }
 }
@@ -2512,6 +2526,7 @@ export const register: Register = (on, options) => {
       registerAgent: spec => $.agent.register({ name: spec.name, description: spec.description, prompt: spec.prompt, model: spec.model, isolation: spec.isolation, background: spec.background }),
       registerCommand: spec => $.command.register(spec),
       registerTools: () => registerTools($),
+      registerWorkerTools: () => registerWorkerTools($),
       resetDelivery: () => resetDelivery(text => toMain($, text)),
       resetStateDir,
       readState: async file => {
@@ -2548,7 +2563,7 @@ export const register: Register = (on, options) => {
       closePreflight: async (live, t) => { await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } }) },
       setSlotDir,
       sh: (script, arg) => sh($, script, arg),
-      roleSessionCount: async () => (await myRoleSessions($)).length,
+      relaySessionCount: async () => (await myRelaySessions($)).length,
       pump: () => void pumpOnce($, { settings: kept.settings, options, installed: kept.installed }),
       refresh: () => void refresh($),
       watchSessions: () => void watchSessions($),

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude workers started as terminal sessions (tmux or Orca) now have their flow tools: test_slot, guard_tests, ask, fyi, note and status, relayed to main through the disk relay as a terminal manager's are. They get a relay directory and `FLOW_RELAY` on their start (and restart) line, record the main that owns them, and main's pump runs their calls as `session:<name>`, owned by the manager that started them: asks and decisions go to that manager, test-slot holds and grants are the session's (the grant is typed into its terminal), guard_tests reads its worktree. Main refuses any other flow tool from a worker (a worker session is never taken for the reviewer), and a worker's whole-suite run is refused as an agent worker's is. Its copy still holds no state and runs no timers. Other harnesses get no relay directory and keep the "no flow tools" line; a claude worker's prompt says its tools are relayed and to put "flow tools missing: …" first in its report if they never reach main. Workers started before this keep their passive copy.
+
 ## [0.6.119] - 2026-10-16
 
 ### Fixed

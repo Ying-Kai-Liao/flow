@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 
-import { deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_REVIEWER_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO, WORKER_PROMPT } from '../hooks/prompts'
+import { deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_REVIEWER_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO, SESSION_NO_TOOLS, SESSION_PROMPT, SESSION_RELAYED_TOOLS, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
 
 const base: Settings = {
@@ -205,4 +205,14 @@ test('push and rebuild runs take no late joins; the terminal reviewer never runs
   expect(all(base)[2]).not.toContain('## Push run')
   expect(all({ ...base, pushMode: 'confirm' })[2]).toContain('takes no late joins')
   expect(REVIEWER_SESSION_RULES_AUTO).toContain('you never run two batches at once')
+})
+
+test('the session preamble has one flow-tools line: relayed for a claude worker with the missing-tools rule, none for another harness', () => {
+  const preamble = SESSION_PROMPT.slice(WORKER_PROMPT.length)
+  expect(preamble).toContain('{{FLOW_TOOLS_RULE}}')
+  expect(preamble).not.toContain('You have no flow tools')
+  expect(SESSION_NO_TOOLS).toContain('You have no flow tools (mcp__flow__*): skip the test slot steps')
+  expect(SESSION_RELAYED_TOOLS).toContain('Your flow tools (mcp__flow__*) are relayed to the main session; use them as the rules above say.')
+  expect(SESSION_RELAYED_TOOLS).toContain('as the first line of your report ("flow tools missing: <what you saw>")')
+  expect(SESSION_RELAYED_TOOLS).toContain('leave guard_tests and whole-suite runs to the reviewer')
 })

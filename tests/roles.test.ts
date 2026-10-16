@@ -3,6 +3,9 @@ import { test } from './support'
 
 import { harnessesOf, parseClaudeTranscript, relayEnv, roleAgents, sessionLive, sessionRow } from '../hooks/sessions'
 import { mergeLayers, modeOf, settingsOf } from '../hooks/settings'
+import { myRelaySessionsTo, roleState } from '../hooks/role-session-run'
+import type { RoleIo } from '../hooks/role-session-run'
+import type { Session } from '../types'
 import { MANAGER_SESSION_RULES, REVIEWER_SESSION_RULES_AUTO, REVIEWER_SESSION_RULES_CONFIRM } from '../hooks/prompts'
 
 const SESSION_BASE = {
@@ -73,4 +76,25 @@ test('the terminal role prompts carry the report file and their rules', () => {
   expect(REVIEWER_SESSION_RULES_AUTO).toContain('new handover')
   expect(REVIEWER_SESSION_RULES_CONFIRM).toContain('and stop')
   expect(REVIEWER_SESSION_RULES_CONFIRM).not.toContain('new handover')
+})
+
+test('main pumps its role sessions and its relaying workers; a worker without a relay dir, another main\'s worker and an ended one are left out', async () => {
+  const me = { session: 's-me', pid: 100 }
+  const other = { session: 's-other', pid: 200 }
+  const all: Record<string, Session> = {
+    m1: { ...SESSION_BASE, role: 'manager', relayDir: '/d/m1', mainOwner: me },
+    w1: { ...SESSION_BASE, name: 'w1', relayDir: '/d/w1', mainOwner: me },
+    w2: { ...SESSION_BASE, name: 'w2', relayDir: '/d/w2', mainOwner: other },
+    w3: { ...SESSION_BASE, name: 'w3', relayDir: '/d/w3', mainOwner: me, status: 'exited' },
+    old: { ...SESSION_BASE, name: 'old' },
+  }
+  const io = { sessions: async () => all } as unknown as RoleIo
+  const was = roleState.identity
+  roleState.identity = Promise.resolve(me)
+  try {
+    expect((await myRelaySessionsTo(io)).map(s => s.name)).toEqual(['m1', 'w1'])
+    expect((await myRelaySessionsTo(io, true)).map(s => s.name)).toEqual(['m1', 'w1', 'w3'])
+  } finally {
+    roleState.identity = was
+  }
 })

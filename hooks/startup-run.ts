@@ -58,6 +58,8 @@ export type StartupIo = {
   registerAgent: (spec: AgentSpec) => Promise<unknown>
   registerCommand: (spec: CommandSpec) => Promise<unknown>
   registerTools: () => Promise<void>
+  // A claude worker's copy: the worker's tools only.
+  registerWorkerTools: () => Promise<void>
   // The state loaders.
   resetDelivery: () => void
   resetStateDir: () => void
@@ -90,7 +92,7 @@ export type StartupIo = {
   setSlotDir: (dir: string | undefined) => void
   sh: (script: string, arg: string) => Promise<unknown>
   // The timers and what they call.
-  roleSessionCount: () => Promise<number>
+  relaySessionCount: () => Promise<number>
   pump: () => void
   refresh: () => void
   watchSessions: () => void
@@ -196,15 +198,16 @@ async function loadState(io: StartupIo, what: string, file: string, apply: (disk
 
 // The body of the session.start hook, up to the `next(e)` that stays in register.tsx.
 export async function startSession(io: StartupIo): Promise<void> {
-  // First of all, what this process is: a terminal-started worker is passive (no tools, no state, no
-  // timers: its copy must not wipe main's test-slot grants), a manager or the reviewer relays to main.
+  // First of all, what this process is: a terminal-started worker without a relay dir (started before workers
+  // had one) is passive (no tools, no state, no timers: its copy must not wipe main's test-slot grants); a
+  // manager, the reviewer or a worker with one relays to main.
   const relay = await io.relayMode()
   io.setRelay(relay)
-  if (relay?.role === 'worker') return
+  if (relay?.role === 'worker' && relay.dir === undefined) return
   if (relay !== undefined) {
-    // A manager's or the reviewer's own claude in a terminal: this copy holds no state and runs no timers.
-    // It reads the settings for its local guards, shows the tools and the /flow stub, and forwards every
-    // flow tool call to main (tool.call). A worker's copy never gets here: it stays passive.
+    // A terminal claude's own copy: it holds no state and runs no timers. It reads the settings for its
+    // local guards, shows the tools (a worker only its own) and the /flow stub, and forwards every flow tool
+    // call to main (tool.call).
     try {
       const local = await io.run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
       if (local.exitCode === 0 && local.stdout.trim() !== '') io.setDetected(local.stdout.trim().replace(/^origin\//, ''))
@@ -225,7 +228,7 @@ export async function startSession(io: StartupIo): Promise<void> {
       name: 'flow-tasks',
       description: 'Runs in the main Claude Code session: run /flow-tasks there.',
     })
-    await io.registerTools()
+    await (relay.role === 'worker' ? io.registerWorkerTools() : io.registerTools())
     return
   }
   io.resetDelivery()
@@ -339,12 +342,12 @@ export async function startSession(io: StartupIo): Promise<void> {
 
   await io.registerTools()
 
-  // Calls the terminal managers and the reviewer left in their relay directories (see pumpOnce). The fast
-  // timer exists only while a role session does: armed here for sessions a restart brought back, and by the
+  // Calls the terminal managers, the reviewer and claude workers left in their relay directories (see pumpOnce).
+  // The fast timer exists only while such a session does: armed here for sessions a restart brought back, and by the
   // roster poll below for ones started since. It never goes away; pumpOnce does nothing without a live one.
   let pumpArmed = false
   const armPump = async () => {
-    if (pumpArmed || (await io.roleSessionCount()) === 0) return
+    if (pumpArmed || (await io.relaySessionCount()) === 0) return
     pumpArmed = true
     io.every(500, () => io.pump())
   }

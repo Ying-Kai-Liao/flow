@@ -608,8 +608,10 @@ built-in.
   under 6 h old, the lowest window; anything older can't tell and doesn't block). Otherwise the
   start is refused and the manager starts a `flow:worker` agent instead.
 - **What it reads.** The prompt (`…/sessions/<name>/prompt.md`) is a short preamble, the usual
-  worker rules, then the brief. The preamble says: no flow tools, the report is a file, answers
-  arrive typed into this terminal.
+  worker rules, then the brief. The preamble says: the report is a file, answers arrive typed into
+  this terminal, and the flow tools: a claude worker's are relayed to main (see The relay below), so it
+  takes test slots and calls guard_tests like an agent worker, and says "flow tools missing" first in its
+  report if they never reach main; another harness loads no plugin and has none.
 - **In the pane** it is a worker card under its manager (yellow while idle), showing its newest
   action and its context meter. Its detail view has:
   - where it runs (`tmux attach -t …` or the Orca handle), worktree and branch;
@@ -646,7 +648,10 @@ environment passes none.
 - **The relay.** A claude in a terminal loads its own copy of the plugin. Its flow tools (`mcp__flow__*`) are not
   run there: each call is left as a file in the session's relay directory, main's pump runs it as that session
   and leaves the answer, so the manager's notes, asks, plan, handovers and the reviewer's take / done / back
-  behave as for an agent. A message to a terminal is typed into it.
+  behave as for an agent. A message to a terminal is typed into it. A claude worker relays too, but only the
+  worker's tools (test_slot, guard_tests, ask, fyi, note, status); main refuses any other from it, and its
+  whole-suite runs are refused as an agent worker's are. A worker started before workers had a relay
+  directory keeps a passive copy with no flow tools.
 - **Workers of a terminal manager** are always session workers (`mcp__flow__session`, `worker_harness` or claude): a terminal has no `flow:worker` agent type.
 - **The reviewer in auto mode** is one long-lived terminal in a worktree of its own. A handover while it
   lives does not start another reviewer: the plugin types `new handover: #N` into it (due deploys and a push run
@@ -658,7 +663,7 @@ environment passes none.
 - **The reviewer in confirm mode** reviews one batch and ends like the agent: after its report (merge_mode is
   read then, so a change while it worked counts) the plugin stops the terminal, removes its worktree if clean,
   and the next handover starts reviewer-N+1. The same happens in auto mode when a batch awaits `/flow push`.
-- **Owners and subagents.** A role session records the main that started it (`mainOwner`: session id and
+- **Owners and subagents.** A role session, and a claude worker, records the main that started it (`mainOwner`: session id and
   claude pid). A main pumps, watches and delivers only for its own; one whose owner pid is dead, or that has
   no owner, is taken over by the next main that sees it (the relay claim is an atomic rename, so a race on
   that never runs a call twice). A subagent of a terminal manager (Explore and the like) reaches main as the
