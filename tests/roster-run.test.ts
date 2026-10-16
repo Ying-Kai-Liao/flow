@@ -2,7 +2,7 @@ import { expect } from 'claude-code/testing'
 import { test } from './support'
 import type { AgentRow } from '../types'
 import type { Plan } from '../hooks/dag'
-import { isManagerOf, liveManagers, planOwner } from '../hooks/roster-run'
+import { endsForSweep, isManagerOf, liveManagers, planOwner } from '../hooks/roster-run'
 
 const row = (id: string, type: string, status: string, name?: string): AgentRow => ({ id, type, status, description: '', ...(name && { name }) })
 
@@ -46,4 +46,17 @@ test('liveManagers keeps managers that have not ended and drops workers and ende
   ]
   expect(liveManagers(rows).map(a => a.id)).toEqual(['1', '2', '3'])
   expect(liveManagers([])).toEqual([])
+})
+
+test('endsForSweep: a terminal session or a manager agent seen ending sets off the occasional sweep; the reviewer and workers do not', async () => {
+  expect(endsForSweep(row('session:w', 'flow:session', 'completed'), 'running')).toBe(true)
+  expect(endsForSweep(row('session:m', 'flow:manager', 'killed'), 'waiting')).toBe(true)
+  expect(endsForSweep(row('a1', 'flow:manager', 'completed'), 'running')).toBe(true)
+  // The reviewer has its own sweep; an agent worker's worktree goes with the merge sweep.
+  expect(endsForSweep(row('session:reviewer-1', 'flow:reviewer', 'completed'), 'running')).toBe(false)
+  expect(endsForSweep(row('a2', 'flow:worker', 'completed'), 'running')).toBe(false)
+  // Only a transition: not first seen ended, not ended again.
+  expect(endsForSweep(row('session:w', 'flow:session', 'completed'), undefined)).toBe(false)
+  expect(endsForSweep(row('session:w', 'flow:session', 'killed'), 'completed')).toBe(false)
+  expect(endsForSweep(row('session:w', 'flow:session', 'idle'), 'running')).toBe(false)
 })

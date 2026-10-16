@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Worktrees no longer pile up when terminal sessions run in the terminal host. The cleanup sweep now covers every worktree flow made, wherever it lives: `flow/` branches, worktrees and host worktrees recorded for a session, and detached `mgr-<name>` / `reviewer-<n>` worktrees whose name flow knows. The person's own worktrees are never read or touched. The same safety rules apply, plus a new one for every worktree: a branch with an open PR keeps its worktree. A worktree the terminal host manages is removed through the host (`orca worktree rm`, never `--force`), or with git when the host is not up. With `cleanup` = `auto` the sweep also runs occasionally between merges: when a terminal session or a manager agent ends, and on main's `status`, at most once every 10 minutes.
+
 ## [0.6.119] - 2026-10-16
 
 ### Fixed

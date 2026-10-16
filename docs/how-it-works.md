@@ -415,23 +415,36 @@ With `release` on, no PR touches the version, so parallel PRs never collide on a
 ## Cleanup
 
 Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
-`flow/*-N`, `worktree-agent-*`, anything else). Most PRs are squash-merged, so `git branch -d`
+`flow/*-N`, `worktree-agent-*`, anything else). Terminal sessions in the terminal host leave theirs
+in the host's workspace directory instead: a worker's on `flow/<name>`, a terminal manager's
+detached `mgr-<name>` host worktree, the terminal reviewer's detached `reviewer-<n>`.
+
+**Which worktrees count.** Besides everything under `.claude/worktrees/`, any linked worktree flow
+made, wherever it lives: one on a `flow/` branch, one that is a session's recorded worktree or host
+worktree (any status), and a detached `mgr-<name>` or `reviewer-<n>` whose name flow knows (a
+session record or a `spawn` line in the log). Any other worktree is the person's own: never read,
+listed or touched. Most PRs are squash-merged, so `git branch -d`
 does not see them as merged; the plugin judges each by ancestry and by the PR's head sha instead
 of by name.
 
-**What goes.** A worktree under `.claude/worktrees/` (never the main checkout) when its HEAD is on
+**What goes.** A worktree of flow's (never the main checkout) when its HEAD is on
 `origin/<base>`, or its branch has a merged PR whose head is HEAD (or contains it), or its branch's
 PR was closed and HEAD is pushed; and `git status` is empty apart from the untracked type links
 `types` and `.claude-plugin/types`; and no live agent works in it; and it is not locked, unless the
-lock names an agent that has ended or a process that is gone. It goes with `git worktree remove`
-(never `--force`), then `git worktree prune`; a directory already missing is pruned. A local
+lock names an agent that has ended or a process that is gone; and its branch has no open PR. It
+goes with `git worktree remove` (never `--force`), then `git worktree prune`; a directory already
+missing is pruned. A worktree the terminal host manages (listed by `orca worktree list` while the
+host is up) goes with `orca worktree rm` instead, also without `--force`, so the host's own list
+drops it too; that also deletes its checked-out branch, so it is used only for a detached worktree
+or one whose branch the same sweep removes. If the host is not up, `git worktree remove` as above. A local
 branch when it is not checked out anywhere (a worktree removed in the same sweep doesn't count),
 is not the base, has no open PR, and its tip is on `origin/<base>` or is the head of a merged PR
 of that branch (or contained in it). It goes with `git branch -D`. Remote branches are never
 deleted: the reviewer's `gh pr merge --delete-branch` does that.
 
 **What stays, listed for a person.** Uncommitted changes (the files named), unpushed commits,
-locked worktrees, a closed PR's branch, a worktree or branch a live agent uses, an open PR's
+locked worktrees, a closed PR's branch, a worktree or branch a live agent or a running terminal
+session uses (a session waiting or idle between turns counts as running), an open PR's worktree or
 branch, and a handed-off worktree whose successor has not started yet. Nothing in that list is
 touched in any mode.
 
@@ -442,7 +455,11 @@ goes by ancestry only. Every sweep that removed something adds a `clean` line to
 
 **The automatic sweep** (`cleanup` = `auto`, the default) runs the same safe sweep in the
 background after each PR the reviewer marks done, and when a reviewer agent ends (its worktree, detached
-at the base, goes once the reviewer is gone). Never two sweeps at once; errors go to the log. With
+at the base, goes once the reviewer is gone). Between merges it also runs occasionally: when a
+terminal session ends (a worker, a terminal manager), when a manager agent ends, and when main calls
+`status` (never an agent's or a terminal session's call). Those occasional runs share one rate
+limit, at most one every 10 minutes; the first one after a load only starts the clock, since startup
+has just swept. Never two sweeps at once; errors go to the log. With
 `cleanup` = `off` nothing runs by itself, the tool's `apply` runs dry and says so, and only
 `/flow clean --yes` removes. The pane and `status` show one dim line while there are leftovers,
 e.g. `Cleanup: 3 worktrees and 12 branches can be removed, 1 holds work that isn't merged. /flow clean lists them` (zero counts are left out), from a dry sweep
