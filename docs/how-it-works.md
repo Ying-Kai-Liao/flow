@@ -459,7 +459,27 @@ at the base, goes once the reviewer is gone). Between merges it also runs occasi
 terminal session ends (a worker, a terminal manager), when a manager agent ends, and when main calls
 `status` (never an agent's or a terminal session's call). Those occasional runs share one rate
 limit, at most one every 10 minutes; the first one after a load only starts the clock, since startup
-has just swept. Never two sweeps at once; errors go to the log. With
+has just swept. Never two sweeps at once; errors go to the log.
+
+Each occasional run first stops the terminal sessions that are finished, so their worktrees go in the
+same sweep. Only sessions this main owns are stopped, and only once their report (or their end) is
+at least 15 minutes old, so a follow-up from main or the reviewer can still reach them:
+- a worker that reported or exited, whose own PR (exactly its branch) is merged or closed, with no
+  handover still queued (pending, awaiting approval, taken or ready for push) and no open ask; no PR yet or an open PR keeps it, and when `gh` fails
+  no worker is stopped;
+- a manager that wrote its final report (`reported`; never one running or waiting) with no live
+  worker session or agent of its own, no handover of its own or its workers' still queued, no
+  open PR of its workers, no open blocking ask from it or its workers and no waiting, ready or
+  running node in its plan;
+- the reviewer, reported or waiting, while no handover is still queued. A new handover then
+  starts a fresh reviewer.
+
+A stop closes the terminal (a close that fails, the terminal maybe gone already, still counts),
+marks the session `stopped` with when it ended, and writes `stopped: finished, <reason>` on its card
+and in the log. The owner is not messaged. It never removes a worktree itself; the sweep right after
+does, by its own rules. A reviewer report for a manager stopped this way is noted for that manager
+and sent to main. The records of ended sessions stay (the sweep reads them to know flow's
+worktrees); `session list` shows them short. With
 `cleanup` = `off` nothing runs by itself, the tool's `apply` runs dry and says so, and only
 `/flow clean --yes` removes. The pane and `status` show one dim line while there are leftovers,
 e.g. `Cleanup: 3 worktrees and 12 branches can be removed, 1 holds work that isn't merged. /flow clean lists them` (zero counts are left out), from a dry sweep
@@ -578,7 +598,7 @@ built-in.
 | `keys` (name, keys) | presses keys: `"1"`, `"y enter"`, `"escape"`, `"interrupt"` (Ctrl-C), `"down down enter"`; named keys are enter, escape, interrupt, tab, up, down, left, right, backspace, space, anything else is typed |
 | `read` (name, lines?) | the end of its terminal |
 | `restart` (name) | a fresh shell in the same tmux pane (`respawn-pane -k`) or a new Orca terminal, then the harness's resume line, or its start line with the same prompt when it has none |
-| `list` | every session, its harness, host, state and worktree |
+| `list` | every live session, its harness, host, state and worktree; sessions that ended in the last 24 hours one short line each (name, state, how long ago); older ended ones as one count line |
 | `stop` (name, remove_worktree?) | closes the terminal; removes the worktree only when it is clean and pushed |
 
 - **Where.** In an Orca terminal (Orca is a terminal and worktree app; `orca worktree create`, then `orca terminal create`) or a
