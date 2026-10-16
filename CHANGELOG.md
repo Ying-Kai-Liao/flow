@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.122] - 2026-10-16
+
 ### Added
 
 - Finished terminal sessions stop by themselves (`cleanup` = `auto`). The occasional sweep first stops the sessions this main owns that only hold a terminal, once their report or end is 15 minutes old: a worker that reported or exited whose own PR is merged or closed; a manager that wrote its final report with no live worker, queued handover, open worker PR, open ask or open plan node left; the reviewer while no handover is still queued (pending, awaiting approval, taken, or ready for /flow push). It closes the terminal, marks the session stopped and notes why; the sweep in the same pass removes the worktree by its usual rules. A reviewer report for a stopped manager is noted for it and sent to main.
