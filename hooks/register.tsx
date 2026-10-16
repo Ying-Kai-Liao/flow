@@ -18,7 +18,7 @@ import { grantTypecheck, reapTypecheck, typecheckDir } from './typecheck-slots'
 import type { Evidence } from './evidence'
 import type { RunWork } from './mainff'
 import { NO_FAILS, type TestFails } from './testfail'
-import { sweep as sweepTo } from './clean'
+import { occasionalDue, sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
 import { gatherLeftovers as gatherLeftoversTo } from './resume'
 import type { Gathered, Leftover, ResumeIo } from './resume'
@@ -701,6 +701,7 @@ function rosterIoOf($: EngineInterface): RosterIo {
     status: line => $.ui.status(line),
     wakeMain: text => { toMain($, text) },
     autoSweep: () => autoSweep($),
+    occasionalSweep: () => { void occasionalSweep($) },
     settleSlots: (rows, t) => settleSlots($, rows, t),
     unhanded: async () => (await currentUnhanded($)).length,
     preflightTick: rows => preflightTick($, rows),
@@ -1786,10 +1787,27 @@ function autoSweep($: EngineInterface): void {
   void sweepOrWarn($, true, () => { autoQueued = false }, 'cleaning up')
 }
 
+// The occasional sweep, between merges: a terminal session or a manager ended, or main asked for its status.
+// One entry point, so later steps (stopping finished sessions first) join it here. At most one per
+// OCCASIONAL_MS; the first call after a load only starts the clock, as startup already swept.
+let occasionalAt: number | undefined
+async function occasionalSweep($: EngineInterface): Promise<void> {
+  if (mirror.cleanupMode !== 'auto') return
+  const t = await $.clock.now()
+  if (!occasionalDue(occasionalAt, t)) {
+    if (occasionalAt === undefined) occasionalAt = t
+    return
+  }
+  occasionalAt = t
+  autoSweep($)
+}
+
 // A background sweep: a failure goes to the log, never to the caller.
 async function sweepOrWarn($: EngineInterface, apply: boolean, started: (() => void) | undefined, what: string): Promise<void> {
+  // The io built here, not through sweep(): the occasional sweep reaches this from a tool call, one hop shorter.
+  const io = cleanIoOf($)
   try {
-    await sweep($, mirror.cleanupBase, apply, undefined, started)
+    await sweepTo(io, mirror.cleanupBase, apply, undefined, started)
   } catch (err) {
     await warn($, what, err)
   }
@@ -2372,7 +2390,11 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
       return { result: 'Unknown action: use list, push, send-back or drop.' }
     }
 
-    case 'mcp__flow__status': return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
+    case 'mcp__flow__status': {
+      // Only main's own call: an agent or a relayed terminal session never sets off a sweep.
+      if (e.agentId === undefined) void occasionalSweep($)
+      return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
+    }
     default: return undefined
   }
 }

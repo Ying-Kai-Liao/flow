@@ -299,7 +299,7 @@ export const DEPLOY_TOOL: ToolSpec = {
 
 export const CLEAN_TOOL: ToolSpec = {
   name: 'clean',
-  description: 'Leftover worktrees under .claude/worktrees/ and local branches of finished work. Dry run unless apply is true; apply removes only clean work that is on the base or in a merged PR (or pushed with its PR closed); uncommitted, unpushed, locked and live work is never touched.',
+  description: 'Leftover worktrees flow made (under .claude/worktrees/, on flow/ branches, or recorded for a terminal session, wherever they live) and local branches of finished work. The person\'s own worktrees are never touched. Dry run unless apply is true; apply removes only clean work that is on the base or in a merged PR (or pushed with its PR closed); uncommitted, unpushed, locked and live work is never touched.',
   inputSchema: { type: 'object', properties: { apply: { type: 'boolean', description: 'Remove the safe candidates (default false: dry run)' } } },
   isDeferred: false,
 }
