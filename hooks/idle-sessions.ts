@@ -30,7 +30,9 @@ export type IdleStop = { name: string; reason: string }
 
 // An agent that may still be working: running, waiting, or idle between turns (clean.ts isLive).
 const LIVE = new Set(['pending', 'running', 'waiting', 'idle'])
-const QUEUED = new Set(['pending', 'taken'])
+// A handover still in the queue: everything but done and returned. An approval or a batch awaiting /flow push
+// would reach a fresh reviewer too (ensureQueue), but the one waiting is kept for it.
+const QUEUED = new Set(['pending', 'awaiting', 'taken', 'ready'])
 
 // A name and its continuations (`<name>-N`) are one line of work.
 const sameLine = (name: string, other: string | undefined): boolean =>

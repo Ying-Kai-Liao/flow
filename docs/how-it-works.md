@@ -465,13 +465,13 @@ Each occasional run first stops the terminal sessions that are finished, so thei
 same sweep. Only sessions this main owns are stopped, and only once their report (or their end) is
 at least 15 minutes old, so a follow-up from main or the reviewer can still reach them:
 - a worker that reported or exited, whose own PR (exactly its branch) is merged or closed, with no
-  pending or taken handover and no open ask; no PR yet or an open PR keeps it, and when `gh` fails
+  handover still queued (pending, awaiting approval, taken or ready for push) and no open ask; no PR yet or an open PR keeps it, and when `gh` fails
   no worker is stopped;
 - a manager that wrote its final report (`reported`; never one running or waiting) with no live
-  worker session or agent of its own, no pending or taken handover of its own or its workers', no
+  worker session or agent of its own, no handover of its own or its workers' still queued, no
   open PR of its workers, no open blocking ask from it or its workers and no waiting, ready or
   running node in its plan;
-- the reviewer, reported or waiting, while no handover is pending or taken. A new handover then
+- the reviewer, reported or waiting, while no handover is still queued. A new handover then
   starts a fresh reviewer.
 
 A stop closes the terminal (a close that fails, the terminal maybe gone already, still counts),

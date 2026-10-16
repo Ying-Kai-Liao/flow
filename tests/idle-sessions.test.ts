@@ -42,6 +42,8 @@ test('a worker is kept with no PR, an open PR, a queued handover, an open ask, o
   expect(names(inputs([sess('a', { status: 'exited', endedAt: OLD })], { prs: [pr(2, 'flow/a', 'OPEN')] }))).toEqual([])
   expect(names(inputs([sess('a')], { prs: merged, handovers: [ho(1, 'flow/a', 'pending')] }))).toEqual([])
   expect(names(inputs([sess('a')], { prs: merged, handovers: [ho(1, 'flow/a', 'taken')] }))).toEqual([])
+  expect(names(inputs([sess('a')], { prs: merged, handovers: [ho(1, 'flow/a', 'awaiting')] }))).toEqual([])
+  expect(names(inputs([sess('a')], { prs: merged, handovers: [ho(1, 'flow/a', 'ready')] }))).toEqual([])
   expect(names(inputs([sess('a')], { prs: merged, asking: ['a'] }))).toEqual([])
   expect(names(inputs([sess('a', { status: 'running' })], { prs: merged }))).toEqual([])
   expect(names(inputs([sess('a', { status: 'idle', screenAt: OLD })], { prs: merged }))).toEqual([])
@@ -109,6 +111,9 @@ test('a manager is kept with a queued handover of its own or its workers\', an o
   const base = [m, w]
   expect(names(inputs(base, { handovers: [ho(1, 'flow/x', 'pending', 'm1')] }))).toEqual([])
   expect(names(inputs(base, { handovers: [ho(1, 'flow/x', 'taken', 'm1-2')] }))).toEqual([])
+  expect(names(inputs(base, { handovers: [ho(1, 'flow/x', 'awaiting', 'm1')] }))).toEqual([])
+  expect(names(inputs(base, { handovers: [ho(1, 'flow/x', 'ready', 'm1')] }))).toEqual([])
+  expect(names(inputs(base, { handovers: [ho(1, 'flow/x', 'returned', 'm1')] }))).toEqual(['m1'])
   expect(names(inputs(base, { handovers: [ho(1, 'flow/w', 'pending', 'other')] }))).toEqual([])
   expect(names(inputs(base, { handovers: [ho(1, 'flow/x', 'pending', 'w')] }))).toEqual([])
   expect(names(inputs(base, { handovers: [ho(1, 'flow/x', 'pending', 'other')] }))).toEqual(['m1'])
@@ -121,12 +126,16 @@ test('a manager is kept with a queued handover of its own or its workers\', an o
   expect(names(inputs(base, { plans: { m1: { n: { id: 'n', title: 'n', after: [], until: 'merged', state: 'done' } } } }))).toEqual(['m1'])
 })
 
-test('a reviewer reported or idle with nothing queued is stopped; anything pending or taken keeps it', async () => {
+test('a reviewer reported or idle with nothing queued is stopped; a pending, awaiting, taken or ready handover keeps it', async () => {
   const r = sess('reviewer-3', { role: 'reviewer', branch: '(detached origin/main)', status: 'idle', reportAt: undefined, screenAt: OLD })
   expect(idleSessions(inputs([r]))).toEqual([{ name: 'reviewer-3', reason: 'reviewer waiting, no handover queued' }])
   expect(names(inputs([{ ...r, status: 'reported', reportAt: OLD }]))).toEqual(['reviewer-3'])
   expect(names(inputs([r], { handovers: [ho(1, 'flow/x', 'pending')] }))).toEqual([])
   expect(names(inputs([r], { handovers: [ho(1, 'flow/x', 'taken')] }))).toEqual([])
+  // An approval or a batch waiting for /flow push keeps it too; done and returned do not.
+  expect(names(inputs([r], { handovers: [ho(1, 'flow/x', 'awaiting')] }))).toEqual([])
+  expect(names(inputs([r], { handovers: [ho(1, 'flow/x', 'ready')] }))).toEqual([])
+  expect(names(inputs([r], { handovers: [ho(1, 'flow/x', 'done'), ho(2, 'flow/y', 'returned')] }))).toEqual(['reviewer-3'])
   expect(names(inputs([{ ...r, status: 'running' }]))).toEqual([])
   // Idle only just now: the grace counts from its last screen change.
   expect(names(inputs([{ ...r, screenAt: NOW - 1000 }]))).toEqual([])
