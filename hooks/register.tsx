@@ -503,6 +503,10 @@ function slotsIoOf($: EngineInterface): SlotsIo {
     slotDir: () => slotDir,
     typecheckSlots: () => read($, typecheckSlots),
     settleTypecheck: (rows, t, pre, me) => settleTypecheck($, rows, t, pre, me),
+    sessions: () => read($, sessions),
+    agents: () => $.agent.list(),
+    exec: argv => $.process.run(argv),
+    cwd: () => $.session.cwd(),
   }
 }
 

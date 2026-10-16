@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `/flow answer q84 done /flow answer q85 done` answers both questions, one result line each, instead of recording q84 as `done /flow answer q85 done`. The line splits only on the literal `/flow answer`; if any piece lacks an id or a choice, nothing is recorded and the reply is "One answer per command" with the usage line. Part of #222.
+- `test_slot` release counts a pass after a fail as flaky only when both ran on the same sha (optional `sha`, else the caller worktree's HEAD plus a hash of any uncommitted diff); a pass on another sha is a fix, and an unknown sha is never flaky (#222, item 6).
 
 ## [0.6.118] - 2026-10-14
 

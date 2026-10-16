@@ -3,7 +3,8 @@ import { test } from './support'
 
 import { deleteMergedBranch } from '../hooks/branchdelete'
 import { remoteDeleteRefusal } from '../hooks/guards'
-import { NO_FAILS, noteRelease, withFailed, withFlaky } from '../hooks/testfail'
+import { NO_FAILS, needsTree, noteRelease, runTree, withFailed, withFlaky } from '../hooks/testfail'
+import type { CallerDirIo, TestFails } from '../hooks/testfail'
 import type { GitRunner, Run } from '../hooks/mainff'
 
 const res = (stdout = '', exitCode = 0, stderr = ''): Run => ({ exitCode, stdout, stderr })
@@ -77,27 +78,108 @@ test('the guard allows the reviewer\'s normal pushes', () => {
   ]) expect([cmd, remoteDeleteRefusal(cmd)]).toEqual([cmd, undefined])
 })
 
-test('a failed run is recorded with its names; a pass on the same label after it is flaky', () => {
-  const failed = noteRelease(NO_FAILS, 'a1', 'full check', 'fail', ['t one', ' t two ', 't one'])
+test('a failed run is recorded with its names; a pass on the same label and sha after it is flaky', () => {
+  const failed = noteRelease(NO_FAILS, 'a1', 'full check', 'fail', ['t one', ' t two ', 't one'], 'abc1234')
   expect(failed.event).toEqual({ kind: 'tests-failed', text: 'full check: failed: t one, t two' })
   expect(failed.answer).toContain('t one, t two')
-  const other = noteRelease(failed.state, 'a1', 'other label', 'pass', undefined)
+  const other = noteRelease(failed.state, 'a1', 'other label', 'pass', undefined, 'abc1234')
   expect(other.event).toBeUndefined()
-  const other2 = noteRelease(failed.state, 'a2', 'full check', 'pass', undefined)
+  const other2 = noteRelease(failed.state, 'a2', 'full check', 'pass', undefined, 'abc1234')
   expect(other2.event).toBeUndefined()
-  const passed = noteRelease(failed.state, 'a1', 'full check', 'pass', undefined)
+  const passed = noteRelease(failed.state, 'a1', 'full check', 'pass', undefined, 'abc1234')
   expect(passed.event).toEqual({ kind: 'flaky', text: 'full check: flaky: t one, t two' })
   expect(passed.answer).toBe('flaky: t one, t two (failed, passed on rerun): name it in your report as flaky: <test>.')
   expect(passed.state.flaky).toEqual({ a1: ['t one', 't two'] })
-  expect(noteRelease(passed.state, 'a1', 'full check', 'pass', undefined).event).toBeUndefined()
+  expect(noteRelease(passed.state, 'a1', 'full check', 'pass', undefined, 'abc1234').event).toBeUndefined()
+  // A short and a full sha of the same commit are the same tree.
+  expect(noteRelease(failed.state, 'a1', 'full check', 'pass', undefined, 'abc1234def5678').event?.kind).toBe('flaky')
 })
 
 test('a fail without names still records and asks for the names in the report', () => {
-  const n = noteRelease(NO_FAILS, 'a1', 'tests', 'fail', undefined)
+  const n = noteRelease(NO_FAILS, 'a1', 'tests', 'fail', undefined, 'abc1234')
   expect(n.event?.text).toBe('tests: fail (names not given)')
   expect(n.answer).toContain('in your report')
-  expect(noteRelease(n.state, 'a1', 'tests', 'pass', undefined).event?.kind).toBe('flaky')
+  expect(noteRelease(n.state, 'a1', 'tests', 'pass', undefined, 'abc1234').event?.kind).toBe('flaky')
   expect(noteRelease(NO_FAILS, 'a1', 'tests', undefined, undefined)).toEqual({ state: NO_FAILS, answer: '' })
+})
+
+test('a pass on a different tree than the failure is a fix, not flaky', () => {
+  const failed = noteRelease({ ...NO_FAILS, flaky: { a1: ['old'] } }, 'a1', 'tests', 'fail', ['t one'], 'abc1234aaaa')
+  const passed = noteRelease(failed.state, 'a1', 'tests', 'pass', undefined, 'def5678bbbb')
+  expect(passed.event).toBeUndefined()
+  expect(passed.answer).toBe('Passed on a different tree than the failure (abc1234 → def5678): a fix, not flaky.')
+  expect(passed.state.flaky).toEqual({ a1: ['old'] })
+  expect(passed.state.last).toEqual({})
+  // An uncommitted fix on the same HEAD is another tree too.
+  const dirty = noteRelease(failed.state, 'a1', 'tests', 'pass', undefined, 'abc1234aaaa+0badf00d')
+  expect(dirty.event).toBeUndefined()
+  // Two fails before a pass: the latest fail's tree wins.
+  const again = noteRelease(failed.state, 'a1', 'tests', 'fail', ['t one'], 'def5678bbbb')
+  expect(noteRelease(again.state, 'a1', 'tests', 'pass', undefined, 'def5678bbbb').event?.kind).toBe('flaky')
+})
+
+test('a pass where either tree is unknown is not flaky, and drops the fail', () => {
+  const noTree = noteRelease(NO_FAILS, 'a1', 'tests', 'fail', ['t one'])
+  const p1 = noteRelease(noTree.state, 'a1', 'tests', 'pass', undefined, 'abc1234')
+  expect(p1.event).toBeUndefined()
+  expect(p1.answer).toContain('not counted as flaky')
+  expect(p1.state).toEqual(NO_FAILS)
+  const withTree = noteRelease(NO_FAILS, 'a1', 'tests', 'fail', ['t one'], 'abc1234')
+  const p2 = noteRelease(withTree.state, 'a1', 'tests', 'pass', undefined, undefined)
+  expect(p2.event).toBeUndefined()
+  expect(p2.state).toEqual(NO_FAILS)
+})
+
+test('old state with string[] fails loads and counts as an unknown tree', () => {
+  const old = { last: { 'a1\u0000tests': ['t one'], 'a2\u0000tests': 'junk' }, flaky: {} } as unknown as TestFails
+  expect(needsTree(old, 'a1', 'tests', 'pass')).toBe(true)
+  const p = noteRelease(old, 'a1', 'tests', 'pass', undefined, 'abc1234')
+  expect(p.event).toBeUndefined()
+  expect(p.state.flaky).toEqual({})
+  expect(Object.keys(p.state.last)).toEqual(['a2\u0000tests'])
+  expect(noteRelease(old, 'a2', 'tests', 'pass', undefined, 'abc1234').event).toBeUndefined()
+  // A new fail on top of old state is recorded in the new shape.
+  expect(noteRelease(old, 'a1', 'tests', 'fail', ['t two'], 'abc1234').state.last['a1\u0000tests']).toEqual({ names: ['t two'], tree: 'abc1234' })
+})
+
+test('the tree of a run: the given sha, else the caller\'s HEAD plus a hash of its uncommitted diff', async () => {
+  const io = (status: string, diff = '') => {
+    const ran: string[] = []
+    const r: CallerDirIo & { ran: string[] } = {
+      ran,
+      sessions: async () => ({ m1: { worktree: '/wt/m1' } }) as never,
+      agents: async () => [{ id: 'w1', name: 'csv-worker', description: 'w', type: 'flow:worker', status: 'running' }],
+      exec: async argv => {
+        ran.push(argv.join(' '))
+        if (argv[1] === 'worktree') return { exitCode: 0, stdout: 'worktree /r/.claude/worktrees/agent-w1\nHEAD abc\nbranch refs/heads/flow/csv-worker\n', stderr: '' }
+        if (argv.includes('rev-parse')) return { exitCode: 0, stdout: 'abc1234def\n', stderr: '' }
+        if (argv.includes('status')) return { exitCode: 0, stdout: status, stderr: '' }
+        return { exitCode: 0, stdout: diff, stderr: '' }
+      },
+      cwd: async () => '/r',
+    }
+    return r
+  }
+  const clean = io('')
+  expect(await runTree(clean, 'w1', ' 9f9f9f9 ')).toBe('9f9f9f9')
+  expect(clean.ran).toEqual([])
+  expect(await runTree(clean, 'w1', undefined)).toBe('abc1234def')
+  expect(clean.ran).toContain('git -C /r/.claude/worktrees/agent-w1 rev-parse HEAD')
+  const relayed = io('')
+  await runTree(relayed, 'session:m1', undefined)
+  expect(relayed.ran).toContain('git -C /wt/m1 rev-parse HEAD')
+  const main = io('')
+  await runTree(main, undefined, undefined)
+  expect(main.ran).toContain('git -C /r rev-parse HEAD')
+  const a = await runTree(io(' M a.ts\n', 'diff one'), 'w1', undefined)
+  const b = await runTree(io(' M a.ts\n', 'diff two'), 'w1', undefined)
+  expect(a).toMatch(/^abc1234def\+[0-9a-f]{8}$/)
+  expect(a).not.toBe(b)
+  expect(await runTree(io(' M a.ts\n', 'diff one'), 'w1', undefined)).toBe(a)
+  // No io to look with, or git failing: unknown.
+  expect(await runTree({}, 'w1', undefined)).toBeUndefined()
+  const broken = { ...io(''), exec: async () => ({ exitCode: 128, stdout: '', stderr: 'not a git repo' }) }
+  expect(await runTree(broken, 'w1', undefined)).toBeUndefined()
 })
 
 test('flaky names are appended to a report once; failed names go into a back reason', () => {
