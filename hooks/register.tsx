@@ -119,7 +119,7 @@ import {
   ago, harnessesOf, roleAgents, runsOutIn, sessionLive, sessionRow,
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
-import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSessions as watchSessionsTo } from './session-run'
+import { sendToSession, sessionTool as sessionToolTo, startRoleSession, stopIdleSessions, watchSessions as watchSessionsTo } from './session-run'
 import { relayCall } from './relay'
 import type { MainIdentity, PumpIo, RelayIo } from './relay'
 import { alreadyForwardedTo, deliverToSessionTo, pumpOnceTo, relayToolCallTo } from './relay-run'
@@ -127,7 +127,7 @@ import type { RelayExecIo, RelayMode, RelayRunIo } from './relay-run'
 import { adoptSessionsTo, durableSessions, identityTo, myRelaySessionsTo, normalizeSessions, onRoleGoneTo, onRoleReportTo, ownsSessionTo, persistSessionsTo, roleState } from './role-session-run'
 import type { RoleIo } from './role-session-run'
 
-import type { Caller, Ran, SessionIo } from './session-run'
+import type { Caller, IdleIo, Ran, SessionIo } from './session-run'
 import { branchOwners, noteKey } from './state'
 import { ADD_OPTION } from './guardtests'
 import {
@@ -1410,7 +1410,14 @@ function routeIoOf($: EngineInterface): RouteIo {
     appendNote: (name, line) => appendNote($, name, line),
     today: () => today($),
     toMain: text => void toMain($, text),
+    endedSession: name => endedSession($, name),
   }
+}
+// A terminal session on record that has ended (reviewer-route.ts RouteIo.endedSession).
+async function endedSession($: EngineInterface, name: string): Promise<boolean> {
+  const all = await read($, sessions)
+  const s = all[name]
+  return s !== undefined && !sessionLive(s)
 }
 function resolveReportTo($: EngineInterface, given: unknown, callerId: string | undefined) {
   return resolveReportToTo(routeIoOf($), given, callerId)
@@ -1788,8 +1795,9 @@ function autoSweep($: EngineInterface): void {
 }
 
 // The occasional sweep, between merges: a terminal session or a manager ended, or main asked for its status.
-// One entry point, so later steps (stopping finished sessions first) join it here. At most one per
-// OCCASIONAL_MS; the first call after a load only starts the clock, as startup already swept.
+// One entry point: finished terminal sessions are stopped first, so their worktrees go in the same sweep. At most
+// one per OCCASIONAL_MS; the first call after a load only starts the clock, as startup already swept. A session
+// stopped here ends on the roster, which calls this again: the clock, set before the first await, turns that away.
 let occasionalAt: number | undefined
 async function occasionalSweep($: EngineInterface): Promise<void> {
   if (mirror.cleanupMode !== 'auto') return
@@ -1799,7 +1807,26 @@ async function occasionalSweep($: EngineInterface): Promise<void> {
     return
   }
   occasionalAt = t
+  // The ios built here, as sweepOrWarn does: this is reached from a tool call, and each hop counts.
+  const io = sessionIoOf($)
+  const idle = idleIoOf($)
+  try {
+    await stopIdleSessions(io, idle)
+  } catch (err) {
+    await warn($, 'stopping finished sessions', err)
+  }
   autoSweep($)
+}
+
+// What the auto stop of finished sessions reads (session-run.ts stopIdleSessions).
+function idleIoOf($: EngineInterface): IdleIo {
+  return {
+    handovers: () => read($, handovers),
+    inbox: () => read($, inbox),
+    plans: () => read($, plan),
+    agents: () => $.agent.list(),
+    reviewerStopped: (name, reason) => reviewerEnded($, name, { answer: `stopped: finished, ${reason}` }),
+  }
 }
 
 // A background sweep: a failure goes to the log, never to the caller.

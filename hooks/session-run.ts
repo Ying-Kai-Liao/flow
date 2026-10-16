@@ -1,6 +1,11 @@
-import type { Activity, LogEvent, Session } from '../types'
+import type { Activity, Handover, LogEvent, Session } from '../types'
 import { restoreWorktree } from './clean'
+import type { Plan } from './dag'
 import { ENDED } from './deliver'
+import { ENDED_SHOWN_MS, endedAt, idleSessions, parsePrStates } from './idle-sessions'
+import type { IdleStop } from './idle-sessions'
+import { askingNames } from './inbox'
+import type { Inbox } from './inbox'
 import { fill, SESSION_NO_TOOLS, SESSION_PROMPT, SESSION_RELAYED_TOOLS } from './prompts'
 import type { Settings } from './prompts'
 import { effortFor, parseSize } from './routing'
@@ -525,7 +530,7 @@ export async function watchSessions(io: SessionIo): Promise<void> {
       }
       if (t - (s.checkedAt ?? s.startedAt) < ALIVE_MS) continue
       const alive = await sessionAlive(io, s)
-      await io.updateSessions(all => ({ ...all, [s.name]: { ...all[s.name]!, checkedAt: t, ...(!alive && { status: 'exited' as const }) } }))
+      await io.updateSessions(all => ({ ...all, [s.name]: { ...all[s.name]!, checkedAt: t, ...(!alive && { status: 'exited' as const, endedAt: t }) } }))
       if (!alive) {
         const tail = await sessionTail(io, s, 30)
         await noteSession(io, s.name, t, 'ended')
@@ -545,10 +550,7 @@ export async function sessionTool(io: SessionIo, input: Record<string, unknown>,
   const action = String(input.action ?? '')
   if (action === 'start') return startSession(io, input, caller, s)
   const all = await io.sessions()
-  if (action === 'list') {
-    const list = Object.values(all).sort((a, b) => a.startedAt - b.startedAt)
-    return list.length === 0 ? 'No sessions.' : list.map(x => `${sessionLine(x)}, owner ${x.ownerName}`).join('\n')
-  }
+  if (action === 'list') return listSessions(Object.values(all), await io.now())
   const name = String(input.name ?? '')
   const ss = all[name]
   if (ss === undefined) return `No session named "${name}". action "list" shows them.`
@@ -615,12 +617,7 @@ export async function sessionTool(io: SessionIo, input: Record<string, unknown>,
       'Tell it what to do next with action "send" once "read" shows it is up.'
   }
   if (action === 'stop') {
-    const r = ss.host === 'tmux'
-      ? await io.run(['tmux', 'kill-session', '-t', ss.handle])
-      : await io.run(['orca', 'terminal', 'close', '--terminal', ss.handle, '--json'])
-    const closed = r.exitCode === 0 ? 'Terminal closed.' : `The terminal did not close (${why(r)}); it may be gone already.`
-    await io.updateSessions(x => ({ ...x, [name]: { ...x[name]!, status: 'stopped' as const } }))
-    await noteSession(io, name, t, 'stopped')
+    const closed = await stopSession(io, ss, 'stopped')
     if (input.remove_worktree !== true || ss.role === 'manager') return `Stopped ${name}. ${closed} The worktree ${ss.worktree} stays.`
     // Removed only when nothing in it would be lost: no changes, and HEAD on a remote branch.
     const dirty = (await io.run(['git', '-C', ss.worktree, 'status', '--porcelain'])).stdout.trim() !== ''
@@ -632,4 +629,77 @@ export async function sessionTool(io: SessionIo, input: Record<string, unknown>,
     return `Stopped ${name}. ${closed} ${rm.exitCode === 0 ? `Removed the worktree ${ss.worktree}.` : `Kept the worktree ${ss.worktree}: ${why(rm)}`}`
   }
   return `Unknown action "${action}".`
+}
+
+// Closes a session's terminal and marks it stopped, with when, a line on its card and one in the log. A close that
+// fails still marks it (the terminal may be gone already). The worktree is never touched here.
+export async function stopSession(io: SessionIo, ss: Session, line: string): Promise<string> {
+  const r = ss.host === 'tmux'
+    ? await io.run(['tmux', 'kill-session', '-t', ss.handle])
+    : await io.run(['orca', 'terminal', 'close', '--terminal', ss.handle, '--json'])
+  const closed = r.exitCode === 0 ? 'Terminal closed.' : `The terminal did not close (${why(r)}); it may be gone already.`
+  const t = await io.now()
+  // An exited session keeps the time it ended.
+  await io.updateSessions(x => x[ss.name] === undefined ? x : {
+    ...x, [ss.name]: { ...x[ss.name]!, status: 'stopped' as const, endedAt: sessionLive(x[ss.name]!) ? t : x[ss.name]!.endedAt ?? t },
+  })
+  await noteSession(io, ss.name, t, line)
+  await io.log({ event: 'note', owner: ss.ownerName, agent: ss.name, text: `${ss.name} ${line}` })
+  return closed
+}
+
+// The live sessions in full; the ones ended in the last ENDED_SHOWN_MS one short line each; older ended ones as a
+// count. The records stay: the sweep reads them to know which worktrees are flow's.
+export function listSessions(all: Session[], now: number): string {
+  if (all.length === 0) return 'No sessions.'
+  const live = all.filter(sessionLive).sort((a, b) => a.startedAt - b.startedAt)
+  const ended = all.filter(x => !sessionLive(x)).sort((a, b) => endedAt(b) - endedAt(a))
+  const recent = ended.filter(x => now - endedAt(x) < ENDED_SHOWN_MS)
+  const older = ended.length - recent.length
+  return [
+    ...live.map(x => `${sessionLine(x)}, owner ${x.ownerName}`),
+    ...recent.map(x => `${x.name}: ${x.status}, ended ${ago(now - endedAt(x))} ago`),
+    ...(older > 0 ? [`and ${older} older ended session${older === 1 ? '' : 's'}`] : []),
+  ].join('\n')
+}
+
+// What the auto stop reads beyond the sessions: the queue, the inbox, the plans and the roster. `reviewerStopped`
+// closes a stopped reviewer's run, as its end would.
+export type IdleIo = {
+  handovers: () => Promise<Record<string, Handover>>
+  inbox: () => Promise<Inbox>
+  plans: () => Promise<Plan>
+  agents: () => Promise<{ id: string; name?: string; status: string; parentId?: string }[]>
+  reviewerStopped?: (name: string, reason: string) => Promise<unknown>
+}
+
+// Stops the finished sessions this main owns (idle-sessions.ts), before the occasional sweep removes their
+// worktrees. A session already stopped (a second pass, a manual stop in between) is skipped.
+export async function stopIdleSessions(io: SessionIo, idle: IdleIo): Promise<IdleStop[]> {
+  const sessions = Object.values(await io.sessions())
+  const owned = new Set<string>()
+  // An exited worker is a candidate too: in tmux its harness is gone but its shell still holds the session.
+  for (const s of sessions) if (s.status !== 'stopped' && (io.owns === undefined || await io.owns(s))) owned.add(s.name)
+  if (owned.size === 0) return []
+  const gh = await io.run(['gh', 'pr', 'list', '--state', 'all', '--limit', '300', '--json', 'number,headRefName,state'], 60_000)
+  const stops = idleSessions({
+    sessions, owned,
+    handovers: Object.values(await idle.handovers()),
+    prs: gh.exitCode === 0 ? parsePrStates(gh.stdout) : undefined,
+    asking: askingNames(await idle.inbox()),
+    plans: await idle.plans(),
+    agents: await idle.agents(),
+    now: await io.now(),
+  })
+  const done: IdleStop[] = []
+  for (const x of stops) {
+    // Read again: a message since the snapshot set it running, or it ended meanwhile.
+    const cur = (await io.sessions())[x.name]
+    const was = sessions.find(s => s.name === x.name)
+    if (cur === undefined || cur.status === 'stopped' || cur.status !== was?.status) continue
+    await stopSession(io, cur, `stopped: finished, ${x.reason}`)
+    if (cur.role === 'reviewer') await idle.reviewerStopped?.(cur.name, x.reason)
+    done.push(x)
+  }
+  return done
 }

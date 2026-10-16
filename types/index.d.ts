@@ -215,6 +215,8 @@ export type Session = {
   reportAt?: number
   // When the terminal was last seen alive.
   checkedAt?: number
+  // When it moved to stopped or exited; a record from before falls back to checkedAt, then startedAt.
+  endedAt?: number
   // The screen's fingerprint, when it last changed, and when it was last looked at.
   screen?: string
   screenAt?: number

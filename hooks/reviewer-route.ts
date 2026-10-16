@@ -29,6 +29,9 @@ export type RouteIo = {
   appendNote: (name: string, line: string) => Promise<boolean>
   today: () => Promise<string>
   toMain: (text: string) => void
+  // Whether `name` is a terminal session on record that has ended (stopped or exited): no longer on the roster,
+  // but a manager whose reports are still noted.
+  endedSession?: (name: string) => Promise<boolean>
 }
 
 export const RELAY_DELAY_MS = 3000
@@ -153,19 +156,22 @@ export async function reviewerSendGuard(io: RouteIo, rid: string, to: string, te
   const sentTokens = new Set(Object.entries(seen.keys).filter(([k]) => k.startsWith(`${rid}|${name}|`)).flatMap(([, v]) => v.map(needToken)))
   const unseen = needs.filter(l => !sentTokens.has(needToken(l)))
   const fresh = before === undefined && unseen.length === needs.length ? undefined : unseen
-  const status = hits.length > 0 ? 'has finished' : 'matches no agent'
+  // A terminal manager stopped once it finished is off the roster, yet the report is still its own.
+  const ended = hits.length === 0 && await io.endedSession?.(name) === true
+  const known = hits.length > 0 || ended
+  const status = known ? 'has finished' : 'matches no agent'
   if (fresh !== undefined && fresh.length === 0) {
     return `Not sent: ${name} ${status}. This report was already forwarded to main, with ${name}'s note: do not message ${name} again and do not repeat it to main.`
   }
   const body = fresh === undefined ? text : fresh.join('\n')
   let noted = false
-  if (hits.length > 0) {
+  if (known) {
     noted = await io.appendNote(name, `- ${await io.today()} progress: reviewer report: ${normText(body)}`)
   }
   await io.updateForwarded(f => ({
     keys: { ...Object.fromEntries(Object.entries(f.keys).slice(-FORWARDED_MAX)), [key]: [...(f.keys[key] ?? []), ...(fresh ?? needs)] },
     lines: Object.fromEntries(Object.entries({ ...f.lines, [rid]: [...(f.lines[rid] ?? []), ...body.split('\n').map(normText).filter(l => l !== ''), ...(fresh ?? needs)].slice(-FORWARDED_MAX) }).slice(-FORWARDED_RIDS)),
   }))
-  io.toMain(`Report for ${hits.length > 0 ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the reviewer:\n${body}`)
+  io.toMain(`Report for ${known ? `${name} (finished${hits.every(a => ENDED.has(a.status)) ? '' : '; not woken'})` : `${name} (no such agent)`}, from the reviewer:\n${body}`)
   return `Not sent: ${name} ${status}, so messaging it would only wake it. The plugin ${noted ? `noted the report for ${name} and ` : ''}sent ${fresh === undefined ? 'it' : 'the new lines'} to main. Do not message ${name} again, and do not repeat this report to main.`
 }
