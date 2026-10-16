@@ -281,8 +281,11 @@ test('a handover while halted does not restart the loop or open a second item; a
   expect(await handover($, 9)).toContain('halted')
   expect(w.spawns).toHaveLength(3)
   expect(haltItems(w)).toHaveLength(1)
-  // Naming it in ids takes its default, which never retries it: "not now" leaves the queue halted and asks again as q2.
-  expect(await $.tool.call({ tool: 'mcp__flow__answer', defaults: true, ids: ['q1'] } as never).then(r => String(r.result))).toContain('q1')
+  // A default never answers it, also named in ids.
+  expect(await $.tool.call({ tool: 'mcp__flow__answer', defaults: true, ids: ['q1'] } as never).then(r => String(r.result))).toContain('q1: answer it explicitly (reviewer item)')
+  expect(stored(w, 'reviewer-breaker').halt).toMatchObject({ qid: 'q1' })
+  // "not now" leaves the queue halted and asks again as q2.
+  expect(await answer($, 'q1', 'not now')).toContain('q1')
   expect(w.spawns).toHaveLength(3)
   expect(stored(w, 'reviewer-breaker').halt).toMatchObject({ qid: 'q2' })
   expect(haltItems(w).filter(x => x.state === 'open')).toHaveLength(1)

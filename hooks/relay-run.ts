@@ -3,14 +3,14 @@ import type { Activity, AgentRow, Session, TestSlots } from '../types'
 import { LOG_MAX } from './core'
 import { killRefusal, remoteDeleteRefusal } from './guards'
 import { describeCall } from './pane'
-import { stripEngineFields, subagentRefusal } from './relay'
+import { stripEngineFields, subagentRefusal, workerToolRefusal } from './relay'
 import type { PumpIo, RelayAnswer, RelayCall } from './relay'
 import { pumpRelay } from './relay'
 import { needLines, normText } from './reviewer-route'
 import type { Forwarded } from './reviewer-route'
 import type { settingsOf } from './settings'
 import { sessionKey, sessionLive } from './sessions'
-import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun } from './testguard'
+import { slotRefusal, suiteRun, typecheckRefusal, typecheckRun, workerSuiteRefusal } from './testguard'
 import { isFlowTool } from './toolguard'
 import { WRITE_TOOLS } from './toolcall-run'
 
@@ -46,7 +46,8 @@ export type RelayRunIo = {
   deliverTerminal: (from: string, key: string, text: string) => Promise<boolean>
   deliver: (id: string, text: string) => Promise<boolean>
   warn: (what: string, err: unknown) => Promise<void>
-  myRoleSessions: () => Promise<Session[]>
+  // The sessions this main pumps (role sessions and relaying workers).
+  myRelaySessions: () => Promise<Session[]>
   pumpIo: PumpIo
 }
 
@@ -86,13 +87,14 @@ function ownReport(r: RelayMode, agentId: string | undefined, e: { tool: string 
   return typeof file === 'string' && file === `${r.dir.replace(/\/relay\/?$/, '')}/report.md`
 }
 
-// The generic hook in a relay copy. A worker's passes straight through. A manager's or the reviewer's keeps
-// the guards that need no state (kills, remote deletes, code edits by a manager, the main checkout), asks
-// main for the ones that do (test slots), and answers every flow tool, and a SendMessage to anyone this
-// session cannot see, through the relay. Activity and the ledger are main's business.
+// The generic hook in a relay copy. A worker's without a relay dir (a session started before workers had one)
+// passes straight through. Every other keeps the guards that need no state (kills, remote deletes, code edits
+// by a manager, the main checkout), asks main for the ones that do (test slots, a worker's whole-suite run),
+// and answers every flow tool, and a SendMessage to anyone this session cannot see, through the relay.
+// Activity and the ledger are main's business.
 export async function relayToolCallTo(io: RelayRunIo, settings: Settings, e: { tool: string; agentId?: string; command?: string }): Promise<RelayOut | undefined> {
   const r = io.relay()
-  if (r.role === 'worker') return undefined
+  if (r.role === 'worker' && r.dir === undefined) return undefined
   const id = e.agentId
   const from = sessionKey(r.name)
   const ask = (tool: string, input: Record<string, unknown>) => r.dir === undefined
@@ -192,7 +194,11 @@ async function sendFrom(io: RelayRunIo, key: string, name: string, to: string, t
 async function relayExec(io: RelayExecIo, call: RelayCall, name: string): Promise<RelayAnswer> {
   const key = sessionKey(name)
   const input = call.input
-  if (io.reached !== undefined) await io.reached(key)
+  // A worker session is one without a role: what it may call is judged here, not by what its copy registered.
+  const s = (await io.sessions())[name]
+  const worker = s !== undefined && s.role === undefined
+  // Only a role session can be the reviewer run in flight; a worker's call never counts as it reaching the plugin.
+  if (io.reached !== undefined && !worker) await io.reached(key)
   await io.best('logging a relayed call', async () => {
     const t = await io.now()
     const line = describeCall({ ...input, tool: call.tool })
@@ -206,21 +212,24 @@ async function relayExec(io: RelayExecIo, call: RelayCall, name: string): Promis
     return refused === undefined ? { result: 'ok' } : { deny: refused }
   }
   if (call.tool === 'slot-check') {
-    const refused = slotRefusal(await io.testSlots(), await io.refresh(), key, io.slotLimits().test, await io.now(), String(input.suite ?? ''))
+    const suite = String(input.suite ?? '')
+    const refused = workerSuiteRefusal(worker, suite) ?? slotRefusal(await io.testSlots(), await io.refresh(), key, io.slotLimits().test, await io.now(), suite)
     return refused === undefined ? { result: 'ok' } : { deny: refused }
   }
   if (call.tool === 'send') return sendFrom(io, key, name, String(input.to ?? ''), String(input.text ?? ''))
   if (!io.flowTools.includes(call.tool)) return { deny: `flow relay: ${call.tool} is not a flow tool` }
+  const notYours = worker ? workerToolRefusal(call.tool, name) : undefined
+  if (notYours !== undefined) return { deny: notYours }
   return io.runFlow(call.tool, { ...input, agentId: key })
 }
 
-// One tick of main's pump: runs the calls the role sessions left. Does nothing until one is live, and
+// One tick of main's pump: runs the calls the relaying sessions left. Does nothing until one is live, and
 // a tick that overlaps the one before it (a slow listing) returns at once.
 export async function pumpOnceTo(io: RelayExecIo): Promise<void> {
   if (pumpState.pumping) return
   pumpState.pumping = true
   try {
-    if ((await io.myRoleSessions()).length === 0) return
+    if ((await io.myRelaySessions()).length === 0) return
     await pumpRelay(io.pumpIo, (call, name) => relayExec(io, call, name))
   } catch (err) {
     await io.warn('relay pump', err)

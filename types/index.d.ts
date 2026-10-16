@@ -215,6 +215,8 @@ export type Session = {
   reportAt?: number
   // When the terminal was last seen alive.
   checkedAt?: number
+  // When it moved to stopped or exited; a record from before falls back to checkedAt, then startedAt.
+  endedAt?: number
   // The screen's fingerprint, when it last changed, and when it was last looked at.
   screen?: string
   screenAt?: number
@@ -280,6 +282,10 @@ export type Question = {
   answer?: string
   answeredBy?: string
   answeredAt?: number
+  // How the answer was given, so a wrong one can be traced: the person (pane, /flow commands), main's own explicit
+  // answer, a bulk default, a standing rule, the plugin itself, or a manager. Absent on answers stored before it.
+  // An env item (kind 'env') a person still owes keeps its last "not yet" here while it stays open.
+  via?: 'user' | 'main' | 'defaults' | 'standing' | 'flow' | 'manager'
   // The answer reached the asker (or needed no message).
   delivered: boolean
   // The asker's agent id, to message it.

@@ -102,6 +102,9 @@ export type CleanInputs = {
   lost?: Set<string>
   // Worktrees restoreWorktree made again in the last RESTORED_MS: their owner is on its way back to them.
   restored?: Set<string>
+  // What flow knows it made outside .claude/worktrees/ (a terminal host's workspace dir): every session's
+  // worktree and hostWorktree, and the names of its sessions and spawned agents (for mgr-<name> and reviewer-<n>).
+  known?: { paths: Set<string>; names: Set<string> }
 }
 
 export type Kept = { kind: 'worktree' | 'branch'; name: string; reason: string; needsLook: boolean }
@@ -116,8 +119,20 @@ export type Sweep = {
   dropped: { kind: 'worktree' | 'branch'; name: string; commits: string[] }[]
 }
 
-const linked = (i: Pick<CleanInputs, 'main'>, w: Worktree) =>
-  w.path !== i.main && w.path.startsWith(`${i.main.replace(/\/+$/, '')}/.claude/worktrees/`)
+// A linked worktree flow made, wherever it lives: under .claude/worktrees/, on a flow/ branch, a session's
+// recorded worktree or host worktree, or a detached mgr-<name> / reviewer-<n> whose name flow knows. Anything
+// else is the person's own and is never listed or touched.
+export function linked(i: Pick<CleanInputs, 'main' | 'known'>, w: Worktree): boolean {
+  if (w.path === i.main) return false
+  if (w.path.startsWith(`${i.main.replace(/\/+$/, '')}/.claude/worktrees/`)) return true
+  if (w.branch?.startsWith('flow/') === true) return true
+  if (i.known?.paths.has(w.path) === true) return true
+  if (w.branch !== undefined) return false
+  const leaf = w.path.replace(/\/+$/, '').split('/').pop() ?? ''
+  const mgr = /^mgr-(.+)$/.exec(leaf)?.[1]
+  if (mgr !== undefined) return i.known?.names.has(mgr) === true
+  return /^reviewer-\d+$/.test(leaf) && i.known?.names.has(leaf) === true
+}
 
 // flow/x and flow/x-2 are one line of work: a continuation or rebase reuses the name with a suffix.
 const family = (b: string) => b.replace(/-\d+$/, '')
@@ -245,6 +260,12 @@ export function selectCleanup(i: CleanInputs): Sweep {
     }
     if (i.restored?.has(w.path)) {
       keep('worktree', w.path, 'made again for its owner', false)
+      hold()
+      continue
+    }
+    const open = w.branch === undefined ? undefined : (i.prs ?? []).find(p => p.state === 'OPEN' && p.headRefName === w.branch)
+    if (open !== undefined) {
+      keep('worktree', w.path, `PR #${open.number} is open`, false)
       hold()
       continue
     }
@@ -416,9 +437,21 @@ async function gatherClean(io: CleanIo, base: string): Promise<CleanGathered> {
   if (remote[base] === undefined) return { notes, error: `origin/${base} not found: nothing is judged without the base.` }
   const onBase = new Set((await run(['git', 'for-each-ref', '--merged', `origin/${base}`, '--format=%(objectname)', 'refs/heads'])).stdout
     .split('\n').map(l => l.trim()).filter(Boolean))
+  // Ended sessions' worktrees are flow's too, wherever the terminal host put them; a record written before
+  // hostWorktree existed names only its worktree. Names from the log reach worktrees whose record is gone.
+  const sessions = await io.sessions()
+  const known = { paths: new Set<string>(), names: new Set<string>() }
+  for (const s of sessions) {
+    known.names.add(s.name)
+    if (s.worktree !== main) known.paths.add(s.worktree)
+    if (s.hostWorktree !== undefined) known.paths.add(s.hostWorktree)
+  }
+  for (const l of await io.log()) if (l.event === 'spawn' && l.agent !== undefined) known.names.add(l.agent)
+  // Only flow's worktrees are read: the person's own are none of the sweep's business.
+  const ours = worktrees.filter(w => linked({ main, known }, w))
   const status: Record<string, string> = {}
   const deadPids = new Set<number>()
-  for (const w of worktrees.slice(1)) {
+  for (const w of ours) {
     if (w.prunable) continue
     const st = await run(['git', '-C', w.path, 'status', '--porcelain'])
     if (st.exitCode === 0) status[w.path] = st.stdout
@@ -453,12 +486,12 @@ async function gatherClean(io: CleanIo, base: string): Promise<CleanGathered> {
   // A worker in another harness lives in its worktree until it is stopped or its terminal is gone. A
   // session waiting for its next message (idle: a worker that went quiet, or the reviewer between
   // batches) still holds it.
-  for (const s of await io.sessions()) {
+  for (const s of sessions) {
     const live = sessionLive(s)
     roster.push({ id: sessionKey(s.name), live, name: s.name, cwd: s.worktree })
     if (s.hostWorktree !== undefined) roster.push({ id: sessionKey(s.name), live, name: s.name, cwd: s.hostWorktree })
   }
-  const partial: Omit<CleanInputs, 'ancestry'> = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting, lost, restored: restoredPaths() }
+  const partial: Omit<CleanInputs, 'ancestry'> = { main, base, worktrees, status, branches, onBase, remote, prs, roster, deadPids, waiting, lost, restored: restoredPaths(), known }
   // Content equivalence for tips a merged PR of the branch family may have replaced (a rebase
   // leaves the old commits behind): contained when every file they changed since the merge base
   // has the very same tree entry on origin/<base>. Anything odd (quoted names, many files) is not.
@@ -491,7 +524,7 @@ async function gatherClean(io: CleanIo, base: string): Promise<CleanGathered> {
     // A fresh agent's worktree is locked before the roster lists it; only an old lock is judged.
     // Unknown age (no admin dir, no lock file) counts as young.
     const oldLocks = new Set<string>()
-    for (const w of worktrees.slice(1)) {
+    for (const w of ours) {
       const lp = Number(/\bpid (\d+)\b/.exec(w.locked ?? '')?.[1] ?? NaN)
       if (!own.has(lp)) continue
       const dir = await run(['git', '-C', w.path, 'rev-parse', '--absolute-git-dir'])
@@ -508,6 +541,11 @@ async function gatherClean(io: CleanIo, base: string): Promise<CleanGathered> {
   }
   return { inputs: { ...partial, ancestry }, notes }
 }
+
+// The occasional sweep's rate limit: due once OCCASIONAL_MS passed since the last one. Never due before a
+// first one was clocked (`last` undefined): the caller starts the clock then, as startup has just swept.
+export const OCCASIONAL_MS = 10 * 60_000
+export const occasionalDue = (last: number | undefined, now: number): boolean => last !== undefined && now - last >= OCCASIONAL_MS
 
 // One sweep at a time: the reviewer's `done`, a reviewer ending and /flow clean may meet.
 let sweepChain: Promise<unknown> = Promise.resolve()
@@ -548,6 +586,18 @@ export async function restoreWorktree(exec: Exec, path: string, base: string): P
   })
 }
 
+// The worktree paths the terminal host manages for this repo; empty when it is not installed or not up.
+async function hostWorktrees(io: CleanIo, main: string): Promise<Set<string>> {
+  try {
+    const r = await io.exec(['orca', 'worktree', 'list', '--repo', `path:${main}`, '--json', '--limit', '1000'], 30_000)
+    if (r.exitCode !== 0) return new Set()
+    const rows = (JSON.parse(r.stdout) as { result?: { worktrees?: { path?: unknown }[] } }).result?.worktrees ?? []
+    return new Set(rows.map(w => w.path).filter((p): p is string => typeof p === 'string' && p !== main))
+  } catch {
+    return new Set()
+  }
+}
+
 const leftoverCounts = (s: Sweep, failed: Kept[] = [], applied = false): Leftovers => ({
   worktrees: applied ? 0 : s.remove.worktrees.length,
   branches: applied ? 0 : s.remove.branches.length,
@@ -578,6 +628,9 @@ export async function sweep(io: CleanIo, base: string, apply: boolean, dryHint?:
     const removed: Sweep['remove'] = { worktrees: [], branches: [] }
     const stuck = new Set<string>()
     const byPath = new Map(g.inputs.worktrees.map(w => [w.path, w]))
+    const hosted = s.remove.worktrees.some(p => byPath.get(p)?.prunable === false) ? await hostWorktrees(io, g.inputs.main) : new Set<string>()
+    // Branches the terminal host's remove may have deleted along with their worktree.
+    const hostRemoved = new Set<string>()
     for (const path of s.remove.worktrees) {
       const w = byPath.get(path)
       // A missing directory: prune drops the entry.
@@ -589,6 +642,19 @@ export async function sweep(io: CleanIo, base: string, apply: boolean, dryHint?:
         // `test -L` then `rm` (no trailing slash, no -r): removes the link, never its target.
         const isLink = await io.exec(['test', '-L', at], 10_000).then(r => r.exitCode === 0, () => false)
         if (isLink) await io.exec(['rm', '-f', '--', at], 10_000).catch(() => undefined)
+      }
+      // The terminal host keeps its own list beside git's: its remove drops both. It also deletes the checked-out
+      // branch, so it is used only when the sweep removes that branch too (it passed the same landed checks)
+      // or the worktree is detached; never --force. When it fails (the host is down), git removes it as before.
+      const branchGoes = w?.branch === undefined || s.remove.branches.includes(w.branch)
+      if (hosted.has(path) && branchGoes) {
+        const h = await io.exec(['orca', 'worktree', 'rm', '--worktree', `path:${path}`, '--json'], 120_000)
+          .catch(() => ({ exitCode: 1, stdout: '', stderr: '' }))
+        if (h.exitCode === 0 && !/"ok"\s*:\s*false/.test(h.stdout)) {
+          removed.worktrees.push(path)
+          if (w?.branch !== undefined) hostRemoved.add(w.branch)
+          continue
+        }
       }
       const r = await git(['worktree', 'remove', path])
       if (r.exitCode === 0) removed.worktrees.push(path)
@@ -605,6 +671,7 @@ export async function sweep(io: CleanIo, base: string, apply: boolean, dryHint?:
       }
       const r = await git(['branch', '-D', b])
       if (r.exitCode === 0) removed.branches.push(b)
+      else if (hostRemoved.has(b) && (await git(['show-ref', '--verify', '--quiet', `refs/heads/${b}`])).exitCode !== 0) removed.branches.push(b)
       else failed.push({ kind: 'branch', name: b, reason: `kept: ${r.stderr.trim().split('\n')[0] || 'git branch -D failed'}`, needsLook: true })
     }
     await io.setLeftovers(leftoverCounts(s, failed, true))

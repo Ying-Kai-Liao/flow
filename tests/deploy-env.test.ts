@@ -1,7 +1,8 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
-import { decideEnv, envCommandFor, openEnvItems, parseEnvInput, shellQuote } from '../hooks/deploy'
+import { currentEnvItem, decideEnv, envCommandFor, envRefusal, envSettledIn, openEnvItems, parseEnvInput, shellQuote, tidyEnvItems } from '../hooks/deploy'
+import type { Handover, Question } from '../types'
 import { EMPTY_INBOX, renderInbox } from '../hooks/inbox'
 import { deployTargetsOf } from '../hooks/prompts'
 import { matchRule, parseRules } from '../hooks/standing'
@@ -72,7 +73,7 @@ test('decideEnv: declined wins, then open items, then apply items; clear lists c
   const yes = item({ 'q-A': { open: false, answer: 'yes' } })
   expect(decideEnv({ ...base, pending: [a], item: yes })).toEqual({ kind: 'clear', apply: [a], record: [] })
   // No env_command: the user applies it; a missing apply item is asked for.
-  expect(decideEnv({ applyItem: none, hasCommand: false, pending: [a], item: yes })).toEqual({ kind: 'envAsk', entries: [a], reopen: [], open: [] })
+  expect(decideEnv({ applyItem: none, hasCommand: false, pending: [a], item: yes })).toEqual({ kind: 'envAsk', entries: [a], open: [] })
   const open = { applyItem: () => ({ qid: 'qa', open: true }), hasCommand: false }
   expect(decideEnv({ ...open, pending: [a], item: yes })).toEqual({ kind: 'envAwaits', qids: ['qa'] })
   // A login step the user has not done yet.
@@ -82,6 +83,41 @@ test('decideEnv: declined wins, then open items, then apply items; clear lists c
   const b = { pr: 2, change: change('A', { qid: 'q-B', value: 'w' }) }
   const both = decideEnv({ ...base, pending: [a, b], item: item({ 'q-A': { open: false, answer: 'yes' }, 'q-B': { open: false, answer: 'yes' } }) })
   expect(both).toEqual({ kind: 'clear', apply: [b], record: [{ entry: a, how: 'superseded' }] })
+})
+
+test('tidyEnvItems: an old "not yet" the handover still names opens again, a replaced copy and an orphaned apply item close by flow; envRefusal names the current item', () => {
+  const item = (id: string, role: 'secret' | 'apply', extra: Partial<Question> = {}): Question => ({
+    id, owner: 'env', addressee: 'main', question: 'Q', options: ['done', 'not yet'], default: 'not yet', blocking: true, kind: 'env',
+    env: { role, target: 'demo', name: role === 'apply' ? 'REGION' : 'KEY', pr: 3 }, askedAt: 1, state: 'answered', answer: 'not yet', answeredBy: 'main', delivered: true, ...extra,
+  })
+  const h = (env: Handover['env'], status: Handover['status'] = 'taken') => ({ pr: 3, status, env, at: 5 } as Handover)
+  const hs = [h([{ target: 'demo', name: 'KEY', secret: true, why: 'w', qid: 'q4' }, { target: 'demo', name: 'REGION', value: 'eu', why: 'w', qid: 'q1' }])]
+  // q2: the old gate's original "not yet"; q4 the copy the handover names. q3: an old apply "not yet", q5 the newer apply item.
+  const box = { next: 6, items: [item('q2', 'secret'), item('q3', 'apply'), item('q4', 'secret'), item('q5', 'apply', { state: 'open', answer: undefined, answeredBy: undefined })] }
+  expect(currentEnvItem(box.items[0]!, hs, box)).toBe('q4')
+  expect(currentEnvItem(box.items[1]!, hs, box)).toBe('q5')
+  const tidy = tidyEnvItems(box, hs, 'demo', undefined, 9)
+  expect(tidy.items.map(x => [x.id, x.state, x.answeredBy])).toEqual([['q2', 'answered', 'flow'], ['q3', 'answered', 'flow'], ['q4', 'open', 'main'], ['q5', 'open', undefined]])
+  // Nothing to do: the same object; another target is left alone.
+  expect(tidyEnvItems(tidy, hs, 'demo', undefined, 10)).toBe(tidy)
+  expect(tidyEnvItems(box, hs, 'production', undefined, 9)).toBe(box)
+  // A handover sent again opens its items before it saves its record: an item newer than the record is left alone.
+  const newer = { ...box, items: [{ ...box.items[0]!, askedAt: 6, state: 'open' as const, answer: undefined, answeredBy: undefined }] }
+  expect(tidyEnvItems(newer, hs, 'demo', undefined, 9)).toBe(newer)
+  expect(envRefusal(newer.items[0]!, hs, newer, undefined)).toBeUndefined()
+  // A current "not yet" whose change is settled (here dropped by a release) is closed, not opened again.
+  const dropped = tidyEnvItems(box, hs, 'demo', { envDone: [{ pr: 3, name: 'KEY', how: 'dropped', at: 1 }] }, 9)
+  expect(dropped.items[2]).toMatchObject({ state: 'answered', answeredBy: 'flow', answer: 'dropped: released without it' })
+  // The pane's card offers no other option for a settled change.
+  const deploys = { targets: { demo: { envDone: [{ pr: 3, name: 'KEY', how: 'secret' as const, at: 1 }] } } }
+  expect(envSettledIn(deploys, box.items[2]!)).toBe(true)
+  expect(envSettledIn(deploys, box.items[1]!)).toBe(false)
+  expect(envSettledIn(undefined, box.items[2]!)).toBe(false)
+  expect(envRefusal(box.items[0]!, hs, box, undefined)?.line).toBe('q2: refused, no handover asks for this item any more; q4 asks for KEY on demo (PR #3) now, answer that one.')
+  expect(envRefusal(box.items[2]!, hs, box, undefined)).toBeUndefined()
+  // A returned PR: nothing asks for its items.
+  expect(envRefusal(box.items[2]!, [h(hs[0]!.env, 'returned')], box, undefined)?.line).toContain('PR #3 was returned or handed over again without KEY')
+  expect(envRefusal(box.items[2]!, hs, box, { envDone: [{ pr: 3, name: 'KEY', how: 'secret', at: 1 }] })?.line).toContain('already settled (secret set by user)')
 })
 
 test('standing answers skip an env item unless a rule names the env kind', () => {
@@ -332,7 +368,7 @@ test('a non-secret value stays out of the log, the toasts and the notes', { opti
   expect(items(w.files)[0]!.question).toContain('Quiet Sender Name')
 })
 
-test('"not yet" is still waiting: a fresh item is opened (one open per change), release drops nothing; only "no" holds and is dropped', { options: OPTS }, async ($, on) => {
+test('"not yet" is still waiting on the same item, which stays open and takes "done" later; release drops nothing; only "no" holds and is dropped', { options: OPTS }, async ($, on) => {
   const w = world(on)
   await handover($, 3, [
     { target: 'production', name: 'API_KEY', secret: true, why: 'key', login: 'log in' },
@@ -340,27 +376,187 @@ test('"not yet" is still waiting: a fresh item is opened (one open per change), 
   ])
   await queue($, 'take', 3)
   // q1 login, q2 secret, q3 REGION.
-  await answer($, { answers: [{ id: 'q1', choice: 'not yet' }, { id: 'q2', choice: 'not yet' }, { id: 'q3', choice: 'yes' }] })
-  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q4, q5')
-  expect(items(w.files).filter(i => i.state === 'open').map(i => i.id)).toEqual(['q4', 'q5'])
-  // Asking again reuses the open items.
-  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q4, q5')
-  expect(items(w.files)).toHaveLength(5)
-  expect(read(w.files, 'handovers/3.json').env[0]).toMatchObject({ qid: 'q4', loginQid: 'q5' })
+  const res = await answer($, { answers: [{ id: 'q1', choice: 'not yet' }, { id: 'q2', choice: 'not yet' }, { id: 'q3', choice: 'yes' }] })
+  expect(res).toContain('q2 stays open')
+  expect(items(w.files).filter(i => i.state === 'open').map(i => i.id)).toEqual(['q1', 'q2'])
+  expect(items(w.files)[1]).toMatchObject({ state: 'open', answer: 'not yet', answeredBy: 'main', via: 'main' })
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q2, q1')
+  // Asking again opens nothing new.
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q2, q1')
+  expect(items(w.files)).toHaveLength(3)
+  expect(await deploy($, { action: 'list' })).toContain('API_KEY (PR #3, secret, not done yet (q2, q1))')
+  // The same "not yet" twice changes nothing.
+  expect(await answer($, { answers: [{ id: 'q2', choice: 'not yet' }] })).toContain('q2: already "not yet"')
   // Release finds nothing declined and drops nothing.
   expect(await $.command.run({ command: 'flow', args: 'release production' } as never).then(r => r.text ?? '')).toContain('no hold')
-  await answer($, { answers: [{ id: 'q4', choice: 'done' }, { id: 'q5', choice: 'done' }] })
-  // REGION has no env_command on production: the user applies it; "not yet" there reopens too.
-  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q6')
-  await answer($, { answers: [{ id: 'q6', choice: 'not yet' }] })
-  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q7')
+  await answer($, { answers: [{ id: 'q1', choice: 'done' }, { id: 'q2', choice: 'done' }] })
+  // REGION has no env_command on production: the user applies it; "not yet" there keeps the same item too.
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q4')
+  await answer($, { answers: [{ id: 'q4', choice: 'not yet' }] })
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q4')
+  expect(items(w.files)).toHaveLength(4)
+  expect(await answer($, { answers: [{ id: 'q4', choice: 'done' }] })).toContain('q4: done')
+  expect(read(w.files, 'deploys.json').targets.production.envDone.map((d: any) => [d.name, d.how])).toEqual([['REGION', 'user']])
+  // Done twice: no second record.
+  expect(await answer($, { answers: [{ id: 'q4', choice: 'done' }] })).toContain('already settled (applied by user)')
+  expect(read(w.files, 'deploys.json').targets.production.envDone).toHaveLength(1)
   // A "no" holds the target and release drops that change only.
   await handover($, 4, [{ target: 'production', name: 'EXTRA', value: 'x', why: 'w' }])
   await queue($, 'take', 4)
-  await answer($, { answers: [{ id: 'q8', choice: 'no' }] })
+  await answer($, { answers: [{ id: 'q5', choice: 'no' }] })
   expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Held: env change EXTRA declined')
   expect(await $.command.run({ command: 'flow', args: 'release production' } as never).then(r => r.text ?? '')).toContain('Dropped the declined env changes: EXTRA')
-  expect(read(w.files, 'deploys.json').targets.production.envDone.map((d: any) => [d.name, d.how])).toEqual([['EXTRA', 'dropped']])
+  expect(read(w.files, 'deploys.json').targets.production.envDone.map((d: any) => [d.name, d.how])).toEqual([['REGION', 'user'], ['EXTRA', 'dropped']])
+  // The dropped change cannot be answered back to life.
+  expect(await answer($, { answers: [{ id: 'q5', choice: 'yes' }] })).toContain('q5: refused, EXTRA on production (PR #4) was dropped by a release; the change is gone. Hand the PR over again')
+  expect(items(w.files)[4]).toMatchObject({ answer: 'no' })
+})
+
+test('an answered env item takes a later explicit answer and the gate follows it; a default never answers one', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [MAIL, { target: 'demo', name: 'API_KEY', secret: true, why: 'key' }])
+  await queue($, 'take', 3)
+  // q1 MAIL change, q2 secret. defaults: true never answers them, also named in ids.
+  const skipped = await answer($, { defaults: true, ids: ['q1', 'q2'] })
+  expect(skipped).toContain('q1: answer it explicitly (env change); a default never answers it.')
+  expect(skipped).toContain('q2: answer it explicitly (env change)')
+  expect(await answer($, { defaults: true })).toContain('q1: answer it explicitly (env change)')
+  expect(items(w.files).filter(i => i.state === 'open').map(i => i.id)).toEqual(['q1', 'q2'])
+  // "no" then "yes" before a release: the target is no longer held.
+  await answer($, { answers: [{ id: 'q1', choice: 'no' }, { id: 'q2', choice: 'done' }] })
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Held: env change MAIL_SENDER declined')
+  expect(await $.command.run({ command: 'flow', args: 'answer q1 yes' } as never).then(r => r.text ?? '')).toContain('q1: yes')
+  expect(items(w.files)[0]).toMatchObject({ state: 'answered', answer: 'yes', via: 'user' })
+  // "done" then "not yet" before Go: the secret is open again.
+  expect(await answer($, { answers: [{ id: 'q2', choice: 'not yet' }] })).toContain('q2 stays open')
+  expect(items(w.files)[1]).toMatchObject({ state: 'open', answer: 'not yet' })
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Awaits env: q2')
+  await answer($, { answers: [{ id: 'q2', choice: 'done' }] })
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Go, first apply env:\n- MAIL_SENDER')
+  // The same answer again is a no-op, with how it was given.
+  expect(await answer($, { answers: [{ id: 'q1', choice: 'yes' }] })).toContain('q1: already answered ("yes" by the user)')
+  // Applied: the change is settled and a later answer says so.
+  await deploy($, { action: 'env-applied', target: 'demo', names: ['MAIL_SENDER'] })
+  expect(await answer($, { answers: [{ id: 'q1', choice: 'no' }] })).toContain('q1: MAIL_SENDER on demo (PR #3) is already settled (applied by command); this answer changes nothing.')
+  expect(items(w.files)[0]).toMatchObject({ answer: 'yes' })
+})
+
+// The inbox as the old gate left it, written straight to disk (every inbox change reads the file first).
+const editItems = (files: Map<string, string>, fn: (xs: Array<Record<string, any>>) => Array<Record<string, any>>) => {
+  const box = read(files, 'inbox.json')
+  files.set(`${DIR}/inbox.json`, JSON.stringify({ ...box, next: Math.max(box.next, 10), items: fn(box.items) }))
+}
+
+test('old data: a "not yet" the handover still names opens again at the gate; a replaced original is closed and refused', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [{ target: 'demo', name: 'API_KEY', secret: true, why: 'key' }])
+  await queue($, 'take', 3)
+  // Stored by the old code: q1 answered "not yet" and closed.
+  editItems(w.files, xs => xs.map(x => (x.id === 'q1' ? { ...x, state: 'answered', answer: 'not yet', answeredBy: 'main' } : x)))
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Awaits env: q1')
+  expect(items(w.files)[0]).toMatchObject({ state: 'open', answer: 'not yet' })
+  expect(await answer($, { answers: [{ id: 'q1', choice: 'done' }] })).toContain('q1: done')
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toBe('Go')
+})
+
+test('old data: the old gate\'s replaced pair (q1 "not yet", the handover on q2) leaves one open item; answering the original is refused', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  const KEY = { target: 'demo', name: 'API_KEY', secret: true, why: 'key' }
+  await handover($, 3, [KEY])
+  editItems(w.files, xs => xs.map(x => (x.id === 'q1' ? { ...x, state: 'answered', answer: 'not yet', answeredBy: 'main' } : x)))
+  // Sent again: the answered "not yet" is not kept, so the handover names a fresh q10 (as the old reopen did).
+  await handover($, 3, [KEY])
+  expect(read(w.files, 'handovers/3.json').env[0].qid).toBe('q10')
+  await queue($, 'take', 3)
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Awaits env: q10')
+  expect(items(w.files).filter(i => i.state === 'open').map(i => i.id)).toEqual(['q10'])
+  expect(items(w.files)[0]).toMatchObject({ state: 'answered', answeredBy: 'flow', answer: 'replaced: no handover asks for it any more' })
+  expect(await answer($, { answers: [{ id: 'q1', choice: 'done' }] })).toContain('q1: closed by flow')
+  expect(await answer($, { answers: [{ id: 'q10', choice: 'done' }] })).toContain('q10: done')
+})
+
+test('old data: an orphaned apply item (the old gate opened a second one) is closed, the newest is the one the gate reads; the auto run is not held by it', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  // production has no env_command: an approved value needs an apply item.
+  await handover($, 4, [{ target: 'production', name: 'REGION', value: 'eu', why: 'region' }])
+  await queue($, 'take', 4)
+  await answer($, { answers: [{ id: 'q1', choice: 'yes' }] })
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q2')
+  // The old code: q2 answered "not yet", then a second apply item q10 for the same change.
+  editItems(w.files, xs => [...xs.map(x => (x.id === 'q2' ? { ...x, state: 'answered', answer: 'not yet', answeredBy: 'main' } : x)), { ...xs[1]!, id: 'q10', askedAt: 2_000_000 }])
+  expect(await deploy($, { action: 'gate', target: 'production', sha: 'abc' })).toContain('Awaits env: q10')
+  expect(items(w.files).find(i => i.id === 'q2')).toMatchObject({ state: 'answered', answeredBy: 'flow' })
+  expect(await answer($, { answers: [{ id: 'q2', choice: 'done' }] })).toContain('q2: closed by flow')
+  expect(await answer($, { answers: [{ id: 'q10', choice: 'done' }] })).toContain('q10: done')
+  expect(read(w.files, 'deploys.json').targets.production.envDone.map((d: any) => [d.name, d.how])).toEqual([['REGION', 'user']])
+})
+
+test('old data: an orphaned apply item still open does not hold the auto run when the newest one is answered', { options: { deploy_targets: JSON.stringify([...CONFIG, { name: 'staging', deploy: ['./deploy staging'] }]) } }, async ($, on) => {
+  const w = world(on)
+  // staging is auto and has no env_command: an approved value needs an apply item.
+  await handover($, 4, [{ target: 'staging', name: 'REGION', value: 'eu', why: 'region' }])
+  await queue($, 'take', 4)
+  await answer($, { answers: [{ id: 'q1', choice: 'yes' }] })
+  expect(await deploy($, { action: 'gate', target: 'staging', sha: 'abc' })).toContain('Awaits env: q2')
+  // The old code opened a second apply item q10 while q2 was still open; no gate has tidied them yet.
+  editItems(w.files, xs => [...xs, { ...xs[1]!, id: 'q10', askedAt: 2_000_000 }])
+  expect(items(w.files).filter(i => i.state === 'open').map(i => i.id)).toEqual(['q2', 'q10'])
+  expect(await answer($, { answers: [{ id: 'q10', choice: 'done' }] })).toContain('staging has its env answers')
+  expect(read(w.files, 'deploys.json').targets.staging.due).toBe(true)
+})
+
+test('a gate between a re-handover opening its items and saving its record leaves the new item open', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  const KEY = { target: 'demo', name: 'API_KEY', secret: true, why: 'key' }
+  await handover($, 3, [KEY])
+  await queue($, 'take', 3)
+  editItems(w.files, xs => xs.map(x => (x.id === 'q1' ? { ...x, state: 'answered', answer: 'not yet', answeredBy: 'main' } : x)))
+  // The window in handover-run: openEnv has opened q10 (later than the stored record), putHandover has not run yet.
+  editItems(w.files, xs => [...xs, { ...xs[0]!, id: 'q10', state: 'open', answer: undefined, answeredBy: undefined, via: undefined, askedAt: 2_000_000 }])
+  await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })
+  expect(items(w.files).find(i => i.id === 'q10')).toMatchObject({ state: 'open' })
+  expect(items(w.files).find(i => i.id === 'q10')?.answeredBy).toBeUndefined()
+  // Answering it in the window is not refused either (the replaced-pair test covers the gate once the record names it).
+  expect(await answer($, { answers: [{ id: 'q10', choice: 'not yet' }] })).toContain('q10 stays open')
+  expect(items(w.files).find(i => i.id === 'q10')).toMatchObject({ state: 'open', answer: 'not yet', via: 'main' })
+})
+
+test('old data: a login step left at "not yet" whose change a release dropped is closed, not reopened; the auto run is not held by it', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [{ ...MAIL, login: 'log in to the mail admin' }])
+  await handover($, 4, [{ target: 'demo', name: 'API_KEY', secret: true, why: 'key' }])
+  await queue($, 'take', 3)
+  await queue($, 'take', 4)
+  // q1 login, q2 MAIL change, q3 secret. MAIL is declined, then dropped by a release.
+  await answer($, { answers: [{ id: 'q2', choice: 'no' }] })
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Held: env change MAIL_SENDER declined')
+  expect(await $.command.run({ command: 'flow', args: 'release demo' } as never).then(r => r.text ?? '')).toContain('Dropped the declined env changes: MAIL_SENDER')
+  // The old code left the login step answered "not yet".
+  editItems(w.files, xs => xs.map(x => (x.id === 'q1' ? { ...x, state: 'answered', answer: 'not yet', answeredBy: 'main' } : x)))
+  expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' })).toContain('Awaits env: q3')
+  expect(items(w.files)[0]).toMatchObject({ state: 'answered', answeredBy: 'flow', answer: 'dropped: released without it' })
+  expect(await answer($, { answers: [{ id: 'q3', choice: 'done' }] })).toContain('demo has its env answers')
+})
+
+test('an env item a re-handover replaced is refused, not answered: no "held" reply for a qid the gate does not read', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [MAIL])
+  await queue($, 'take', 3)
+  await answer($, { answers: [{ id: 'q1', choice: 'yes' }] })
+  // A new value: q1 is not kept, q2 asks again.
+  await handover($, 3, [{ ...MAIL, value: 'Ops 2' }])
+  expect(read(w.files, 'handovers/3.json').env[0].qid).toBe('q2')
+  const res = await answer($, { answers: [{ id: 'q1', choice: 'no' }] })
+  expect(res).toBe('q1: refused, no handover asks for this item any more; q2 asks for MAIL_SENDER on demo (PR #3) now, answer that one.')
+  expect(items(w.files)[0]).toMatchObject({ answer: 'yes' })
+})
+
+test('an env item closed by flow stays closed', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await handover($, 3, [MAIL, { target: 'demo', name: 'API_KEY', secret: true, why: 'key' }])
+  await handover($, 3, [MAIL])
+  expect(items(w.files)[1]).toMatchObject({ state: 'answered', answeredBy: 'flow', via: 'flow' })
+  expect(await answer($, { answers: [{ id: 'q2', choice: 'done' }] })).toContain('q2: closed by flow ("dropped: the PR was handed over again without it"); it cannot be answered any more.')
 })
 
 test('ask_cards on: a handover with env items and the env gate each notify main once with the card instruction', { options: OPTS }, async ($, on) => {

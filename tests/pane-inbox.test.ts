@@ -348,9 +348,31 @@ test('a card for an item answered meanwhile shows the answer and answers nothing
   await openCard(ui, 'q1')
   await cmd($, 'answer q1 b')
   // drawn again, the card is read-only: the answer, no buttons
-  expect(await ui.find({ text: /Answered: no \(by main/ })).toBeDefined()
+  expect(await ui.find({ text: /Answered: no \(by the user/ })).toBeDefined()
   expect(await ui.find({ key: 'card-opt-0' })).toBeUndefined()
   expect(stateOf(w.files, 'q1')?.answer).toBe('no')
+  await ui.unmount()
+})
+
+test('an answered env card takes another option (the gate follows the latest answer); one closed by flow stays read-only', async ($, on) => {
+  const w = world(on)
+  const base = { owner: 'env', addressee: 'main', options: ['yes', 'no'], default: 'no', blocking: true, askedAt: 1_000_000, kind: 'env', delivered: true, state: 'answered', answeredBy: 'main', answeredAt: 1_000_000 }
+  w.files.set(`${DIR}/inbox.json`, JSON.stringify({ next: 3, items: [
+    { ...base, id: 'q1', question: 'Set X=1 on demo?', answer: 'no', env: { target: 'demo', name: 'X', role: 'change', pr: 1 } },
+    { ...base, id: 'q2', question: 'Set Y=1 on demo?', answer: 'dropped: the PR was returned', answeredBy: 'flow', env: { target: 'demo', name: 'Y', role: 'change', pr: 1 } },
+  ] }))
+  await fyi($, 'w1', [F(1)])
+  const ui = await mount($)
+  await open(ui)
+  await ui.press({ key: 'inbox-archive' })
+  await ui.press({ key: 'arch-q2' })
+  expect(await ui.find({ text: /Nothing more to answer\./ })).toBeDefined()
+  expect(await ui.find({ key: 'card-opt-0' })).toBeUndefined()
+  await ui.press({ key: 'card-back' })
+  await ui.press({ key: 'arch-q1' })
+  expect(await ui.find({ text: /Answered: no \(by main.*Press another option to change it\./ })).toBeDefined()
+  await ui.press({ key: 'card-opt-0' })
+  expect(stateOf(w.files, 'q1')).toMatchObject({ state: 'answered', answer: 'yes' })
   await ui.unmount()
 })
 
@@ -508,9 +530,9 @@ test('the archive lists answered items; an archived card is read-only', async ($
   const ui = await mount($)
   await open(ui)
   await ui.press({ key: 'inbox-archive' })
-  expect(await ui.find({ text: /q1 no \(by main, 0 min ago\): Quote fields/ })).toBeDefined()
+  expect(await ui.find({ text: /q1 no \(by the user, 0 min ago\): Quote fields/ })).toBeDefined()
   await ui.press({ key: 'arch-q1' })
-  expect(await ui.find({ text: /Answered: no \(by main/ })).toBeDefined()
+  expect(await ui.find({ text: /Answered: no \(by the user/ })).toBeDefined()
   expect(await ui.find({ key: 'card-opt-0' })).toBeUndefined()
   await ui.press({ key: 'card-back' })
   expect(await ui.find({ text: /Archive/ })).toBeDefined()
@@ -523,7 +545,7 @@ test('/flow inbox archive lists answered items; archive all lifts the cap', asyn
   await ask($, 'm1', [SOFT])
   expect(await cmd($, 'inbox archive')).toContain('empty')
   await cmd($, 'answer q1 b')
-  expect(await cmd($, 'inbox archive')).toMatch(/Archive: 1 answered item[\s\S]*q1 no \(by main/)
+  expect(await cmd($, 'inbox archive')).toMatch(/Archive: 1 answered item[\s\S]*q1 no \(by the user/)
   expect(await cmd($, 'inbox archive all')).toContain('q1 no')
   expect(await cmd($, 'inbox')).toContain('/flow inbox archive')
 })
@@ -568,7 +590,7 @@ test('a highlight answered meanwhile answers nothing: the highlight moves and th
   await cmd($, 'answer q2 b')
   await ui.press({ key: 'inbox-yes' })
   expect(stateOf(w.files, 'q1')?.state).toBe('open')
-  expect(await ui.find({ text: /q2 was answered meanwhile \(by main\); the highlight moved, press again/ })).toBeDefined()
+  expect(await ui.find({ text: /q2 was answered meanwhile \(by the user\); the highlight moved, press again/ })).toBeDefined()
   await ui.press({ key: 'inbox-yes' })
   expect(stateOf(w.files, 'q1')?.answer).toBe('yes')
   await ui.unmount()

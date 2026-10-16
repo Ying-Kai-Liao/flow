@@ -10,7 +10,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The Flow pane's card for a decision kept without anyone looking (by default, a rule or the decision API) now shows the answer input and `n Undo (say what instead)`, so it can be undone from the pane (part of #222).
-- `/flow ok|no|answer` now offers a standing rule once when the answer completes a suggestion, as the answer tool already did (part of #222).
+- `/flow ok|no|answer` now offers a standing rule once when the answer completes a suggestion, as the answer tool already did (part of #222). The lines also reach main as hidden context, so the user tells main to add the rule; it counts as the one offer, and `mcp__flow__status` and the answer tool do not repeat it.
+
+## [0.6.122] - 2026-10-16
+
+### Added
+
+- Finished terminal sessions stop by themselves (`cleanup` = `auto`). The occasional sweep first stops the sessions this main owns that only hold a terminal, once their report or end is 15 minutes old: a worker that reported or exited whose own PR is merged or closed; a manager that wrote its final report with no live worker, queued handover, open worker PR, open ask or open plan node left; the reviewer while no handover is still queued (pending, awaiting approval, taken, or ready for /flow push). It closes the terminal, marks the session stopped and notes why; the sweep in the same pass removes the worktree by its usual rules. A reviewer report for a stopped manager is noted for it and sent to main.
+
+### Changed
+
+- `mcp__flow__session` action `list` shows live sessions in full, sessions that ended in the last 24 hours as one short line each, and older ended ones as a count. Sessions record when they stopped or exited (`endedAt`).
+
+## [0.6.121] - 2026-10-16
+
+### Changed
+
+- Sweep every flow worktree, wherever it lives, and sweep occasionally between merges (#234)
+
+## [0.6.120] - 2026-10-16
+
+### Fixed
+
+- Env items stay answerable (part of #222, item 1). "Not yet" (or anything but "done") on a secret, login or apply item leaves it open with the answer noted on it, and a later "done" on the same id is accepted; the gate waits on that same item instead of opening a fresh copy (reopenItem is gone). An answered env item takes a later explicit answer from the user (`/flow answer`, the pane) or main (`mcp__flow__answer` answers) and the gate follows the latest one: a change answered "no" then "yes" before a release is no longer held, a secret answered "done" then "not yet" is open again. A change the gate already settled (applied, set, dropped by a release) refuses a new answer with what happened; an item flow closed itself stays closed. The same answer twice changes nothing. An env item no handover asks for any more (an older copy, a change re-handed with a new value, a returned PR) refuses a new answer and names the current item; one still open is closed by flow. Items the old gate left behind are tidied at the next gate for their target: a "not yet" the handover still names opens again, the replaced original or a second apply item is closed by flow, so one change has one open item and an orphan never holds the deploy-only run; a "not yet" whose change is already settled (a login step for a change a release dropped) is closed by flow instead. An item asked after its handover's stored record (a handover sent again, between opening its items and saving the record) is never closed by a gate in that window. The Flow pane's card for an answered env item takes another option unless its change is settled.
+- `mcp__flow__answer` with `defaults: true` never answers deploy, env, push and reviewer items or guard suggestions, also when named in `ids`: it says to answer them explicitly, as `/flow ok` does.
+
+### Added
+
+- Each answer records how it was given (`via`: user, main, defaults, standing, flow, manager). "Already answered" lines, `/flow inbox <id>`, the archive and the pane show it where the who alone does not say it, e.g. `("not yet" by main, via defaults)`, and an answer from the pane or a `/flow` command reads `by the user`. Older answers show as before.
+- Claude workers started as terminal sessions (tmux or Orca) now have their flow tools: test_slot, guard_tests, ask, fyi, note and status, relayed to main through the disk relay as a terminal manager's are. They get a relay directory and `FLOW_RELAY` on their start (and restart) line, record the main that owns them, and main's pump runs their calls as `session:<name>`, owned by the manager that started them: asks and decisions go to that manager, test-slot holds and grants are the session's (the grant is typed into its terminal), guard_tests reads its worktree. Main refuses any other flow tool from a worker (a worker session is never taken for the reviewer), and a worker's whole-suite run is refused as an agent worker's is. Its copy still holds no state and runs no timers. Other harnesses get no relay directory and keep the "no flow tools" line; a claude worker's prompt says its tools are relayed and to put "flow tools missing: …" first in its report if they never reach main. Workers started before this keep their passive copy.
+### Fixed
+
+- Worktrees no longer pile up when terminal sessions run in the terminal host. The cleanup sweep now covers every worktree flow made, wherever it lives: `flow/` branches, worktrees and host worktrees recorded for a session, and detached `mgr-<name>` / `reviewer-<n>` worktrees whose name flow knows. The person's own worktrees are never read or touched. The same safety rules apply, plus a new one for every worktree: a branch with an open PR keeps its worktree. A worktree the terminal host manages is removed through the host (`orca worktree rm`, never `--force`), or with git when the host is not up. With `cleanup` = `auto` the sweep also runs occasionally between merges: when a terminal session or a manager agent ends, and on main's `status`, at most once every 10 minutes.
 
 ## [0.6.119] - 2026-10-16
 

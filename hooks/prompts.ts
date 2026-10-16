@@ -478,6 +478,11 @@ When every PR is merged (or you merged it, without a reviewer), end with a short
 
 ${BRIEF_TEMPLATE}`
 
+// The session preamble's line on flow tools: a claude worker's copy of the plugin relays them to main
+// (relay.ts); another harness loads no plugin and has none.
+export const SESSION_NO_TOOLS = '- You have no flow tools (mcp__flow__*): skip the test slot steps, and leave whole-suite runs that take minutes to the reviewer.'
+export const SESSION_RELAYED_TOOLS = '- Your flow tools (mcp__flow__*) are relayed to the main session; use them as the rules above say. If none are in your tool list, or a call answers "flow relay: …" saying it did not reach the main session (or main did not pick it up) twice, say so once, clearly, as the first line of your report ("flow tools missing: <what you saw>"), then skip the test slot steps and leave guard_tests and whole-suite runs to the reviewer.'
+
 // What a worker in another harness reads before the worker rules and its brief. `{{NAME}}` and
 // the rest are filled per session by the session tool.
 export const SESSION_PROMPT = `${WORKER_PROMPT}
@@ -486,7 +491,7 @@ export const SESSION_PROMPT = `${WORKER_PROMPT}
 
 You are running as {{HARNESS}} in a terminal, outside the Claude Code session that runs the flow. Your manager is {{OWNER}}. Where the worker rules above differ from this part, this part wins:
 - Your name is {{NAME}}. The current directory is your worktree, already on branch \`{{BRANCH}}\`: skip the rename. A "Continue on branch:" line in the brief still applies.
-- You have no flow tools (mcp__flow__*): skip the test slot steps, and leave whole-suite runs that take minutes to the reviewer.
+{{FLOW_TOOLS_RULE}}
 - Your report is a file, not your last message: write it to \`{{REPORT}}\`, replacing the whole file each time you report, with what the rules above say a final message carries and the same last-line rules (a question ending in "?", "BLOCKED: …", "HANDOFF: …"). The plugin sends it to your manager. Then wait in this terminal.
 - Your manager's answers and review feedback are typed into this terminal. Act on them, then write the report file again.
 - Nobody tells you when your context runs low. If you notice it, follow the Handoff steps on your own and put the note in the report file.

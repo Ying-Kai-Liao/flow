@@ -4,8 +4,8 @@
 import type { EnvChange, Handover, LogEvent } from '../types'
 import {
   applyAnswer, applyViewOf, approvalContext, closeEnvItems, declinedEntries, decideEnv, decideGate, ENV_KIND, envCommandFor, envListLine,
-  isApprove, normalizeDeploys, openApplyItem, openApprovalItem, reopenItem, openDeployIds, openEnvItems, pendingEnv, recordDeployed,
-  release, renderList, retargetItem, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
+  isApprove, normalizeDeploys, openApplyItem, openApprovalItem, openDeployIds, openEnvItems, pendingEnv, recordDeployed,
+  currentEnvItem, envJudged, envRefusal, release, renderList, retargetItem, tidyEnvItems, unknownTarget, itemViewOf, withApproval, withEnvDone, withHold,
 } from './deploy'
 import type { Deploys, Draft, EnvInput, Hold, TargetInfo, TargetState } from './deploy'
 import { AUTO, matchRule } from './standing'
@@ -131,13 +131,31 @@ export async function onEnvAnswer(io: DeployIo, q: Question, answer: string): Pr
   if (!yes) {
     return e.role === 'change'
       ? ` ${e.target} is held by this: the gate skips it until main runs release on ${e.target}, which drops the declined change.`
-      : ` Not yet: ${e.target} keeps waiting; the next gate opens a fresh item for it.`
+      : ` Not yet: ${q.id} stays open and ${e.target} keeps waiting; answer done on ${q.id} when it is.`
   }
   const ib = await io.inbox()
-  const stillOpen = ib.items.some(x => x.state === 'open' && x.kind === ENV_KIND && x.env?.target === e.target)
+  // Only the items the gate reads count: an orphan left by the old gate never holds the run.
+  const stillOpen = ib.items.some(x => x.state === 'open' && x.kind === ENV_KIND && x.env?.target === e.target && (currentEnvItem(x, hs, ib) === x.id || !envJudged(x, hs)))
   if (!waiting || stillOpen || info === undefined || info.mode !== 'auto') return ''
   await withDeploys(io, cur => ({ deploys: setTarget(cur, e.target, { ...(cur.targets[e.target] ?? {}), due: true }), out: undefined }))
   return ` ${e.target} has its env answers. ${await io.ensureQueue('approval')}`
+}
+
+// The refusal for an answer to an env item that can change nothing (its change is recorded for the target, or no
+// handover asks for the item any more), else undefined. Such an item still open is closed by flow, so it stops
+// showing as open and holding the target.
+export async function envSettled(io: DeployIo, q: Question): Promise<string | undefined> {
+  const e = q.env
+  if (e === undefined) return undefined
+  const ts = await withDeploys(io, cur => ({ deploys: cur, out: cur.targets[e.target] }))
+  const hs = Object.values(await io.handovers())
+  const at = await io.now()
+  return io.withInbox(cur => {
+    const x = cur.items.find(i => i.id === q.id)
+    const r = x === undefined || x.answeredBy === 'flow' ? undefined : envRefusal(x, hs, cur, ts)
+    if (r === undefined) return { inbox: cur, out: undefined }
+    return { inbox: x!.state === 'open' ? closeEnvItems(cur, [x!.id], r.note, at) : cur, out: r.line }
+  })
 }
 
 // A person's (or main's) hold on a target.
@@ -230,6 +248,9 @@ const skipText = (target: string) => `Skip ${target} for this batch and go on wi
 async function runGate(io: DeployIo, options: Record<string, unknown>, info: TargetInfo, sha: string, at: number, again: boolean): Promise<string> {
   const target = info.name
   const hs = Object.values(await io.handovers())
+  // Items the old gate left behind: a current "not yet" opens again, an orphan or a settled one is closed by flow.
+  const before = await withDeploys(io, cur => ({ deploys: cur, out: cur.targets[target] }))
+  await io.withInbox(cur => ({ inbox: tidyEnvItems(cur, hs, target, before, at), out: undefined }))
   const ib = await io.inbox()
   const open = openDeployIds(ib)
   const decided = await withDeploys(io, cur => {
@@ -249,7 +270,6 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
   if (gate.kind === 'envAsk') {
     const qids: string[] = [...gate.open]
     const created: string[] = []
-    const moved: Array<{ pr: number; name: string; field: 'qid' | 'loginQid'; qid: string }> = []
     await io.withInbox(cur => {
       let next = cur
       for (const e of gate.entries) {
@@ -258,28 +278,8 @@ async function runGate(io: DeployIo, options: Record<string, unknown>, info: Tar
         qids.push(r.q.id)
         created.push(r.q.id)
       }
-      // An item answered "not yet" is replaced by a fresh copy, so the change keeps one open item.
-      for (const re of gate.reopen) {
-        const old = next.items.find(x => x.id === re.entry.change[re.field])
-        if (old === undefined) continue
-        const r = reopenItem(next, old, at)
-        next = r.inbox
-        qids.push(r.q.id)
-        created.push(r.q.id)
-        moved.push({ pr: re.entry.pr, name: re.entry.change.name, field: re.field, qid: r.q.id })
-      }
       return { inbox: next, out: undefined }
     })
-    for (const pr of new Set(moved.map(m => m.pr))) {
-      const h = (await io.handovers())[String(pr)]
-      if (h?.env === undefined) continue
-      const next: Handover = { ...h, env: h.env.map(c => {
-        const mine = moved.filter(x => x.pr === pr && x.name === c.name && c.target === target)
-        return mine.length === 0 ? c : { ...c, ...Object.fromEntries(mine.map(m => [m.field, m.qid])) }
-      }) }
-      await io.updateHandovers(hs => ({ ...hs, [String(pr)]: next }))
-      await io.best('saving a handover', () => io.saveHandover(next))
-    }
     io.toast(`Env on ${target} awaits you: /flow inbox (${qids.join(', ')})`)
     if (created.length > 0) await sendCards(cardsOf(io), options, () => `Env on ${target} awaits the user`, created)
     return `Awaits env: ${qids.join(', ')}. ${skipText(target)}`

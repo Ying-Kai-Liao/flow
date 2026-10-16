@@ -112,6 +112,62 @@ test('markAnswered: null takes the default, a choice is parsed', () => {
   expect(typed.kind === 'ok' && typed.isDefault).toBe(true)
 })
 
+test('markAnswered records how an answer was given: user, main, defaults, manager, standing; archiveWho shows the user and defaults', () => {
+  const inbox = store([ask('Q', { options: ['A', 'B'], default: 'A' })], { name: 'mgr-a', id: 'm1', isManager: true }, 'main')
+  const via = (choice: string | null, by: string, rule?: string, user = false) => {
+    const m = markAnswered(inbox, 'q1', choice, by, 9, rule, user)
+    return m.kind === 'ok' ? m.q.via : m.kind
+  }
+  expect(via('b', 'main')).toBe('main')
+  expect(via(null, 'main')).toBe('defaults')
+  expect(via(null, 'main', undefined, true)).toBe('user')
+  expect(via('a', 'standing answer', 'r1')).toBe('standing')
+  const toMgr = store([ask('Q')])
+  const m = markAnswered(toMgr, 'q1', 'No', 'mgr', 9)
+  expect(m.kind === 'ok' && m.q.via).toBe('manager')
+  const d = markAnswered(inbox, 'q1', null, 'main', 9)
+  expect(d.kind === 'ok' && renderItem(d.inbox, 'q1', 9)).toContain('Answered: A (by main, via defaults, 0 min ago)')
+  const e = markAnswered(inbox, 'q1', 'b', 'main', 9)
+  expect(e.kind === 'ok' && renderItem(e.inbox, 'q1', 9)).toContain('Answered: B (by main, 0 min ago)')
+})
+
+test('env items: "not yet" on a step keeps it open, an explicit answer replaces an earlier one, flow-closed and defaults never reopen', () => {
+  const env = (role: 'change' | 'secret', extra: Record<string, unknown> = {}) => ({
+    id: 'q1', owner: 'env', addressee: 'main', question: 'Q', options: role === 'change' ? ['yes', 'no'] : ['done', 'not yet'], default: role === 'change' ? 'no' : 'not yet',
+    blocking: true, kind: 'env' as const, env: { role, target: 'demo', name: 'A', pr: 1 }, askedAt: 1, state: 'open' as const, delivered: false, ...extra,
+  })
+  const secret: Inbox = { next: 2, items: [env('secret')] }
+  const later = markAnswered(secret, 'q1', 'not yet', 'main', 5)
+  if (later.kind !== 'ok') throw new Error('expected ok')
+  expect(later.q).toMatchObject({ state: 'open', answer: 'not yet', via: 'main' })
+  expect(renderItem(later.inbox, 'q1', 5)).toContain('Last answer: not yet (by main, 0 min ago); still open.')
+  expect(markAnswered(later.inbox, 'q1', 'not yet', 'main', 6).kind).toBe('answered')
+  const done = markAnswered(later.inbox, 'q1', 'done', 'main', 7)
+  expect(done.kind === 'ok' && done.q.state).toBe('answered')
+  // Done, then "not yet" again: open again.
+  const back = done.kind === 'ok' ? markAnswered(done.inbox, 'q1', 'not yet', 'main', 8, undefined, true) : undefined
+  expect(back?.kind === 'ok' && back.q).toMatchObject({ state: 'open', via: 'user' })
+  const change: Inbox = { next: 2, items: [env('change', { state: 'answered', answer: 'no', answeredBy: 'main' })] }
+  const yes = markAnswered(change, 'q1', 'yes', 'main', 5)
+  expect(yes.kind === 'ok' && yes.q).toMatchObject({ state: 'answered', answer: 'yes' })
+  // The same answer, a default, a manager or a rule do not re-answer.
+  expect(markAnswered(change, 'q1', 'no', 'main', 5).kind).toBe('answered')
+  expect(markAnswered(change, 'q1', null, 'main', 5).kind).toBe('answered')
+  expect(markAnswered(change, 'q1', 'yes', 'mgr', 5).kind).toBe('answered')
+  expect(markAnswered(change, 'q1', 'yes', 'standing answer', 5, 'r1').kind).toBe('answered')
+  const closed: Inbox = { next: 2, items: [env('secret', { state: 'answered', answer: 'dropped: the PR was returned', answeredBy: 'flow' })] }
+  expect(markAnswered(closed, 'q1', 'done', 'main', 5, undefined, true).kind).toBe('answered')
+})
+
+test('normalizeInbox leaves env items as stored: the gate (tidyEnvItems) decides which old "not yet" opens again', () => {
+  const base = { owner: 'env', addressee: 'main', question: 'Q', options: ['done', 'not yet'], default: 'not yet', blocking: true, kind: 'env', askedAt: 1, delivered: true }
+  const box = normalizeInbox({ next: 5, items: [
+    { ...base, id: 'q1', env: { role: 'secret', target: 'd', name: 'A', pr: 1 }, state: 'answered', answer: 'not yet', answeredBy: 'main' },
+  ] })
+  expect(box.items[0]).toMatchObject({ state: 'answered', answer: 'not yet' })
+  expect(box.items[0]!.via).toBeUndefined()
+})
+
 test('markAnswered refuses a non-addressee, a second answer and an unknown id', () => {
   const inbox = store([ask('Q')])
   expect(markAnswered(inbox, 'q1', null, 'other', 1).kind).toBe('refused')
@@ -541,10 +597,10 @@ test('the archive lists answered items newest first with answer, who and when; c
   expect(archiveOf(box)[0]!.id).toBe('q60')
   const text = renderArchive(box, 61 * 60_000)
   expect(text).toContain('60 answered items')
-  expect(text).toContain('q60 No (by main, 1 min ago): question 59')
+  expect(text).toContain('q60 No (by the user, 1 min ago): question 59')
   expect(text).toContain('+10 older: /flow inbox archive all')
   expect(text).not.toContain('q1 No')
-  expect(renderArchive(box, 61 * 60_000, true)).toContain('q1 No (by mgr')
+  expect(renderArchive(box, 61 * 60_000, true)).toContain('q1 No (by the user')
   expect(renderArchive(EMPTY_INBOX, 0)).toContain('empty')
 })
 

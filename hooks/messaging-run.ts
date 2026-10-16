@@ -6,7 +6,7 @@ import { LIVE } from './deliver'
 import type { DeliverOptions } from './deliver'
 import { ENV_KIND } from './deploy'
 import { dupGroupOf } from './inbox-dups'
-import { answerMessage, findItem, parseChoice, isAddressee, isFyi, markAnswered, needsMessage, notesOwner, overridesManager, endedOwners, paneRows } from './inbox'
+import { answerMessage, archiveWho, findItem, parseChoice, isAddressee, isFyi, markAnswered, needsMessage, notesOwner, overridesManager, endedOwners, paneRows } from './inbox'
 import type { Inbox, Marked, PaneRow, Question } from './inbox'
 import { PUSH_KIND } from './pushgate'
 import { backNote } from './routing'
@@ -34,6 +34,8 @@ export type MessagingIo = {
   addGuardTest: (options: Record<string, unknown>, glob: string, test: string) => Promise<string>
   onDeployAnswer: (q: Question, answer: string) => Promise<string>
   onEnvAnswer: (q: Question, answer: string) => Promise<string>
+  // An env item whose change the deploy gate already settled (applied, set, dropped): the refusal line, else undefined.
+  envSettled: (q: Question) => Promise<string | undefined>
   onPushAnswer: (q: Question, answer: string, by: string) => Promise<string>
   onReviewerAnswer: (answer: string, by: string) => Promise<string>
   loadLedger: () => Promise<void>
@@ -55,7 +57,8 @@ export async function answerQuestionTo(io: MessagingIo, wanted: string, choice: 
   if (group.length >= 2) {
     // Each its own default when they differ. A letter or number is resolved against this question's options: the members' orders may differ.
     if (choice === null && !group.every(m => m.default === first!.default)) return answerOneTo(io, wanted, choice, by, options, user)
-    const shared = choice === null ? first!.default : parseChoice(first!.options, choice).text
+    // No choice stays no choice, so each member records it as a default.
+    const shared = choice === null ? null : parseChoice(first!.options, choice).text
     const lines: string[] = []
     for (const m of group) lines.push(await answerOneTo(io, m.id, shared, by, options, user))
     return [...lines, `Answered together (same question): ${group.map(m => `${m.id} (${m.owner})`).join(', ')}.`].join('\n')
@@ -66,7 +69,11 @@ export async function answerQuestionTo(io: MessagingIo, wanted: string, choice: 
 async function answerOneTo(io: MessagingIo, wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user = false): Promise<string> {
   const at = await io.now()
   // A decision filed before decisions had d-ids is also found by its old q-id.
-  const id = findItem(await io.inbox(), wanted)?.id ?? wanted.trim().toLowerCase()
+  const found = findItem(await io.inbox(), wanted)
+  const id = found?.id ?? wanted.trim().toLowerCase()
+  // An answer can no longer change an env change the gate has settled: say so instead of reopening it.
+  const settledEnv = found?.kind === ENV_KIND && found.answeredBy !== 'flow' ? await io.envSettled(found) : undefined
+  if (settledEnv !== undefined) return settledEnv
   const marked = await io.withInbox((cur): { inbox: Inbox; out: Marked | { kind: 'escalated'; q: Question } } => {
     // A standing rule made this the user's decision: only main answers it.
     const held = cur.items.find(x => x.id === id)
@@ -76,7 +83,7 @@ async function answerOneTo(io: MessagingIo, wanted: string, choice: string | nul
   })
   if (marked.kind === 'escalated') return `${id}: refused, standing rule ${marked.q.escalated} makes this the user's decision. It is in main's inbox as ${id}; main answers it directly and the asker gets the answer. Don't answer or re-ask it.`
   if (marked.kind === 'unknown') return `${id}: no such question.`
-  if (marked.kind === 'answered') return `${id}: already answered ("${marked.q.answer ?? ''}" by ${marked.q.answeredBy ?? '?'}).`
+  if (marked.kind === 'answered') return answeredLine(marked.q)
   if (marked.kind === 'refused') return `${id}: refused, it is addressed to ${marked.q.addressee}, not ${by}.`
   if (marked.kind === 'empty') return `${id}: refused, the choice is empty.`
   const { q, answer, isDefault } = marked
@@ -118,6 +125,13 @@ async function answerOneTo(io: MessagingIo, wanted: string, choice: string | nul
   if (!(isFyi(q) && isDefault)) await io.appendNote(notesOwner(q), `- ${await io.today()} decision: "${q.id} ${noteText(q)}: ${isFyi(q) ? `undone, ${answer}` : answer}"`)
   const guard = q.guard !== undefined && answer === ADD_OPTION ? ` ${await io.addGuardTest(options, q.guard.glob, q.guard.test)}` : ''
   return `${id}: ${answer}${isDefault ? ' (default)' : ''}, ${delivered ? 'delivered' : 'undelivered'}${hint}.${guard}${deployNote}`
+}
+
+// The line for an answer that changes nothing: the earlier answer and how it was given.
+function answeredLine(q: Question): string {
+  if (q.answeredBy === 'flow') return `${q.id}: closed by flow ("${q.answer ?? ''}"); it cannot be answered any more. Hand the PR over again with the change to ask for it anew.`
+  if (q.state === 'open') return `${q.id}: already "${q.answer ?? ''}" (by ${archiveWho(q)}); it stays open, answer done when it is.`
+  return `${q.id}: already answered ("${q.answer ?? ''}" by ${archiveWho(q)}).`
 }
 
 // Where an answer to a question goes: the asker if it runs (or idles); else, for a blocking question, its
@@ -163,7 +177,7 @@ async function linkedEscalation(io: MessagingIo, q: Question, answer: string, by
   const other = await io.withInbox((cur): { inbox: Inbox; out: Question | undefined } => {
     const o = cur.items.find(x => x.id === otherId)
     if (o === undefined || o.state !== 'open') return { inbox: cur, out: undefined }
-    const done: Question = { ...o, state: 'answered', answer, answeredBy: by, answeredAt: at, delivered: true }
+    const done: Question = { ...o, state: 'answered', answer, answeredBy: by, answeredAt: at, delivered: true, ...(q.via !== undefined ? { via: q.via } : {}) }
     return { inbox: { ...cur, items: cur.items.map(x => (x.id === otherId ? done : x)) }, out: done }
   })
   if (other === undefined) return

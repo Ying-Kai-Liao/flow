@@ -1,7 +1,7 @@
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
-import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, restoreWorktree, selectCleanup, sweepText, typeLinks, waitingPaths } from '../hooks/clean'
+import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, linked, OCCASIONAL_MS, occasionalDue, parsePorcelain, restoreWorktree, selectCleanup, sweepText, typeLinks, waitingPaths } from '../hooks/clean'
 import type { CleanInputs, PrRow } from '../hooks/clean'
 
 const MAIN = '/repo'
@@ -21,7 +21,7 @@ function inputs(o: {
   wts?: Wt[]; status?: Record<string, string>; branches?: Record<string, string>; onBase?: string[]
   remote?: Record<string, string>; prs?: PrRow[] | undefined; roster?: CleanInputs['roster']; ancestry?: string[]
   deadPids?: number[]; waiting?: string[]; contained?: Record<string, string[]>; ownPid?: number; oldLocks?: Set<string>
-  ownPids?: Set<number>; restored?: string[]
+  ownPids?: Set<number>; restored?: string[]; known?: { paths?: string[]; names?: string[] }
 }): CleanInputs {
   const wts = [{ path: MAIN, head: BASE, branch: 'main' }, ...(o.wts ?? [])]
   const status: Record<string, string> = {}
@@ -33,6 +33,7 @@ function inputs(o: {
     ancestry: new Set(o.ancestry ?? []), deadPids: new Set(o.deadPids ?? []), waiting: new Set(o.waiting ?? []),
     ...(o.contained && { contained: o.contained }), ...(o.oldLocks && { oldLocks: o.oldLocks }), ...(o.ownPid !== undefined && { ownPid: o.ownPid }),
     ...(o.ownPids && { ownPids: o.ownPids }), ...(o.restored && { restored: new Set(o.restored) }),
+    ...(o.known && { known: { paths: new Set(o.known.paths ?? []), names: new Set(o.known.names ?? []) } }),
   }
 }
 
@@ -262,6 +263,85 @@ test('a lock from this very process goes when its agent is not in the roster; ot
   expect(kept(selectCleanup(inputs({ wts: anon, ownPid: 33643, oldLocks: new Set([WT('x')]) })), WT('x'))?.reason).toBe('locked')
 })
 
+// Worktrees a terminal host made for flow live outside .claude/worktrees/ (its workspace dir).
+const WS = (n: string) => `/ws/flow/${n}`
+
+test('a flow/ branch outside .claude/worktrees goes when landed; the person\'s own worktree there is never listed', () => {
+  const s = selectCleanup(inputs({
+    wts: [{ path: WS('a'), head: BASE, branch: 'flow/a' }, { path: WS('mine'), head: BASE, branch: 'feature' }, { path: '/elsewhere/scratch', head: BASE }],
+    branches: { 'flow/a': BASE, feature: BASE },
+  }))
+  expect(s.remove.worktrees).toEqual([WS('a')])
+  expect(s.remove.branches).toEqual(['flow/a'])
+  // The person's worktrees: neither removed nor listed; the branch checked out there stays, as any checked-out branch does.
+  expect(s.keep.some(k => k.name === WS('mine') || k.name === '/elsewhere/scratch')).toBe(false)
+  expect(kept(s, 'feature')?.reason).toBe(`checked out in ${WS('mine')}`)
+})
+
+test('a session\'s recorded worktree and host worktree go once the session ended, and stay while it is live', () => {
+  const wts = [{ path: WS('rev-wt'), head: BASE }, { path: WS('host'), head: BASE }]
+  const known = { paths: [WS('rev-wt'), WS('host')] }
+  const ended = selectCleanup(inputs({ wts, known, roster: [{ id: 'session:x', name: 'x', live: false, cwd: WS('rev-wt') }, { id: 'session:m', name: 'm', live: false, cwd: WS('host') }] }))
+  expect(ended.remove.worktrees).toEqual([WS('rev-wt'), WS('host')])
+  const live = selectCleanup(inputs({ wts, known, roster: [{ id: 'session:x', name: 'x', live: true, cwd: WS('rev-wt') }, { id: 'session:m', name: 'm', live: true, cwd: WS('host') }] }))
+  expect(live.remove.worktrees).toEqual([])
+  expect(kept(live, WS('rev-wt'))?.reason).toBe('in use by x')
+  expect(kept(live, WS('host'))?.reason).toBe('in use by m')
+  // Without the record those paths are not flow's: untouched.
+  expect(selectCleanup(inputs({ wts })).remove.worktrees).toEqual([])
+})
+
+test('a detached mgr-<name> or reviewer-<n> goes when flow knows the name and it is clean on the base; an unknown one is not touched', () => {
+  const wts = [{ path: WS('mgr-env'), head: BASE }, { path: WS('reviewer-1'), head: BASE }, { path: WS('mgr-other'), head: BASE }, { path: WS('reviewer-7'), head: BASE }]
+  const s = selectCleanup(inputs({ wts, known: { names: ['env', 'reviewer-1'] } }))
+  expect(s.remove.worktrees).toEqual([WS('mgr-env'), WS('reviewer-1')])
+  expect(s.keep.some(k => k.name === WS('mgr-other') || k.name === WS('reviewer-7'))).toBe(false)
+  // On a branch a mgr- name is not enough.
+  expect(linked({ main: MAIN, known: { paths: new Set(), names: new Set(['env']) } }, { path: WS('mgr-env'), head: BASE, branch: 'x', prunable: false })).toBe(false)
+  // Known but with commits off the base: kept for a person.
+  const off = selectCleanup(inputs({ wts: [{ path: WS('mgr-env'), head: 'd1' }], known: { names: ['env'] } }))
+  expect(kept(off, WS('mgr-env'))?.reason).toBe('detached HEAD with commits not on the base')
+})
+
+test('outside .claude/worktrees too, dirty, unpushed, locked and open-PR worktrees are kept; a gone one is pruned', () => {
+  const s = selectCleanup(inputs({
+    wts: [
+      { path: WS('dirty'), head: BASE, branch: 'flow/dirty' }, { path: WS('unp'), head: 'u1', branch: 'flow/unp' },
+      { path: WS('lock'), head: BASE, branch: 'flow/lock', locked: '' }, { path: WS('open'), head: BASE, branch: 'flow/open' },
+      { path: WS('gone'), head: 'g1', branch: 'flow/gone', prunable: true },
+    ],
+    status: { [WS('dirty')]: ' M a.ts\n' },
+    branches: { 'flow/dirty': BASE, 'flow/unp': 'u1', 'flow/lock': BASE, 'flow/open': BASE, 'flow/gone': 'g1' },
+    prs: [{ number: 31, headRefName: 'flow/open', headRefOid: BASE, state: 'OPEN' }],
+  }))
+  expect(kept(s, WS('dirty'))?.reason).toBe('uncommitted changes: a.ts')
+  expect(kept(s, WS('unp'))?.reason).toBe('unpushed commits')
+  expect(kept(s, WS('lock'))?.reason).toBe('locked')
+  expect(kept(s, WS('open'))).toEqual({ kind: 'worktree', name: WS('open'), reason: 'PR #31 is open', needsLook: false })
+  expect(s.remove.worktrees).toEqual([WS('gone')])
+  expect(sweepText(s, { applied: false })).toContain(`  ${WS('gone')}`)
+})
+
+test('an open PR keeps a .claude/worktrees worktree too, even when its head is on the base', () => {
+  const s = selectCleanup(inputs({
+    wts: [{ path: WT('o'), head: BASE, branch: 'flow/o' }], branches: { 'flow/o': BASE },
+    prs: [{ number: 40, headRefName: 'flow/o', headRefOid: BASE, state: 'OPEN' }],
+  }))
+  expect(kept(s, WT('o'))?.reason).toBe('PR #40 is open')
+  expect(s.remove).toEqual({ worktrees: [], branches: [] })
+})
+
+test('a reviewer worktree made again outside .claude/worktrees is still kept', () => {
+  const s = selectCleanup(inputs({ wts: [{ path: WS('reviewer-2'), head: BASE }], known: { names: ['reviewer-2'] }, restored: [WS('reviewer-2')] }))
+  expect(kept(s, WS('reviewer-2'))?.reason).toBe('made again for its owner')
+})
+
+test('occasionalDue: never before a first clock, then once every ten minutes', () => {
+  expect(occasionalDue(undefined, 5)).toBe(false)
+  expect(occasionalDue(1000, 1000 + OCCASIONAL_MS - 1)).toBe(false)
+  expect(occasionalDue(1000, 1000 + OCCASIONAL_MS)).toBe(true)
+})
+
 // --- The hooks: /flow clean and mcp__flow__clean against a scripted git ---
 
 type Dollar = Parameters<TestBody>[0]
@@ -271,7 +351,7 @@ type On = Parameters<TestBody>[1]
 function repo(on: On) {
   const ran: string[] = []
   const log: string[] = []
-  mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: 1_000_000 })
   on('agent.list', () => ({ value: [] }))
   on('ui.log', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
@@ -288,7 +368,7 @@ function repo(on: On) {
     if (/^git (worktree (remove|unlock|prune)|branch -D)/.test(a)) ran.push(a)
     return out('')
   })
-  return { ran, log }
+  return { ran, log, clock }
 }
 
 const flow = ($: Dollar, args: string) => $.command.run({ command: 'flow', args } as never)
@@ -470,4 +550,83 @@ test('restoreWorktree: two callers at once add the worktree once; a failed add i
 
   const bad = gitWorld(new Set(), { addFails: "fatal: invalid reference: origin/main\nmore" })
   expect(await restoreWorktree(bad.exec, WT('agent-r7'), 'main')).toEqual({ error: 'fatal: invalid reference: origin/main' })
+})
+
+// A repo with two finished flow worktrees in the terminal host's workspace dir: the host manages WS('a'), not WS('b').
+function hostRepo(on: On, o: { hostRmFails?: boolean } = {}) {
+  const ran: string[] = []
+  const branches = new Set(['flow/a', 'flow/b'])
+  mock.clock(on, { now: 1_000_000 })
+  on('agent.list', () => ({ value: [] }))
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('process.run', (_, e) => {
+    const a = e.argv.join(' ')
+    const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    if (a === 'git worktree list --porcelain') return out(porcelain([{ path: MAIN, head: BASE, branch: 'main' }, { path: WS('a'), head: BASE, branch: 'flow/a' }, { path: WS('b'), head: BASE, branch: 'flow/b' }]))
+    if (a.startsWith('git for-each-ref --merged')) return out(`${BASE}\n`)
+    if (a.endsWith('refs/heads')) return out(`main ${BASE}\n${[...branches].map(b => `${b} ${BASE}`).join('\n')}\n`)
+    if (a.endsWith('refs/remotes/origin')) return out(`origin/main ${BASE}\n`)
+    if (a.startsWith('gh ')) return out('[]')
+    if (a.startsWith('orca worktree list')) return out(JSON.stringify({ ok: true, result: { worktrees: [{ path: MAIN }, { path: WS('a') }] } }))
+    if (a.startsWith('orca worktree rm')) {
+      ran.push(a)
+      if (o.hostRmFails) return out('', 1)
+      // The host deletes the checked-out branch with the worktree.
+      branches.delete('flow/a')
+      return out(JSON.stringify({ ok: true, result: {} }))
+    }
+    if (a.startsWith('git show-ref')) return out('', branches.has(a.split('refs/heads/')[1]!) ? 0 : 1)
+    if (/^git (worktree (remove|unlock|prune)|branch -D)/.test(a)) {
+      ran.push(a)
+      if (a.startsWith('git branch -D')) {
+        const b = a.slice('git branch -D '.length)
+        if (!branches.delete(b)) return out('', 1)
+      }
+    }
+    return out('')
+  })
+  return ran
+}
+
+test('a worktree the terminal host manages is removed through it, without --force; the rest through git', async ($, on) => {
+  const ran = hostRepo(on)
+  const text = String((await flow($, 'clean --yes')).text)
+  expect(ran).toEqual([
+    `orca worktree rm --worktree path:${WS('a')} --json`, `git worktree remove ${WS('b')}`, 'git worktree prune',
+    'git branch -D flow/a', 'git branch -D flow/b',
+  ])
+  expect(ran.some(r => r.includes('--force'))).toBe(false)
+  // The branch the host already deleted counts as removed, not as a failure.
+  expect(text).toContain('Removed 2 branches:')
+  expect(text).not.toContain('Kept for a person')
+})
+
+test('when the terminal host is not up, git removes its worktree as before', async ($, on) => {
+  const ran = hostRepo(on, { hostRmFails: true })
+  await flow($, 'clean --yes')
+  expect(ran.slice(0, 3)).toEqual([`orca worktree rm --worktree path:${WS('a')} --json`, `git worktree remove ${WS('a')}`, `git worktree remove ${WS('b')}`])
+})
+
+test('main\'s status sweeps at most once in ten minutes, an agent\'s status never', async ($, on) => {
+  const r = repo(on)
+  const clock = r.clock
+  const status = (agentId?: string) => $.tool.call({ tool: 'mcp__flow__status', ...(agentId && { agentId }) } as never)
+  // A dry /flow clean waits behind any running sweep, so after it the sweep a status set off has finished.
+  const settle = () => flow($, 'clean')
+  await status()
+  await settle()
+  expect(r.ran).toEqual([])
+  await clock.advance(OCCASIONAL_MS)
+  await status('m1')
+  await settle()
+  expect(r.ran).toEqual([])
+  await status()
+  await settle()
+  expect(r.ran).toContain(`git worktree remove ${WT('a')}`)
+  const after = r.ran.length
+  await clock.advance(OCCASIONAL_MS - 1)
+  await status()
+  await settle()
+  expect(r.ran.length).toBe(after)
 })

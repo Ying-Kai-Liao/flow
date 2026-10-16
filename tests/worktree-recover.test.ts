@@ -116,7 +116,7 @@ test('session start sweeps only after the sessions are loaded and adopted and th
     paths: () => [],
     detected: () => 'main',
     settings: () => settingsOf({}, 'main'),
-    roleSessionCount: async () => 0,
+    relaySessionCount: async () => 0,
     firstRun: async () => false,
   } as Record<string, unknown>
   const recorded = ['mergeSessions', 'adoptSessions', 'applySettings', 'autoSweep']

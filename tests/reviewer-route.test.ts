@@ -237,6 +237,14 @@ test('reviewerSendGuard reports an unknown name as no such agent, without a note
   expect(main).toEqual(['Report for ghost (no such agent), from the reviewer:\nhello'])
 })
 
+test('reviewerSendGuard notes the report for a terminal manager stopped once finished, and sends it to main', async () => {
+  const { io, notes, main } = fake({})
+  const r = await reviewerSendGuard({ ...io, endedSession: async name => name === 'm-term' }, 'r1', 'm-term', 'Merged #7')
+  expect(r).toContain('Not sent: m-term has finished')
+  expect(notes).toEqual([['m-term', '- 2026-10-13 progress: reviewer report: Merged #7']])
+  expect(main).toEqual(['Report for m-term (finished), from the reviewer:\nMerged #7'])
+})
+
 test('reviewerSendGuard wakes a completed manager that still has work, unless it failed or was killed', async () => {
   const w: W = { agents: [mgr('m1', 'boss', 'completed')], handovers: { '1': { pr: 1, status: 'pending', reportTo: 'boss' } } }
   const a = fake(w)

@@ -18,7 +18,7 @@ import { grantTypecheck, reapTypecheck, typecheckDir } from './typecheck-slots'
 import type { Evidence } from './evidence'
 import type { RunWork } from './mainff'
 import { NO_FAILS, type TestFails } from './testfail'
-import { sweep as sweepTo } from './clean'
+import { occasionalDue, sweep as sweepTo } from './clean'
 import type { CleanInputs, CleanIo, Kept, PrRow, Sweep } from './clean'
 import { gatherLeftovers as gatherLeftoversTo } from './resume'
 import type { Gathered, Leftover, ResumeIo } from './resume'
@@ -119,15 +119,15 @@ import {
   ago, harnessesOf, roleAgents, runsOutIn, sessionLive, sessionRow,
 } from './sessions'
 import type { HarnessSpec, Limit } from './sessions'
-import { sendToSession, sessionTool as sessionToolTo, startRoleSession, watchSessions as watchSessionsTo } from './session-run'
+import { sendToSession, sessionTool as sessionToolTo, startRoleSession, stopIdleSessions, watchSessions as watchSessionsTo } from './session-run'
 import { relayCall } from './relay'
 import type { MainIdentity, PumpIo, RelayIo } from './relay'
 import { alreadyForwardedTo, deliverToSessionTo, pumpOnceTo, relayToolCallTo } from './relay-run'
 import type { RelayExecIo, RelayMode, RelayRunIo } from './relay-run'
-import { adoptSessionsTo, durableSessions, identityTo, myRoleSessionsTo, normalizeSessions, onRoleGoneTo, onRoleReportTo, ownsSessionTo, persistSessionsTo, roleState } from './role-session-run'
+import { adoptSessionsTo, durableSessions, identityTo, myRelaySessionsTo, normalizeSessions, onRoleGoneTo, onRoleReportTo, ownsSessionTo, persistSessionsTo, roleState } from './role-session-run'
 import type { RoleIo } from './role-session-run'
 
-import type { Caller, Ran, SessionIo } from './session-run'
+import type { Caller, IdleIo, Ran, SessionIo } from './session-run'
 import { branchOwners, noteKey } from './state'
 import { ADD_OPTION } from './guardtests'
 import {
@@ -143,7 +143,7 @@ import {
 import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, TEXT_MAX, WORKER, WORKERS } from './core'
 import type { Deploys, Draft, Hold, TargetInfo } from './deploy'
 import {
-  closeReturnedEnv as closeReturnedEnvTo, deployTool as deployToolTo, holdTarget as holdTargetTo, onDeployAnswer as onDeployAnswerTo, onEnvAnswer as onEnvAnswerTo,
+  closeReturnedEnv as closeReturnedEnvTo, deployTool as deployToolTo, envSettled as envSettledTo, holdTarget as holdTargetTo, onDeployAnswer as onDeployAnswerTo, onEnvAnswer as onEnvAnswerTo,
   openHandoverEnv as openHandoverEnvTo, refreshBehind as refreshBehindTo, releaseTarget as releaseTargetTo,
 } from './deploy-run'
 import type { DeployIo } from './deploy-run'
@@ -702,6 +702,7 @@ function rosterIoOf($: EngineInterface): RosterIo {
     status: line => $.ui.status(line),
     wakeMain: text => { toMain($, text) },
     autoSweep: () => autoSweep($),
+    occasionalSweep: () => { void occasionalSweep($) },
     settleSlots: (rows, t) => settleSlots($, rows, t),
     unhanded: async () => (await currentUnhanded($)).length,
     preflightTick: rows => preflightTick($, rows),
@@ -998,6 +999,11 @@ async function liteManagerOf($: EngineInterface, agentId: string | undefined): P
 async function toolCallerOf($: EngineInterface, agentId: string | undefined): Promise<ToolCaller> {
   if (agentId === undefined) return { kind: 'main' }
   const me = (await agentsOf($)).find(a => a.id === agentId)
+  // A worker session is not on that roster; it is a worker, never the reviewer an unlisted id is taken for.
+  if (me === undefined) {
+    const named = await sessionOfId($, agentId)
+    if (named !== undefined && named.role === undefined) return { kind: 'other' }
+  }
   // Only a manager or a worker is refused. An id the roster no longer lists (the host drops agents) is a reviewer's, as before.
   if (me === undefined || isReviewer(me.type)) return { kind: 'reviewer' }
   const name = await liteManagerOf($, agentId)
@@ -1027,6 +1033,7 @@ function messagingIoOf($: EngineInterface): MessagingIo {
     addGuardTest: (options, glob, test) => addGuardTest(standingIoOf($), options, glob, test),
     onDeployAnswer: (q, answer) => onDeployAnswer($, q, answer),
     onEnvAnswer: (q, answer) => onEnvAnswer($, q, answer),
+    envSettled: q => envSettled($, q),
     onPushAnswer: (q, answer, by) => onPushAnswer($, q, answer, by),
     onReviewerAnswer: (answer, by) => onReviewerAnswer($, answer, by),
     loadLedger: () => loadLedger($),
@@ -1086,6 +1093,7 @@ function deployIoOf($: EngineInterface): DeployIo {
 function refreshBehind($: EngineInterface): Promise<void> { return refreshBehindTo(deployIoOf($)) }
 function onDeployAnswer($: EngineInterface, q: Question, answer: string): Promise<string> { return onDeployAnswerTo(deployIoOf($), q, answer) }
 function onEnvAnswer($: EngineInterface, q: Question, answer: string): Promise<string> { return onEnvAnswerTo(deployIoOf($), q, answer) }
+function envSettled($: EngineInterface, q: Question): Promise<string | undefined> { return envSettledTo(deployIoOf($), q) }
 function holdTarget($: EngineInterface, name: string, until: Hold['until'], by: string, reason: string | undefined): Promise<string> {
   return holdTargetTo(deployIoOf($), name, until, by, reason)
 }
@@ -1403,7 +1411,14 @@ function routeIoOf($: EngineInterface): RouteIo {
     appendNote: (name, line) => appendNote($, name, line),
     today: () => today($),
     toMain: text => void toMain($, text),
+    endedSession: name => endedSession($, name),
   }
+}
+// A terminal session on record that has ended (reviewer-route.ts RouteIo.endedSession).
+async function endedSession($: EngineInterface, name: string): Promise<boolean> {
+  const all = await read($, sessions)
+  const s = all[name]
+  return s !== undefined && !sessionLive(s)
 }
 function resolveReportTo($: EngineInterface, given: unknown, callerId: string | undefined) {
   return resolveReportToTo(routeIoOf($), given, callerId)
@@ -1780,10 +1795,47 @@ function autoSweep($: EngineInterface): void {
   void sweepOrWarn($, true, () => { autoQueued = false }, 'cleaning up')
 }
 
+// The occasional sweep, between merges: a terminal session or a manager ended, or main asked for its status.
+// One entry point: finished terminal sessions are stopped first, so their worktrees go in the same sweep. At most
+// one per OCCASIONAL_MS; the first call after a load only starts the clock, as startup already swept. A session
+// stopped here ends on the roster, which calls this again: the clock, set before the first await, turns that away.
+let occasionalAt: number | undefined
+async function occasionalSweep($: EngineInterface): Promise<void> {
+  if (mirror.cleanupMode !== 'auto') return
+  const t = await $.clock.now()
+  if (!occasionalDue(occasionalAt, t)) {
+    if (occasionalAt === undefined) occasionalAt = t
+    return
+  }
+  occasionalAt = t
+  // The ios built here, as sweepOrWarn does: this is reached from a tool call, and each hop counts.
+  const io = sessionIoOf($)
+  const idle = idleIoOf($)
+  try {
+    await stopIdleSessions(io, idle)
+  } catch (err) {
+    await warn($, 'stopping finished sessions', err)
+  }
+  autoSweep($)
+}
+
+// What the auto stop of finished sessions reads (session-run.ts stopIdleSessions).
+function idleIoOf($: EngineInterface): IdleIo {
+  return {
+    handovers: () => read($, handovers),
+    inbox: () => read($, inbox),
+    plans: () => read($, plan),
+    agents: () => $.agent.list(),
+    reviewerStopped: (name, reason) => reviewerEnded($, name, { answer: `stopped: finished, ${reason}` }),
+  }
+}
+
 // A background sweep: a failure goes to the log, never to the caller.
 async function sweepOrWarn($: EngineInterface, apply: boolean, started: (() => void) | undefined, what: string): Promise<void> {
+  // The io built here, not through sweep(): the occasional sweep reaches this from a tool call, one hop shorter.
+  const io = cleanIoOf($)
   try {
-    await sweep($, mirror.cleanupBase, apply, undefined, started)
+    await sweepTo(io, mirror.cleanupBase, apply, undefined, started)
   } catch (err) {
     await warn($, what, err)
   }
@@ -1996,7 +2048,7 @@ function watchSessions($: EngineInterface) {
 function identityOf($: EngineInterface): Promise<MainIdentity | undefined> { return identityTo(roleIoOf($)) }
 function ownsSession($: EngineInterface, s: Session): Promise<boolean> { return ownsSessionTo(roleIoOf($), s) }
 function adoptSessions($: EngineInterface): Promise<void> { return adoptSessionsTo(roleIoOf($)) }
-function myRoleSessions($: EngineInterface, ended = false): Promise<Session[]> { return myRoleSessionsTo(roleIoOf($), ended) }
+function myRelaySessions($: EngineInterface, ended = false): Promise<Session[]> { return myRelaySessionsTo(roleIoOf($), ended) }
 
 // The io of the terminal role sessions' ownership, sessions file and reports (bodies in role-session-run.ts).
 function roleIoOf($: EngineInterface): RoleIo {
@@ -2064,14 +2116,14 @@ function relayIoOf($: EngineInterface): RelayIo {
   }
 }
 
-// Main's pump io: the relay directories of the role sessions it knows; an ended one is listed dead,
+// Main's pump io: the relay directories of the role sessions and relaying workers it owns; an ended one is listed dead,
 // so a call it left behind is refused instead of waiting for a pickup.
 function pumpIoOf($: EngineInterface): PumpIo {
   // Bound first, then spread: the plugin directory flags a call passing $ spread into an object.
   const relay = relayIoOf($)
   return {
     ...relay,
-    dirs: async () => (await myRoleSessions($, true))
+    dirs: async () => (await myRelaySessions($, true))
       .filter(s => s.relayDir !== undefined)
       .map(s => ({ name: s.name, dir: s.relayDir!, live: sessionLive(s) })),
   }
@@ -2131,6 +2183,15 @@ async function registerTools($: EngineInterface): Promise<void> {
   await $.tool.register(ARMS_TOOL)
 }
 
+// A claude worker's copy in a terminal: only the tools the worker rules use (relay.ts, WORKER_TOOLS), relayed to main.
+async function registerWorkerTools($: EngineInterface): Promise<void> {
+  await $.tool.register(TEST_SLOT_TOOL)
+  await $.tool.register(GUARD_TESTS_TOOL)
+  await $.tool.register(ASK_TOOL)
+  await $.tool.register(FYI_TOOL)
+  await $.tool.register(NOTE_TOOL)
+  await $.tool.register(STATUS_TOOL)
+}
 
 function alreadyForwarded($: EngineInterface, rid: string, text: string): Promise<boolean> { return alreadyForwardedTo(relayRunIoOf($), rid, text) }
 function pumpOnce($: EngineInterface, c: FlowCtx): Promise<void> { return pumpOnceTo(relayExecIoOf($, c)) }
@@ -2154,7 +2215,7 @@ function relayRunIoOf($: EngineInterface): RelayRunIo {
     deliverTerminal: (from, key, text) => deliverTo(ioOf($, from), key, text),
     deliver: (id, text) => deliver($, id, text),
     warn: (what, err) => warn($, what, err),
-    myRoleSessions: () => myRoleSessions($),
+    myRelaySessions: () => myRelaySessions($),
     pumpIo: pumpIoOf($),
   }
 }
@@ -2357,7 +2418,11 @@ async function runFlowTool($: EngineInterface, tool: string, e: FlowCall, c: Flo
       return { result: 'Unknown action: use list, push, send-back or drop.' }
     }
 
-    case 'mcp__flow__status': return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
+    case 'mcp__flow__status': {
+      // Only main's own call: an agent or a relayed terminal session never sets off a sweep.
+      if (e.agentId === undefined) void occasionalSweep($)
+      return statusTool(statusIoOf($, options, settings.base), settings, e, e.agentId)
+    }
     default: return undefined
   }
 }
@@ -2513,6 +2578,7 @@ export const register: Register = (on, options) => {
       registerAgent: spec => $.agent.register({ name: spec.name, description: spec.description, prompt: spec.prompt, model: spec.model, isolation: spec.isolation, background: spec.background }),
       registerCommand: spec => $.command.register(spec),
       registerTools: () => registerTools($),
+      registerWorkerTools: () => registerWorkerTools($),
       resetDelivery: () => resetDelivery(text => toMain($, text)),
       resetStateDir,
       readState: async file => {
@@ -2549,7 +2615,7 @@ export const register: Register = (on, options) => {
       closePreflight: async (live, t) => { await withPreflight($, cur => { return { state: closeStale(cur, live, t), out: undefined } }) },
       setSlotDir,
       sh: (script, arg) => sh($, script, arg),
-      roleSessionCount: async () => (await myRoleSessions($)).length,
+      relaySessionCount: async () => (await myRelaySessions($)).length,
       pump: () => void pumpOnce($, { settings: kept.settings, options, installed: kept.installed }),
       refresh: () => void refresh($),
       watchSessions: () => void watchSessions($),

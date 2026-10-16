@@ -174,6 +174,9 @@ export function roleAgents(sessions: Record<string, Session> | Session[]): { id:
     .map(s => ({ id: sessionKey(s.name), name: s.name, description: `${s.harness} in ${s.host}`, type: ROLE_TYPE[s.role!], status: STATUS[s.status] }))
 }
 
+// Whether a harness loads this plugin, so its flow tools can be relayed to main: only claude does.
+export const loadsPlugin = (harness: string): boolean => harness === 'claude'
+
 // The environment a terminal-started claude gets: its role and name, and where it leaves relayed
 // calls. Written as an inline assignment prefix, which works in front of any harness's command line.
 export function relayEnv(role: 'manager' | 'reviewer' | 'worker', name: string, dir?: string): string {

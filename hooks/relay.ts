@@ -1,5 +1,5 @@
-// The disk relay for managers and the reviewer that run in a terminal (Orca or tmux) as their own
-// claude: that claude has its own copy of this plugin, which forwards every mcp__flow__* call to the
+// The disk relay for managers, the reviewer and claude workers that run in a terminal (Orca or tmux) as
+// their own claude: that claude has its own copy of this plugin, which forwards every mcp__flow__* call to the
 // main session through files in <state dir>/sessions/<name>/relay/, so the pane, inbox, test lock,
 // handovers and roster stay in main's state. Main runs the call as that agent and writes the answer.
 //
@@ -227,4 +227,15 @@ export function subagentRefusal(tool: string, input: Record<string, unknown>, ma
     || (SUBAGENT_LIST_ONLY.has(t) && input.action === 'list')
     || (t === 'note' && (input.text === undefined || String(input.text).trim() === ''))
   return ok ? undefined : `flow: a subagent of terminal manager ${manager} cannot call ${t}; report back to your manager and let it make the call.`
+}
+
+// --- What a worker session may call ---------------------------------------------------------------------
+// A claude worker in a terminal relays the tools the worker rules use and nothing else; main refuses the rest,
+// whatever the worker's copy registered.
+export const WORKER_TOOLS = ['test_slot', 'guard_tests', 'ask', 'fyi', 'note', 'status'] as const
+
+// undefined when the call is allowed; else the refusal text.
+export function workerToolRefusal(tool: string, worker: string): string | undefined {
+  const t = tool.replace(/^mcp__flow__/, '')
+  return (WORKER_TOOLS as readonly string[]).includes(t) ? undefined : `flow: worker ${worker} cannot call ${t}; that is your manager's or the reviewer's. Put it in your report.`
 }

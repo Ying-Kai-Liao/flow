@@ -9,7 +9,7 @@ import { askingNames } from './inbox'
 import type { Inbox } from './inbox'
 import { labelOf } from './meter'
 import { ROLE } from './pane'
-import { sessionRow } from './sessions'
+import { sessionKey, sessionRow } from './sessions'
 import { branchOwners } from './state'
 
 // Syncing the plans and refreshing the roster. The atoms and the hooks stay in register.tsx; this takes
@@ -36,6 +36,8 @@ export type RosterIo = {
   // Wakes main with a prompt, on the next tick.
   wakeMain: (text: string) => void
   autoSweep: () => void
+  // The rate-limited sweep between merges (register.tsx occasionalSweep).
+  occasionalSweep: () => void
   settleSlots: (rows: AgentRow[], t: number) => Promise<void>
   unhanded: () => Promise<number>
   preflightTick: (rows: AgentRow[]) => Promise<void>
@@ -55,6 +57,12 @@ const freedSeen = new Set<string>()
 
 export const isManagerOf = (owner: string, name: string | undefined) =>
   name !== undefined && (name === owner || (name.startsWith(owner + '-') && /^\d+$/.test(name.slice(owner.length + 1))))
+
+// A terminal session (worker or terminal manager) or a manager agent seen ending: its worktree may now go,
+// so the occasional sweep runs. The reviewer has its own sweep above.
+export const endsForSweep = (a: Pick<AgentRow, 'id' | 'type' | 'status'>, prev: string | undefined): boolean =>
+  prev !== undefined && prev !== a.status && !ENDED.has(prev) && ENDED.has(a.status) && !isReviewer(a.type)
+    && (a.id.startsWith(sessionKey('')) || a.type === MANAGER)
 
 // Whose graph an agent works on: its own name, or the manager it continues (`<name>-N`); main has none.
 export function planOwner(plans: Plan, name: string | undefined): string {
@@ -150,6 +158,7 @@ export async function refreshTo(io: RosterIo): Promise<AgentRow[]> {
     // The reviewer's worktree (detached at the base) goes once the reviewer is gone, also when
     // its ending was not seen as a transition (a reload left the roster record empty).
     if (ENDED.has(a.status) && isReviewer(a.type) && (prev === undefined || (prev !== a.status && !ENDED.has(prev)))) io.autoSweep()
+    if (endsForSweep(a, prev)) io.occasionalSweep()
     if (prev === undefined || prev === a.status || ENDED.has(prev)) continue
     if (ENDED.has(a.status) && acts[a.id] !== undefined) ended.push(a.id)
     if (ENDED.has(a.status) || a.status === 'idle') {

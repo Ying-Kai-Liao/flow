@@ -1,8 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 import type { Activity, Session } from '../types'
 
-import { sendToSession, sessionTool, startRoleSession, watchSessions, withClaudeFlags } from '../hooks/session-run'
-import type { Ran, SessionIo, SessionSettings } from '../hooks/session-run'
+import { sendToSession, sessionTool, startRoleSession, stopIdleSessions, stopSession, watchSessions, withClaudeFlags } from '../hooks/session-run'
+import type { IdleIo, Ran, SessionIo, SessionSettings } from '../hooks/session-run'
+import { SESSION_NO_TOOLS, SESSION_RELAYED_TOOLS } from '../hooks/prompts'
 import { harnessesOf } from '../hooks/sessions'
 import { settingsOf } from '../hooks/settings'
 
@@ -150,6 +151,49 @@ test('a worker session gets the worker marker in front of its command line', asy
   const typed = w.runs.find(a => a[0] === 'tmux' && a.includes('-l'))!.at(-1)!
   expect(typed).toContain("unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; FLOW_ROLE=worker FLOW_NAME='w1' codex ")
   expect(w.sessions().w1!.role).toBeUndefined()
+  // Codex loads no plugin: no relay dir, no owner main, and its prompt keeps the "no flow tools" line.
+  expect(typed).not.toContain('FLOW_RELAY')
+  expect(w.sessions().w1!.relayDir).toBeUndefined()
+  expect(w.sessions().w1!.mainOwner).toBeUndefined()
+  expect(w.runs).not.toContainEqual(['mkdir', '-p', '/r/.git/flow/sessions/w1/relay'])
+  const prompt = w.files.get('/r/.git/flow/sessions/w1/prompt.md')!
+  expect(prompt).toContain(SESSION_NO_TOOLS)
+  expect(prompt).not.toContain('{{FLOW_TOOLS_RULE}}')
+})
+
+test('a claude worker session relays its flow tools: relay dir, FLOW_RELAY, owner main, kept on restart (tmux and Orca)', async () => {
+  for (const [settings, o] of [[SETTINGS, {}], [ORCA, { orca: true }]] as const) {
+    const w = world(o)
+    w.io.identity = async () => ({ session: 's-main', pid: 42 })
+    await sessionTool(w.io, { action: 'start', name: 'w1', harness: 'claude', brief: 'do it' }, { id: 'session:m1', name: 'm1' }, settings)
+    const line = "FLOW_ROLE=worker FLOW_NAME='w1' FLOW_RELAY='/r/.git/flow/sessions/w1/relay' claude "
+    const started = settings === ORCA
+      ? w.runs.find(a => a[0] === 'orca' && a[2] === 'create' && a[1] === 'terminal')!
+      : w.runs.find(a => a[0] === 'tmux' && a.includes('-l'))!
+    expect(started.join(' ')).toContain(line)
+    expect(w.runs).toContainEqual(['mkdir', '-p', '/r/.git/flow/sessions/w1/relay'])
+    // Still a worker: no role, so it never counts as a manager or the reviewer.
+    expect(w.sessions().w1).toMatchObject({ relayDir: '/r/.git/flow/sessions/w1/relay', mainOwner: { session: 's-main', pid: 42 }, owner: 'session:m1', ownerName: 'm1' })
+    expect(w.sessions().w1!.role).toBeUndefined()
+    const prompt = w.files.get('/r/.git/flow/sessions/w1/prompt.md')!
+    expect(prompt).toContain(SESSION_RELAYED_TOOLS)
+    expect(prompt).not.toContain(SESSION_NO_TOOLS)
+    w.runs.length = 0
+    expect(await sessionTool(w.io, { action: 'restart', name: 'w1' }, OWNER, settings)).toContain('Restarted w1')
+    expect(w.runs.some(a => a.join(' ').includes(line.replace(' claude ', ' claude --continue')))).toBe(true)
+  }
+})
+
+test('a worker started before workers had a relay dir restarts with the passive marker only', async () => {
+  const old: Session = {
+    name: 'w0', harness: 'claude', host: 'tmux', handle: 'flow-w0', worktree: '/r/.claude/worktrees/w0', branch: 'flow/w0', promptFile: '/p', reportFile: '/rep',
+    start: 'claude {prompt}', resume: 'claude --continue', owner: 'main', ownerName: 'main', status: 'running', startedAt: 1,
+  }
+  const w = world({ sessions: { w0: old } })
+  await sessionTool(w.io, { action: 'restart', name: 'w0' }, OWNER, SETTINGS)
+  const typed = w.runs.filter(a => a[0] === 'tmux' && a.includes('-l')).map(a => a.at(-1)!).join('\n')
+  expect(typed).toContain("FLOW_ROLE=worker FLOW_NAME='w0' claude --continue")
+  expect(typed).not.toContain('FLOW_RELAY')
 })
 
 test('a worker started by a role session defaults to claude, or to worker_harness when that is set', async () => {
@@ -322,4 +366,86 @@ test('a worker session whose worktree is gone is not restarted into a missing di
   const r = await sessionTool(w.io, { action: 'restart', name: 'w1' }, OWNER, SETTINGS)
   expect(r).toContain("Refused: w1's worktree /r/.claude/worktrees/w1 is gone")
   expect(w.runs.some(a => a[1] === 'respawn-pane' || (a[1] === 'worktree' && a[2] === 'add'))).toBe(false)
+})
+
+// The auto stop of finished sessions (stopIdleSessions), the stop routine it shares with the stop action, and endedAt.
+const finished = (name: string, o: Partial<Session> = {}): Session => ({
+  name, harness: 'claude', host: 'tmux', handle: `flow-${name}`, worktree: `/w/${name}`, branch: `flow/${name}`,
+  promptFile: `/s/${name}/prompt.md`, reportFile: `/s/${name}/report.md`, start: 'claude', owner: 'main', ownerName: 'main',
+  status: 'reported', startedAt: 1, reportAt: 1, ...o,
+})
+const IDLE: IdleIo = { handovers: async () => ({}), inbox: async () => ({ items: [] }) as never, plans: async () => ({}), agents: async () => [] }
+
+function withGh(w: ReturnType<typeof world>, prs: unknown, o: { killFails?: boolean } = {}) {
+  const logs: string[] = []
+  const io: SessionIo = {
+    ...w.io,
+    run: async (argv, ms) => {
+      if (argv[0] === 'gh') return { exitCode: prs === undefined ? 1 : 0, stdout: JSON.stringify(prs ?? null), stderr: prs === undefined ? 'gh: not logged in' : '' }
+      if (o.killFails && argv[1] === 'kill-session') { w.runs.push(argv); return { exitCode: 1, stdout: '', stderr: "can't find session" } }
+      return w.io.run(argv, ms)
+    },
+    log: async e => void logs.push(`${e.event} ${e.agent}: ${e.text}`),
+  }
+  return { io, logs }
+}
+
+test('stopIdleSessions closes a finished worker\'s terminal, marks it stopped with endedAt, notes and logs why; never its worktree', async () => {
+  const w = world({ sessions: { a: finished('a'), b: finished('b', { status: 'running' }) } })
+  w.tick(20 * 60_000)
+  const { io, logs } = withGh(w, [{ number: 4, headRefName: 'flow/a', state: 'MERGED' }, { number: 5, headRefName: 'flow/b', state: 'MERGED' }])
+  expect(await stopIdleSessions(io, IDLE)).toEqual([{ name: 'a', reason: 'PR #4 merged' }])
+  expect(w.sessions().a!.status).toBe('stopped')
+  expect(w.sessions().a!.endedAt).toBe(1_000_000 + 20 * 60_000)
+  expect(w.sessions().b!.status).toBe('running')
+  expect(w.runs.filter(r => r[0] === 'tmux' && r[1] === 'kill-session')).toEqual([['tmux', 'kill-session', '-t', 'flow-a']])
+  expect(w.runs.some(r => r.includes('worktree'))).toBe(false)
+  expect(logs).toEqual(['note a: a stopped: finished, PR #4 merged'])
+  // A second pass closes nothing again.
+  expect(await stopIdleSessions(io, IDLE)).toEqual([])
+  expect(w.runs.filter(r => r[1] === 'kill-session')).toHaveLength(1)
+})
+
+test('stopIdleSessions: a close that fails still marks the session stopped; gh failing stops no worker', async () => {
+  const w = world({ sessions: { a: finished('a') } })
+  w.tick(20 * 60_000)
+  expect(await stopIdleSessions(withGh(w, undefined).io, IDLE)).toEqual([])
+  expect(w.sessions().a!.status).toBe('reported')
+  expect(await stopIdleSessions(withGh(w, [{ number: 4, headRefName: 'flow/a', state: 'CLOSED' }], { killFails: true }).io, IDLE)).toHaveLength(1)
+  expect(w.sessions().a!.status).toBe('stopped')
+})
+
+test('stopIdleSessions leaves another main\'s sessions alone, and a reviewer it stops closes its run', async () => {
+  const rev = finished('reviewer-2', { role: 'reviewer', status: 'idle', screenAt: 1, branch: '(detached origin/main)' })
+  const w = world({ sessions: { a: finished('a', { relayDir: '/x' }), 'reviewer-2': rev } })
+  w.tick(20 * 60_000)
+  const stopped: string[] = []
+  const { io } = withGh(w, [{ number: 4, headRefName: 'flow/a', state: 'MERGED' }])
+  const r = await stopIdleSessions({ ...io, owns: async s => s.role !== undefined }, { ...IDLE, reviewerStopped: async (n, why) => void stopped.push(`${n}: ${why}`) })
+  expect(r.map(x => x.name)).toEqual(['reviewer-2'])
+  expect(w.sessions().a!.status).toBe('reported')
+  expect(stopped).toEqual(['reviewer-2: reviewer waiting, no handover queued'])
+})
+
+test('the stop action uses the same routine: stopped, endedAt, a log line', async () => {
+  const w = world({ sessions: { a: finished('a', { status: 'running' }) } })
+  const { io, logs } = withGh(w, [])
+  expect(await sessionTool(io, { action: 'stop', name: 'a' }, OWNER, SETTINGS)).toContain('Stopped a. Terminal closed.')
+  expect(w.sessions().a!.status).toBe('stopped')
+  expect(w.sessions().a!.endedAt).toBe(1_000_000)
+  expect(logs).toEqual(['note a: a stopped'])
+})
+
+test('a terminal seen gone is exited with endedAt; stopping it later keeps that time', async () => {
+  const w = world()
+  await startRoleSession(w.io, { role: 'reviewer', name: 'rev', prompt: 'p', owner: OWNER }, SETTINGS)
+  w.kill()
+  w.tick(40_000)
+  await watchSessions({ ...w.io, onRoleGone: async () => undefined })
+  expect(w.sessions().rev!.status).toBe('exited')
+  expect(w.sessions().rev!.endedAt).toBe(1_040_000)
+  w.tick(60_000)
+  await stopSession(w.io, w.sessions().rev!, 'stopped')
+  expect(w.sessions().rev!.status).toBe('stopped')
+  expect(w.sessions().rev!.endedAt).toBe(1_040_000)
 })

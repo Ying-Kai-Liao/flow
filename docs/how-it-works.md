@@ -415,23 +415,36 @@ With `release` on, no PR touches the version, so parallel PRs never collide on a
 ## Cleanup
 
 Finished agents leave worktrees under `.claude/worktrees/` and local branches (`flow/*`,
-`flow/*-N`, `worktree-agent-*`, anything else). Most PRs are squash-merged, so `git branch -d`
+`flow/*-N`, `worktree-agent-*`, anything else). Terminal sessions in the terminal host leave theirs
+in the host's workspace directory instead: a worker's on `flow/<name>`, a terminal manager's
+detached `mgr-<name>` host worktree, the terminal reviewer's detached `reviewer-<n>`.
+
+**Which worktrees count.** Besides everything under `.claude/worktrees/`, any linked worktree flow
+made, wherever it lives: one on a `flow/` branch, one that is a session's recorded worktree or host
+worktree (any status), and a detached `mgr-<name>` or `reviewer-<n>` whose name flow knows (a
+session record or a `spawn` line in the log). Any other worktree is the person's own: never read,
+listed or touched. Most PRs are squash-merged, so `git branch -d`
 does not see them as merged; the plugin judges each by ancestry and by the PR's head sha instead
 of by name.
 
-**What goes.** A worktree under `.claude/worktrees/` (never the main checkout) when its HEAD is on
+**What goes.** A worktree of flow's (never the main checkout) when its HEAD is on
 `origin/<base>`, or its branch has a merged PR whose head is HEAD (or contains it), or its branch's
 PR was closed and HEAD is pushed; and `git status` is empty apart from the untracked type links
 `types` and `.claude-plugin/types`; and no live agent works in it; and it is not locked, unless the
-lock names an agent that has ended or a process that is gone. It goes with `git worktree remove`
-(never `--force`), then `git worktree prune`; a directory already missing is pruned. A local
+lock names an agent that has ended or a process that is gone; and its branch has no open PR. It
+goes with `git worktree remove` (never `--force`), then `git worktree prune`; a directory already
+missing is pruned. A worktree the terminal host manages (listed by `orca worktree list` while the
+host is up) goes with `orca worktree rm` instead, also without `--force`, so the host's own list
+drops it too; that also deletes its checked-out branch, so it is used only for a detached worktree
+or one whose branch the same sweep removes. If the host is not up, `git worktree remove` as above. A local
 branch when it is not checked out anywhere (a worktree removed in the same sweep doesn't count),
 is not the base, has no open PR, and its tip is on `origin/<base>` or is the head of a merged PR
 of that branch (or contained in it). It goes with `git branch -D`. Remote branches are never
 deleted: the reviewer's `gh pr merge --delete-branch` does that.
 
 **What stays, listed for a person.** Uncommitted changes (the files named), unpushed commits,
-locked worktrees, a closed PR's branch, a worktree or branch a live agent uses, an open PR's
+locked worktrees, a closed PR's branch, a worktree or branch a live agent or a running terminal
+session uses (a session waiting or idle between turns counts as running), an open PR's worktree or
 branch, and a handed-off worktree whose successor has not started yet. Nothing in that list is
 touched in any mode.
 
@@ -442,7 +455,31 @@ goes by ancestry only. Every sweep that removed something adds a `clean` line to
 
 **The automatic sweep** (`cleanup` = `auto`, the default) runs the same safe sweep in the
 background after each PR the reviewer marks done, and when a reviewer agent ends (its worktree, detached
-at the base, goes once the reviewer is gone). Never two sweeps at once; errors go to the log. With
+at the base, goes once the reviewer is gone). Between merges it also runs occasionally: when a
+terminal session ends (a worker, a terminal manager), when a manager agent ends, and when main calls
+`status` (never an agent's or a terminal session's call). Those occasional runs share one rate
+limit, at most one every 10 minutes; the first one after a load only starts the clock, since startup
+has just swept. Never two sweeps at once; errors go to the log.
+
+Each occasional run first stops the terminal sessions that are finished, so their worktrees go in the
+same sweep. Only sessions this main owns are stopped, and only once their report (or their end) is
+at least 15 minutes old, so a follow-up from main or the reviewer can still reach them:
+- a worker that reported or exited, whose own PR (exactly its branch) is merged or closed, with no
+  handover still queued (pending, awaiting approval, taken or ready for push) and no open ask; no PR yet or an open PR keeps it, and when `gh` fails
+  no worker is stopped;
+- a manager that wrote its final report (`reported`; never one running or waiting) with no live
+  worker session or agent of its own, no handover of its own or its workers' still queued, no
+  open PR of its workers, no open blocking ask from it or its workers and no waiting, ready or
+  running node in its plan;
+- the reviewer, reported or waiting, while no handover is still queued. A new handover then
+  starts a fresh reviewer.
+
+A stop closes the terminal (a close that fails, the terminal maybe gone already, still counts),
+marks the session `stopped` with when it ended, and writes `stopped: finished, <reason>` on its card
+and in the log. The owner is not messaged. It never removes a worktree itself; the sweep right after
+does, by its own rules. A reviewer report for a manager stopped this way is noted for that manager
+and sent to main. The records of ended sessions stay (the sweep reads them to know flow's
+worktrees); `session list` shows them short. With
 `cleanup` = `off` nothing runs by itself, the tool's `apply` runs dry and says so, and only
 `/flow clean --yes` removes. The pane and `status` show one dim line while there are leftovers,
 e.g. `Cleanup: 3 worktrees and 12 branches can be removed, 1 holds work that isn't merged. /flow clean lists them` (zero counts are left out), from a dry sweep
@@ -561,7 +598,7 @@ built-in.
 | `keys` (name, keys) | presses keys: `"1"`, `"y enter"`, `"escape"`, `"interrupt"` (Ctrl-C), `"down down enter"`; named keys are enter, escape, interrupt, tab, up, down, left, right, backspace, space, anything else is typed |
 | `read` (name, lines?) | the end of its terminal |
 | `restart` (name) | a fresh shell in the same tmux pane (`respawn-pane -k`) or a new Orca terminal, then the harness's resume line, or its start line with the same prompt when it has none |
-| `list` | every session, its harness, host, state and worktree |
+| `list` | every live session, its harness, host, state and worktree; sessions that ended in the last 24 hours one short line each (name, state, how long ago); older ended ones as one count line |
 | `stop` (name, remove_worktree?) | closes the terminal; removes the worktree only when it is clean and pushed |
 
 - **Where.** In an Orca terminal (Orca is a terminal and worktree app; `orca worktree create`, then `orca terminal create`) or a
@@ -608,8 +645,10 @@ built-in.
   under 6 h old, the lowest window; anything older can't tell and doesn't block). Otherwise the
   start is refused and the manager starts a `flow:worker` agent instead.
 - **What it reads.** The prompt (`…/sessions/<name>/prompt.md`) is a short preamble, the usual
-  worker rules, then the brief. The preamble says: no flow tools, the report is a file, answers
-  arrive typed into this terminal.
+  worker rules, then the brief. The preamble says: the report is a file, answers arrive typed into
+  this terminal, and the flow tools: a claude worker's are relayed to main (see The relay below), so it
+  takes test slots and calls guard_tests like an agent worker, and says "flow tools missing" first in its
+  report if they never reach main; another harness loads no plugin and has none.
 - **In the pane** it is a worker card under its manager (yellow while idle), showing its newest
   action and its context meter. Its detail view has:
   - where it runs (`tmux attach -t …` or the Orca handle), worktree and branch;
@@ -646,7 +685,10 @@ environment passes none.
 - **The relay.** A claude in a terminal loads its own copy of the plugin. Its flow tools (`mcp__flow__*`) are not
   run there: each call is left as a file in the session's relay directory, main's pump runs it as that session
   and leaves the answer, so the manager's notes, asks, plan, handovers and the reviewer's take / done / back
-  behave as for an agent. A message to a terminal is typed into it.
+  behave as for an agent. A message to a terminal is typed into it. A claude worker relays too, but only the
+  worker's tools (test_slot, guard_tests, ask, fyi, note, status); main refuses any other from it, and its
+  whole-suite runs are refused as an agent worker's are. A worker started before workers had a relay
+  directory keeps a passive copy with no flow tools.
 - **Workers of a terminal manager** are always session workers (`mcp__flow__session`, `worker_harness` or claude): a terminal has no `flow:worker` agent type.
 - **The reviewer in auto mode** is one long-lived terminal in a worktree of its own. A handover while it
   lives does not start another reviewer: the plugin types `new handover: #N` into it (due deploys and a push run
@@ -658,7 +700,7 @@ environment passes none.
 - **The reviewer in confirm mode** reviews one batch and ends like the agent: after its report (merge_mode is
   read then, so a change while it worked counts) the plugin stops the terminal, removes its worktree if clean,
   and the next handover starts reviewer-N+1. The same happens in auto mode when a batch awaits `/flow push`.
-- **Owners and subagents.** A role session records the main that started it (`mainOwner`: session id and
+- **Owners and subagents.** A role session, and a claude worker, records the main that started it (`mainOwner`: session id and
   claude pid). A main pumps, watches and delivers only for its own; one whose owner pid is dead, or that has
   no owner, is taken over by the next main that sees it (the relay claim is an atomic rename, so a race on
   that never runs a call twice). A subagent of a terminal manager (Explore and the like) reaches main as the
