@@ -424,8 +424,9 @@ export async function renderPane(io: PaneIo, e: PaneEvent) {
     // The same rows a press reads, so what is drawn and what is pressed fold alike.
     const irows = (await io.paneInboxRows()).rows
     const sugg = mode === 'inbox' ? await io.suggestions() : []
+    const deploys = mode === 'card' ? await io.read.deploys() : undefined
     const ictx: InboxCtx = {
-      els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, sugg, iopen, list, now: t, from, scroll,
+      els: { Box, Text, Button }, Input, rows, columns, ibox, icur, draft, note, irows, sugg, iopen, list, now: t, from, scroll, deploys,
       io: {
         acted,
         rows: async () => (await io.paneInboxRows()).rows,

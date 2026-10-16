@@ -4,6 +4,8 @@ import type { Activity, AgentRow, Handover, Limit, Session } from '../types'
 import { shimmerParts } from './shimmer'
 import { asksQuestion } from './dag'
 import type { Plan } from './dag'
+import { envSettledIn } from './deploy'
+import type { Deploys } from './deploy'
 import { ENDED } from './deliver'
 import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELLS, tokensDown } from './meter'
 import { askBright, COLOR, FINISHED_KEY, GLYPH, handoffOf, ICON, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
@@ -250,6 +252,8 @@ export type InboxCtx = {
   from: 'tree' | 'inbox' | 'archive'
   // The large card's body offset; without it (the demo) the body shows from its top.
   scroll?: CardScroll
+  // The deploy state, for the card: an env item whose change is settled takes no other option.
+  deploys?: Deploys
   io: {
     acted: () => Promise<void>
     rows: () => Promise<PaneRow[]>
@@ -1011,8 +1015,9 @@ export function cardView(x: InboxCtx & { id: string | null }) {
     )
   }
   const open = q.state === 'open'
-  // An answered env item takes another option (the user changed their mind); the answer path refuses a settled one.
-  const answerable = open || envReanswerable(q)
+  // An answered env item takes another option (the user changed their mind), unless its change is settled for the
+  // target; the answer path refuses a settled one anyway.
+  const answerable = open || (envReanswerable(q) && !envSettledIn(x.deploys, q))
   const linked = q.forQ === undefined ? undefined : findItem(x.ibox, q.forQ)
   const agent = list.find(a => a.name !== undefined && noteKey(a.name) === noteKey(q.owner))
   // Where the next card comes from: the rows as they are after the answer, from this one on.

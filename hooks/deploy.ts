@@ -443,6 +443,8 @@ const stateWord = (e: EnvEntry, ts: TargetState | undefined, item: EnvInput['ite
 export function currentEnvItem(q: Question, handovers: Handover[], inbox: Inbox): string | undefined {
   const e = q.env
   if (e === undefined) return undefined
+  // Any live record names its items, a merged one too (taken or done); pendingEnv reads only taken/done because only
+  // those can deploy, which is not the question here.
   const c = handovers.find(h => h.pr === e.pr && h.status !== 'returned')?.env?.find(x => x.target === e.target && x.name === e.name)
   if (c === undefined) return undefined
   if (e.role === 'apply') return applyViewOf(inbox)(e.pr, e.target, e.name)?.qid
@@ -451,24 +453,34 @@ export function currentEnvItem(q: Question, handovers: Handover[], inbox: Inbox)
 
 const REPLACED = 'replaced: no handover asks for it any more'
 
-// Whether any handover record (whatever its status) is known for the item's PR: without one there is nothing to judge
-// the item by, so it is left as it is.
-const knownPr = (q: Question, handovers: Handover[]): boolean => handovers.some(h => h.pr === q.env?.pr)
+// Whether an env item's change is settled for its target (applied, set, superseded or dropped): no answer changes it.
+export const envSettledIn = (deploys: Deploys | undefined, q: Question): boolean =>
+  q.env !== undefined && deploys?.targets[q.env.target]?.envDone?.some(d => d.pr === q.env?.pr && d.name === q.env?.name) === true
+
+// Whether the item can be judged by the stored handover record: one (whatever its status) is known for its PR, and the
+// item was not asked after it. A handover sent again opens its items before it saves its record, so an item newer than
+// the record is left as it is until the record names it. Apply items are asked at the gate, after the record, and are
+// judged by the newest one (applyViewOf), so the record's time does not apply to them.
+export function envJudged(q: Question, handovers: Handover[]): boolean {
+  const h = handovers.find(x => x.pr === q.env?.pr)
+  return h !== undefined && (q.env?.role === 'apply' || q.askedAt <= h.at)
+}
 
 // Env items the old gate left behind, tidied for one target: a step answered "not yet" that the gate still reads
-// opens again; an open or "not yet" one nothing reads any more (an older copy, a dropped or returned change) is
-// closed by flow, so it never shows as open nor holds the target's run.
-export function tidyEnvItems(inbox: Inbox, handovers: Handover[], target: string, now: number): Inbox {
+// opens again; an open or "not yet" one that can change nothing (its change is settled for the target, or nothing
+// reads it any more: an older copy, a dropped or returned change) is closed by flow, so it never shows as open nor
+// holds the target's run.
+export function tidyEnvItems(inbox: Inbox, handovers: Handover[], target: string, ts: TargetState | undefined, now: number): Inbox {
   let changed = false
   const items = inbox.items.map(x => {
-    if (x.kind !== ENV_KIND || x.env?.target !== target || x.answeredBy === 'flow' || !knownPr(x, handovers)) return x
-    const current = currentEnvItem(x, handovers, inbox) === x.id
+    if (x.kind !== ENV_KIND || x.env?.target !== target || x.answeredBy === 'flow' || !envJudged(x, handovers)) return x
     const owed = x.state === 'answered' && envOwed(x, x.answer)
-    if (!current && (x.state === 'open' || owed)) {
+    const r = envRefusal(x, handovers, inbox, ts)
+    if (r !== undefined && (x.state === 'open' || owed)) {
       changed = true
-      return { ...x, state: 'answered' as const, answer: REPLACED, answeredBy: 'flow', answeredAt: now, via: 'flow' as const, delivered: true }
+      return { ...x, state: 'answered' as const, answer: r.note, answeredBy: 'flow', answeredAt: now, via: 'flow' as const, delivered: true }
     }
-    if (current && owed) {
+    if (r === undefined && owed) {
       changed = true
       return { ...x, state: 'open' as const }
     }
@@ -487,7 +499,7 @@ export function envRefusal(q: Question, handovers: Handover[], inbox: Inbox, ts:
   if (d?.how === 'dropped') return { line: `${q.id}: refused, ${what} was dropped by a release; the change is gone. Hand the PR over again with it to ask anew.`, note: 'dropped: released without it' }
   if (d !== undefined) return { line: `${q.id}: ${what} is already settled (${doneWords(d.how)}); this answer changes nothing.`, note: `settled: ${doneWords(d.how)}` }
   const now = currentEnvItem(q, handovers, inbox)
-  if (now === q.id || !knownPr(q, handovers)) return undefined
+  if (now === q.id || !envJudged(q, handovers)) return undefined
   return {
     line: `${q.id}: refused, no handover asks for this item any more${now === undefined ? ` (PR #${e.pr} was returned or handed over again without ${e.name})` : `; ${now} asks for ${what} now, answer that one`}.`,
     note: REPLACED,
