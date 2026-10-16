@@ -143,7 +143,7 @@ import {
 import { cap, CONTINUE, DEFAULT_WORKER_MODEL, isReviewer, LOG_MAX, MANAGER, mirror, NOTES_MAX, PANE, POLL_MS, TEXT_MAX, WORKER, WORKERS } from './core'
 import type { Deploys, Draft, Hold, TargetInfo } from './deploy'
 import {
-  closeReturnedEnv as closeReturnedEnvTo, deployTool as deployToolTo, holdTarget as holdTargetTo, onDeployAnswer as onDeployAnswerTo, onEnvAnswer as onEnvAnswerTo,
+  closeReturnedEnv as closeReturnedEnvTo, deployTool as deployToolTo, envSettled as envSettledTo, holdTarget as holdTargetTo, onDeployAnswer as onDeployAnswerTo, onEnvAnswer as onEnvAnswerTo,
   openHandoverEnv as openHandoverEnvTo, refreshBehind as refreshBehindTo, releaseTarget as releaseTargetTo,
 } from './deploy-run'
 import type { DeployIo } from './deploy-run'
@@ -1026,6 +1026,7 @@ function messagingIoOf($: EngineInterface): MessagingIo {
     addGuardTest: (options, glob, test) => addGuardTest(standingIoOf($), options, glob, test),
     onDeployAnswer: (q, answer) => onDeployAnswer($, q, answer),
     onEnvAnswer: (q, answer) => onEnvAnswer($, q, answer),
+    envSettled: q => envSettled($, q),
     onPushAnswer: (q, answer, by) => onPushAnswer($, q, answer, by),
     onReviewerAnswer: (answer, by) => onReviewerAnswer($, answer, by),
     loadLedger: () => loadLedger($),
@@ -1085,6 +1086,7 @@ function deployIoOf($: EngineInterface): DeployIo {
 function refreshBehind($: EngineInterface): Promise<void> { return refreshBehindTo(deployIoOf($)) }
 function onDeployAnswer($: EngineInterface, q: Question, answer: string): Promise<string> { return onDeployAnswerTo(deployIoOf($), q, answer) }
 function onEnvAnswer($: EngineInterface, q: Question, answer: string): Promise<string> { return onEnvAnswerTo(deployIoOf($), q, answer) }
+function envSettled($: EngineInterface, q: Question): Promise<string | undefined> { return envSettledTo(deployIoOf($), q) }
 function holdTarget($: EngineInterface, name: string, until: Hold['until'], by: string, reason: string | undefined): Promise<string> {
   return holdTargetTo(deployIoOf($), name, until, by, reason)
 }

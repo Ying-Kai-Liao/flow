@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Env items stay answerable (part of #222, item 1). "Not yet" (or anything but "done") on a secret, login or apply item leaves it open with the answer noted on it, and a later "done" on the same id is accepted; the gate waits on that same item instead of opening a fresh copy (reopenItem is gone). An answered env item takes a later explicit answer from the user (`/flow answer`, the pane) or main (`mcp__flow__answer` answers) and the gate follows the latest one: a change answered "no" then "yes" before a release is no longer held, a secret answered "done" then "not yet" is open again. A change the gate already settled (applied, set, dropped by a release) refuses a new answer with what happened; an item flow closed itself stays closed. The same answer twice changes nothing. An env item no handover asks for any more (an older copy, a change re-handed with a new value, a returned PR) refuses a new answer and names the current item; one still open is closed by flow. Items the old gate left behind are tidied at the next gate for their target: a "not yet" the handover still names opens again, the replaced original or a second apply item is closed by flow, so one change has one open item and an orphan never holds the deploy-only run; a "not yet" whose change is already settled (a login step for a change a release dropped) is closed by flow instead. An item asked after its handover's stored record (a handover sent again, between opening its items and saving the record) is never closed by a gate in that window. The Flow pane's card for an answered env item takes another option unless its change is settled.
+- `mcp__flow__answer` with `defaults: true` never answers deploy, env, push and reviewer items or guard suggestions, also when named in `ids`: it says to answer them explicitly, as `/flow ok` does.
+
+### Added
+
+- Each answer records how it was given (`via`: user, main, defaults, standing, flow, manager). "Already answered" lines, `/flow inbox <id>`, the archive and the pane show it where the who alone does not say it, e.g. `("not yet" by main, via defaults)`, and an answer from the pane or a `/flow` command reads `by the user`. Older answers show as before.
+
 ## [0.6.119] - 2026-10-16
 
 ### Fixed

@@ -4,12 +4,14 @@ import type { Activity, AgentRow, Handover, Limit, Session } from '../types'
 import { shimmerParts } from './shimmer'
 import { asksQuestion } from './dag'
 import type { Plan } from './dag'
+import { envSettledIn } from './deploy'
+import type { Deploys } from './deploy'
 import { ENDED } from './deliver'
 import { CARD_ROWS, cells, elapsed, labelOf, limitTokens, meterColor, METER_CELLS, tokensDown } from './meter'
 import { askBright, COLOR, FINISHED_KEY, GLYPH, handoffOf, ICON, handoffText, HANDOVER_GLYPH, nodeColor, nodeGlyph, rankOf, ROLE, ROOT_GLYPH, treeItems, viewOf } from './pane'
 import { graphNodes, layoutGraph, moveFocus } from './graph'
 import type { GNode, Seg } from './graph'
-import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, groupTitle, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
+import { age, archiveOf, archiveRowText, archiveWho, ARCHIVE_SHOWN, decisionOutcomeText, clip, envLabel, envReanswerable, findItem, isAddressee, isFyi, overridesManager, OVERTURN, fit, groupHint, groupTitle, paneRowText, plural, protectedWhy, tagsOf } from './inbox'
 import { dupAskers, dupHidden, dupMark } from './inbox-dups'
 import type { Inbox, PaneGroup, PaneRow, Question } from './inbox'
 import { MANAGER } from './core'
@@ -250,6 +252,8 @@ export type InboxCtx = {
   from: 'tree' | 'inbox' | 'archive'
   // The large card's body offset; without it (the demo) the body shows from its top.
   scroll?: CardScroll
+  // The deploy state, for the card: an env item whose change is settled takes no other option.
+  deploys?: Deploys
   io: {
     acted: () => Promise<void>
     rows: () => Promise<PaneRow[]>
@@ -492,7 +496,7 @@ export function inboxView(x: InboxCtx) {
     const found = fresh.findIndex(r => r.key === c)
     if (strict && c !== null && found < 0) {
       const was = (await io.readInbox()).items.find(x => x.id === c)
-      const by = was?.state === 'answered' ? ` (by ${was.answeredBy ?? '?'})` : ''
+      const by = was?.state === 'answered' ? ` (by ${archiveWho(was)})` : ''
       if (at === undefined) await io.setCursor(fresh[0]?.key ?? null)
       await io.setNote(`${c} ${was?.state === 'answered' ? 'was answered meanwhile' : 'moved out of the list'}${by}; ${at === undefined ? 'the highlight moved, press again' : 'nothing was changed'}.`)
       return undefined
@@ -1011,6 +1015,9 @@ export function cardView(x: InboxCtx & { id: string | null }) {
     )
   }
   const open = q.state === 'open'
+  // An answered env item takes another option (the user changed their mind), unless its change is settled for the
+  // target; the answer path refuses a settled one anyway.
+  const answerable = open || (envReanswerable(q) && !envSettledIn(x.deploys, q))
   const linked = q.forQ === undefined ? undefined : findItem(x.ibox, q.forQ)
   const agent = list.find(a => a.name !== undefined && noteKey(a.name) === noteKey(q.owner))
   // Where the next card comes from: the rows as they are after the answer, from this one on.
@@ -1019,7 +1026,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
     const before = (await io.rows()).filter(r => r.q !== undefined).map(r => r.q!.id)
     const fresh = findItem(await io.readInbox(), q.id)
     if (fresh === undefined) return
-    if (fresh.state === 'answered') {
+    if (fresh.state === 'answered' && !(choice !== null && envReanswerable(fresh))) {
       const text = `${fresh.id} is already answered: ${fresh.answer ?? ''} (by ${archiveWho(fresh)}).`
       await io.setNote(text)
       io.toast(clip(text, 120))
@@ -1066,13 +1073,13 @@ export function cardView(x: InboxCtx & { id: string | null }) {
   ]
   const overrideText = open && overridesManager(q) ? `It is for ${q.addressee}: answering it overrides ${q.addressee}, who is told.` : undefined
   const optText = (o: string, k: number) => `${k + 1}) ${o}${o === q.default ? ' (default)' : ''}`
-  const doneText = open ? undefined : isFyi(q) ? decisionOutcomeText(q, now) : `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). Nothing more to answer.`
+  const doneText = open ? undefined : isFyi(q) ? decisionOutcomeText(q, now) : `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). ${answerable ? 'Press another option to change it.' : 'Nothing more to answer.'}`
   const protectedText = open && x.id !== null && protectedWhy(q) !== undefined ? 'Needs an explicit choice: y never answers it.' : undefined
   const inputLabel = isFyi(q) ? 'instead ' : 'answer '
   const inputHint = isFyi(q) ? 'what instead (n, or Enter): undoes the decision' : 'your own words, then Enter'
   const rowsOf = (t: string | undefined) => (t === undefined || t === '' ? 0 : textRows(t, x.columns))
   const head = 5 + (tags !== '' ? 1 : 0) + (isFyi(q) && q.topic ? 1 : 0) + (isFyi(q) ? 0 : 1) + (linked !== undefined ? 1 : 0) + (q.env !== undefined ? 1 : 0) + rowsOf(overrideText)
-  const foot = 1 + (isFyi(q) ? 0 : q.options.reduce((n, o, k) => n + rowsOf(`${open ? '' : '  '}${optText(o, k)}`), 0)) + rowsOf(doneText) + rowsOf(protectedText)
+  const foot = 1 + (isFyi(q) ? 0 : q.options.reduce((n, o, k) => n + rowsOf(`${answerable ? '' : '  '}${optText(o, k)}`), 0)) + rowsOf(doneText) + rowsOf(protectedText)
     + rowsOf(note) + (open && Input !== undefined ? rowsOf(`${inputLabel}${draft === '' ? inputHint : draft}`) : 0) + (open ? 1 : 0)
   const w = scrollWindow(lines, Math.max(3, rows - head - foot), `q:${q.id}`, x.scroll)
   return (
@@ -1104,7 +1111,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
       <Box flexDirection="column" flexGrow={1} flexShrink={0}>
       <Text dimColor>{'─'.repeat(Math.max(20, x.columns))}</Text>
       {!isFyi(q) && q.options.map((o, k) => {
-        return open ? (
+        return answerable ? (
           <Button key={`card-opt-${k}`} hotkey={k < 9 ? String(k + 1) : undefined} onPress={pick(k)}>
             {optText(o, k)}
           </Button>
