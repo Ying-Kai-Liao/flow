@@ -1,7 +1,7 @@
 import { expect, mock } from 'claude-code/testing'
 import { test } from './support'
 import type { TestBody } from 'claude-code/testing'
-import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, leftoverLine, parsePorcelain, selectCleanup, sweepText, typeLinks, waitingPaths } from '../hooks/clean'
+import { ancestorPids, ancestryQueries, containedCandidates, dirtyFiles, isLive, leftoverLine, parsePorcelain, restoreWorktree, selectCleanup, sweepText, typeLinks, waitingPaths } from '../hooks/clean'
 import type { CleanInputs, PrRow } from '../hooks/clean'
 
 const MAIN = '/repo'
@@ -21,7 +21,7 @@ function inputs(o: {
   wts?: Wt[]; status?: Record<string, string>; branches?: Record<string, string>; onBase?: string[]
   remote?: Record<string, string>; prs?: PrRow[] | undefined; roster?: CleanInputs['roster']; ancestry?: string[]
   deadPids?: number[]; waiting?: string[]; contained?: Record<string, string[]>; ownPid?: number; oldLocks?: Set<string>
-  ownPids?: Set<number>
+  ownPids?: Set<number>; restored?: string[]
 }): CleanInputs {
   const wts = [{ path: MAIN, head: BASE, branch: 'main' }, ...(o.wts ?? [])]
   const status: Record<string, string> = {}
@@ -32,7 +32,7 @@ function inputs(o: {
     remote: { main: BASE, ...o.remote }, prs: 'prs' in o ? o.prs : [], roster: o.roster ?? [],
     ancestry: new Set(o.ancestry ?? []), deadPids: new Set(o.deadPids ?? []), waiting: new Set(o.waiting ?? []),
     ...(o.contained && { contained: o.contained }), ...(o.oldLocks && { oldLocks: o.oldLocks }), ...(o.ownPid !== undefined && { ownPid: o.ownPid }),
-    ...(o.ownPids && { ownPids: o.ownPids }),
+    ...(o.ownPids && { ownPids: o.ownPids }), ...(o.restored && { restored: new Set(o.restored) }),
   }
 }
 
@@ -406,4 +406,68 @@ test('ancestorPids stops at the nearest claude, inclusive; none found is empty',
   expect([...(await ancestorPids(5, async p => ({ ppid: p, comm: 'sh' })))]).toEqual([])
   expect([...(await ancestorPids(5, async () => undefined))]).toEqual([])
   expect([...(await ancestorPids(NaN, step))]).toEqual([])
+})
+
+// #222: a reviewer's worktree is a clean detached checkout of the base, which reads as safe to remove; only
+// its owner keeps it. A resumed reviewer found it gone when the sweep ran before its owner was known.
+test('a reviewer worktree is kept while its owner is live, waiting or idle, and goes once the reviewer ended', () => {
+  for (const status of ['pending', 'running', 'waiting', 'idle']) expect(isLive(status)).toBe(true)
+  for (const status of ['completed', 'failed', 'killed']) expect(isLive(status)).toBe(false)
+  const agentWt = { path: WT('agent-r1'), head: BASE }
+  const sessionWt = { path: WT('reviewer-2'), head: BASE }
+  const keptBy = (roster: CleanInputs['roster']) => selectCleanup(inputs({ wts: [agentWt, sessionWt], roster }))
+  // The agent reviewer by its isolation path, the terminal reviewer by its cwd (a session idle between batches is live).
+  const live = keptBy([{ id: 'r1', name: 'reviewer-1', live: true }, { id: 'session:reviewer-2', name: 'reviewer-2', live: true, cwd: WT('reviewer-2') }])
+  expect(live.remove.worktrees).toEqual([])
+  expect(kept(live, WT('agent-r1'))?.reason).toBe('in use by reviewer-1')
+  expect(kept(live, WT('reviewer-2'))?.reason).toBe('in use by reviewer-2')
+  // Ended (or not known at all, as before the sessions loaded): both go, as the reviewer prompt says.
+  expect(keptBy([{ id: 'r1', name: 'reviewer-1', live: false }, { id: 'session:reviewer-2', name: 'reviewer-2', live: false, cwd: WT('reviewer-2') }]).remove.worktrees)
+    .toEqual([WT('agent-r1'), WT('reviewer-2')])
+  expect(keptBy([]).remove.worktrees).toEqual([WT('agent-r1'), WT('reviewer-2')])
+})
+
+test('a worktree made again for its reviewer is kept from the sweep while the reviewer comes back to it', () => {
+  const s = selectCleanup(inputs({ wts: [{ path: WT('agent-r1'), head: BASE }], restored: [WT('agent-r1')] }))
+  expect(s.remove.worktrees).toEqual([])
+  expect(kept(s, WT('agent-r1'))).toMatchObject({ reason: 'made again for its owner', needsLook: false })
+})
+
+// A git that knows which directories exist: `test -d` answers from `dirs`, `git worktree add` makes one.
+function gitWorld(dirs: Set<string>, o: { addFails?: string } = {}) {
+  const runs: string[][] = []
+  const exec = async (argv: string[]) => {
+    runs.push(argv)
+    if (argv[0] === 'test') return { exitCode: dirs.has(argv[2]!) ? 0 : 1, stdout: '', stderr: '' }
+    if (argv[1] === 'worktree' && argv[2] === 'add') {
+      if (o.addFails !== undefined) return { exitCode: 128, stdout: '', stderr: o.addFails }
+      dirs.add(argv[4]!)
+    }
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  return { runs, exec }
+}
+
+test('restoreWorktree: a gone worktree is unlocked, pruned and added again detached at origin/<base>; a present one is left alone', async () => {
+  const dirs = new Set<string>()
+  const g = gitWorld(dirs)
+  expect(await restoreWorktree(g.exec, WT('agent-r9'), 'main')).toEqual({ restored: true })
+  expect(g.runs.map(a => a.join(' '))).toEqual([
+    `test -d ${WT('agent-r9')}`, `git worktree unlock ${WT('agent-r9')}`, 'git worktree prune', 'git fetch origin main',
+    `git worktree add --detach ${WT('agent-r9')} origin/main`,
+  ])
+  g.runs.length = 0
+  expect(await restoreWorktree(g.exec, WT('agent-r9'), 'main')).toEqual({ restored: false })
+  expect(g.runs.map(a => a[0])).toEqual(['test'])
+})
+
+test('restoreWorktree: two callers at once add the worktree once; a failed add is an error', async () => {
+  const dirs = new Set<string>()
+  const g = gitWorld(dirs)
+  const both = await Promise.all([restoreWorktree(g.exec, WT('agent-r8'), 'main'), restoreWorktree(g.exec, WT('agent-r8'), 'main')])
+  expect(both).toEqual([{ restored: true }, { restored: false }])
+  expect(g.runs.filter(a => a[2] === 'add').length).toBe(1)
+
+  const bad = gitWorld(new Set(), { addFails: "fatal: invalid reference: origin/main\nmore" })
+  expect(await restoreWorktree(bad.exec, WT('agent-r7'), 'main')).toEqual({ error: 'fatal: invalid reference: origin/main' })
 })

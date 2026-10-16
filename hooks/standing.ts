@@ -5,7 +5,9 @@ import type { Inbox, Question } from './inbox'
 // Standing answers: rules that answer a recurring decision-inbox question the way the user once decided.
 // Pure half: parse and validate the rules, match a question, suggest new rules, render the list. The
 // disk half (reading both settings files, writing the personal one) is in register.tsx.
-// SEEDS are a few common rules offered once when no rules exist; they are suggestions, never applied unasked.
+// SEEDS are a few common rules offered once when no rules exist; they are suggestions, never applied unasked,
+// except `conservative`, which is on by default as the implicit rule `conservative` (withDefaults) until the
+// setting conservative_default is false.
 //
 // A rule: { id?, topic?, match?, answer, blocking?, from?, note? } or { id?, topic?, match?, escalate: true, from?, note? }.
 //   topic    equals the question's topic (trimmed, any case)
@@ -31,7 +33,7 @@ import type { Inbox, Question } from './inbox'
 // `personal:1`, `repo:2`, `config:1`. Positions count every entry, valid or not, so they stay stable.
 
 export type Rule = { id?: string; topic?: string; match?: string; answer?: string; escalate?: boolean; blocking?: boolean; from?: string; note?: string; kinds?: string[]; options?: string[] }
-export type Source = 'personal' | 'repo' | 'config'
+export type Source = 'personal' | 'repo' | 'config' | 'default'
 export type Resolved = { rid: string; source: Source; pos: number; rule: Rule; re?: RegExp }
 
 export const AUTO = 'standing answer'
@@ -114,7 +116,14 @@ export function parseRules(value: unknown, source: Source, label: string, warnin
   return out
 }
 
-export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner' | 'default' | 'kind'> & { topic?: string }
+export type Askable = Pick<Question, 'question' | 'options' | 'blocking' | 'owner' | 'default' | 'kind'> & Partial<Pick<Question, 'guard' | 'env' | 'escalated' | 'forQ' | 'viaQ'>> & { topic?: string }
+
+// Anything a rule must never settle unasked: a deploy, env, push, reviewer or person-check item, a guard
+// suggestion, an escalation, or a question linked to another. A group holding one is never suggested, and the
+// rule on by default never answers one.
+const hardItem = (q: Askable): boolean =>
+  (q.kind !== undefined && q.kind !== 'question' && q.kind !== 'fyi') || q.guard !== undefined || q.env !== undefined ||
+  q.escalated !== undefined || q.forQ !== undefined || q.viaQ !== undefined
 
 // Topic, match and asker filters of a rule against a question.
 function applies(r: Resolved, q: Askable): boolean {
@@ -142,6 +151,8 @@ export function matchRule(rules: Resolved[], q: Askable): { rule: Resolved; answ
     if ((kind === 'deploy' || kind === 'env') && rule.kinds?.includes(kind) !== true) continue
     // Pushing a checked batch is the user's call, whatever the rule says: no rule can name this kind.
     if (kind === 'push' || kind === 'reviewer') continue
+    // The rule on by default answers plain questions only: no decision, and nothing a person must settle.
+    if (r.source === 'default' && (kind !== 'ask' || hardItem(q))) continue
     if (rule.kinds !== undefined && !rule.kinds.includes(kind)) continue
     if (rule.answer === DEFAULT_WORD) {
       if (q.blocking) continue
@@ -201,11 +212,6 @@ export type Suggestion = { key: string; id: string; fyi: boolean; label: string;
 
 const SUGGEST_AT = 3
 
-// Anything a rule must never settle: a deploy, env, push, reviewer or person-check item, a guard suggestion,
-// an escalation, or a question linked to another. A group holding one is never suggested.
-const hardItem = (q: Question): boolean =>
-  (q.kind !== undefined && q.kind !== 'question' && q.kind !== 'fyi') || q.guard !== undefined || q.env !== undefined ||
-  q.escalated !== undefined || q.forQ !== undefined || q.viaQ !== undefined
 
 // Topics (or, without one, identical question texts) main answered SUGGEST_AT times or more with the same
 // answer, that no rule covers yet. Decisions (FYIs) main kept make a rule with kinds ["fyi"].
@@ -246,7 +252,7 @@ export function suggest(inbox: Inbox, rules: Resolved[]): Suggestion[] {
 
 const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-const SOURCE_NAME: Record<Source, string> = { personal: 'personal file', repo: 'repo file (committed)', config: '/config' }
+const SOURCE_NAME: Record<Source, string> = { personal: 'personal file', repo: 'repo file (committed)', config: '/config', default: 'on by default; off with the setting conservative_default: false' }
 
 export function describeRule(r: Resolved): string {
   const parts = [
@@ -265,7 +271,8 @@ const outcome = (rule: Rule): string =>
 
 export type Seed = { id: string; label: string; rule: Rule; why: string }
 
-// Common rules offered once, never applied unasked. Accepted with mcp__flow__standing {action: "add", seed: id}.
+// Common rules offered once, never applied unasked (but `conservative`, on by default: withDefaults). Accepted with
+// mcp__flow__standing {action: "add", seed: id}.
 export const SEEDS: Seed[] = [
   {
     id: 'tracker', label: 'Never write to an external task tracker without my yes; report in the terminal',
@@ -285,6 +292,17 @@ export const SEEDS: Seed[] = [
 ]
 
 export const seedIds = (): string[] => SEEDS.map(s => s.id)
+
+// The seed that is on by default, and the id its implicit rule answers under.
+export const DEFAULT_SEED = 'conservative'
+
+// The rules with the implicit `conservative` rule last, so every rule of your own wins over it. It is left out
+// when conservative_default is false, or when a rule of your own already says the same (an accepted seed).
+export function withDefaults(rules: Resolved[], on: boolean): Resolved[] {
+  const seed = SEEDS.find(s => s.id === DEFAULT_SEED)!
+  if (!on || rules.some(r => sameRule(r.rule, seed.rule))) return rules
+  return [...rules, { rid: DEFAULT_SEED, source: 'default', pos: 1, rule: { ...seed.rule, note: 'on by default' }, re: new RegExp(seed.rule.match!, 'i') }]
+}
 
 // The seeds worth offering: none once a rule of your own exists. Rules that are only accepted seeds do not
 // count as your own, so a partly accepted set still shows the rest.

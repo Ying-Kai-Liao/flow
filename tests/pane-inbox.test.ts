@@ -1,6 +1,6 @@
 import type { AgentInfo } from 'claude-code'
 import { expect, mock } from 'claude-code/testing'
-import { test } from './support'
+import { inboxTest as test } from './support'
 import { askBright } from '../hooks/pane'
 import { strWidth } from '../hooks/markdown'
 import type { TestBody } from 'claude-code/testing'

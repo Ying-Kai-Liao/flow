@@ -398,8 +398,10 @@ export type Breaker = {
   // Failed or short-lived reviewers in a row; a good run resets it. Survives a restart, so a second
   // immediate failure halts sooner.
   streak: number
-  // The reviewer in flight, by name, and when the plugin started it.
-  run?: { name: string; startedAt: number }
+  // The reviewer in flight, by name, and when the plugin started it. `reached`: false from the start until one of
+  // its flow tool calls arrives in the plugin, then true; absent on a run recorded before this was tracked. `reachFrom`:
+  // when a terminal reviewer's terminal started, which its REACH_MS wait counts from.
+  run?: { name: string; startedAt: number; reached?: boolean; reachFrom?: number }
   // When the last reviewer ended, and why that counted as a failure.
   endedAt?: number
   error?: string
@@ -407,6 +409,10 @@ export type Breaker = {
   halt?: { at: number; error: string; qid?: string }
   // When recent reviewers were started (the last hour only); a retry keeps them, so the hourly cap holds.
   starts?: number[]
+  // Reviewers in a row that ended without a flow tool call ever reaching the plugin (its hooks not running in that
+  // process); a run that reaches it resets this. Kept apart from `streak`. `unreachableTold`: main was told this streak.
+  unreachable?: number
+  unreachableTold?: boolean
 }
 
 export type Filing = {
@@ -442,7 +448,13 @@ export type Round = {
   reported: string[]
 }
 
-export type Preflight = { next: number; entries: Record<string, Entry>; rounds: Round[] }
+export type Preflight = {
+  next: number
+  entries: Record<string, Entry>
+  rounds: Round[]
+  // What main was last told of each member (preflight.ts said()): a message telling nothing new is not sent.
+  said?: Record<string, string>
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -468,9 +480,10 @@ declare module 'claude-code' {
       ledgerDelta: Ledger
       ledgerEpoch: string
       queueRuns: number
+      reviewerDelayUntil: number
       // Per reviewer run (agent id), what it did with the queue; persisted so a reload keeps the final report whole.
       reviewerWork: Record<string, { touched: boolean; ready: boolean; line?: string }>
-      testFails: { last: Record<string, string[]>; flaky: Record<string, string[]> }
+      testFails: { last: Record<string, { names: string[]; tree?: string } | string[]>; flaky: Record<string, string[]> }
       prCache: PrCache
       // Deploy gates, mirrored from <state dir>/deploys.json, and how many commits each target is behind the base.
       deploys: Deploys

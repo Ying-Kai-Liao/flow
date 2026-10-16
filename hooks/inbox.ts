@@ -67,6 +67,8 @@ export function parseAsk(input: unknown): { questions: AskedQuestion[] } | { err
 
 export const KEEP = 'Keep'
 export const OVERTURN = 'Undo'
+// Who kept a decision filed already kept (worker-size, manager-size): nobody had to look at it.
+export const DEFAULT_KEEP = 'default'
 export const isFyi = (q: Question): boolean => q.kind === 'fyi'
 
 // An item by its id, or by the question id a decision had before it got its d-id.
@@ -190,8 +192,8 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   const q = findItem(inbox, wanted)
   const id = q?.id ?? wanted
   if (q === undefined) return { kind: 'unknown' }
-  // A decision the decision API kept stays undoable: any answer but Keep takes it back. Keep itself changes nothing.
-  const retake = q.state === 'answered' && (q.auto !== undefined || q.rule !== undefined) && isFyi(q) && choice !== null && parseChoice(q.options, choice).text !== KEEP
+  // A decision the decision API, a rule or the default kept stays undoable: any answer but Keep takes it back. Keep itself changes nothing.
+  const retake = q.state === 'answered' && (q.auto !== undefined || q.rule !== undefined || q.answeredBy === DEFAULT_KEEP) && isFyi(q) && choice !== null && parseChoice(q.options, choice).text !== KEEP
   // An env item stays answerable: a later explicit answer (the person's, or main relaying one) replaces the
   // earlier one and the gate follows it. One the plugin closed itself (answeredBy "flow") stays closed.
   const reanswer = envReanswerable(q) && choice !== null && rule === undefined && (user || by === 'main') &&
@@ -214,6 +216,11 @@ export function markAnswered(inbox: Inbox, wanted: string, choice: string | null
   }
   return { kind: 'ok', inbox: { ...inbox, items: inbox.items.map(x => (x.id === id ? done : x)) }, q: done, answer, isDefault }
 }
+
+// A decision stored already kept by DEFAULT_KEEP: recorded, never open, undoable by id like one a rule kept.
+export const keepByDefault = (inbox: Inbox, id: string, now: number): Inbox => ({
+  ...inbox, items: inbox.items.map(x => (x.id === id && x.state === 'open' && isFyi(x) ? { ...x, state: 'answered' as const, answer: KEEP, answeredBy: DEFAULT_KEEP, answeredAt: now, delivered: true } : x)),
+})
 
 export const openFor = (inbox: Inbox, who: string): Question[] =>
   inbox.items.filter(x => x.state === 'open' && (x.addressee === who || noteKey(x.addressee) === noteKey(who)))
@@ -414,7 +421,8 @@ export type PaneGroup = {
 
 export const FOLD_KEY = 'fold'
 
-// Decisions that are routine by their topic: sizing calls nobody needs to weigh one by one.
+// Decisions that are routine by their topic: sizing calls nobody needs to weigh one by one. They are filed kept
+// now (spawn.ts fileKept); one left open (an escalate rule, or filed before that) still folds here.
 export const ROUTINE_TOPICS = ['worker-size', 'manager-size']
 const isRoutine = (q: Question): boolean => q.topic !== undefined && ROUTINE_TOPICS.includes(q.topic.toLowerCase())
 

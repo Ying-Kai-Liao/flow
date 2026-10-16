@@ -13,3 +13,10 @@ export const test = (name: string, ...rest: TestRest): void => {
   const [options, body] = rest.length === 1 ? [{}, rest[0]] : rest
   kitTest(name, { timeoutMs: TEST_TIMEOUT_MS, ...options, options: { reviewer_delay: 0, ...(options as { options?: Record<string, unknown> }).options } }, body)
 }
+
+// For tests of the inbox's own mechanics: the conservative standing rule, on by default, would answer their
+// non-blocking asks at once. A test can still turn it on in its own options.
+export const inboxTest = (name: string, ...rest: TestRest): void => {
+  const [options, body] = rest.length === 1 ? [{}, rest[0]] : rest
+  test(name, { ...options, options: { conservative_default: false, ...(options as { options?: Record<string, unknown> }).options } }, body)
+}

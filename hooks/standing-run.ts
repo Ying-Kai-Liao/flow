@@ -3,7 +3,7 @@
 // register.tsx (the engine refuses `$` across an import).
 import type { LogEvent } from '../types'
 import { mergeLayers } from './settings'
-import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule } from './standing'
+import { AUTO, escalation, matchRule, nextRuleId, removeRule, renderRules, renderSeeds, ruleFromQuestion, sameRule, SEEDS, seedIds, seedsToOffer, suggest, validateRule, withDefaults } from './standing'
 import type { Resolved, Rule } from './standing'
 import { addMapping, parseGuardTests, suggestionQuestion, suggestionsFor } from './guardtests'
 import type { GuardMap } from './guardtests'
@@ -12,7 +12,7 @@ import type { Inbox, Question } from './inbox'
 import { noteKey } from './state'
 import { ENV_KIND } from './deploy'
 import { PUSH_KIND } from './pushgate'
-import { dismissSuggestions, paneText, pendingSuggestions } from './standing-suggest'
+import { dismissSuggestions, offerNewSuggestions, paneText, pendingSuggestions } from './standing-suggest'
 
 export type StandingIo = {
   locate: () => Promise<string[]>
@@ -32,12 +32,14 @@ export type StandingIo = {
 }
 
 // Standing answers (standing.ts): the rules of both settings files, read fresh so a rule made a moment ago
-// applies to the next ask. A bad rule is dropped by mergeLayers; the others stand.
+// applies to the next ask. A bad rule is dropped by mergeLayers; the others stand. The `conservative` rule
+// comes last, on unless conservative_default is false (withDefaults).
 export async function loadRules(io: StandingIo, options: Record<string, unknown>): Promise<{ rules: Resolved[]; paths: string[] }> {
   const paths = await io.locate()
   const layers = await Promise.all(paths.map(async path => ({ path, text: path === '' ? undefined : await io.readFile(path) })))
-  const raw = mergeLayers(options, layers).raw.standing_answers
-  return { rules: Array.isArray(raw) ? raw as Resolved[] : [], paths }
+  const merged = mergeLayers(options, layers).raw
+  const raw = merged.standing_answers
+  return { rules: withDefaults(Array.isArray(raw) ? raw as Resolved[] : [], merged.conservative_default !== false), paths }
 }
 
 export type AutoHits = Map<string, { answer: string; rid: string }>
@@ -123,7 +125,8 @@ export function addRule(io: StandingIo, options: Record<string, unknown>, rule: 
     const { rules, paths } = await loadRules(io, options)
     const path = paths[1] ?? ''
     if (path === '') return { kind: 'error', msg: 'rules need a repo for the personal file.' }
-    const dup = rules.find(r => sameRule(r.rule, rule))
+    // The rule on by default is not in a file: adding the same rule writes it, so it stays when the default is off.
+    const dup = rules.find(r => r.source !== 'default' && sameRule(r.rule, rule))
     if (dup !== undefined) return { kind: 'exists', id: dup.rid }
     const used = [...rules.map(r => r.rid), ...(await io.inbox()).items.flatMap(q => (q.rule === undefined ? [] : [q.rule]))]
     const id = nextRuleId(used)
@@ -182,6 +185,7 @@ export function dropRule(io: StandingIo, options: Record<string, unknown>, rid: 
     const hit = rules.find(r => r.rid === rid)
     if (hit === undefined) return `${rid}: no such rule. mcp__flow__standing {"action":"list"} shows them.`
     if (hit.source === 'config') return `${rid}: set in /config, remove it there.`
+    if (hit.source === 'default') return `${rid}: on by default, not in a file; turn it off with the setting conservative_default: false (mcp__flow__settings).`
     const path = (hit.source === 'repo' ? paths[0] : paths[1]) ?? ''
     const r = await editRuleFile(io, path, async list => {
       const res = removeRule(list, hit.source, rid)
@@ -201,11 +205,19 @@ export async function offerSeedsOnce(io: StandingIo, options: Record<string, unk
   const flag = `${dir}/seeds-offered.json`
   if (await io.readJson(flag) !== undefined) return []
   const { rules } = await loadRules(io, options)
-  const offer = rules.length === 0 ? seedsToOffer(rules) : []
+  // The rule on by default is not one of your own: the other seeds are still offered beside it.
+  const offer = rules.every(r => r.source === 'default') ? seedsToOffer(rules) : []
   if (offer.length === 0) return []
   await io.mkdirp(dir)
   await io.writeJson(flag, { offeredAt: await io.now() })
   return renderSeeds(offer)
+}
+
+// Suggested standing rules main has not been offered yet, one line each (standing-suggest.ts), for whichever of
+// main's answer and status results comes first.
+export async function offerSuggestionsOnce(io: StandingIo, options: Record<string, unknown>): Promise<string[]> {
+  const { rules } = await loadRules(io, options)
+  return offerNewSuggestions(io, rules)
 }
 
 // The Flow pane's suggestion rows: pending ones, each as id and one line of text.

@@ -72,13 +72,18 @@ function world(on: On, spawnFn?: (model: string | undefined, n: number) => unkno
   const files = new Map<string, string>()
   const spawned: { type: string; model?: string; name?: string }[] = []
   const logs: string[] = []
+  const sent: { to: string; text: string }[] = []
   on('agent.list', () => ({ value: agents }))
   on('session.usage', () => ({ value: { startedAt: 900_000, rateLimits: [], context: { window: 200_000, tokens: undefined, percent: undefined } } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
-  on('session.send', () => ({ isDelivered: true as const }))
+  on('session.send', (_, e) => {
+    const raw = (e as unknown as { to: string | { agentId: string } }).to
+    sent.push({ to: typeof raw === 'string' ? raw : raw.agentId, text: e.text })
+    return { isDelivered: true as const }
+  })
   on('fs.write', (_, e) => { files.set(e.path, e.text); return { value: undefined } })
   on('fs.read', (_, e) => {
     const t = files.get(e.path)
@@ -101,7 +106,7 @@ function world(on: On, spawnFn?: (model: string | undefined, n: number) => unkno
     spawned.push({ type: ev.subagentType, model: ev.model, name: ev.name })
     return (spawnFn?.(ev.model, spawned.length) ?? { model: ev.model ?? 'none', agentId: `a${spawned.length}` }) as never
   })
-  return { agents, files, spawned, logs, clock }
+  return { agents, files, spawned, logs, sent, clock }
 }
 
 const spawn = ($: Dollar, name: string, prompt: string, extra: Record<string, unknown> = {}) =>
@@ -196,13 +201,13 @@ test('Continue on branch escalates from the sized workers on that branch', { opt
   expect(w.logs.join('\n')).toContain('size normal -> sonnet (escalated)')
 })
 
-test('a small or normal worker files one worker-size decision for its manager; large and an escalation to large do not', { options: OPTS }, async ($, on) => {
+test('a small or normal worker files one worker-size decision for its manager, already kept; large and an escalation to large do not', { options: OPTS }, async ($, on) => {
   const w = world(on)
   await spawn($, 'csv-fix', 'Size: small — docs only')
   await spawn($, 'csv-fix', 'Size: small — docs only')
   const fyis = items(w)
   expect(fyis.length).toBe(1)
-  expect(fyis[0]).toMatchObject({ kind: 'fyi', owner: 'csv-export', addressee: 'main', topic: 'worker-size', blocking: false, state: 'open' })
+  expect(fyis[0]).toMatchObject({ kind: 'fyi', owner: 'csv-export', addressee: 'main', topic: 'worker-size', blocking: false, state: 'answered', answer: 'Keep', answeredBy: 'default' })
   expect(fyis[0]!.question).toBe('csv-fix runs small -> haiku: docs only')
   await spawn($, 'other', 'Size: normal')
   expect(items(w).map(q => q.question)).toEqual(['csv-fix runs small -> haiku: docs only', 'other runs normal -> sonnet: no reason given'])
@@ -218,6 +223,39 @@ test('a standing rule answers the worker-size decision at once', { options: { ..
   expect(q.state).toBe('answered')
   expect(q.rule).toBe('sz')
   expect(q.answer).toBe('Keep')
+})
+
+const answer = ($: Dollar, args: Record<string, unknown>) => $.tool.call({ tool: 'mcp__flow__answer', ...args } as never).then(r => String(r.result))
+
+test('a kept worker-size decision is not open anywhere, and undoing it by id tells the manager as before', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await spawn($, 'csv-fix', 'Size: small — docs only')
+  expect(await answer($, { defaults: true })).toBe('No open questions for you.')
+  expect(await $.command.run({ command: 'flow', args: 'ok' } as never).then(r => r.text ?? '')).toContain('No open decisions to keep.')
+  expect(await $.command.run({ command: 'flow', args: 'inbox archive' } as never).then(r => r.text ?? '')).toContain('d1 Kept (by default')
+  // Keep changes nothing; anything else undoes it, and the owning manager hears it.
+  expect(await answer($, { answers: [{ id: 'd1', choice: 'Keep' }] })).toContain('d1: already answered ("Keep" by default)')
+  expect(await answer($, { answers: [{ id: 'd1', choice: 'run it normal' }] })).toContain('d1: run it normal, delivered')
+  expect(items(w)[0]).toMatchObject({ state: 'answered', answer: 'run it normal', answeredBy: 'main' })
+  expect(w.sent.map(m => m.to)).toEqual(['m1'])
+  expect(w.sent[0]!.text).toContain('main undid your decision d1: you decided "csv-fix runs small -> haiku: docs only". Instead: run it normal.')
+  expect(w.files.get(`${DIR}/managers/csv-export/notes.md`)).toContain('undone, run it normal')
+})
+
+test('a kept manager-size decision undone by id messages the manager, which hands off', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await mspawn($, 'docs-a', 'Size: small — docs only')
+  w.agents.push({ id: 'a1', name: 'docs-a', description: 'm', type: 'flow:manager', status: 'running' })
+  expect(await answer($, { answers: [{ id: 'd1', choice: 'Undo' }] })).toContain('d1: Undo, delivered')
+  expect(w.sent.map(m => m.to)).toEqual(['a1'])
+  expect(w.sent[0]!.text).toContain('undid your decision d1')
+})
+
+test('an escalate rule for the topic leaves a size decision open for the user', { options: { ...OPTS, standing_answers: JSON.stringify([{ id: 'e1', topic: 'worker-size', escalate: true }]) } }, async ($, on) => {
+  const w = world(on)
+  await spawn($, 'csv-fix', 'Size: small — docs')
+  expect(items(w)[0]).toMatchObject({ state: 'open', topic: 'worker-size' })
+  expect(items(w)[0]!.answeredBy).toBeUndefined()
 })
 
 test('Explore from a flow agent gets the explore model; from main, or with a model, it is left alone', async ($, on) => {
@@ -311,7 +349,7 @@ test('a small manager files one manager-size decision owned by itself; large fil
   await mspawn($, 'big', 'Size: large — refactor')
   const fyis = items(w)
   expect(fyis.length).toBe(1)
-  expect(fyis[0]).toMatchObject({ kind: 'fyi', owner: 'docs-a', addressee: 'main', topic: 'manager-size', blocking: false })
+  expect(fyis[0]).toMatchObject({ kind: 'fyi', owner: 'docs-a', addressee: 'main', topic: 'manager-size', blocking: false, state: 'answered', answer: 'Keep', answeredBy: 'default' })
   expect(fyis[0]!.question).toBe('docs-a runs small -> sonnet: docs only')
   await spawn($, 'csv-fix', 'Size: small')
   expect(w.spawned.at(-1)!.model).toBe('haiku')

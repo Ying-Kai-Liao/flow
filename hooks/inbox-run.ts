@@ -10,10 +10,9 @@ import type { DeliverOptions } from './deliver'
 import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, KEEP, linkEscalations, markAnswered, needsExplicitAnswer, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
 import { followUp, FILE_HELP, parseFiling, recordFiling, renderFollowUp } from './preflight'
 import type { Preflight } from './preflight'
-import { alwaysRule, autoAnswer, loadRules, recordAutoAnswers } from './standing-run'
+import { alwaysRule, autoAnswer, loadRules, offerSuggestionsOnce, recordAutoAnswers } from './standing-run'
 import type { AutoHits, StandingIo } from './standing-run'
 import { AUTO, fyiRules, matchRule } from './standing'
-import { offerNewSuggestions } from './standing-suggest'
 import { noteKey } from './state'
 
 export type InboxIo = {
@@ -107,7 +106,8 @@ export async function fyiTool(io: InboxIo, input: Record<string, unknown>, agent
   // A standing rule naming kind "fyi" keeps a fresh routine decision (before the decision API, which then skips it).
   // Only Keep: a rule never undoes a decision. Hard kinds are not autoKeepable, so no rule reaches them.
   const { rules } = await loadRules(io.standing, options)
-  const kept = rules.length === 0 ? new Map<string, string>() : await io.standing.withInbox(cur => {
+  // The rule on by default never reaches a decision, so it alone takes no inbox write.
+  const kept = fyiRules(rules).length === 0 ? new Map<string, string>() : await io.standing.withInbox(cur => {
     let next = cur
     const out = new Map<string, string>()
     for (const a of added) {
@@ -155,12 +155,13 @@ export async function preflightTool(io: InboxIo, options: Record<string, unknown
   const ids = { asked: kept.map(a => a.q.id), blocking: kept.filter(a => a.q.blocking).map(a => a.q.id) }
   const answered = [...earlier, ...added.filter(a => auto.has(a.q.id)).map(a => `${a.q.id} by standing answer ${auto.get(a.q.id)!.rid}: ${auto.get(a.q.id)!.answer}`)]
   const answeredLine = answered.length > 0 ? ` Answered, carry on from them: ${answered.join('; ')}.` : ''
+  const items = await io.standing.inbox()
   const late = await io.withPreflight(cur => {
-    const f = followUp(recordFiling(cur, name, parsed.filing, ids, at), name)
+    const f = followUp(recordFiling(cur, name, parsed.filing, ids, at), name, items)
     return { state: f.state, out: f.send ? f.state : undefined }
   })
   if (late !== undefined) {
-    const text = renderFollowUp(late, await io.standing.inbox(), name, at, cardsOn(options))
+    const text = renderFollowUp(late, items, name, at, cardsOn(options))
     io.submitLater(text)
   }
   await io.preflightTick(rows)
@@ -208,9 +209,10 @@ export async function answerTool(io: InboxIo, options: Record<string, unknown>, 
     lines.push(await io.answerQuestion(id, choice, by, options))
     if (always.has(id) && choice !== null && before !== undefined && !isFyi(before)) lines.push(await alwaysRule(io.standing, options, id, choice, agentId === undefined, before))
   }
-  // Pushed suggestion: main's answers may have made a topic a candidate for a standing rule (offered once each).
+  // Pushed suggestion: main's answers, defaults: true included, may have made a topic a candidate for a standing
+  // rule (offered once each, here or in main's status, whichever comes first).
   if (agentId === undefined && todo.size > 0) {
-    const offer = await offerNewSuggestions(io.standing, (await loadRules(io.standing, options)).rules).catch(() => [])
+    const offer = await offerSuggestionsOnce(io.standing, options).catch(() => [])
     lines.push(...offer)
   }
   return { result: lines.join('\n') }

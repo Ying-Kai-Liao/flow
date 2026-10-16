@@ -45,7 +45,7 @@ import {
 } from './inbox'
 import type { PaneRow } from './inbox'
 import {
-  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, gateOf, markDelivered, normalizePreflight, renderRound,
+  closeStale, deliverRound, denyText, doneManagers, EMPTY_PREFLIGHT, gateOf, normalizePreflight, renderRound,
 } from './preflight'
 import type { Preflight } from './preflight'
 import { deployToolAccess, EMPTY_LITE, isLiteName, normalizeLite, releaseToolAccess, reviewerToolAccess } from './lite'
@@ -56,7 +56,7 @@ import {
 } from './checks'
 import type { Check, Checks } from './checks'
 import type { Inbox, Marked, Question } from './inbox'
-import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, paneSuggestions, standingTool, suggestGuardTests } from './standing-run'
+import { addGuardTest, dismissSuggestionIds, loadRules, offerSeedsOnce, offerSuggestionsOnce, paneSuggestions, standingTool, suggestGuardTests } from './standing-run'
 import type { StandingIo } from './standing-run'
 import { decideEvalTool } from './decide-eval-run'
 import { sizeAbTool } from './size-ab'
@@ -86,7 +86,7 @@ import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
 import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
 import type { Forwarded, RouteIo } from './reviewer-route'
-import { noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue } from './reviewer-run'
+import { noteReached, noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue } from './reviewer-run'
 import { reconcileStale } from './stale-handovers'
 import type { StaleIo } from './stale-handovers'
 import type { BreakerIo, QueueIo, QueueWhy, ReviewerIo } from './reviewer-run'
@@ -189,6 +189,8 @@ const ledgerDelta = atom({ plugin: 'flow', key: 'ledgerDelta' } as const, {} as 
 const ledgerEpoch = atom({ plugin: 'flow', key: 'ledgerEpoch' } as const, '')
 const handoffs = atom({ plugin: 'flow', key: 'handoffs' } as const, {} as Record<string, HandoffRecord>)
 const queueRuns = atom({ plugin: 'flow', key: 'queueRuns' } as const, 0)
+// When the reviewer_delay wait ends (0: no wait): the atom outlives a hook reload, which cancels the wait's timer.
+const reviewerDelayUntil = atom({ plugin: 'flow', key: 'reviewerDelayUntil' } as const, 0)
 // The reviewer respawn circuit breaker, mirrored from <state dir>/reviewer-breaker.json.
 const reviewerBreaker = atom({ plugin: 'flow', key: 'reviewerBreaker' } as const, EMPTY_BREAKER as Breaker)
 // The open PRs gh listed last, so the 3 s refresh never calls gh itself.
@@ -503,6 +505,10 @@ function slotsIoOf($: EngineInterface): SlotsIo {
     slotDir: () => slotDir,
     typecheckSlots: () => read($, typecheckSlots),
     settleTypecheck: (rows, t, pre, me) => settleTypecheck($, rows, t, pre, me),
+    sessions: () => read($, sessions),
+    agents: () => $.agent.list(),
+    exec: argv => $.process.run(argv),
+    cwd: () => $.session.cwd(),
   }
 }
 
@@ -543,6 +549,7 @@ function statusIoOf($: EngineInterface, options: Record<string, unknown>, base: 
     slots: () => read($, testSlots),
     typecheckSlots: () => read($, typecheckSlots),
     offerSeeds: () => offerSeedsOnce(standingIoOf($), options),
+    offerSuggestions: () => offerSuggestionsOnce(standingIoOf($), options),
     pushState: () => read($, pushState),
     breaker: () => read($, reviewerBreaker),
     deploys: () => read($, deploys),
@@ -563,7 +570,7 @@ function commandIoOf($: EngineInterface): CommandIo {
     handovers: () => read($, handovers),
     preflight: () => read($, preflight),
     roster: () => read($, roster),
-    endedManagers: rows => endedManagers(rows),
+    endedManagers: (state, rows, hs) => doneManagers(state, rows, hs),
     endedOwners: () => endedOwnersOf($),
     panes: () => panesOf($),
     close: () => $.ui.close({ id: PANE }),
@@ -930,29 +937,21 @@ async function captureChecks($: EngineInterface, ho: Handover, verifyPaths: stri
   })
 }
 
-// Managers that ended with no live manager of the same notes key (a successor is the same manager).
-function endedManagers(rows: AgentRow[]): Set<string> {
-  const live = new Set(liveManagers(rows).map(a => noteKey(a.name ?? '')))
-  return new Set(rows.filter(a => a.type === MANAGER && ENDED.has(a.status) && !live.has(noteKey(a.name ?? ''))).map(a => noteKey(a.name ?? '')))
-}
-
-// Sends the round to main once it is due: everyone filed, skipped or ended, or the wait is over. The
-// delivered flag is written inside the update, so two callers deliver it once.
+// Sends the round to main once it is due: everyone filed, skipped or done (preflight.ts doneManagers), or
+// the wait is over. The delivered flag is written inside the update, so two callers deliver it once; a
+// round telling main nothing new is closed unsent (deliverRound).
 async function preflightTick($: EngineInterface, rows: AgentRow[]): Promise<void> {
   if (!(await read($, preflight)).rounds.some(r => !r.delivered)) return
   const t = await $.clock.now()
-  const ended = endedManagers(rows)
+  const hs = await read($, handovers)
+  const items = await read($, inbox)
   const due = await withPreflight($, cur => {
-    const d = dueRound(cur, ended, t, mirror.preflightWaitMs)
-    if (d === undefined) return { state: cur, out: undefined }
-    const changed = markDelivered(cur, d.round.id, t)
-    return { state: changed, out: { ...d, state: changed } }
+    const done = doneManagers(cur, rows, Object.values(hs))
+    const d = deliverRound(cur, items, done, t, mirror.preflightWaitMs)
+    return { state: d.state, out: d.send === undefined ? undefined : { ...d.send, done } }
   })
   if (due === undefined) return
-  const members = due.round.members.map(k => due.state.entries[k])
-  // A round of skipped managers only has nothing to say.
-  if (members.every(e => e === undefined || e.phase === 'skipped')) return
-  const text = renderRound(due.state, await read($, inbox), due.round, ended, t, due.timedOut, mirror.askCards)
+  const text = renderRound(due.state, items, due.round, due.done, t, due.timedOut, mirror.askCards)
   toMain($, text)
 }
 
@@ -1468,8 +1467,8 @@ function decideEvalIoOf($: EngineInterface): DecideEvalIo {
 // the next handover, or a reviewer that ended with work left, starts a fresh one.
 // Calls run one after another: handovers arriving back to back must not each see "no queue yet".
 let queueChain: Promise<unknown> = Promise.resolve()
-function ensureQueue($: EngineInterface, why: QueueWhy = 'other'): Promise<string> {
-  const run = queueChain.then(() => startQueue(queueIoOf($), why))
+function ensureQueue($: EngineInterface, why: QueueWhy = 'other', reported?: string): Promise<string> {
+  const run = queueChain.then(() => startQueue(queueIoOf($), why, reported))
   queueChain = run.catch(() => undefined)
   return run
 }
@@ -1556,8 +1555,32 @@ function queueIoOf($: EngineInterface): QueueIo {
     runs: () => read($, queueRuns),
     setRuns: n => update($, queueRuns, () => n),
     spawn: input => spawnReviewer($, input),
-    reviewerSession: async () => Object.values(await read($, sessions)).find(x => x.role === 'reviewer' && sessionLive(x)),
+    // Only one this main owns: another main's reviewer terminal is that main's to tell.
+    reviewerSession: async () => {
+      const all = await read($, sessions)
+      for (const x of Object.values(all)) {
+        if (x.role !== 'reviewer' || !sessionLive(x)) continue
+        const mine = await ownsSession($, x)
+        if (mine) return x
+      }
+      return undefined
+    },
     setTold: (s, told) => markNudged($, s.name, told),
+    stopReviewer: async s => void await sessionToolTo(sessionIoOf($), { action: 'stop', name: s.name, remove_worktree: true }, { id: 'main', name: 'main' }, heldSettings!),
+    reach: ms => {
+      $.clock.after(ms, () => {
+        void best($, 'looking at the reviewer', async () => void (await ensureQueue($)))
+      })
+    },
+    tell: async (id, text) => {
+      try {
+        const r = await $.session.send({ to: { agentId: id }, text })
+        if (r !== undefined && r.isDelivered === false) return r.reason ?? 'not delivered'
+        return undefined
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err)
+      }
+    },
     nudge: async (s, text, told) => {
       const r = await sendToSession(sessionIoOf($), s, text)
       if (r.exitCode !== 0) return r.stderr.trim() || `could not type into ${s.name}`
@@ -1583,16 +1606,22 @@ function queueIoOf($: EngineInterface): QueueIo {
         delayTimer = true
         $.clock.after(ms, () => {
           delayTimer = false
-          void best($, 'starting the reviewer', async () => void (await ensureQueue($)))
+          void best($, 'starting the reviewer', async () => {
+            await update($, reviewerDelayUntil, () => 0)
+            await ensureQueue($)
+          })
         })
       },
+      until: () => read($, reviewerDelayUntil),
+      setUntil: t => update($, reviewerDelayUntil, () => t),
     },
   }
 }
 
 let breakerTimer = false
 // reviewer_delay's timer, apart from the breaker's: a backoff and a delay never swallow each other. Lost on a restart,
-// where the session start's ensureQueue starts the reviewer at once.
+// where the session start's ensureQueue starts the reviewer at once, and on a hook reload, where reviewerDelayUntil
+// re-arms it at the next trigger (or starts the reviewer, once past it).
 let delayTimer = false
 
 // A reviewer's report to main: its whole answer, only for a run that did batch work, once main's transcript
@@ -1620,7 +1649,7 @@ async function reviewerEnded($: EngineInterface, name: string, end: { answer: st
 async function reviewerRan($: EngineInterface, id: string, name: string, end: { answer: string; reason?: string; status?: string }, ended: boolean): Promise<void> {
   await relayReviewerReport($, id, name, end.answer)
   if (ended) await reviewerEnded($, name, end)
-  else await ensureQueue($)
+  else await ensureQueue($, 'other', name)
 }
 
 // The settings as last loaded, for the module-level code that starts terminal sessions (register()'s own copy
@@ -1634,7 +1663,7 @@ function terminalSettings(): ReturnType<typeof settingsOf> | undefined {
 
 // The reviewer: a terminal session in mode orca or tmux, else the agent as always. A terminal that cannot
 // start is not replaced by an agent: the handover stays pending and the next trigger tries again.
-async function spawnReviewer($: EngineInterface, input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }): Promise<{ deny?: string }> {
+async function spawnReviewer($: EngineInterface, input: { subagentType: string; name: string; description: string; prompt: string; pending?: string[] }): Promise<{ deny?: string; terminal?: boolean }> {
   const { pending, ...agentInput } = input
   const settings = terminalSettings()
   if (settings === undefined) return $.agent.spawn(agentInput)
@@ -1654,7 +1683,7 @@ async function spawnReviewer($: EngineInterface, input: { subagentType: string; 
   }
   const told = pending ?? []
   if (told.length > 0) await markNudged($, input.name, told)
-  return {}
+  return { terminal: true }
 }
 
 // Records who a role session was told about. The io is bound to a const first: the plugin directory
@@ -1675,6 +1704,26 @@ function breakerIoOf($: EngineInterface): BreakerIo {
     now: () => $.clock.now(),
     withInbox: fn => withInbox($, fn),
     toast: text => { $.ui.toast(text) },
+    tell: text => { toMain($, text) },
+  }
+}
+
+// A flow tool call from `agentId` (an agent's id, or `session:<name>` for a relayed one) reached the plugin: when it
+// is the reviewer run in flight, the breaker records that its tools work. Never throws: the call goes on regardless.
+async function noteReviewerReached($: EngineInterface, agentId: string | undefined): Promise<void> {
+  try {
+    const b = await read($, reviewerBreaker)
+    if (agentId === undefined || b.run === undefined || b.run.reached !== false) return
+    let name = agentId.startsWith('session:') ? agentId.slice('session:'.length) : undefined
+    if (name === undefined) {
+      const all = await $.agent.list()
+      name = all.find(a => a.id === agentId)?.name
+    }
+    if (name !== b.run.name) return
+    const io = breakerIoOf($)
+    await noteReached(io, name)
+  } catch (err) {
+    await warn($, 'noting the reviewer reached the plugin', err)
   }
 }
 
@@ -2122,6 +2171,7 @@ function relayExecIoOf($: EngineInterface, c: FlowCtx): RelayExecIo {
     refresh: () => refresh($),
     slotLimits: () => ({ test: c.settings.testSlots, typecheck: c.settings.typecheckSlots ?? 1 }),
     flowTools: FLOW_TOOLS,
+    reached: key => noteReviewerReached($, key),
     runFlow: async (tool, input) => {
       const out = await runFlowTool($, tool, input, c)
       return out!
@@ -2186,6 +2236,7 @@ function toolCallIoOf($: EngineInterface, held: Pick<ToolCallIo, 'settings' | 'e
     alreadyForwarded: (id, text) => alreadyForwarded($, id, text),
     deliverToSession: (fromId, target, text) => deliverToSession($, fromId, target, text),
     holdForReviewer: id => holdForReviewer($, id),
+    startReviewer: () => ensureQueue($),
   }
 }
 
@@ -2582,6 +2633,7 @@ export const register: Register = (on, options) => {
   const toolCallHeld = { settings: () => kept.settings, explicitEffort, mainModel: () => kept.mainModel, mainWindow: () => kept.mainWindow }
   on('tool.call', async ($, e, next) => {
     if (relay !== undefined) return (await relayToolCallTo(relayRunIoOf($), kept.settings, e)) ?? next(e)
+    if (e.tool.startsWith('mcp__flow__')) await noteReviewerReached($, e.agentId)
     const io = toolCallIoOf($, toolCallHeld)
     const refused = await beforeToolCall(io, e)
     if (refused !== undefined) return refused

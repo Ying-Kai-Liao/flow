@@ -3,11 +3,12 @@ import { test } from './support'
 import { addQuestions, EMPTY_INBOX, markAnswered } from '../hooks/inbox'
 import type { Inbox } from '../hooks/inbox'
 import {
-  closeStale, denyText, dueRound, EMPTY_PREFLIGHT, followUp, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
+  closeStale, deliverRound, denyText, doneManagers, dueRound, EMPTY_PREFLIGHT, followUp, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
   recordFiling, recordSpawn, renderFollowUp, renderRound, renderStatus,
 } from '../hooks/preflight'
 import type { Preflight } from '../hooks/preflight'
 import { mergeLayers } from '../hooks/settings'
+import { sessionRow } from '../hooks/sessions'
 import { cardsNotice, cardsOn, CARDS_TEXT, lastLineAsks } from '../hooks/askcards'
 
 const OK = { summary: 'export csv', criteria: ['a file downloads'], shipped: [], depends: [] }
@@ -213,4 +214,107 @@ test('askcards helper: the instruction covers every rule; the report hint fires 
   expect(lastLineAsks('done\nShip it?\n')).toBe(true)
   expect(lastLineAsks('Ship it?\ndone')).toBe(false)
   expect(lastLineAsks('')).toBe(false)
+})
+
+// #222: managers past pre-flight without filing, and rounds that would tell main nothing new.
+const row = (name: string, status: string, id = name) => ({ id, name, description: '', type: 'flow:manager', status })
+const ho = (reportTo: string, at: number) => ({ pr: 1, title: 't', head: 'h', branch: 'b', reportTo, verified: '', pending: '', afterDeploy: '', status: 'pending' as const, at })
+
+test('doneManagers: an ended agent or session, a reported session, a handover since spawn; a live successor is not', () => {
+  let s = EMPTY_PREFLIGHT
+  for (const n of ['a', 'b', 'c', 'd', 'e', 'f']) s = recordSpawn(s, n, false, 10, 10 * MIN)
+  const rows = [
+    row('a', 'completed'), row('a-2', 'running'),
+    row('b', 'completed', 'session:b'),
+    sessionRow({ name: 'c', role: 'manager', status: 'reported', harness: 'claude', host: 'orca', owner: 'main' } as never),
+    row('d', 'running'),
+    row('e', 'running'),
+    row('f', 'running'),
+  ]
+  const done = doneManagers(s, rows, [ho('d', 20), ho('e-2', 11), ho('f', 5)])
+  expect([...done.entries()].sort()).toEqual([['b', 'ended'], ['c', 'finished'], ['d', 'handed over a PR'], ['e', 'handed over a PR']])
+})
+
+test('a done manager is settled: not timed out for, listed by why, and the round is due at once', () => {
+  let s = recordSpawn(recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0, 10 * MIN), 'b', false, 0, 10 * MIN), 'c', false, 0, 10 * MIN)
+  s = filed(s, 'a')
+  const done = new Map([['b', 'handed over a PR'], ['c', 'finished']])
+  expect(dueRound(s, done, 1, 10 * MIN)?.timedOut).toBe(false)
+  const text = renderRound(s, EMPTY_INBOX, s.rounds[0]!, done, 1, false)
+  expect(text).toContain('- b: handed over a PR without pre-flight')
+  expect(text).toContain('- c: finished without pre-flight')
+  expect(text).not.toContain('still in recon')
+  // Timed out with one manager in recon and one done: only the recon one is waited for.
+  const late = recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'x', false, 0, 10 * MIN), 'y', false, 0, 10 * MIN)
+  const t = renderRound(late, EMPTY_INBOX, late.rounds[0]!, new Map([['y', 'ended']]), 10 * MIN, true)
+  expect(t).toContain('Timed out waiting for: x.')
+  expect(t).toContain('- y: ended without pre-flight')
+})
+
+test('answered questions are left out of a round and of a late follow-up', () => {
+  let inbox: Inbox = addQuestions(EMPTY_INBOX, { name: 'a', isManager: true }, 'main',
+    [{ question: 'A?', options: ['x', 'y'], default: 'x', blocking: true }, { question: 'B?', options: ['x', 'y'], default: 'x', blocking: false }], 2).inbox
+  const m = markAnswered(inbox, 'q1', null, 'main', 3)
+  if (m.kind !== 'ok') throw new Error('not answered')
+  inbox = m.inbox
+  let s = filed(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0, 10 * MIN), 'a', OK, { asked: ['q1', 'q2'], blocking: ['q1'] })
+  // The inbox footer's usage example always says q1: look for the question itself.
+  const text = renderRound(s, inbox, s.rounds[0]!, NONE, 5, false)
+  expect(text).not.toContain('A?')
+  expect(text).toContain('questions: q2\n')
+  expect(text).toContain('B?')
+  s = recordSpawn(markDelivered(recordSpawn(EMPTY_PREFLIGHT, 'b', false, 0, 10 * MIN), 1, 1), 'z', false, 2, 10 * MIN)
+  s = filed(markDelivered(s, 2, 3), 'a', OK, { asked: ['q1', 'q2'], blocking: ['q1'] })
+  const late = renderFollowUp(s, inbox, 'a', 5)
+  expect(late).not.toContain('A?')
+  expect(late).toContain('questions: q2\n')
+  expect(late).toContain('B?')
+})
+
+test('deliverRound: a round telling main nothing new is closed unsent; a change or a new question is sent', () => {
+  // Round 1 times out with login in recon; login is spawned again and its round times out the same.
+  let s = filed(recordSpawn(recordSpawn(EMPTY_PREFLIGHT, 'csv', false, 0, 10 * MIN), 'login', false, 0, 10 * MIN), 'csv')
+  const r1 = deliverRound(s, EMPTY_INBOX, NONE, 10 * MIN, 10 * MIN)
+  expect(r1.send?.timedOut).toBe(true)
+  s = recordSpawn(r1.state, 'login', false, 11 * MIN, 10 * MIN)
+  const r2 = deliverRound(s, EMPTY_INBOX, NONE, 21 * MIN, 10 * MIN)
+  expect(r2.send).toBeUndefined()
+  expect(r2.state.rounds[1]!.delivered).toBe(true)
+  // Done since: that is news.
+  s = recordSpawn(r2.state, 'login', false, 22 * MIN, 10 * MIN)
+  expect(deliverRound(s, EMPTY_INBOX, new Set(['login']), 22 * MIN, 10 * MIN).send).toBeDefined()
+  // The same filing with a new open question is news too.
+  let q = filed(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0, 10 * MIN), 'a')
+  const d1 = deliverRound(q, EMPTY_INBOX, NONE, 1, 10 * MIN)
+  expect(d1.send).toBeDefined()
+  q = filed(recordSpawn(d1.state, 'a', false, 2, 10 * MIN), 'a')
+  expect(deliverRound(q, EMPTY_INBOX, NONE, 3, 10 * MIN).send).toBeUndefined()
+  const inbox = addQuestions(EMPTY_INBOX, { name: 'a', isManager: true }, 'main', [{ question: 'Q?', options: ['x', 'y'], default: 'x', blocking: false }], 2).inbox
+  q = filed(recordSpawn(q, 'a', false, 4, 10 * MIN), 'a', OK, { asked: ['q1'], blocking: [] })
+  expect(deliverRound(q, inbox, NONE, 5, 10 * MIN).send).toBeDefined()
+  // Skipped managers only: closed, nothing sent.
+  const sk = deliverRound(recordSpawn(EMPTY_PREFLIGHT, 's', true, 0, 10 * MIN), EMPTY_INBOX, NONE, 1, 10 * MIN)
+  expect(sk.send).toBeUndefined()
+  expect(sk.state.rounds[0]!.delivered).toBe(true)
+})
+
+test('a late filing main was already told of is not sent again', () => {
+  // a filed and was reported; a fresh spawn of a lands in a round closed unsent (left by a session that
+  // ended), then it files the same plan again.
+  let s = filed(recordSpawn(EMPTY_PREFLIGHT, 'a', false, 0, 10 * MIN), 'a')
+  s = deliverRound(s, EMPTY_INBOX, NONE, 1, 10 * MIN).state
+  s = closeStale(recordSpawn(s, 'a', false, 2, 10 * MIN), [], 3)
+  const again = followUp(filed(s, 'a'), 'a', EMPTY_INBOX)
+  expect(again.send).toBe(false)
+  expect(again.state.rounds[1]!.reported).toEqual(['a'])
+  // A different filing is news.
+  expect(followUp(filed(s, 'a', { ...OK, summary: 'export tsv' }), 'a', EMPTY_INBOX).send).toBe(true)
+})
+
+test('normalizePreflight: a record from before said loads without it and keeps the stored one', () => {
+  const old = { next: 2, entries: { a: { name: 'a', phase: 'recon', round: 1, spawnedAt: 0, blocking: [], asked: [] } }, rounds: [{ id: 1, openedAt: 0, members: ['a'], delivered: false, reported: [] }] }
+  const n = normalizePreflight(old)
+  expect('said' in n).toBe(false)
+  expect(deliverRound(n, EMPTY_INBOX, NONE, 10 * MIN, 10 * MIN).send?.timedOut).toBe(true)
+  expect(normalizePreflight({ ...old, said: { a: 'x', b: 3 } }).said).toEqual({ a: 'x' })
 })

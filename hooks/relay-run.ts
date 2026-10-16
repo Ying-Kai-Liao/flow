@@ -58,6 +58,8 @@ export type RelayExecIo = RelayRunIo & {
   refresh: () => Promise<AgentRow[]>
   slotLimits: () => { test: number; typecheck: number }
   flowTools: readonly string[]
+  // A call from the session `key` (session:<name>) arrived: the reviewer run in flight, if it is that one, reached the plugin.
+  reached?: (key: string) => Promise<void>
   runFlow: (tool: string, input: Record<string, unknown>) => Promise<RelayAnswer>
 }
 
@@ -190,6 +192,7 @@ async function sendFrom(io: RelayRunIo, key: string, name: string, to: string, t
 async function relayExec(io: RelayExecIo, call: RelayCall, name: string): Promise<RelayAnswer> {
   const key = sessionKey(name)
   const input = call.input
+  if (io.reached !== undefined) await io.reached(key)
   await io.best('logging a relayed call', async () => {
     const t = await io.now()
     const line = describeCall({ ...input, tool: call.tool })

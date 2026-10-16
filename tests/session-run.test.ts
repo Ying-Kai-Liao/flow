@@ -7,7 +7,7 @@ import { harnessesOf } from '../hooks/sessions'
 import { settingsOf } from '../hooks/settings'
 
 // Role sessions driven straight through the io (the engine is not needed): every command recorded.
-function world(o: { orca?: boolean; orcaTerminalInMain?: boolean; screen?: string; sessions?: Record<string, Session> } = {}) {
+function world(o: { orca?: boolean; orcaTerminalInMain?: boolean; screen?: string; sessions?: Record<string, Session>; gone?: Set<string> } = {}) {
   const files = new Map<string, string>()
   const mtimes = new Map<string, number>()
   const runs: string[][] = []
@@ -32,6 +32,9 @@ function world(o: { orca?: boolean; orcaTerminalInMain?: boolean; screen?: strin
     if (argv[0] === 'sh' && cmd.includes('command -v')) return out('/bin/x\n')
     if (cmd.startsWith('tmux capture-pane') || cmd.startsWith('orca terminal read')) return out(o.screen ?? 'working')
     if (cmd.startsWith('tmux display-message')) return out(alive ? 'claude\n' : 'zsh\n')
+    // Worktree directories a test removed: `test -d` fails until a `git worktree add` makes one again.
+    if (argv[0] === 'test' && argv[1] === '-d') return out('', o.gone?.has(argv[2]!) ? 1 : 0)
+    if (cmd.startsWith('git worktree add')) o.gone?.delete(argv.at(-2)!)
     if (cmd.startsWith('orca terminal show')) return out(JSON.stringify({ connected: alive }))
     return out('')
   }
@@ -246,4 +249,77 @@ test('a manager session starts claude with --effort, and a restart keeps it', as
   const typed = w.runs.find(a => a[0] === 'tmux' && a.includes('-l'))!.at(-1)!
   expect(typed).toContain("claude --effort 'high' --permission-mode")
   expect(w.sessions().m1!.start).toContain("--effort 'high'")
+})
+
+// #222: a reviewer whose worktree was removed under it (a sweep, a person) gets it back before anything runs there.
+const REMADE = ['git', 'worktree', 'add', '--detach', '/r/.claude/worktrees/rev', 'origin/main']
+
+test('restarting a reviewer session whose worktree is gone makes it again, detached at origin/<base>, before the respawn', async () => {
+  const gone = new Set<string>()
+  const w = world({ gone })
+  await startRoleSession(w.io, { role: 'reviewer', name: 'rev', prompt: 'p', owner: OWNER }, SETTINGS)
+  gone.add('/r/.claude/worktrees/rev')
+  w.runs.length = 0
+  expect(await sessionTool(w.io, { action: 'restart', name: 'rev' }, OWNER, SETTINGS)).toContain('Restarted rev')
+  const add = w.runs.findIndex(a => a.join(' ') === REMADE.join(' '))
+  const respawn = w.runs.findIndex(a => a[0] === 'tmux' && a[1] === 'respawn-pane')
+  expect(add).toBeGreaterThan(-1)
+  expect(respawn).toBeGreaterThan(add)
+  expect(w.runs.findIndex(a => a.join(' ') === 'git worktree prune')).toBeLessThan(add)
+
+  // Twice: the second restart finds it there and adds nothing.
+  w.runs.length = 0
+  await sessionTool(w.io, { action: 'restart', name: 'rev' }, OWNER, SETTINGS)
+  expect(w.runs.some(a => a[1] === 'worktree' && a[2] === 'add')).toBe(false)
+})
+
+test('a reviewer whose worktree is there restarts as before, with no git calls', async () => {
+  const w = world({ gone: new Set() })
+  await startRoleSession(w.io, { role: 'reviewer', name: 'rev', prompt: 'p', owner: OWNER }, SETTINGS)
+  w.runs.length = 0
+  await sessionTool(w.io, { action: 'restart', name: 'rev' }, OWNER, SETTINGS)
+  expect(w.runs.filter(a => a[0] === 'git')).toEqual([])
+})
+
+test('a message or keys typed into a reviewer session make its gone worktree again first', async () => {
+  const gone = new Set<string>()
+  const w = world({ gone })
+  await startRoleSession(w.io, { role: 'reviewer', name: 'rev', prompt: 'p', owner: OWNER }, SETTINGS)
+  gone.add('/r/.claude/worktrees/rev')
+  w.runs.length = 0
+  expect((await sendToSession(w.io, w.sessions().rev!, 'new handover: #4')).exitCode).toBe(0)
+  const add = w.runs.findIndex(a => a.join(' ') === REMADE.join(' '))
+  expect(add).toBeGreaterThan(-1)
+  expect(w.runs.findIndex(a => a[1] === 'set-buffer')).toBeGreaterThan(add)
+
+  gone.add('/r/.claude/worktrees/rev')
+  w.runs.length = 0
+  expect(await sessionTool(w.io, { action: 'keys', name: 'rev', keys: 'enter' }, OWNER, SETTINGS)).toContain('Pressed enter')
+  expect(w.runs.findIndex(a => a.join(' ') === REMADE.join(' '))).toBeLessThan(w.runs.findIndex(a => a[1] === 'send-keys'))
+})
+
+test('a reviewer worktree that cannot be made again: nothing is typed, the caller is told why', async () => {
+  const gone = new Set<string>()
+  const w = world({ gone })
+  await startRoleSession(w.io, { role: 'reviewer', name: 'rev', prompt: 'p', owner: OWNER }, SETTINGS)
+  gone.add('/r/.claude/worktrees/rev')
+  const io = { ...w.io, run: async (argv: string[], ms?: number) => argv[1] === 'worktree' && argv[2] === 'add' ? { exitCode: 128, stdout: '', stderr: 'fatal: invalid reference: origin/main' } : w.io.run(argv, ms) }
+  w.runs.length = 0
+  const r = await sendToSession(io, w.sessions().rev!, 'hi')
+  expect(r.exitCode).not.toBe(0)
+  expect(r.stderr).toContain('fatal: invalid reference')
+  expect(w.runs.some(a => a[0] === 'tmux')).toBe(false)
+  expect(await sessionTool(io, { action: 'restart', name: 'rev' }, OWNER, SETTINGS)).toContain('Could not restart rev: its worktree /r/.claude/worktrees/rev is gone')
+  expect(w.runs.some(a => a[1] === 'respawn-pane')).toBe(false)
+})
+
+test('a worker session whose worktree is gone is not restarted into a missing directory', async () => {
+  const gone = new Set<string>()
+  const w = world({ gone })
+  expect(await sessionTool(w.io, { action: 'start', name: 'w1', brief: 'Your name: w1' }, OWNER, SETTINGS)).toContain('Started w1')
+  gone.add('/r/.claude/worktrees/w1')
+  w.runs.length = 0
+  const r = await sessionTool(w.io, { action: 'restart', name: 'w1' }, OWNER, SETTINGS)
+  expect(r).toContain("Refused: w1's worktree /r/.claude/worktrees/w1 is gone")
+  expect(w.runs.some(a => a[1] === 'respawn-pane' || (a[1] === 'worktree' && a[2] === 'add'))).toBe(false)
 })
