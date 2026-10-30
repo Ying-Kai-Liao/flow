@@ -219,6 +219,19 @@ test('main pumps a role session\'s calls and runs them as that session: a note, 
   expect([...w.files.keys()].some(k => k.includes('/taken-'))).toBe(false)
 })
 
+test('a restarted main loads families.json first: a terminal manager issue-240 keeps its own notes, not issue-238\'s', async ($, on) => {
+  const w = world(on)
+  const session = (name: string) => ({ ...MANAGER, name, handle: `flow-${name}`, relayDir: `${DIR}/sessions/${name}/relay` })
+  w.files.set(`${DIR}/sessions.json`, JSON.stringify({ 'issue-238': session('issue-238'), 'issue-240': session('issue-240') }))
+  w.files.set(`${DIR}/families.json`, JSON.stringify({ 'issue-238': 'issue-238', 'issue-240': 'issue-240' }))
+  await start($)
+  leave(w, 'n1', 'mcp__flow__note', { manager: 'issue-240', text: 'after the restart', kind: 'progress' }, 'issue-240')
+  await w.clock.advance(1200)
+  expect(answerOf(w, 'n1', 'issue-240')?.result).toContain('Noted in')
+  expect(w.files.get(`${DIR}/managers/issue-240/notes.md`)).toContain('progress: after the restart')
+  expect(w.files.has(`${DIR}/managers/issue/notes.md`)).toBe(false)
+})
+
 // A claude worker session started by terminal manager m1, relaying its flow tools.
 const WORKER = (name: string) => ({
   ...SESSION, name, handle: `flow-${name}`, worktree: `/r/.claude/worktrees/${name}`, branch: `flow/${name}`, promptFile: `${DIR}/sessions/${name}/prompt.md`,

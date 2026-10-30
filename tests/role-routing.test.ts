@@ -110,6 +110,31 @@ test('mode tmux: main\'s manager spawn starts a terminal session and is answered
   expect(stored(w, 'preflight').entries['csv-mgr']).toBeDefined()
 })
 
+test('mode tmux: a manager\'s family is recorded in main before its session starts, and its relayed note and pre-flight use it', { options: TMUX }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await spawnManager($, 'issue-238')
+  await spawnManager($, 'issue-240')
+  await spawnManager($, 'issue-238-2')
+  expect(newSessions(w)).toEqual(['flow-issue-238', 'flow-issue-240', 'flow-issue-238-2'])
+  expect(stored(w, 'families')).toEqual({ 'issue-238': 'issue-238', 'issue-240': 'issue-240', 'issue-238-2': 'issue-238' })
+  expect(Object.keys(stored(w, 'preflight').entries).sort()).toEqual(['issue-238', 'issue-240'])
+  // issue-240's flow tools reach main through its relay dir and run there, under its own key.
+  const relay = `${DIR}/sessions/issue-240/relay`
+  const leave = (id: string, tool: string, input: Record<string, unknown>) =>
+    w.files.set(`${relay}/call-${id}.json`, JSON.stringify({ id, tool, input, from: 'session:issue-240', role: 'manager', by: 'issue-240', at: 1 }))
+  leave('n1', 'mcp__flow__note', { manager: 'issue-240', text: 'its own notes', kind: 'progress' })
+  leave('p1', 'mcp__flow__preflight', { from: 'issue-240', summary: 'do it', criteria: ['works'], shipped: [], depends: [] })
+  // The roster poll arms the relay pump for the sessions started since; the pump then takes the calls.
+  await w.clock.advance(4000)
+  await w.clock.settle()
+  expect(w.files.get(`${DIR}/managers/issue-240/notes.md`)).toContain('progress: its own notes')
+  expect(w.files.has(`${DIR}/managers/issue/notes.md`)).toBe(false)
+  const entries = stored(w, 'preflight').entries
+  expect(entries['issue-240'].phase).toBe('filed')
+  expect(entries['issue-238'].phase).toBe('recon')
+})
+
 test('mode agent (the default) starts the agent as before', async ($, on) => {
   const w = world(on)
   await start($)
