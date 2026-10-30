@@ -368,7 +368,7 @@ stops a tool call.
   afterDeploy, evidence?: {ran, exercised, notVerified}, status, at, sha?, report?, reason?}`; `status` is pending, awaiting, taken, ready (⇪, in a batch that awaits `/flow push`), done or returned.
   A new session loads these.
 - `push.json`: `{batch?: {id, state, prs, items, sha, baseSha, ref, check, createdAt, version?, qid?, releasedAt?, reason?}}`; `state` is ready, pushing or rebuilding, `ref` is `refs/flow/push/<id>` (a local ref shared by all worktrees). The inbox item has kind `push`, options push / not yet (default) / drop, and is never answered by standing answers.
-- `reviewer-breaker.json`: `{streak, run?: {name, startedAt}, endedAt?, error?, starts?: [ms], halt?: {at, error, qid?}}`; `halt` stops reviewer starts until a retry. Its inbox item has kind `reviewer`, options retry / not now (default), and is never answered by standing answers. Missing or damaged reads as an empty history.
+- `reviewer-breaker.json`: `{streak, run?: {name, startedAt, reached?, reachFrom?, frame?: 'tool' | 'other'}, endedAt?, error?, starts?: [ms], halt?: {at, error, qid?}, unreachable?, unreachableTold?}`; `frame` is where an agent reviewer was spawned (an unreachable end counts toward the halt only for `tool`); `halt` stops reviewer starts until a retry. Its inbox item has kind `reviewer`, options retry / not now (default), and is never answered by standing answers. Missing or damaged reads as an empty history.
 - `log.jsonl`: one JSON object per line, `{ts, event, owner, agent?, pr?, branch?, text?}`;
   `event` is spawn, report, handover, take, done, back or note. `owner` is the manager the
   event belongs to (or `main`).

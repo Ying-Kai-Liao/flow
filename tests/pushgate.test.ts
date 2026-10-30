@@ -398,7 +398,11 @@ test('/flow push: releases the batch, starts a reviewer with the push prompt, tw
   w.agents.find(a => a.id === 'r1')!.status = 'completed'
   const text = await cmd($, 'push')
   expect(text).toContain('Batch 11111111 released (#7, #8)')
-  expect(text).toContain('Started reviewer reviewer-2')
+  // A command is no tool call: the reviewer starts from the next one.
+  expect(text).toContain('A reviewer is starting.')
+  expect(w.spawns).toHaveLength(1)
+  await status($)
+  expect(w.spawns).toHaveLength(2)
   expect(stored(w, 'push').batch).toMatchObject({ state: 'pushing', releasedAt: 1_000_000 })
   expect(items_(w)[0]).toMatchObject({ state: 'answered', answer: 'push', answeredBy: 'user' })
   expect(w.spawns[1]!.prompt).toContain('Push run for batch 11111111')
@@ -473,6 +477,7 @@ test('send back: the PR returns with the reason and its manager is told; the res
   expect(statusOf(w, 8)).toBe('ready')
   expect(stored(w, 'push').batch).toMatchObject({ state: 'rebuilding', prs: [8] })
   expect(items_(w)[0]).toMatchObject({ state: 'answered', answer: 'send back #7' })
+  await status($)
   expect(w.spawns[1]!.prompt).toContain('Rebuild run for batch 11111111')
   // The rebuild: the reviewer is told, takes the ready PR, builds again, records the new head.
   expect(await reviewer($, 'r2', { action: 'list' })).toContain('REBUILD RUN: PR #7 was sent back by the user')
@@ -503,6 +508,7 @@ test('the base moved: the push run rebuilds the same PRs on the new base, re-cut
   w.files.set('/q/plugin.json', '{\n  "version": "0.5.0"\n}\n')
   expect(await $.tool.call({ tool: 'mcp__flow__release', dir: '/q', prs: [7, 8], recut: true, agentId: 'r1' } as never).then(r => String(r.result))).toContain('already released')
   await cmd($, 'push')
+  await status($)
   w.agents.find(a => a.id === 'r2')!.status = 'running'
   expect(await $.tool.call({ tool: 'mcp__flow__release', dir: '/q', prs: [7, 8], agentId: 'r2' } as never).then(r => String(r.result))).toContain('already released')
   expect(await $.tool.call({ tool: 'mcp__flow__release', dir: '/q', prs: [7, 8], recut: true, agentId: 'r2' } as never).then(r => String(r.result))).toContain('Released 0.5.1')
@@ -574,6 +580,7 @@ test('restart: a ready batch on disk is shown by status and resume and its inbox
   expect(resume).toContain('Batch 11111111 ready to push')
   expect(resume).toContain('handover ready')
   expect(await cmd($, 'push')).toContain('Batch 11111111 released')
+  await status($)
   expect(w.spawns).toHaveLength(1)
 
 })
@@ -584,5 +591,7 @@ test('restart: a batch released by a session that died gets its reviewer on the 
   w2.files.set(`${DIR}/handovers/7.json`, JSON.stringify({ version: 1, pr: 7, title: 'Export', head: 'h7', branch: 'flow/b7', reportTo: 'csv-export', verified: '', pending: 'none', afterDeploy: 'none', status: 'ready', at: 1 }))
   await start($)
   await w2.clock.advance(5)
+  // The session start wants the reviewer; the first tool call starts it.
+  await status($)
   expect(w2.spawns.map(s => s.prompt.includes('Push run for batch 11111111'))).toEqual([true])
 })

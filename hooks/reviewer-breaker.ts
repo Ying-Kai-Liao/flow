@@ -33,7 +33,10 @@ export function normalizeBreaker(raw: unknown): Breaker {
   const out: Breaker = { streak: num(r.streak) && r.streak > 0 ? Math.floor(r.streak) : 0 }
   const run = r.run as Record<string, unknown> | undefined | null
   if (run && typeof run.name === 'string' && num(run.startedAt)) {
-    out.run = { name: run.name, startedAt: run.startedAt, ...(typeof run.reached === 'boolean' ? { reached: run.reached } : {}), ...(num(run.reachFrom) ? { reachFrom: run.reachFrom } : {}) }
+    out.run = {
+      name: run.name, startedAt: run.startedAt, ...(typeof run.reached === 'boolean' ? { reached: run.reached } : {}), ...(num(run.reachFrom) ? { reachFrom: run.reachFrom } : {}),
+      ...(run.frame === 'tool' || run.frame === 'other' ? { frame: run.frame } : {}),
+    }
   }
   if (num(r.endedAt)) out.endedAt = r.endedAt
   if (typeof r.error === 'string') out.error = r.error
@@ -78,9 +81,9 @@ function waitLeft(b: Breaker, now: number): number {
 }
 
 // `tracked`: the plugin watches whether this run's flow tools reach it (see endRun); a run recorded without it never
-// counts as unreachable.
-export const startRun = (b: Breaker, name: string, now: number, tracked = false): Breaker =>
-  ({ ...b, run: { name, startedAt: now, ...(tracked ? { reached: false } : {}) }, starts: [...recentStarts(b, now), now] })
+// counts as unreachable. `frame`: where an agent reviewer is spawned (see Breaker.run).
+export const startRun = (b: Breaker, name: string, now: number, tracked = false, frame?: 'tool' | 'other'): Breaker =>
+  ({ ...b, run: { name, startedAt: now, ...(tracked ? { reached: false } : {}), ...(frame !== undefined ? { frame } : {}) }, starts: [...recentStarts(b, now), now] })
 
 // A flow tool call of the run `name` arrived: its tools work, and the unreachable streak ends.
 export function reachRun(b: Breaker, name: string): Breaker {
@@ -120,9 +123,16 @@ export const isFailure = (e: RunEnd): boolean => e.answer.trim() === '' || e.rea
 // without a flow tool call ever reaching the plugin is `unreachable`: it counts in its own streak, not the short-run
 // one, so the next start is a fresh reviewer at once; the halt after HALT_AFTER in a row stays the backstop. A failed
 // end (an API error, no answer) is a short or failed run as before: it never got as far as calling a tool.
+// An agent spawned outside a tool.call hook (frame 'other') has its tool calls left unanswered by the host: that end is
+// the plugin's doing, not the reviewer's, so it counts toward no streak and the next one starts at once; the hourly cap
+// still bounds the starts.
 export function endRun(b: Breaker, e: RunEnd): { breaker: Breaker; halted: boolean; unreachable?: true } {
   if (b.run === undefined || b.run.name !== e.name) return { breaker: b, halted: false }
   const lived = e.now - b.run.startedAt
+  if (b.run.reached === false && !isFailure(e) && b.run.frame === 'other') {
+    const { run: _run, ...kept } = b
+    return { breaker: kept, halted: false }
+  }
   if (b.run.reached === false && !isFailure(e)) {
     const { run: _run, error: _error, ...kept } = b
     const unreachable = (b.unreachable ?? 0) + 1
@@ -148,13 +158,13 @@ export function clearHalt(b: Breaker): Breaker {
 
 // What main is told, once per unreachable streak, when a reviewer ends without its tools reaching the plugin.
 export function unreachableNotice(name: string, error: string): string {
-  return `flow: reviewer ${name} ended, but ${error}. Its mcp__flow__* calls were answered by the host, not by flow (e.g. "no tool.call hook answered this call"): flow's hooks were not running in that process. The plugin starts a fresh reviewer in a new worktree; after ${HALT_AFTER} in a row it halts the queue and asks you. Said once until a reviewer reaches the plugin again.`
+  return `flow: reviewer ${name} ended, but ${error}. Its mcp__flow__* calls were answered by the host, not by flow (e.g. "no tool.call hook answered this call"). The plugin starts a fresh reviewer in a new worktree from the next tool call; after ${HALT_AFTER} in a row it halts the queue and asks you, and answering "${RETRY_ANSWER}" starts one from that answer's own tool call. Said once until a reviewer reaches the plugin again.`
 }
 
 export const haltQuestion = 'The reviewer cannot start: it keeps ending at once. Retry?'
 
 export function haltContext(error: string): string {
-  if (error.startsWith(UNREACHABLE_ERROR)) return `The last ${HALT_AFTER} reviewers ended without one flow tool call reaching the plugin (${error}), so the plugin stopped starting them; handed-over PRs wait. Their flow tools were answered by the host, not by flow: check that the flow plugin loads (/plugin, or a reload), then answer "${RETRY_ANSWER}" to start a fresh reviewer, or "${NOT_NOW_ANSWER}" to leave the queue halted (/flow resume retries later).`
+  if (error.startsWith(UNREACHABLE_ERROR)) return `The last ${HALT_AFTER} reviewers ended without one flow tool call reaching the plugin (${error}), so the plugin stopped starting them; handed-over PRs wait. Their flow tools were answered by the host, not by flow. Answer "${RETRY_ANSWER}" to start a fresh reviewer from that answer's own tool call, where its flow tools reach the plugin, or "${NOT_NOW_ANSWER}" to leave the queue halted (/flow resume retries later).`
   if (error === CAP_ERROR) return `The plugin stopped starting reviewers: ${error}. Handed-over PRs wait. Retry clears the halt but not the start history, so a new reviewer starts only once the last hour holds fewer than ${MAX_STARTS_PER_HOUR} starts. Answer "${RETRY_ANSWER}" to try, or "${NOT_NOW_ANSWER}" to leave the queue halted.`
   return `The last ${HALT_AFTER} reviewers each ended within ${SHORT_RUN_MS / 1000}s, so the plugin stopped starting them; handed-over PRs wait. Last error: ${error}. Fix the cause (usage limit, sign-in, network), then answer "${RETRY_ANSWER}" to start a reviewer, or "${NOT_NOW_ANSWER}" to leave the queue halted (/flow resume retries later).`
 }

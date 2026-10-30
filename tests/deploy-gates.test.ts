@@ -278,6 +278,9 @@ test('hold and release are main only; unknown targets list the configured ones; 
   w.agents.length = 0
   const rel = await $.command.run({ command: 'flow', args: 'release demo' } as never).then(r => r.text ?? '')
   expect(rel).toContain('demo released')
+  // A command is no tool call: the reviewer starts from the next one.
+  expect(w.spawned).toEqual([])
+  await deploy($, { action: 'list' })
   expect(w.spawned).toEqual(['flow:reviewer'])
   expect(await deploy($, { action: 'gate', target: 'demo', sha: 'abc' }, 'q2')).toBe('Go')
   expect(await $.command.run({ command: 'flow', args: 'release demo' } as never).then(r => r.text ?? '')).toContain('has no hold')

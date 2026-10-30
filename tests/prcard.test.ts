@@ -252,6 +252,8 @@ test('the pane: Approve runs what /flow approve runs; a second press is refused 
   await ui.press({ key: 'pr-approve' })
   expect(rec(w, 7)).toMatchObject({ status: 'pending', approvedHead: 'h7' })
   expect(w.toasts.join('\n')).toContain('PR #7 approved at h7')
+  // A press is no tool call: the reviewer starts from the next one.
+  await $.tool.call({ tool: 'mcp__flow__status' } as never)
   expect(w.agents.some(a => a.type === 'flow:reviewer')).toBe(true)
   // The card stays open and shows the new status; the buttons are gone, so nothing can approve twice.
   expect(await ui.find({ text: /Approved PR #7 at h7/ })).toBeDefined()

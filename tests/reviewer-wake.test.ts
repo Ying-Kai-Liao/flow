@@ -3,7 +3,7 @@ import { expect, mock } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { Breaker, Handover, Session } from '../types'
 import { mirror } from '../hooks/core'
-import { decide, EMPTY_BREAKER, endRun, HALT_AFTER, haltContext, normalizeBreaker, REACH_MS, reachRun, startRun, UNREACHABLE_ERROR } from '../hooks/reviewer-breaker'
+import { decide, EMPTY_BREAKER, endRun, HALT_AFTER, haltContext, normalizeBreaker, REACH_MS, reachRun, RETRY_ANSWER, startRun, unreachableNotice, UNREACHABLE_ERROR } from '../hooks/reviewer-breaker'
 import { noteReviewerEnd, startQueue, toldKey } from '../hooks/reviewer-run'
 import type { BreakerIo, QueueIo } from '../hooks/reviewer-run'
 import { test } from './support'
@@ -235,6 +235,72 @@ test('a reviewer terminal whose tools never reached the plugin is stopped and re
   expect(ok.w.stopped).toEqual([])
 })
 
+// ---- the start path: an agent reviewer is spawned only inside the reviewer-start tool.call hook ----
+
+test('outside the reviewer-start hook a start is only wanted: no spawn, no run, the full decision runs again there', async () => {
+  const wanted: number[] = []
+  const away = setup({ pending: [ho(7)] })
+  away.io.want = () => { wanted.push(1) }
+  away.io.frame = 'other'
+  expect(await startQueue(away.io)).toBe('A reviewer is starting.')
+  expect(wanted).toHaveLength(1)
+  expect(away.w.spawns).toEqual([])
+  expect(away.w.breaker).toEqual(EMPTY_BREAKER)
+  // Nothing to start, a halt, or a backoff: nothing is wanted.
+  const idle = setup()
+  idle.io.want = () => { wanted.push(2) }
+  expect(await startQueue(idle.io)).toBe('Nothing pending.')
+  const halted = setup({ pending: [ho(7)], breaker: { streak: 3, halt: { at: 1, error: 'x' } } })
+  halted.io.want = () => { wanted.push(3) }
+  expect(await startQueue(halted.io)).toContain('halted')
+  expect(wanted).toEqual([1])
+  // Inside the hook it spawns, and the run says where.
+  const hook = setup({ pending: [ho(7)] })
+  hook.io.frame = 'tool'
+  expect(await startQueue(hook.io)).toBe('Started reviewer reviewer-1.')
+  expect(hook.w.breaker.run).toMatchObject({ name: 'reviewer-1', reached: false, frame: 'tool' })
+})
+
+test('an unreachable end of an agent spawned outside a tool.call hook counts toward no halt; one spawned inside still does, and short failed runs still halt', () => {
+  const otherEnd = (b: Breaker, name: string, at: number) => endRun(startRun(b, name, at, true, 'other'), { name, now: at + 11_000, answer: 'My flow tools fail: no tool.call hook answered this call.' })
+  let b: Breaker = EMPTY_BREAKER
+  for (let i = 1; i <= HALT_AFTER + 2; i++) {
+    const r = otherEnd(b, `reviewer-${i}`, i * 20_000)
+    expect(r.halted).toBe(false)
+    expect(r.unreachable).toBeUndefined()
+    b = r.breaker
+  }
+  expect(b).toMatchObject({ streak: 0 })
+  expect(b.unreachable).toBeUndefined()
+  expect(b.run).toBeUndefined()
+  expect(decide(b, 200_000)).toEqual({ kind: 'spawn' })
+  // Spawned inside the hook: unreachable is a real failure, and the third in a row halts.
+  const toolEnd = (x: Breaker, name: string, at: number) => endRun(startRun(x, name, at, true, 'tool'), { name, now: at + 11_000, answer: 'no tool.call hook answered this call' })
+  const third = toolEnd(toolEnd(toolEnd(EMPTY_BREAKER, 'reviewer-1', 0).breaker, 'reviewer-2', 20_000).breaker, 'reviewer-3', 70_000)
+  expect(third.halted).toBe(true)
+  // A failed end (an API error) is a short run wherever it was spawned.
+  let f: Breaker = EMPTY_BREAKER
+  let halted = false
+  for (let i = 1; i <= HALT_AFTER; i++) {
+    const r = endRun(startRun(f, `reviewer-${i}`, i * 400_000, true, 'other'), { name: `reviewer-${i}`, now: i * 400_000 + 500, answer: '', reason: 'error' })
+    f = r.breaker
+    halted = r.halted
+  }
+  expect(halted).toBe(true)
+  // The hourly cap still bounds starts that count toward nothing.
+  expect(decide({ streak: 0, starts: Array.from({ length: 20 }, (_, i) => 1_000 + i) }, 2_000)).toEqual({ kind: 'cap' })
+})
+
+test('the halt and the unreachable notice say what helps: a retry answer, not a plugin reload', () => {
+  const text = haltContext(`${UNREACHABLE_ERROR} (ended after 11s: x)`)
+  expect(text).toContain(`"${RETRY_ANSWER}"`)
+  expect(text).not.toContain('reload')
+  expect(text).not.toContain('/plugin')
+  const notice = unreachableNotice('reviewer-1', UNREACHABLE_ERROR)
+  expect(notice).not.toContain('not running in that process')
+  expect(notice).toContain(`"${RETRY_ANSWER}"`)
+})
+
 // ---- the breaker's rules ----
 
 const unreachedEnd = (b: Breaker, name: string, at: number) => endRun(startRun(b, name, at, true), { name, now: at + 11_000, answer: 'My flow tools fail: no tool.call hook answered this call.' })
@@ -264,6 +330,8 @@ test('an answer with no flow tool call reaching the plugin counts as unreachable
 
 test('a breaker file without the new fields loads, and the new fields round-trip', () => {
   expect(normalizeBreaker({ streak: 2, run: { name: 'reviewer-3', startedAt: 5 } })).toEqual({ streak: 2, run: { name: 'reviewer-3', startedAt: 5 } })
+  expect(normalizeBreaker({ streak: 0, run: { name: 'r', startedAt: 5, reached: false, frame: 'tool' } })).toEqual({ streak: 0, run: { name: 'r', startedAt: 5, reached: false, frame: 'tool' } })
+  expect(normalizeBreaker({ streak: 0, run: { name: 'r', startedAt: 5, frame: 'timer' } })).toEqual({ streak: 0, run: { name: 'r', startedAt: 5 } })
   expect(normalizeBreaker({ streak: 0, run: { name: 'r', startedAt: 5, reached: false }, unreachable: 2, unreachableTold: true }))
     .toEqual({ streak: 0, run: { name: 'r', startedAt: 5, reached: false }, unreachable: 2, unreachableTold: true })
 })
@@ -372,13 +440,19 @@ const stored = (w: W, name: string) => JSON.parse(w.files.get(`${DIR}/${name}.js
 const newSessions = (w: W) => w.runs.filter(a => a[0] === 'tmux' && a[1] === 'new-session').map(a => a[a.indexOf('-s') + 1])
 const killed = (w: W) => w.runs.filter(a => a[0] === 'tmux' && a[1] === 'kill-session').map(a => a.at(-1))
 const notices = (w: W) => w.prompts.filter(t => t.includes('never reached the plugin'))
+// Any tool call in the session: a start a timer or a turn end wanted is spawned there (the reviewer-start hook).
+async function settle($: Dollar, w: W) {
+  await w.clock.settle()
+  await $.tool.call({ tool: 'mcp__flow__status' } as never)
+  await w.clock.settle()
+}
 
 // The agent `id` answers after 11s without one flow tool call, as the 0.6.103 reviewers did.
 async function endUnreached($: Dollar, w: W, id: string) {
   await w.clock.advance(11_000)
   w.agents.find(a => a.id === id)!.status = 'completed'
   await $.turn.complete({ answer: 'My mcp__flow__ tools fail: no tool.call hook answered this call.', agentId: id, durationMs: 11_000, isAborted: false, turnId: `t-${id}`, reason: 'answer' } as never)
-  await w.clock.settle()
+  await settle($, w)
 }
 
 test('agent mode: a pending handover reaches a reviewer held on background work', async ($, on) => {
@@ -401,21 +475,21 @@ test('agent mode: reviewers whose tools never reach the plugin are reported once
   await start($)
   await handover($, 7)
   await endUnreached($, w, 'r1')
-  await w.clock.advance(1_000); await w.clock.settle()
+  await w.clock.advance(1_000); await settle($, w)
   expect(notices(w)).toHaveLength(1)
   expect(notices(w)[0]).toContain('reviewer reviewer-1 ended')
   // Replaced at once with a fresh reviewer.
   expect(w.spawns).toEqual(['reviewer-1', 'reviewer-2'])
   expect(stored(w, 'reviewer-breaker')).toMatchObject({ streak: 0, unreachable: 1 })
   await endUnreached($, w, 'r2')
-  await w.clock.advance(1_000); await w.clock.settle()
+  await w.clock.advance(1_000); await settle($, w)
   expect(notices(w)).toHaveLength(1)
   expect(w.spawns).toHaveLength(2)
-  await w.clock.advance(30_000); await w.clock.settle()
+  await w.clock.advance(30_000); await settle($, w)
   expect(w.spawns).toHaveLength(3)
   await endUnreached($, w, 'r3')
   expect(stored(w, 'reviewer-breaker').halt?.error).toContain(UNREACHABLE_ERROR)
-  await w.clock.advance(20 * 60_000); await w.clock.settle()
+  await w.clock.advance(20 * 60_000); await settle($, w)
   expect(w.spawns).toHaveLength(3)
 })
 
@@ -459,4 +533,63 @@ test('terminal mode: another main\'s live reviewer terminal is not this main\'s 
   expect(await handover($, 7)).toContain('Started reviewer reviewer-1')
   expect(newSessions(w)).toEqual(['flow-reviewer-1'])
   expect(w.runs.filter(a => a[0] === 'tmux' && a[1] === 'set-buffer' && a.includes('flow-reviewer-9'))).toEqual([])
+})
+
+// A reviewer that called a flow tool, then ends after 40s with an answer while #7 is still pending (in this fake).
+async function endWorked($: Dollar, w: W, id: string) {
+  await $.tool.call({ tool: 'mcp__flow__reviewer', action: 'list', agentId: id } as never)
+  await w.clock.advance(40_000)
+  w.agents.find(a => a.id === id)!.status = 'completed'
+  await $.turn.complete({ answer: 'Nothing merged.', agentId: id, durationMs: 40_000, isAborted: false, turnId: `t-${id}`, reason: 'answer' } as never)
+  await w.clock.settle()
+}
+const asks = (w: W) => w.prompts.filter(t => t.includes('a reviewer start is waiting for a tool call'))
+
+test('agent mode: a start a reviewer\'s end wants is spawned by the next tool call, a worker\'s too, and only once for parallel calls', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await handover($, 7)
+  expect(w.spawns).toEqual(['reviewer-1'])
+  expect(stored(w, 'reviewer-breaker').run).toMatchObject({ name: 'reviewer-1', frame: 'tool' })
+  await endWorked($, w, 'r1')
+  // The end ran in turn.complete: nothing is spawned there.
+  expect(w.spawns).toEqual(['reviewer-1'])
+  await Promise.all([1, 2, 3].map(() => $.tool.call({ tool: 'mcp__flow__status', agentId: 'm1' } as never)))
+  expect(w.spawns).toEqual(['reviewer-1', 'reviewer-2'])
+  expect(stored(w, 'reviewer-breaker').run).toMatchObject({ name: 'reviewer-2', frame: 'tool' })
+  // Nothing wanted now: later calls start nothing.
+  await $.tool.call({ tool: 'mcp__flow__status' } as never)
+  expect(w.spawns).toHaveLength(2)
+  expect(asks(w)).toEqual([])
+})
+
+test('agent mode: with no tool call for a while, main is asked once to make one, and its call starts the reviewer', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await handover($, 7)
+  await endWorked($, w, 'r1')
+  await w.clock.advance(19_000); await w.clock.settle()
+  expect(asks(w)).toEqual([])
+  await w.clock.advance(1_000); await w.clock.settle()
+  expect(asks(w)).toHaveLength(1)
+  expect(asks(w)[0]).toContain('mcp__flow__status')
+  // Once per wanted start, not in a loop.
+  await w.clock.advance(5 * 60_000); await w.clock.settle()
+  expect(asks(w)).toHaveLength(1)
+  expect(w.spawns).toEqual(['reviewer-1'])
+  await $.tool.call({ tool: 'mcp__flow__status' } as never)
+  expect(w.spawns).toEqual(['reviewer-1', 'reviewer-2'])
+})
+
+test('terminal mode: a start from a timer opens the terminal at once, with no tool call and no ask to main', { options: TMUX }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await handover($, 7)
+  expect(newSessions(w)).toEqual(['flow-reviewer-1'])
+  expect(stored(w, 'reviewer-breaker').run.frame).toBeUndefined()
+  // reviewer-1 never reaches the plugin: the REACH timer replaces it from the timer itself.
+  await w.clock.advance(REACH_MS); await w.clock.settle()
+  expect(newSessions(w)).toEqual(['flow-reviewer-1', 'flow-reviewer-2'])
+  await w.clock.advance(60_000); await w.clock.settle()
+  expect(asks(w)).toEqual([])
 })

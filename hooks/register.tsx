@@ -86,7 +86,7 @@ import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
 import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
 import type { Forwarded, RouteIo } from './reviewer-route'
-import { noteReached, noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue } from './reviewer-run'
+import { noteReached, noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue, WANTED_LINE } from './reviewer-run'
 import { reconcileStale } from './stale-handovers'
 import type { StaleIo } from './stale-handovers'
 import type { BreakerIo, QueueIo, QueueWhy, ReviewerIo } from './reviewer-run'
@@ -1480,11 +1480,44 @@ function decideEvalIoOf($: EngineInterface): DecideEvalIo {
 // Starts a reviewer unless one is live. The reviewer drains every pending handover, then ends;
 // the next handover, or a reviewer that ended with work left, starts a fresh one.
 // Calls run one after another: handovers arriving back to back must not each see "no queue yet".
+// In agent mode a start is only wanted here (wantReviewer); the reviewer-start tool.call hook spawns it.
 let queueChain: Promise<unknown> = Promise.resolve()
 function ensureQueue($: EngineInterface, why: QueueWhy = 'other', reported?: string): Promise<string> {
   const run = queueChain.then(() => startQueue(queueIoOf($), why, reported))
   queueChain = run.catch(() => undefined)
   return run
+}
+
+// An agent reviewer is spawned only inside a tool.call hook of its own (the reviewer-start hook): spawned from a
+// $.clock.after timer, the host answers none of the new agent's mcp__flow__* calls ("no tool.call hook answered this
+// call"), and spawned inside flow's other tool.call hook, the agent's calls skip that hook. So any other caller records
+// that a start is wanted, and the next tool call in the session, main's or any agent's, carries it out. Lost on a hook
+// reload: the session start's own ensureQueue wants it again.
+const reviewerStart = { wanted: false, gen: 0 }
+// How long a wanted start may wait for a tool call before main is asked to make one.
+const WANT_IDLE_MS = 20_000
+
+// The entry point for any start: records it and, once per wanted start, asks main for a tool call if none comes.
+function wantReviewer($: EngineInterface): void {
+  if (reviewerStart.wanted) return
+  reviewerStart.wanted = true
+  const gen = ++reviewerStart.gen
+  $.clock.after(WANT_IDLE_MS, () => {
+    if (!reviewerStart.wanted || reviewerStart.gen !== gen) return
+    toMain($, 'flow: a reviewer start is waiting for a tool call (the plugin starts the reviewer only from inside one). Call mcp__flow__status once now; that call starts it. Nothing else is needed.')
+  })
+}
+
+// The reviewer-start hook's part: when a start is wanted, runs the full start decision in this hook's frame,
+// serialized with every other ensureQueue, and returns its line. Cheap when nothing is wanted; never throws.
+async function startWantedReviewer($: EngineInterface): Promise<string | undefined> {
+  if (!reviewerStart.wanted) return undefined
+  reviewerStart.wanted = false
+  const run = queueChain.then(() => startQueue(queueIoOf($, true)))
+  queueChain = run.catch(() => undefined)
+  let line: string | undefined
+  await best($, 'starting the reviewer', async () => { line = await run })
+  return line
 }
 
 // Reconciling stale handovers: the git and gh calls stay local to this closure set.
@@ -1560,8 +1593,12 @@ function reviewerIoOf($: EngineInterface, base: string): ReviewerIo {
   }
 }
 
-function queueIoOf($: EngineInterface): QueueIo {
+// `inStartHook`: the io is used inside the reviewer-start tool.call hook, where an agent reviewer may be spawned.
+function queueIoOf($: EngineInterface, inStartHook = false): QueueIo {
+  const agentMode = terminalSettings() === undefined
   return {
+    ...(agentMode && { frame: inStartHook ? 'tool' as const : 'other' as const }),
+    ...(agentMode && !inStartHook && { want: () => wantReviewer($) }),
     agents: () => $.agent.list(),
     batch: async () => (await read($, pushState)).batch,
     handovers: () => read($, handovers),
@@ -2688,6 +2725,23 @@ export const register: Register = (on, options) => {
     }
     return onSpawn(io, input, next)
   }).catch(($, e, next) => next(e))
+
+  // The reviewer-start hook: the one place an agent reviewer is spawned (see wantReviewer). Registered before the catch-all
+  // hook below, so it is the outer one: a start wanted during this very call (a handover, a retry answer) is spawned once
+  // the call has run, before its result returns. A start wanted earlier goes first, so a long call does not hold it.
+  // A matcher of its own: an agent skips the hook its spawn was nested in, and this one does nothing for it.
+  // The call that wanted the start (a handover, a retry answer) reads what came of it in place of the wanted line.
+  // Its own part never throws, so `next` runs once; a failure beneath `next` (a flow tool's hook throwing) reaches its
+  // catch, which answers as the catch-all hook's does.
+  on('tool.call', { tool: /^/ }, async ($, e, next) => {
+    if (relay !== undefined) return next(e)
+    try { await startWantedReviewer($) } catch { /* the call goes on */ }
+    const r = await next(e)
+    let line: string | undefined
+    try { line = await startWantedReviewer($) } catch { return r }
+    if (line === undefined || typeof r.result !== 'string' || !r.result.includes(WANTED_LINE)) return r
+    return { ...r, result: r.result.replace(WANTED_LINE, line) }
+  }).catch((_$, e, next) => flowCatch(e, next))
 
   // Every tool call, the main session's too: refuse broad process kills and writes to the main
   // checkout. Then, for a subagent: refuse code edits from managers (a change goes into a
