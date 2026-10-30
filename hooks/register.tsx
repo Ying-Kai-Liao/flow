@@ -2731,14 +2731,17 @@ export const register: Register = (on, options) => {
   // the call has run, before its result returns. A start wanted earlier goes first, so a long call does not hold it.
   // A matcher of its own: an agent skips the hook its spawn was nested in, and this one does nothing for it.
   // The call that wanted the start (a handover, a retry answer) reads what came of it in place of the wanted line.
+  // Its own part never throws, so `next` runs once; a failure beneath `next` (a flow tool's hook throwing) reaches its
+  // catch, which answers as the catch-all hook's does.
   on('tool.call', { tool: /^/ }, async ($, e, next) => {
     if (relay !== undefined) return next(e)
-    await startWantedReviewer($)
+    try { await startWantedReviewer($) } catch { /* the call goes on */ }
     const r = await next(e)
-    const line = await startWantedReviewer($)
+    let line: string | undefined
+    try { line = await startWantedReviewer($) } catch { return r }
     if (line === undefined || typeof r.result !== 'string' || !r.result.includes(WANTED_LINE)) return r
     return { ...r, result: r.result.replace(WANTED_LINE, line) }
-  }).catch((_$, e, next) => next(e))
+  }).catch((_$, e, next) => flowCatch(e, next))
 
   // Every tool call, the main session's too: refuse broad process kills and writes to the main
   // checkout. Then, for a subagent: refuse code edits from managers (a change goes into a
