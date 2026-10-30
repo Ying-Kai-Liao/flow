@@ -169,6 +169,12 @@ export type QueueIo = {
   // the breaker's backoff and the delay never swallow each other. Absent: no delay.
   // `until` and `setUntil` keep the wait's deadline (0: none) where a hook reload does not lose it, as it does the timer.
   delay?: { ms: () => number; running: () => boolean; start: (ms: number) => void; until?: () => Promise<number>; setUntil?: (t: number) => Promise<unknown> }
+  // Where an agent reviewer spawned through this io would start: 'tool' inside the plugin's tool.call hook that starts
+  // reviewers, 'other' anywhere else. Recorded on the run (Breaker.run.frame). Absent: a terminal reviewer.
+  frame?: 'tool' | 'other'
+  // Records that a reviewer should start, for the next tool call to carry out (a host leaves the tool calls of an agent
+  // spawned from a timer unanswered). Present outside that hook in agent mode: startQueue then spawns nothing itself.
+  want?: () => void
 }
 
 // Why startQueue runs: a fresh handover may wait for reviewer_delay; an approval joins a wait already running and
@@ -276,6 +282,9 @@ export async function onReviewerAnswer(io: BreakerIo, ensureQueue: () => Promise
   return ` ${await ensureQueue()}`
 }
 
+// startQueue's line for a start it left to the reviewer-start tool.call hook; that hook puts what came of it in its place.
+export const WANTED_LINE = 'A reviewer is starting.'
+
 // Starts a reviewer unless one is live (register.tsx's ensureQueue serialises the calls).
 // `reported`: the reviewer terminal of that name just wrote a report and waits; the handovers still pending are told
 // to it again, since a PR typed in while it worked may have been missed.
@@ -349,12 +358,18 @@ export async function startQueue(io: QueueIo, why: QueueWhy = 'other', reported?
   // After the breaker's halt and backoff: a halted queue arms no delay, and a backoff already spaces the start.
   const held = await delayStart(io, why, all, otherWork, undefined)
   if (held !== undefined) return held
+  // Only the tool.call hook spawns an agent: here the start is recorded, and that hook runs this whole decision again,
+  // since a reviewer may be live or the queue empty by then.
+  if (io.want !== undefined) {
+    io.want()
+    return WANTED_LINE
+  }
   // A wait whose timer a reload lost is over now that a reviewer starts.
   if (io.delay?.until !== undefined && await io.delay.until() > 0) await io.delay.setUntil?.(0)
   const n = (await io.runs()) + 1
   await io.setRuns(n)
   // Recorded before the spawn: a reviewer that dies at once ends before spawn() resolves, and that end must find its run.
-  await withBreaker(io.breaker, cur => ({ breaker: startRun(cur, `reviewer-${n}`, now, true), out: undefined }))
+  await withBreaker(io.breaker, cur => ({ breaker: startRun(cur, `reviewer-${n}`, now, true, io.frame), out: undefined }))
   const started = await io.spawn({
     subagentType: REVIEWER,
     name: `reviewer-${n}`,

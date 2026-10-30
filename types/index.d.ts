@@ -402,8 +402,10 @@ export type Breaker = {
   streak: number
   // The reviewer in flight, by name, and when the plugin started it. `reached`: false from the start until one of
   // its flow tool calls arrives in the plugin, then true; absent on a run recorded before this was tracked. `reachFrom`:
-  // when a terminal reviewer's terminal started, which its REACH_MS wait counts from.
-  run?: { name: string; startedAt: number; reached?: boolean; reachFrom?: number }
+  // when a terminal reviewer's terminal started, which its REACH_MS wait counts from. `frame`: where an agent reviewer
+  // was spawned: 'tool' inside the plugin's tool.call hook that starts reviewers, 'other' anywhere else (a timer, a turn
+  // end, a command), where the host leaves the new agent's tool calls unanswered; absent for a terminal reviewer.
+  run?: { name: string; startedAt: number; reached?: boolean; reachFrom?: number; frame?: 'tool' | 'other' }
   // When the last reviewer ended, and why that counted as a failure.
   endedAt?: number
   error?: string
@@ -411,8 +413,8 @@ export type Breaker = {
   halt?: { at: number; error: string; qid?: string }
   // When recent reviewers were started (the last hour only); a retry keeps them, so the hourly cap holds.
   starts?: number[]
-  // Reviewers in a row that ended without a flow tool call ever reaching the plugin (its hooks not running in that
-  // process); a run that reaches it resets this. Kept apart from `streak`. `unreachableTold`: main was told this streak.
+  // Reviewers in a row that ended without a flow tool call ever reaching the plugin; a run that reaches it resets
+  // this. Kept apart from `streak`. `unreachableTold`: main was told this streak.
   unreachable?: number
   unreachableTold?: boolean
 }

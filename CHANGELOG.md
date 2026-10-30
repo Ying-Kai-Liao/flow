@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- In agent mode the reviewer no longer keeps ending at once with "no tool.call hook answered this call" and halting the queue. A reviewer spawned from a timer (`reviewer_delay`, the breaker's backoff) got none of its flow tool calls answered by the host; a spawn inside flow's catch-all tool.call hook skipped that hook for the new agent. Now any start that comes from a timer, a reviewer's end, a command, a pane press, a session start or a message is recorded as wanted, and the next tool call in the session, main's or any agent's, spawns the reviewer from a tool.call hook of its own. A handover or a retry answer still starts it within its own call. If no tool call comes within 20 seconds, main is asked once to call `mcp__flow__status`, which starts it. Terminal mode (orca, tmux) starts as before. An unreachable end of a reviewer spawned outside a tool call no longer counts toward the halt, and the halt text no longer tells the user to reload the plugin: it says a retry answer starts a fresh reviewer from that answer's own tool call.
+
 ## [0.6.123] - 2026-10-17
 
 ### Added
