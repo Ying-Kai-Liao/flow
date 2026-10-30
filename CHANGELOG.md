@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The reviewer's own batch and status PRs (`flow/batch-<id>`, `flow/batch-ready-<sha>`, `flow/status-<id>`, protected-base route) no longer show as PRs nobody handed over in the Flow pane and `/flow status`.
+- Batch PR route: the reviewer no longer closes a worker's PR whose branch merely starts with `flow/batch-` (such as `flow/batch-pr-gaps`). Its leftover-batch-PR selectors match only its own names, `flow/batch-<8 hex>` and `flow/batch-ready-<sha>`.
+- Batch PR route: after `gh pr merge` the reviewer checks that the merge commit's tree is the checked tree. When the base moved in the seconds before GitHub merged, it runs the full check on the merge commit before it publishes or deploys, and on a failure deploys nothing and tells main. A batch PR left open because only the user could unblock it is kept and resumed by the next run instead of closed and rebuilt, and one the user merged on GitHub is deployed with the next run.
 
 ## [0.6.126] - 2026-10-30
 
