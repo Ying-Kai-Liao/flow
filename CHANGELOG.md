@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A message from main to one of its managers no longer counts as a fresh start of that manager. The host raises a spawn when a message resumes an agent. Each resume had reset the manager's activity card to "started", logged a second `spawn` line, and overwritten its cost-ledger row: the spawn model fell back to `manager_model`, and a Size line in the message replaced the size. It also put the LITE rules and the size-feedback digest in front of main's message again, and the plan gate and the Fable check could refuse a manager that was already running. A `flow:manager` from main whose name is already on the roster, whatever its status, is now passed on as main wrote it. When the host answers with that manager's own id, it was a resume: its bookkeeping stays as it was, and the activity card only moves its last-active time. When the host starts a new agent under the name, the new manager gets its own card, ledger row, family and `spawn` line, but runs with main's prompt as written (no routing, LITE rules or size digest), since nothing before the start tells it from a resume. The pre-flight keeps what #239 gave it. This works with pre-flight on or off. A new name is a new manager, as before.
+
 ## [0.6.127] - 2026-10-31
 
 ### Fixed
