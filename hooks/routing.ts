@@ -1,3 +1,5 @@
+import { noteKey } from './state'
+
 // Model routing, the pure part: a brief's `Size:` line picks the worker's model at spawn, and a
 // successor of a worker that failed runs one size up.
 
@@ -38,6 +40,22 @@ export const generation = (name: string): number => {
   return n === null ? 1 : Number(n[1])
 }
 export const isSuccessorName = (name: string): boolean => generation(name) >= 2
+
+const stripped = (name: string): string => name.replace(/-\d+$/, '')
+
+// An earlier manager of the same family (state.ts noteKey): the name it succeeds (`x` for `x-2`, issue-238 for
+// issue-238-2) or a lower generation of the same base (`x-2` for `x-3`). issue-238 and issue-240 started as two
+// tasks are two families, so neither is the other's.
+export const isManagerPredecessor = (earlier: string, name: string): boolean =>
+  earlier !== name && noteKey(earlier) === noteKey(name)
+  && (name.startsWith(`${earlier}-`) || (stripped(earlier) === stripped(name) && generation(earlier) < generation(name)))
+
+// An earlier worker of the same package: `x-N` succeeds the lower generations of `x` only when a worker `x` itself
+// ran, so fix-issue-12 started fresh is no successor of an unrelated fix-issue-7.
+export const isWorkerPredecessor = (earlier: string, name: string, names: readonly string[]): boolean => {
+  const root = stripped(name)
+  return earlier !== name && names.includes(root) && (earlier === root || (stripped(earlier) === root && generation(earlier) < generation(name)))
+}
 
 // The size a spawn ends up with: the brief's own, raised to the floor. Neither leaves it unset, which is
 // today's behaviour. A large floor is kept, so the next successor escalates from large, not from nothing.

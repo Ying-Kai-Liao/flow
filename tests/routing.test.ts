@@ -342,6 +342,28 @@ test('a manager successor runs one size up from its predecessor', { options: OPT
   expect((await ledger(w)).a2!.size).toBe('normal')
 })
 
+test('issue-240 started as a new task gets no floor from issue-238; issue-238-2 runs one size up', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await mspawn($, 'issue-238', 'Size: small — docs')
+  await w.clock.advance(3500)
+  await w.clock.settle()
+  await mspawn($, 'issue-240', 'Size: small — docs')
+  await w.clock.advance(3500)
+  await w.clock.settle()
+  await mspawn($, 'issue-238-2', 'Size: small — docs')
+  expect(w.spawned.map(s => s.model)).toEqual(['sonnet', 'sonnet', 'opus'])
+  const l = await ledger(w)
+  expect([l.a1!.size, l.a2!.size, l.a3!.size]).toEqual(['small', 'small', 'normal'])
+})
+
+test('a worker fix-issue-12 started fresh gets no floor from an unrelated fix-issue-7', { options: OPTS }, async ($, on) => {
+  const w = world(on)
+  await spawn($, 'fix-issue-7', 'Size: small')
+  await spawn($, 'fix-issue-12', 'Size: small')
+  await spawn($, 'fix-issue-7-2', 'Size: small')
+  expect(w.spawned.map(s => s.model)).toEqual(['haiku', 'haiku', 'sonnet'])
+})
+
 test('a small manager files one manager-size decision owned by itself; large files none; a worker is unaffected', { options: OPTS }, async ($, on) => {
   const w = world(on)
   await mspawn($, 'docs-a', 'Size: small — docs only')

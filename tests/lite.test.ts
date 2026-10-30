@@ -162,6 +162,15 @@ test('a lite manager is recorded, gets the LITE block and the normal manager mod
   expect(w.spawned[2]!.prompt.match(/## LITE MODE/g)!.length).toBe(1)
 })
 
+test('issue-240 started as a new task is not lite because issue-238 is; issue-238-2 is', async ($, on) => {
+  const w = world(on)
+  await manager($, 'issue-238', 'Mode: lite\nfix the header')
+  await manager($, 'issue-240', 'fix the footer')
+  await manager($, 'issue-238-2', 'continue the header')
+  expect(w.spawned.map(s => s.prompt.startsWith('## LITE MODE'))).toEqual([true, false, true])
+  expect(Object.keys(JSON.parse(w.files.get(`${DIR}/lite.json`) ?? '{}') as Record<string, unknown>)).toEqual(['issue-238'])
+})
+
 test('normal manager size routing applies unchanged to a lite manager; a plain manager has no block', async ($, on) => {
   const w = world(on)
   await manager($, 'big', 'Mode: lite\nSize: large - wide change\nrework')

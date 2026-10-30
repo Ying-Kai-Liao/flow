@@ -5,10 +5,9 @@ import type { AgentInfo, AgentSpawnInput } from 'claude-code'
 import type { HandoffRecord, LogEvent, Ledger } from '../types'
 import { absolutePath, parseAttachments, rewriteAttachments } from './attachments'
 import { dirtyFiles, isLive } from './clean'
-import { baseName } from './cost'
 import { addQuestions, findItem, fyiAsked, isFyi, keepByDefault } from './inbox'
 import type { Asker, AskedQuestion, Inbox, Question } from './inbox'
-import { effectiveSize, floorFrom, generation, isSuccessorName, managerDecision, managerModelFor, MANAGER_FYI_WHY, modelFor, parseSize } from './routing'
+import { effectiveSize, floorFrom, isManagerPredecessor, isSuccessorName, isWorkerPredecessor, managerDecision, managerModelFor, MANAGER_FYI_WHY, modelFor, parseSize } from './routing'
 import { isSize } from './routing'
 import type { Size, SizeModels } from './routing'
 import type { Decision, Question as DecideQuestion } from './decide'
@@ -204,9 +203,9 @@ export async function routeWorker(io: SpawnIo, e: AgentSpawnInput, models: SizeM
   let floor: Size | undefined
   if (isSuccessorName(name) || branch !== undefined) {
     await io.loadLedger()
-    const gen = generation(name)
-    const before = Object.values(await io.ledger()).filter(x => x.role === 'worker' && x.name !== name
-      && ((baseName(x.name) === baseName(name) && generation(x.name) < gen) || (branch !== undefined && x.branch === branch)))
+    const workers = Object.values(await io.ledger()).filter(x => x.role === 'worker')
+    const names = workers.map(x => x.name)
+    const before = workers.filter(x => x.name !== name && (isWorkerPredecessor(x.name, name, names) || (branch !== undefined && x.branch === branch)))
     floor = floorFrom(before.map(x => x.size))
   }
   const size = effectiveSize(declared?.size, floor)
@@ -254,8 +253,7 @@ export async function routeManager(io: SpawnIo, e: AgentSpawnInput, small: strin
   let floor: Size | undefined
   if (isSuccessorName(name)) {
     await io.loadLedger()
-    const gen = generation(name)
-    const before = Object.values(await io.ledger()).filter(x => x.role === 'manager' && baseName(x.name) === baseName(name) && generation(x.name) < gen)
+    const before = Object.values(await io.ledger()).filter(x => x.role === 'manager' && isManagerPredecessor(x.name, name))
     floor = floorFrom(before.map(x => x.size))
   }
   const size = effectiveSize(declared?.size, floor)

@@ -128,7 +128,8 @@ import { adoptSessionsTo, durableSessions, identityTo, myRelaySessionsTo, normal
 import type { RoleIo } from './role-session-run'
 
 import type { Caller, IdleIo, Ran, SessionIo } from './session-run'
-import { branchOwners, noteKey } from './state'
+import { branchOwners, familiesNow, normalizeFamilies, noteKey, setFamilies } from './state'
+import type { Families } from './state'
 import { ADD_OPTION } from './guardtests'
 import {
   EMPTY_PUSH,
@@ -993,6 +994,25 @@ function withLite<T>($: EngineInterface, fn: (cur: LiteState) => { state: LiteSt
   return result
 }
 
+// Manager families (state.ts recordFamily) change one after another too, and survive a plugin restart.
+let familiesChain: Promise<unknown> = Promise.resolve()
+
+function withFamilies($: EngineInterface, fn: (cur: Families) => Families): Promise<void> {
+  const run = async (): Promise<void> => {
+    const dir = await stateDir($)
+    const cur = dir === undefined ? familiesNow() : normalizeFamilies(await readJson($, `${dir}/families.json`))
+    const state = fn(cur)
+    if (state !== cur && dir !== undefined) {
+      await $.process.run(['mkdir', '-p', dir])
+      await writeJsonAtomic($, `${dir}/families.json`, state)
+    }
+    setFamilies(state)
+  }
+  const result = familiesChain.then(run, run)
+  familiesChain = result.catch(() => undefined)
+  return result
+}
+
 // The lite manager an agent is (by its roster name), else undefined.
 async function liteManagerOf($: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
   if (agentId === undefined) return undefined
@@ -1219,7 +1239,7 @@ async function appendNote($: EngineInterface, name: string, line: string): Promi
   try {
     const path = await notesPath($, name)
     if (path === undefined) return false
-    const old = await readQuietly($, path) ?? `# ${name.replace(/-\d+$/, '')}\n`
+    const old = await readQuietly($, path) ?? `# ${noteKey(name)}\n`
     // fs has no append: the file is rewritten whole. Notes are small and a manager is their only writer.
     await $.fs.write(path, `${old.endsWith('\n') ? old : `${old}\n`}${line}\n`)
     return true
@@ -2574,6 +2594,8 @@ function mirrorSettings(s: ReturnType<typeof settingsOf>): void {
 }
 
 export const register: Register = (on, options) => {
+  // Manager families are module state (state.ts): a fresh plugin has none until session.start loads families.json.
+  setFamilies({})
   // register()'s state, held by property: the hooks' ios read and write it here, so none hands out a closure
   // assigning an outer variable (plain-names check 10).
   const kept = {
@@ -2666,6 +2688,7 @@ export const register: Register = (on, options) => {
       refreshBehind: () => void refreshBehind($),
       setPush: async disk => { await update($, pushState, () => disk) },
       setLite: async disk => { await update($, lite, () => disk) },
+      setFamilies: async disk => { setFamilies(disk) },
       mergeSessions: async raw => {
         const t = await $.clock.now()
         const disk = normalizeSessions(raw, t)
@@ -2744,6 +2767,7 @@ export const register: Register = (on, options) => {
       changeLedger: fn => changeLedger($, fn),
       withLite: fn => withLite($, fn),
       withPreflight: fn => withPreflight($, fn),
+      withFamilies: fn => withFamilies($, fn),
       after: (ms, fn) => $.clock.after(ms, fn),
       sessions: () => read($, sessions),
       terminalSettings,
