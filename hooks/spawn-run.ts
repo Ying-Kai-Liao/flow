@@ -158,6 +158,95 @@ async function recordFamilyOf(io: SpawnHookIo, name: string): Promise<void> {
   }))
 }
 
+// What a started agent leaves behind: its activity card and effort, its cost-ledger row, a lite record, a size
+// decision, a manager's pre-flight and the spawn log line.
+type Start = {
+  used: unknown
+  model: string | undefined
+  targetEffort: string | undefined
+  routed: Routed | undefined
+  sizeFed: boolean
+  sizeArm: SizeArm | undefined
+  arm: ReturnType<typeof armOfSpawn>
+  liteMode: boolean
+  again: boolean
+}
+async function recordStart(io: SpawnHookIo, e: AgentSpawnInput, id: string, s: Start): Promise<void> {
+  const { used, model, targetEffort, routed, sizeFed, sizeArm, arm, liteMode, again } = s
+  const t = await io.now()
+  // Recorded only for a `[1m]` model finally used (after the refused-[1m] fallback). A plain
+  // model leaves it unset: its window may be the main session's, which windowOf borrows.
+  const spawnWindow = typeof used === 'string' && used.includes('[1m]') ? LARGE_WINDOW : undefined
+  await io.updateActivity(acts => ({
+    ...acts, [id]: { startedAt: t, lastAt: t, log: [`started: ${e.description}`], ...(spawnWindow !== undefined && { spawnWindow }), ...(targetEffort !== undefined && { effort: targetEffort }) },
+  }))
+  if (targetEffort !== undefined) io.setEffort(id, targetEffort)
+  await io.refresh()
+  void io.openPane()
+  await io.best('recording an agent in the cost ledger', async () => {
+    const name = (e as { name?: string }).name ?? e.description
+    const role = (ROLE[e.subagentType] ?? 'other') as Role
+    const parent = e.parentAgentId === undefined ? undefined : (await io.agentList()).find(a => a.id === e.parentAgentId)
+    await io.changeLedger((l, now) => setIdentity(l, id, {
+      role, name,
+      ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }),
+      ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
+      ...(typeof used === 'string' && { spawnModel: used }),
+      ...(routed !== undefined && { size: routed.size }),
+      ...(sizeFed && { sizeFeedback: true }),
+      ...(sizeArm !== undefined && { sizeArm }),
+      ...(arm !== undefined && { arm }),
+      ...(targetEffort !== undefined && { effort: targetEffort }),
+    }, now))
+  })
+  if (liteMode) await io.best('recording a lite manager', async () => { const at = await io.now(); await io.withLite(cur => ({ state: recordLite(cur, (e as { name?: string }).name ?? e.description, at), out: undefined })) })
+  // A lite task files no size decisions: not for its manager, not for its workers. The routing itself still happens.
+  const liteOwner = e.subagentType === WORKER && routed !== undefined && isLiteName(await io.lite(), (await io.agentList()).find(a => a.id === e.parentAgentId)?.name)
+  if (routed !== undefined && !liteMode && !liteOwner) {
+    const r = routed
+    if (e.subagentType === MANAGER) await io.best('filing a manager-size decision', () => fileManagerSizeFyi(io.spawn, io.options(), (e as { name?: string }).name ?? e.description, id, r))
+    else await io.best('filing a worker-size decision', () => fileSizeFyi(io.spawn, io.options(), (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
+  }
+  if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
+    await io.best('recording a pre-flight', () => recordManager(io, (e as { name?: string }).name ?? e.description, e.prompt, liteMode, again))
+  }
+  if (FLOW_TYPES.has(e.subagentType)) {
+    await io.best('logging a spawn', async () => {
+      await io.spawn.appendLog({
+        event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await io.spawn.ownerName(e.parentAgentId),
+        ...(routed !== undefined && { text: `size ${routed.size} -> ${model ?? routed.model}${routed.escalated ? ' (escalated)' : ''}` }),
+      })
+    })
+  }
+}
+
+// Main's manager already on the roster: main's message resumes it (#239), or main starts a new manager under that
+// name. The input tells the two apart by nothing before the start, only the answer does: the listed agent's own id
+// is a resume. So main's message goes through as main wrote it, past the plan gate and the checks, with no routing,
+// LITE rules or size digest: a resume (the common case) never gets them again, and a new manager under a listed name
+// goes without them. A resume keeps its start's bookkeeping: the activity card only moves its lastAt; the ledger
+// row, size decision, spawn log line, lite record, effort and family are left alone. A new id gets the bookkeeping of
+// any start. Either way the pre-flight keeps what the name filed (recordSpawn's again).
+async function resumeManager<R extends { agentId?: string }>(io: SpawnHookIo, e: AgentSpawnInput, name: string, listed: string[], next: (ev: AgentSpawnInput) => Promise<R>): Promise<R> {
+  const started = await next(e)
+  const id = started.agentId
+  if (id === undefined) return started
+  const liteMode = isLite(e.prompt) || isLiteName(await io.lite(), name)
+  if (!listed.includes(id)) {
+    await io.best('recording a manager family', () => recordFamilyOf(io, name))
+    const wantEffort = io.takeExplicit(e.tool_use_id) ? undefined : effortFor('manager', undefined, io.settings(), undefined)
+    const targetEffort = wantEffort === undefined ? undefined : effortFor('manager', undefined, io.settings(), await io.effortEnv())
+    const used = e.model ?? io.settings().managerModel
+    await recordStart(io, e, id, { used, model: e.model, targetEffort, routed: undefined, sizeFed: false, sizeArm: undefined, arm: undefined, liteMode, again: true })
+    return started
+  }
+  const t = await io.now()
+  await io.updateActivity(acts => (acts[id] === undefined ? acts : { ...acts, [id]: { ...acts[id], lastAt: t } }))
+  await io.refresh()
+  if (mirror.preflightOn) await io.best('recording a pre-flight', () => recordManager(io, name, e.prompt, liteMode, true))
+  return started
+}
+
 export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, input: AgentSpawnInput, next: (ev: AgentSpawnInput) => Promise<R>): Promise<R | { deny: string }> {
   // A terminal session's own subagents (Explore and the like) are plain. Its workers are sessions.
   const relay = io.relay()
@@ -170,6 +259,13 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
   let e = input
   // Only the plugin's own rewrite below starts flow:continue: it needs the old worktree as cwd.
   if (e.subagentType === CONTINUE) return { deny: 'flow: flow:continue is started by the plugin only; spawn a flow:worker with "Continue on branch: <branch>" in the brief.' }
+  // Main's manager already on the roster (see resumeManager). Read before the start: after it, the roster lists this
+  // spawn too. Before the family too, so a resume writes no families.json: a name keeps the family of its first start.
+  if (e.subagentType === MANAGER && e.parentAgentId === undefined) {
+    const name = (e as { name?: string }).name ?? e.description
+    const listed = (await io.agentList()).filter(a => a.name === name && a.type === MANAGER && a.parentId === undefined).map(a => a.id)
+    if (listed.length > 0) return resumeManager(io, e, name, listed, next)
+  }
   // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
   const plans = await io.plans()
   if (Object.keys(plans).length > 0 && e.name !== undefined) {
@@ -256,10 +352,6 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
     const started = await startManagerSession(io, e, { routed, liteMode })
     if (started !== undefined) return started
   }
-  // Main's manager already on the roster is the same one (a message resumed it). Read before the start: after it, the
-  // roster lists this spawn too.
-  const again = mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined &&
-    onRoster(await io.agentList(), (e as { name?: string }).name ?? e.description, [MANAGER], undefined)
   // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
   // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
   const spawn = e.subagentType === WORKER ? await prepareContinue(io.spawn, e, !io.noContinue()) : e
@@ -305,53 +397,7 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
     return { deny: `flow: the host refused the in-place continuation (flow:continue); spawn the same brief again and it starts as a plain flow:worker in a new worktree on ${branch}.` }
   }
   if ('agentId' in started && started.agentId !== undefined) {
-    const t = await io.now()
-    const id = started.agentId
-    // Recorded only for a `[1m]` model finally used (after the refused-[1m] fallback). A plain
-    // model leaves it unset: its window may be the main session's, which windowOf borrows.
-    const used = ev.model ?? wanted
-    const spawnWindow = typeof used === 'string' && used.includes('[1m]') ? LARGE_WINDOW : undefined
-    await io.updateActivity(acts => ({
-      ...acts, [id]: { startedAt: t, lastAt: t, log: [`started: ${e.description}`], ...(spawnWindow !== undefined && { spawnWindow }), ...(targetEffort !== undefined && { effort: targetEffort }) },
-    }))
-    if (targetEffort !== undefined) io.setEffort(id, targetEffort)
-    await io.refresh()
-    void io.openPane()
-    await io.best('recording an agent in the cost ledger', async () => {
-      const name = (e as { name?: string }).name ?? e.description
-      const role = (ROLE[e.subagentType] ?? 'other') as Role
-      const parent = e.parentAgentId === undefined ? undefined : (await io.agentList()).find(a => a.id === e.parentAgentId)
-      await io.changeLedger((l, now) => setIdentity(l, id, {
-        role, name,
-        ...(role === 'worker' && parent?.name !== undefined && { manager: parent.name }),
-        ...(role === 'worker' && { branch: CONTINUE_LINE.exec(e.prompt)?.[1] ?? `flow/${name}` }),
-        ...(typeof used === 'string' && { spawnModel: used }),
-        ...(routed !== undefined && { size: routed.size }),
-        ...(sizeFed && { sizeFeedback: true }),
-        ...(sizeArm !== undefined && { sizeArm }),
-        ...(arm !== undefined && { arm }),
-        ...(targetEffort !== undefined && { effort: targetEffort }),
-      }, now))
-    })
-    if (liteMode) await io.best('recording a lite manager', async () => { const at = await io.now(); await io.withLite(cur => ({ state: recordLite(cur, (e as { name?: string }).name ?? e.description, at), out: undefined })) })
-    // A lite task files no size decisions: not for its manager, not for its workers. The routing itself still happens.
-    const liteOwner = e.subagentType === WORKER && routed !== undefined && isLiteName(await io.lite(), (await io.agentList()).find(a => a.id === e.parentAgentId)?.name)
-    if (routed !== undefined && !liteMode && !liteOwner) {
-      const r = routed
-      if (e.subagentType === MANAGER) await io.best('filing a manager-size decision', () => fileManagerSizeFyi(io.spawn, io.options(), (e as { name?: string }).name ?? e.description, id, r))
-      else await io.best('filing a worker-size decision', () => fileSizeFyi(io.spawn, io.options(), (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
-    }
-    if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
-      await io.best('recording a pre-flight', () => recordManager(io, (e as { name?: string }).name ?? e.description, e.prompt, liteMode, again))
-    }
-    if (FLOW_TYPES.has(e.subagentType)) {
-      await io.best('logging a spawn', async () => {
-        await io.spawn.appendLog({
-          event: 'spawn', agent: (e as { name?: string }).name ?? e.description, owner: await io.spawn.ownerName(e.parentAgentId),
-          ...(routed !== undefined && { text: `size ${routed.size} -> ${ev.model ?? routed.model}${routed.escalated ? ' (escalated)' : ''}` }),
-        })
-      })
-    }
+    await recordStart(io, e, started.agentId, { used: ev.model ?? wanted, model: ev.model, targetEffort, routed, sizeFed, sizeArm, arm, liteMode, again: false })
   }
   return started
 }
