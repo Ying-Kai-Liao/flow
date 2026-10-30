@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 
-import { deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_REVIEWER_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO, SESSION_NO_TOOLS, SESSION_PROMPT, SESSION_RELAYED_TOOLS, WORKER_PROMPT } from '../hooks/prompts'
+import { BATCH_PR_CHECKS_MINUTES, deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_REVIEWER_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO, SESSION_NO_TOOLS, SESSION_PROMPT, SESSION_RELAYED_TOOLS, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
 
 const base: Settings = {
@@ -205,6 +205,55 @@ test('push and rebuild runs take no late joins; the terminal reviewer never runs
   expect(all(base)[2]).not.toContain('## Push run')
   expect(all({ ...base, pushMode: 'confirm' })[2]).toContain('takes no late joins')
   expect(REVIEWER_SESSION_RULES_AUTO).toContain('you never run two batches at once')
+})
+
+test('a push refused by branch protection takes the batch PR route and sends nothing back', () => {
+  const q = fill(REVIEWER_PROMPT, base)
+  const push = q.slice(q.indexOf('4. Push:'), q.indexOf('5. Deploy:'))
+  for (const s of ['"GH006"', '"GH013"', '"protected branch"', '"Changes must be made through a pull request"', '"Repository rule violations"']) expect(push).toContain(s)
+  expect(push).toContain('never send a PR back for it')
+  expect(push).toContain('Take the batch PR route')
+  expect(q).not.toContain('refused by branch protection; the reviewer needs push rights')
+  expect(q).toContain('never sent back because branch protection refused the push')
+  const route = q.slice(q.indexOf('## Batch PR route'), q.indexOf('## After a batch'))
+  expect(route).toContain('`git push origin HEAD:refs/heads/flow/batch-<id>`')
+  expect(route).toContain('first 8 characters of the batch head')
+  expect(route).toContain('gh pr create --base main --head flow/batch-<id>')
+  expect(route).toContain(`gh pr checks <b> --required --watch --fail-fast\` (run_in_background), for at most ${BATCH_PR_CHECKS_MINUTES} minutes`)
+  expect(route).toContain('"no required checks reported" means there is nothing to wait for')
+  expect(route).toContain('`git merge-base --is-ancestor origin/main HEAD` must succeed')
+  expect(route).toContain('`gh pr merge <b> --merge --match-head-commit <full sha of HEAD> --delete-branch`')
+  expect(route).toContain('| merged via batch PR #<b>')
+  expect(route).toContain('never with `git push --delete`')
+  // Failure branches: none sends a PR back.
+  expect(route).toContain('handle it by step 3\'s rules')
+  expect(route).toContain('with the same id (it updates the open PR, never a second one)')
+  expect(route).toContain('leave the batch PR open, send nothing back')
+  expect(route).toContain('merge it on GitHub or fix the repo setting')
+  expect(route).toContain('the merge counts as blocked (above), never a send-back')
+  expect(route).not.toMatch(/action "back"/)
+})
+
+test('each batch starts by closing leftover batch PRs, and a PR merged through one is done, not merged again', () => {
+  const q = fill(REVIEWER_PROMPT, base)
+  const step1 = q.slice(q.indexOf('1. Start clean'), q.indexOf('2. For each pending PR'))
+  expect(step1).toContain('select(.headRefName | startswith("flow/batch-"))')
+  expect(step1).toContain('gh pr close <n> --delete-branch --comment "superseded by a new batch"')
+  const step2 = q.slice(q.indexOf('2. For each pending PR'), q.indexOf('2b. Late join'))
+  expect(step2).toContain('State MERGED with the handover\'s head in the base (`git merge-base --is-ancestor <head sha> origin/main` succeeds)')
+  expect(step2).toContain('do not merge it again and do not send it back')
+  expect(step2).toContain('"merged earlier via batch PR; not deployed by this run"')
+})
+
+test('the push run and the status file go through the batch PR route too', () => {
+  const run = fill(REVIEWER_PROMPT, { ...base, pushMode: 'confirm' })
+  expect(run.slice(run.indexOf('## Push run'), run.indexOf('## A batch'))).toContain('a branch-protection refusal takes the batch PR route, where a moved base makes the batch stale')
+  expect(run).toContain('In a PUSH RUN the batch is stale instead: close the batch PR as superseded')
+  const st = fill(REVIEWER_PROMPT, { ...base, stateFile: { path: 'STATUS.md', archive: 'STATUS-archive.md', keep: 5 } })
+  const step8 = st.slice(st.indexOf('8. Status file'))
+  expect(step8).toContain('`git fetch origin && git checkout --detach origin/main` first')
+  expect(step8).toContain('`flow/status-<id>`')
+  expect(step8).toContain('no publish and no deploy')
 })
 
 test('the session preamble has one flow-tools line: relayed for a claude worker with the missing-tools rule, none for another harness', () => {

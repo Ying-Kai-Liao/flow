@@ -406,7 +406,7 @@ test('prompts: the publish step needs release and release_github; the branch pro
   for (const s of [base, on]) {
     const p = fill(REVIEWER_PROMPT, s)
     expect(p).toContain('GH006')
-    expect(p).toContain('refused by branch protection')
+    expect(p).toContain('## Batch PR route')
   }
 })
 

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A manager's filed pre-flight is no longer forgotten when main messages it (#238). The host raises a spawn when a message resumes an agent, and each one reset the manager to recon: every later worker start was refused until it filed again, each re-filing sent main another "Pre-flight" message, and a PR it handed over read "handed over a PR without pre-flight". A manager already on the roster under that name, whatever its status, now keeps a filed or skipped pre-flight, joins no new round and sends main nothing new. A worker resumed under its manager is never refused by the pre-flight gate. A name not on the roster is still a new manager and starts over.
+- A reviewer whose push to the base branch is refused by branch protection or a ruleset (GH006, GH013) no longer sends the checked batch back. It merges the batch through a batch PR instead: pushes `flow/batch-<id>`, opens a PR into the base, waits up to 30 minutes for its required checks and merges with a merge commit pinned to the checked head, then publishes, deploys and marks the PRs done as after a direct push. Each batch first closes batch PRs an earlier run left open, and a handed-over PR already merged through one is marked done. The status-file commit, the `/flow push` run and lite mode take the same route (#237).
 
 ## [0.6.123] - 2026-10-17
 
