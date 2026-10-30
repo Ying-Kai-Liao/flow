@@ -3,7 +3,7 @@ import { test } from './support'
 import { addQuestions, EMPTY_INBOX, markAnswered } from '../hooks/inbox'
 import type { Inbox } from '../hooks/inbox'
 import {
-  closeStale, deliverRound, denyText, doneManagers, dueRound, EMPTY_PREFLIGHT, followUp, gateOf, isSkip, markDelivered, normalizePreflight, parseFiling, phaseOf,
+  closeStale, deliverRound, denyText, doneManagers, dueRound, EMPTY_PREFLIGHT, followUp, gateOf, isSkip, markDelivered, normalizePreflight, onRoster, parseFiling, phaseOf,
   recordFiling, recordSpawn, renderFollowUp, renderRound, renderStatus,
 } from '../hooks/preflight'
 import type { Preflight } from '../hooks/preflight'
@@ -80,6 +80,31 @@ test('a successor inherits its predecessor; a fresh spawn of the same slug start
   expect(s.entries['csv']!.name).toBe('csv-2')
   s = recordSpawn(s, 'csv', false, 10, 10 * MIN)
   expect(gateOf(s, EMPTY_INBOX, 'csv')).toEqual({ kind: 'unfiled' })
+})
+
+test('the same manager spawned again keeps its filed or skipped record and joins no round (#238)', () => {
+  const s = markDelivered(filed(recordSpawn(EMPTY_PREFLIGHT, 'csv', false, 1, 10 * MIN), 'csv'), 1, 6)
+  expect(recordSpawn(s, 'csv', false, 9, 10 * MIN, true)).toBe(s)
+  expect(gateOf(recordSpawn(s, 'csv', false, 9, 10 * MIN, true), EMPTY_INBOX, 'csv')).toBeUndefined()
+  const lite = recordSpawn(EMPTY_PREFLIGHT, 'small', true, 1, 10 * MIN)
+  expect(recordSpawn(lite, 'small', false, 9, 10 * MIN, true)).toBe(lite)
+  // Still in recon: it goes in the open round as before (#222).
+  const recon = recordSpawn(markDelivered(recordSpawn(EMPTY_PREFLIGHT, 'login', false, 1, 10 * MIN), 1, 2), 'login', false, 9, 10 * MIN, true)
+  expect(recon.rounds.map(r => r.members)).toEqual([['login'], ['login']])
+  // Not on the roster: a new manager of that name starts over.
+  expect(recordSpawn(s, 'csv', false, 9, 10 * MIN).entries['csv']!.phase).toBe('recon')
+})
+
+test('onRoster: the same name of a type under the same owner, whatever its status', () => {
+  const rows = [
+    { id: 'a1', name: 'csv', description: '', type: 'flow:manager', status: 'completed' },
+    { id: 'a2', name: 'w', description: '', type: 'flow:worker', status: 'idle', parentId: 'a1' },
+  ]
+  expect(onRoster(rows, 'csv', ['flow:manager'], undefined)).toBe(true)
+  expect(onRoster(rows, 'csv-2', ['flow:manager'], undefined)).toBe(false)
+  expect(onRoster(rows, 'w', ['flow:worker'], 'a1')).toBe(true)
+  expect(onRoster(rows, 'w', ['flow:worker'], 'a9')).toBe(false)
+  expect(onRoster(rows, 'w', ['flow:manager'], 'a1')).toBe(false)
 })
 
 test('rounds: managers join the open round; a delivered round is followed by a new one', () => {

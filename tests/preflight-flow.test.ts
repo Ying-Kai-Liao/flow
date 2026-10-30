@@ -9,6 +9,7 @@ type On = Parameters<TestBody>[1]
 const DIR = '/r/.git/flow'
 const ok = (stdout = '') => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 const MIN = 60_000
+const PR = { state: 'OPEN', isDraft: false, headRefOid: 'abc1234def5678', headRefName: 'flow/csv', title: 'Export', labels: [], body: '## Verification\nRan:\n- `bun test`: pass\nExercised: ran it\nNot verified:\n- full check' }
 
 // Main (no agent id) starts managers a1, a2, ..; a manager's id is its agent id.
 function world(on: On) {
@@ -52,6 +53,7 @@ function world(on: On) {
   on('process.run', (_, e) => {
     const a = e.argv
     if (a[0] === 'git' && a[1] === 'rev-parse') return ok('/r/.git\n')
+    if (a[0] === 'gh' && a[1] === 'pr' && a[2] === 'view') return ok(JSON.stringify(PR))
     if (a[0] === 'mv') {
       const t = files.get(a[1] ?? '')
       if (t !== undefined) { files.set(a[2] ?? '', t); files.delete(a[1] ?? '') }
@@ -73,6 +75,8 @@ const file = ($: Dollar, agentId: string | null, over: Record<string, unknown> =
   } as never).then(r => String(r.result))
 const answer = ($: Dollar, args: Record<string, unknown>) =>
   $.tool.call({ tool: 'mcp__flow__answer', ...args } as never).then(r => String(r.result))
+const handover = ($: Dollar, agentId: string) =>
+  $.tool.call({ tool: 'mcp__flow__handover', pr: 7, verified: 'v', agentId } as never).then(r => String(r.result))
 const BLOCK = { question: 'Which format?', options: ['csv', 'tsv'], default: 'csv', blocking: true }
 const SOFT = { question: 'Quote fields?', options: ['yes', 'no'], default: 'yes', blocking: false }
 
@@ -220,6 +224,50 @@ test('a manager spawned again and still in recon is not timed out for twice (#22
   expect(w.submitted.length).toBe(1)
   const view = await $.command.run({ command: 'flow', args: 'preflight' } as never)
   expect(view.text).toContain('Round 2: delivered to main')
+})
+
+test('a filed manager spawned again while on the roster keeps its pre-flight, whatever its status (#238)', async ($, on) => {
+  const w = world(on)
+  await manager($, 'csv')
+  await file($, 'a1')
+  await w.clock.advance(5)
+  expect(w.submitted.length).toBe(1)
+  // A message from main resumes the manager, and the host raises agent.spawn for it again.
+  await manager($, 'csv')
+  expect(await worker($, 'a1')).not.toContain('pre-flight')
+  for (const a of w.agents) if (a.name === 'csv') a.status = 'completed'
+  await manager($, 'csv')
+  expect(await worker($, 'a1', 'w2')).not.toContain('pre-flight')
+  expect(await worker($, 'a1', 'w3')).not.toContain('pre-flight')
+  // Its handover is no "without pre-flight", and main is told nothing again.
+  expect(await handover($, 'a1')).not.toMatch(/^Refused/)
+  await w.clock.advance(11 * MIN)
+  expect(w.submitted.length).toBe(1)
+  const view = await $.command.run({ command: 'flow', args: 'preflight' } as never)
+  expect(view.text).toContain('Round 1: delivered to main (1 of 1 had filed)')
+  expect(view.text).not.toContain('without pre-flight')
+  const state = JSON.parse(w.files.get(`${DIR}/preflight.json`) ?? '{}') as { entries: Record<string, { phase: string }>; rounds: unknown[] }
+  expect(state.entries['csv']!.phase).toBe('filed')
+  expect(state.rounds.length).toBe(1)
+})
+
+test('a skipped manager spawned again stays skipped (#238)', async ($, on) => {
+  const w = world(on)
+  await manager($, 'small', 'Pre-flight: skip\nrename a variable')
+  await manager($, 'small', 'Your manager answered: go on')
+  expect(await worker($, 'a1')).not.toContain('pre-flight')
+  await w.clock.advance(11 * MIN)
+  expect(w.submitted).toEqual([])
+})
+
+test('a worker resumed under its manager is not refused; a new one still waits on the blocking question (#238)', async ($, on) => {
+  world(on)
+  await manager($, 'csv')
+  await file($, 'a1')
+  expect(await worker($, 'a1', 'w')).not.toContain('pre-flight')
+  await file($, 'a1', { questions: [BLOCK] })
+  expect(await worker($, 'a1', 'w')).not.toContain('pre-flight')
+  expect(await worker($, 'a1', 'w2')).toContain('still open')
 })
 
 test('a round of only skipped managers sends nothing; a manager that ended counts as done', async ($, on) => {

@@ -13,7 +13,7 @@ import { isManagerOf, planOwner } from './roster-run'
 import type { Plan } from './dag'
 import { isLiteName, recordLite, withLiteRules } from './lite'
 import type { LiteState } from './lite'
-import { isLite, isSkip, recordSpawn } from './preflight'
+import { isLite, isSkip, onRoster, recordSpawn } from './preflight'
 import type { Preflight } from './preflight'
 import { fill, LITE_MARK, LITE_RULES, MANAGER_PROMPT, MANAGER_SESSION_RULES, NO_REVIEWER_RULE, REVIEWER_RULE } from './prompts'
 import { effortFor, generation } from './routing'
@@ -130,11 +130,12 @@ async function startManagerSession(io: SpawnHookIo, e: AgentSpawnInput, ctx: { r
   return { deny: `flow: started manager ${name} in ${r.session.host} (${r.session.handle}); it runs as a terminal session. This is not an error: do not spawn it again. Its reports arrive as messages from it.` }
 }
 
-// A manager main just started joins the open round, or opens one with a timer for the wait. A lite one is skipped.
-async function recordManager(io: SpawnHookIo, name: string, prompt: string, liteMode: boolean): Promise<void> {
+// A manager main just started joins the open round, or opens one with a timer for the wait. A lite one is skipped;
+// one already on the roster (again: main's message resumed it) keeps what it filed.
+async function recordManager(io: SpawnHookIo, name: string, prompt: string, liteMode: boolean, again = false): Promise<void> {
   const t = await io.now()
   const opened = await io.withPreflight(cur => {
-    const changed = recordSpawn(cur, name, isSkip(prompt) || liteMode, t, mirror.preflightWaitMs)
+    const changed = recordSpawn(cur, name, isSkip(prompt) || liteMode, t, mirror.preflightWaitMs, again)
     return { state: changed, out: changed.rounds.length > cur.rounds.length }
   })
   if (opened) io.after(mirror.preflightWaitMs, () => void io.refresh().catch(() => undefined))
@@ -164,9 +165,10 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
     }
   }
   // A manager may not start workers before its pre-flight is filed (and its blocking questions answered).
+  // A worker already on its roster is resumed by a message: the manager was past the gate when it started it.
   if (e.subagentType === WORKER) {
     const gated = await io.gate(e.parentAgentId)
-    if (gated !== undefined) return { deny: gated }
+    if (gated !== undefined && !onRoster(await io.agentList(), (e as { name?: string }).name ?? e.description, [WORKER, CONTINUE], e.parentAgentId)) return { deny: gated }
   }
   // Attachments: every listed file must exist, and a relative path becomes absolute here, since the
   // worker runs in another worktree. Before the continue rewrite and the retries, which carry this prompt.
@@ -235,6 +237,10 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
     const started = await startManagerSession(io, e, { routed, liteMode })
     if (started !== undefined) return started
   }
+  // Main's manager already on the roster is the same one (a message resumed it). Read before the start: after it, the
+  // roster lists this spawn too.
+  const again = mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined &&
+    onRoster(await io.agentList(), (e as { name?: string }).name ?? e.description, [MANAGER], undefined)
   // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
   // remember, so later spawns skip the failed try. A no-model spawn gets the registered model.
   const spawn = e.subagentType === WORKER ? await prepareContinue(io.spawn, e, !io.noContinue()) : e
@@ -317,7 +323,7 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
       else await io.best('filing a worker-size decision', () => fileSizeFyi(io.spawn, io.options(), (e as { name?: string }).name ?? e.description, e.parentAgentId, r))
     }
     if (mirror.preflightOn && e.subagentType === MANAGER && e.parentAgentId === undefined) {
-      await io.best('recording a pre-flight', () => recordManager(io, (e as { name?: string }).name ?? e.description, e.prompt, liteMode))
+      await io.best('recording a pre-flight', () => recordManager(io, (e as { name?: string }).name ?? e.description, e.prompt, liteMode, again))
     }
     if (FLOW_TYPES.has(e.subagentType)) {
       await io.best('logging a spawn', async () => {

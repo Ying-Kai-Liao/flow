@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A manager's filed pre-flight is no longer forgotten when main messages it (#238). The host raises a spawn when a message resumes an agent, and each one reset the manager to recon: every later worker start was refused until it filed again, each re-filing sent main another "Pre-flight" message, and a PR it handed over read "handed over a PR without pre-flight". A manager already on the roster under that name, whatever its status, now keeps a filed or skipped pre-flight, joins no new round and sends main nothing new. A worker resumed under its manager is never refused by the pre-flight gate. A name not on the roster is still a new manager and starts over.
+
 ## [0.6.123] - 2026-10-17
 
 ### Added

@@ -94,12 +94,20 @@ export function phaseOf(state: Preflight, inbox: Inbox, name: string): Phase | u
   return openBlocking(e, inbox).length > 0 ? 'waiting on answers' : 'released'
 }
 
+// The same agent asked for again (#238): a message resumes an agent under its id and the host raises
+// agent.spawn for it, so a name of that type already listed under the same owner, whatever its status,
+// is that agent. A name not listed is a new one.
+export const onRoster = (rows: AgentRow[], name: string, types: readonly string[], parentId: string | undefined): boolean =>
+  rows.some(a => a.name === name && types.includes(a.type) && a.parentId === parentId)
+
 // A manager main spawns: recorded in the open round, or in a new one. A successor of a recorded
-// manager inherits its record. Returns the same object when nothing changes.
-export function recordSpawn(state: Preflight, name: string, skip: boolean, now: number, waitMs: number): Preflight {
+// manager inherits its record; the same manager spawned again (again: on the roster already) keeps a
+// filed or skipped one. Returns the same object when nothing changes.
+export function recordSpawn(state: Preflight, name: string, skip: boolean, now: number, waitMs: number, again = false): Preflight {
   const key = noteKey(name)
   const old = state.entries[key]
   if (old !== undefined && /-\d+$/.test(name)) return { ...state, entries: { ...state.entries, [key]: { ...old, name } } }
+  if (again && old !== undefined && old.phase !== 'recon') return state
   let rounds = state.rounds
   let next = state.next
   // A round already past its wait (left over from a session that ended) is closed unsent: joining it
