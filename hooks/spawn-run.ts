@@ -20,6 +20,8 @@ import { effortFor, generation } from './routing'
 import type { EffortRole } from './routing'
 import { ROLE } from './pane'
 import { sessionKey, sessionLive } from './sessions'
+import { recordFamily } from './state'
+import type { Families } from './state'
 import { sizeArmOf, sizerFor } from './size-ab'
 import type { SizeArm } from './size-ab'
 import type { RoleStart, SessionSettings } from './session-run'
@@ -56,6 +58,7 @@ export type SpawnHookIo = {
   changeLedger: (fn: (l: Ledger, now: number) => Ledger) => Promise<void>
   withLite: <T>(fn: (cur: LiteState) => { state: LiteState; out: T }) => Promise<T>
   withPreflight: <T>(fn: (cur: Preflight) => { state: Preflight; out: T }) => Promise<T>
+  withFamilies: (fn: (cur: Families) => Families) => Promise<void>
   after: (ms: number, fn: () => void) => void
   sessions: () => Promise<Record<string, Session>>
   // The settings when flow runs in a terminal mode (orca or tmux), undefined in agent mode, and the start of a terminal session.
@@ -141,6 +144,20 @@ async function recordManager(io: SpawnHookIo, name: string, prompt: string, lite
   if (opened) io.after(mirror.preflightWaitMs, () => void io.refresh().catch(() => undefined))
 }
 
+// What the roster, the terminal sessions and the cost ledger say about a manager name, for its family.
+async function recordFamilyOf(io: SpawnHookIo, name: string): Promise<void> {
+  const rows = (await io.agentList()).filter(a => a.type === MANAGER && a.name !== undefined)
+  const sessions = await io.sessions()
+  const session = (n: string) => (sessions[n]?.role === 'manager' ? sessions[n] : undefined)
+  await io.spawn.loadLedger()
+  const ledger = Object.values(await io.spawn.ledger())
+  const listed = (n: string) => rows.some(a => a.name === n) || session(n) !== undefined
+  await io.withFamilies(cur => recordFamily(cur, name, {
+    listed,
+    seen: n => listed(n) || ledger.some(x => x.role === 'manager' && x.name === n),
+  }))
+}
+
 export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, input: AgentSpawnInput, next: (ev: AgentSpawnInput) => Promise<R>): Promise<R | { deny: string }> {
   // A terminal session's own subagents (Explore and the like) are plain. Its workers are sessions.
   const relay = io.relay()
@@ -177,6 +194,8 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
     if ('deny' in checked) return { deny: checked.deny }
     if (checked.prompt !== e.prompt) e = { ...e, prompt: checked.prompt }
   }
+  // A manager's family (state.ts recordFamily) is fixed before anything reads its notes key: lite, pre-flight, routing.
+  if (e.subagentType === MANAGER) await io.best('recording a manager family', () => recordFamilyOf(io, (e as { name?: string }).name ?? e.description))
   // Lite mode: a `Mode: lite` line (or an earlier spawn of this manager's task) puts the LITE rules in front of the prompt.
   let liteMode = false
   if (e.subagentType === MANAGER) {

@@ -6,6 +6,7 @@
 // not dollars, so a changed table reprices history.
 
 import { localDate } from './release'
+import { noteKey } from './state'
 import type { Bucket, Ledger, LedgerEntry, Role, Tokens } from '../types'
 
 export type Rates = { input: number; write5m: number; write1h: number; read: number; output: number }
@@ -282,7 +283,7 @@ export function costBlock(ledger: Ledger, prs: { pr: number; branch: string }[],
   for (const e of [...entries].sort((a, b) => order[a.role] - order[b.role] || a.name.localeCompare(b.name))) {
     lines.push(`  ${e.role} ${e.name} [${Object.keys(e.models).join(', ')}]: ${totalText(totalOf([e]))}`)
   }
-  const ownerOf = (e: LedgerEntry): string | undefined => e.role === 'manager' ? baseName(e.name) : e.role === 'worker' && e.manager !== undefined ? baseName(e.manager) : undefined
+  const ownerOf = (e: LedgerEntry): string | undefined => e.role === 'manager' ? noteKey(e.name) : e.role === 'worker' && e.manager !== undefined ? noteKey(e.manager) : undefined
   for (const m of [...new Set(entries.map(ownerOf).filter((x): x is string => x !== undefined))].sort()) {
     lines.push(`  manager ${m} total (with its workers): ${totalText(totalOf(entries.filter(e => ownerOf(e) === m)))}`)
   }

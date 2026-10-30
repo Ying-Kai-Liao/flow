@@ -8,6 +8,8 @@ import { normalizeDeploys } from './deploy'
 import type { Deploys } from './deploy'
 import { normalizeInbox } from './inbox'
 import type { Inbox } from './inbox'
+import { normalizeFamilies } from './state'
+import type { Families } from './state'
 import { normalizeLite } from './lite'
 import type { LiteState } from './lite'
 import { normalizePreflight } from './preflight'
@@ -83,6 +85,7 @@ export type StartupIo = {
   refreshBehind: () => void
   setPush: (disk: PushState) => Promise<void>
   setLite: (disk: LiteState) => Promise<void>
+  setFamilies: (disk: Families) => Promise<void>
   mergeSessions: (raw: unknown) => Promise<void>
   snapshotSessions: () => Promise<void>
   adoptSessions: () => Promise<void>
@@ -241,6 +244,8 @@ export async function startSession(io: StartupIo): Promise<void> {
     await io.mergeHandovers(disk)
     queueDue = Object.values(disk).some(ho => ho.status === 'pending')
   })
+  // Manager families first: the inbox, lite and pre-flight records below are keyed by noteKey.
+  await loadState(io, 'loading manager families', 'families.json', raw => io.setFamilies(normalizeFamilies(raw)))
   await loadState(io, 'loading the inbox', 'inbox.json', raw => io.setInbox(normalizeInbox(raw)))
   // A fresh session is a fresh attempt: the halt and the wait end, the failure history stays.
   await loadState(io, 'loading the reviewer breaker', 'reviewer-breaker.json', async raw => {

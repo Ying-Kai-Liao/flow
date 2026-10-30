@@ -4,8 +4,49 @@ import type { LogEvent } from '../types'
 // live in register.tsx: the engine follows `$` only into functions declared in the same file.
 // `config.json` in the state dir belongs to the settings package: never touched here.
 
-// "csv-export-2" and "csv-export" share one manager's notes.
-export const noteKey = (name: string): string => name.replace(/-\d+$/, '').replace(/[^\w.-]/g, '_') || 'manager'
+// A manager's family: the notes key it shares with its successors (notes, pre-flight, lite, inbox folding).
+// Decided once when main starts the manager (recordFamily) and kept in families.json: name -> key. Module
+// state, so the many pure callers of noteKey agree without the roster or the ledger. A name not in it (a
+// worker, a manager from before families were recorded) keeps the old reading: "csv-export-2" and
+// "csv-export" share one key.
+export type Families = Record<string, string>
+let families: Families = {}
+export const setFamilies = (f: Families): void => { families = f }
+export const familiesNow = (): Families => families
+
+const clean = (name: string): string => name.replace(/[^\w.-]/g, '_') || 'manager'
+const keyIn = (f: Families, name: string): string => {
+  const k = f[name]
+  return typeof k === 'string' ? k : clean(name.replace(/-\d+$/, ''))
+}
+export const noteKey = (name: string): string => keyIn(families, name)
+
+// What the spawn hook knows about a name when it records a family: listed (on the roster or a terminal
+// session now) and seen (that, or a manager in the cost ledger).
+export type FamilyFacts = { listed: (name: string) => boolean; seen: (name: string) => boolean }
+
+// The family of a manager main starts; the same object when nothing changes. A name recorded before keeps
+// its family (a resume, a second spawn). One already listed but not recorded started before families
+// were: it keeps the old reading, so an in-flight manager finds its notes and pre-flight. Otherwise
+// `x-N` is a successor of `x` only when `x` is a manager seen before: it joins x's family. Whether x still
+// runs is not asked, since a predecessor that was told to hand off may not have ended yet. Anything else
+// is its own root, so issue-238 and issue-240 are two tasks. Left ambiguous: a task named `x` and a new
+// task `x-2`.
+export function recordFamily(f: Families, name: string, facts: FamilyFacts): Families {
+  if (typeof f[name] === 'string') return f
+  if (facts.listed(name)) return { ...f, [name]: keyIn(f, name) }
+  const base = /^(.+)-\d+$/.exec(name)?.[1]
+  const successor = base !== undefined && (typeof f[base] === 'string' || facts.seen(base))
+  return { ...f, [name]: successor ? keyIn(f, base) : clean(name) }
+}
+
+// families.json read back; anything malformed is dropped.
+export function normalizeFamilies(raw: unknown): Families {
+  const out: Families = {}
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) if (typeof v === 'string' && v !== '') out[k] = v
+  return out
+}
 
 // Who owns a PR or branch: the latest handover or spawn event that names it.
 export function ownerFor(events: LogEvent[], match: { pr?: number; branch?: string }): string | undefined {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Manager names ending in `-<digits>` are no longer read as successors unless they are one. issue-238 and issue-240, started by main as two tasks, kept one notes key, one pre-flight entry (issue-240 inherited a filed pre-flight and was never gated) and issue-240 ran one size up. A manager's family is now decided when main starts it and kept in `families.json`: `x-N` joins `x`'s family only when `x` is a manager seen before (roster, terminal session or cost ledger); otherwise the name is its own. Real successors (csv -> csv-2 -> csv-3, issue-238 -> issue-238-2) keep sharing notes, pre-flight, lite and the size floor. A manager already running before the upgrade keeps its old key. A worker `x-N` takes a size floor from earlier generations only when a worker `x` ran, so fix-issue-12 gets none from an unrelated fix-issue-7. The cost summary's per-manager totals group by the same family.
+
 ## [0.6.126] - 2026-10-30
 
 ### Added

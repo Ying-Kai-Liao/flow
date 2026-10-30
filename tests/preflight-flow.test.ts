@@ -160,6 +160,22 @@ test('a successor inherits the filed record', async ($, on) => {
   expect(await worker($, 'a2', 'w')).not.toContain('pre-flight')
 })
 
+test('issue-238 and issue-240 are two tasks: issue-240 starts in recon and is gated; issue-238-2 inherits issue-238', async ($, on) => {
+  const w = world(on)
+  await manager($, 'issue-238')
+  await file($, 'a1')
+  w.agents[0]!.status = 'completed'
+  await manager($, 'issue-240')
+  expect(await worker($, 'a2', 'w')).toContain('pre-flight is filed')
+  await manager($, 'issue-238-2')
+  expect(await worker($, 'a3', 'w2')).not.toContain('pre-flight')
+  const state = JSON.parse(w.files.get(`${DIR}/preflight.json`) ?? '{}') as { entries: Record<string, { name: string; phase: string }> }
+  expect(Object.keys(state.entries).sort()).toEqual(['issue-238', 'issue-240'])
+  expect(state.entries['issue-238']).toMatchObject({ name: 'issue-238-2', phase: 'filed' })
+  expect(state.entries['issue-240']!.phase).toBe('recon')
+  expect(JSON.parse(w.files.get(`${DIR}/families.json`) ?? '{}')).toEqual({ 'issue-238': 'issue-238', 'issue-240': 'issue-240', 'issue-238-2': 'issue-238' })
+})
+
 test('only managers file; main and workers are refused with a message', async ($, on) => {
   world(on)
   await manager($, 'csv')
