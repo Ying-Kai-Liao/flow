@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
 
-import { BATCH_PR_CHECKS_MINUTES, deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_REVIEWER_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO, SESSION_NO_TOOLS, SESSION_PROMPT, SESSION_RELAYED_TOOLS, WORKER_PROMPT } from '../hooks/prompts'
+import { BATCH_BRANCH_RE, BATCH_PR_CHECKS_MINUTES, deploySection, fill, HEALTH_FIRST_WAIT_SECONDS, HEALTH_RETRY_MINUTES, MANAGER_PROMPT, NO_REVIEWER_RULE, PUSH_RETRY_BACKOFF, PUSH_RETRY_MINUTES, REVIEWER_PROMPT, REVIEWER_RULE, REVIEWER_SESSION_RULES_AUTO, SESSION_NO_TOOLS, SESSION_PROMPT, SESSION_RELAYED_TOOLS, WORKER_PROMPT } from '../hooks/prompts'
 import type { Settings } from '../hooks/prompts'
 
 const base: Settings = {
@@ -234,21 +234,78 @@ test('a push refused by branch protection takes the batch PR route and sends not
   expect(route).not.toMatch(/action "back"/)
 })
 
-test('each batch starts by closing leftover batch PRs, and a PR merged through one is done, not merged again', () => {
+test('each batch starts by keeping or closing leftover batch PRs, and a PR merged through one rides with this deploy', () => {
   const q = fill(REVIEWER_PROMPT, base)
   const step1 = q.slice(q.indexOf('1. Start clean'), q.indexOf('2. For each pending PR'))
-  expect(step1).toContain('select(.headRefName | startswith("flow/batch-"))')
-  expect(step1).toContain('gh pr close <n> --delete-branch --comment "superseded by a new batch"')
+  expect(step1).toContain(`--state open --json number,headRefName,headRefOid,title --jq '.[] | select(.headRefName | test("${BATCH_BRANCH_RE}"))'`)
+  expect(step1).toContain('--state merged --limit 20')
+  expect(step1).not.toContain('startswith(')
+  expect(step1).toContain('one that can still go in as checked is resumed, not closed')
+  expect(step1).toContain('The PRs a kept batch PR names stay out of this run\'s batch.')
   const step2 = q.slice(q.indexOf('2. For each pending PR'), q.indexOf('2b. Late join'))
   expect(step2).toContain('State MERGED with the handover\'s head in the base (`git merge-base --is-ancestor <head sha> origin/main` succeeds)')
   expect(step2).toContain('do not merge it again and do not send it back')
-  expect(step2).toContain('"merged earlier via batch PR; not deployed by this run"')
+  expect(step2).toContain('"merged earlier via batch PR; deployed earlier"')
+  expect(step2).toContain('it rides with this run\'s deploy: hold its "done" until step 7')
+  expect(step2).toContain('the batch is origin/main as it stands: run step 3 on it, cut no release, skip step 4')
+  expect(step2).not.toContain('not deployed by this run')
+})
+
+test('the batch branch selector matches the reviewer\'s own names only, never a worker branch', () => {
+  const re = new RegExp(BATCH_BRANCH_RE)
+  for (const b of ['flow/batch-0a1b2c3d', 'flow/batch-ready-0a1b2c3', 'flow/batch-ready-0a1b2c3d4e5f60718293a4b5c6d7e8f901234567']) expect(re.test(b)).toBe(true)
+  for (const b of ['flow/batch-pr-gaps-route', 'flow/batch-pr-gaps', 'flow/batch-0A1B2C3D', 'flow/batch-0a1b2c3', 'flow/batch-0a1b2c3d9', 'flow/batch-ready-xyz', 'flow/status-0a1b2c3d', 'x/flow/batch-0a1b2c3d']) expect(re.test(b)).toBe(false)
+  // Every selector in the prompts uses it: none falls back to a prefix match.
+  const q = fill(REVIEWER_PROMPT, { ...base, pushMode: 'confirm' })
+  expect(q).not.toContain('startswith("flow/batch-")')
+  expect(q.split(`test("${BATCH_BRANCH_RE}")`).length - 1).toBe(2)
+})
+
+test('a leftover batch PR is kept while it can still go in as checked, and resumed before a new batch', () => {
+  const q = fill(REVIEWER_PROMPT, base)
+  const left = q.slice(q.indexOf('\nLeft open by an earlier run'), q.indexOf('## After a batch'))
+  expect(left).toContain('Close it as superseded (`gh pr close <b> --delete-branch --comment "superseded by a new batch"`) when it can no longer go in as checked')
+  expect(left).toContain('its title names no PR')
+  expect(left).toContain('a PR it names is not shown as `taken`')
+  expect(left).toContain('no longer OPEN at its handover\'s head')
+  expect(left).toContain('its head is not the checked head')
+  expect(left).toContain('`gh pr checks <b> --required` reports a failed check')
+  expect(left).toContain('never building a second batch PR for its PRs and never merging them into another batch')
+  expect(left).toContain('cut no release for it')
+  expect(left).toContain('take the base-moved path above first')
+  expect(left).toContain('"merge it on GitHub or fix the repo setting" line, once in this run, not again on each list')
+  const route = q.slice(q.indexOf('## Batch PR route'), q.indexOf('\nLeft open by an earlier run'))
+  expect(route).toContain('a last line checked head: <full sha of HEAD>')
+  expect(route).toContain('the next run keeps the batch PR and resumes it')
+  expect(route).not.toContain('closes the batch PR in step 1')
+  expect(q).toContain('When it shows no pending PR (the PRs a kept batch PR names stay taken there), end')
+})
+
+test('after a batch PR merge the reviewer checks the merged tree, and checks the merge commit when the base moved', () => {
+  const q = fill(REVIEWER_PROMPT, base)
+  const route = q.slice(q.indexOf('## Batch PR route'), q.indexOf('When it does not go through'))
+  expect(route).toContain('gh pins the head, not the base')
+  expect(route).toContain('`gh pr view <b> --json mergeCommit --jq .mergeCommit.oid`')
+  expect(route).toContain('`git diff --quiet <merge commit> HEAD`')
+  expect(route).toContain('run the full check on the merge commit before anything is published or deployed')
+  expect(route).toContain('`git worktree add --detach /tmp/merged-<id> <merge commit>`, under the test slot')
+  expect(route).toContain('"| base moved during merge; checked again at <short sha>"')
+  expect(route).toContain('"merged via batch PR #<b>; base moved during merge and the full check of <short sha> failed; not deployed"')
+  expect(route).toContain('Do not publish, deploy or run after_deploy.')
+  const moved = q.slice(q.indexOf('- The base moved before the merge'))
+  expect(moved).toContain('gh says the head is not up to date')
+  expect(moved).toContain('never change repo settings')
+  expect(q).toContain('the sha you push is always one whose exact tree passed the full check')
 })
 
 test('the push run and the status file go through the batch PR route too', () => {
   const run = fill(REVIEWER_PROMPT, { ...base, pushMode: 'confirm' })
-  expect(run.slice(run.indexOf('## Push run'), run.indexOf('## A batch'))).toContain('a branch-protection refusal takes the batch PR route, where a moved base makes the batch stale')
+  expect(run.slice(run.indexOf('## Push run'), run.indexOf('## A batch'))).toContain('where a moved base makes the batch stale as the next bullet says')
   expect(run).toContain('In a PUSH RUN the batch is stale instead: close the batch PR as superseded')
+  const push = run.slice(run.indexOf('## Push run'), run.indexOf('## A batch'))
+  expect(push).toContain('reuses this batch\'s open batch PR from an earlier blocked try, checks what GitHub merged')
+  expect(push).toContain('If origin/main already holds the batch\'s sha')
+  expect(push).toContain('go on at the batch PR route\'s step 5 (check what GitHub merged)')
   const st = fill(REVIEWER_PROMPT, { ...base, stateFile: { path: 'STATUS.md', archive: 'STATUS-archive.md', keep: 5 } })
   const step8 = st.slice(st.indexOf('8. Status file'))
   expect(step8).toContain('`git fetch origin && git checkout --detach origin/main` first')
