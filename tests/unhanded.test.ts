@@ -24,6 +24,11 @@ test('the rule: draft, non-flow branch, handovers', () => {
   expect(out[1]!.note).toBe('returned: head moved')
 })
 
+test("the reviewer's batch and status PRs are not listed", () => {
+  const prs = [pr(1, 'flow/batch-7'), pr(2, 'flow/batch-ready-abc1234'), pr(3, 'flow/status-7'), pr(4, 'flow/batchfoo'), pr(5, 'flow/x')]
+  expect(numbers(unhandedPrs(prs, {}, [], {}, NOW))).toEqual([4, 5])
+})
+
 test('a live worker or its continuation keeps the PR out', () => {
   const prs = [pr(1, 'flow/csv')]
   for (const status of ['pending', 'running', 'waiting', 'idle']) {

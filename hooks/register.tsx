@@ -221,6 +221,8 @@ const infosOf = (s: Parameters<typeof targetsOf>[0]): TargetInfo[] => targetsOf(
 // Open flow/* PRs that nobody handed to the reviewer and nobody is working on any more.
 // A draft is a WIP handoff, a pending/taken/done handover is in hand, a returned one needs a
 // manager again. The worker is the agent named like the branch, or its continuation (-2, -3).
+const REVIEWER_PR_PREFIXES = ['flow/batch-', 'flow/status-']
+
 export function unhandedPrs(
   prs: OpenPr[], handovers: Record<string, Handover>, roster: AgentRow[],
   activity: Record<string, Activity>, t: number, graceMs = GRACE_MS, armPr?: (branch: string) => boolean,
@@ -228,6 +230,8 @@ export function unhandedPrs(
   const out: Unhanded[] = []
   for (const p of prs) {
     if (p.isDraft || !p.headRefName.startsWith('flow/')) continue
+    // The reviewer's own batch and status PRs (protected-base route): it owns them, nobody hands them over.
+    if (REVIEWER_PR_PREFIXES.some(x => p.headRefName.startsWith(x))) continue
     const ho = handovers[String(p.number)]
     if (ho !== undefined && ho.status !== 'returned') continue
     // A best-of-N arm waits for its pick: not forgotten while the group is open, never owed once it lost.
