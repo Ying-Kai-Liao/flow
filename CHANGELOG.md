@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The reviewer's own batch and status PRs (`flow/batch-<id>`, `flow/batch-ready-<sha>`, `flow/status-<id>`, protected-base route) no longer show as PRs nobody handed over in the Flow pane and `/flow status`.
+
 ## [0.6.126] - 2026-10-30
 
 ### Added
