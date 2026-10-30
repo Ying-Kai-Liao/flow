@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A reviewer whose push to the base branch is refused by branch protection or a ruleset (GH006, GH013) no longer sends the checked batch back. It merges the batch through a batch PR instead: pushes `flow/batch-<id>`, opens a PR into the base, waits up to 30 minutes for its required checks and merges with a merge commit pinned to the checked head, then publishes, deploys and marks the PRs done as after a direct push. Each batch first closes batch PRs an earlier run left open, and a handed-over PR already merged through one is marked done. The status-file commit, the `/flow push` run and lite mode take the same route (#237).
+
 ## [0.6.123] - 2026-10-17
 
 ### Added

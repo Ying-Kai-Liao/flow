@@ -99,6 +99,11 @@ test('the LITE block carries the self-merge steps for the repo settings', () => 
   expect(plain).toContain('git push origin HEAD:main')
   expect(plain).toContain('action "done"')
   expect(plain).not.toContain('mcp__flow__release')
+  expect(plain).toContain('never send the PR back for it, merge through a batch PR instead')
+  expect(plain).toContain('`git push origin HEAD:refs/heads/flow/batch-<id>`')
+  expect(plain).toContain('`gh pr merge <b> --merge --match-head-commit <full sha of HEAD> --delete-branch`')
+  expect(plain).toContain('`gh pr close <b> --delete-branch`')
+  expect(plain).not.toContain('Branch protection or a lasting server error')
   expect(LITE_RULES).toContain('{{LITE_STEPS}}')
   expect(LITE_RULES).toContain('mode "confirm"')
   const full = liteSteps({ ...base, release: true, releaseGithub: true, deployTargets: [{ name: 'demo', mode: 'auto', backup: [], deploy: ['./d'], verify: [] }] } as never)
@@ -108,6 +113,7 @@ test('the LITE block carries the self-merge steps for the repo settings', () => 
   const gated = liteSteps({ ...base, release: true, pushMode: 'confirm' } as never)
   expect(gated).toContain('action "ready"')
   expect(gated).not.toContain('git push origin HEAD:main')
+  expect(gated).not.toContain('flow/batch-')
 })
 
 test('tool access: a lite manager reaches the reviewer tools for its own PRs only', () => {
