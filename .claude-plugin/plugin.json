@@ -91,6 +91,12 @@
       "description": "Advanced: After a handover on an idle queue, wait this many minutes before starting the reviewer, so PRs handed over close together land in one batch. 0: start at once.",
       "default": 3
     },
+    "reviewer_handoff": {
+      "type": "number",
+      "title": "Reviewer handoff (%)",
+      "description": "Advanced: After a batch with no handover pending, a reviewer past this percent of its context window ends, and a fresh one takes the next handover. 0: never.",
+      "default": 50
+    },
     "typecheck_slots": {
       "type": "number",
       "title": "Typecheck slots",

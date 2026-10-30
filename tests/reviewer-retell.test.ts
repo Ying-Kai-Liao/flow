@@ -31,7 +31,8 @@ function setup(initial: { pending?: Handover[]; deploys?: Deploys; batch?: Batch
     reviewerSession: async () => w.session,
     nudge: async (_s: Session, text: string, told: string[]) => { w.typed.push(text); w.session.nudged = told; return undefined },
     setTold: async (_s: Session, told: string[]) => { w.session.nudged = told },
-    breaker: {} as never,
+    // Read for a reviewer told to hand off (none here); nothing else of the breaker is used on this path.
+    breaker: { stateDir: async () => undefined, get: async () => ({ streak: 0 }) } as never,
     wait: () => undefined,
   } as QueueIo
   return { w, io }

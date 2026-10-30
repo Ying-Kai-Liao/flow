@@ -417,6 +417,9 @@ export type Breaker = {
   // this. Kept apart from `streak`. `unreachableTold`: main was told this streak.
   unreachable?: number
   unreachableTold?: boolean
+  // Reviewers told to end at their handoff point (reviewer_handoff), newest last: their end is planned, not a failure,
+  // and one that ended its turn is not told new work. The last few only.
+  handedOff?: string[]
 }
 
 export type Filing = {

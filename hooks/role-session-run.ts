@@ -30,6 +30,8 @@ export type RoleIo = {
   heldMergeMode: () => string | undefined
   heldSettings: () => boolean
   batchReady: () => Promise<boolean>
+  // The reviewer of that name was told to end at its handoff point (reviewer_handoff).
+  handedOff: (name: string) => Promise<boolean>
   stopTerminal: (name: string) => Promise<void>
   reviewerRan: (id: string, name: string, end: { answer: string }, ended: boolean) => Promise<void>
   relayReviewerReport: (id: string, name: string, answer: string) => Promise<void>
@@ -186,8 +188,9 @@ export async function onRoleReportTo(io: RoleIo, s: Session, report: string): Pr
   const id = sessionKey(s.name)
   const ready = await io.batchReady()
   // Read now, not at the start: merge_mode may have changed while it worked. A batch waiting for /flow push also
-  // ends the session; the push run is a fresh reviewer's.
-  const oneBatch = parseMode(io.heldMergeMode()) === 'confirm' || ready
+  // ends the session; the push run is a fresh reviewer's. So does a report after the reviewer was told to hand off:
+  // the next handover goes to a fresh one.
+  const oneBatch = parseMode(io.heldMergeMode()) === 'confirm' || ready || await io.handedOff(s.name)
   if (!oneBatch || !io.heldSettings()) {
     await io.reviewerRan(id, s.name, { answer: report }, false)
     return
