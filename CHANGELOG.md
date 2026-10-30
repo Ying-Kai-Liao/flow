@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The reviewer hands off at its context limit, as managers do (#236). After a batch, with nothing taken, no push or rebuild run and no handover pending, a reviewer past `reviewer_handoff` percent of its context window (default 50, 0 = never) is told once to finish and end; a terminal reviewer's session is stopped after its report. The next handover, or the end itself when work arrived meanwhile, starts a fresh reviewer through the normal start path, and the breaker counts the end as planned, not as a failed or short run. Before, one reviewer could run for a day on auto-compaction.
+
 ## [0.6.125] - 2026-10-30
 
 ### Changed

@@ -9,10 +9,11 @@ import type { PushState } from './pushgate'
 import { envSummary, itemViewOf } from './deploy'
 import { SKIP_NOTE } from './checks'
 import { withFailed, withFlaky } from './testfail'
-import { abandonRun, CAP_ERROR, clearHalt, decide, endRun, isRetry, normalizeBreaker, openHaltItem, REACH_MS, reachRun, REVIEWER_KIND, startRun, unreachableNotice } from './reviewer-breaker'
+import { abandonRun, CAP_ERROR, clearHalt, decide, endRun, handedOff, isRetry, markHandedOff, normalizeBreaker, openHaltItem, REACH_MS, reachRun, REVIEWER_KIND, startRun, unreachableNotice } from './reviewer-breaker'
 import type { RunEnd } from './reviewer-breaker'
 import { isReviewer, mirror, REVIEWER } from './core'
 import { LIVE } from './deliver'
+import { reviewerHandoffText } from './meter'
 import type { Ran } from './session-run'
 import type { settingsOf } from './settings'
 
@@ -46,10 +47,18 @@ export type ReviewerIo = {
   captureChecks: (h: Handover, verifyPaths: string[], live: boolean) => Promise<Check[]>
   suggestGuardTests: (input: Record<string, unknown>, pr: number, queueName: string, agentId: string | undefined, map: Settings['guardTests']) => Promise<string>
   sizeBackNote: (branch: string) => Promise<string | undefined>
+  // The reviewer's handoff point (#236): the caller's name and its context share (percent of its window) by agent id,
+  // a terminal's being its session key (undefined: unknown), and the breaker that remembers who was told. Absent: none.
+  handoff?: { name: (agentId: string) => Promise<string | undefined>; percent: (agentId: string) => Promise<number | undefined>; breaker: BreakerIo }
 }
 
 export async function reviewerToolRun(io: ReviewerIo, settings: Settings, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
   const action = String(input.action)
+  // A reviewer told to hand off takes no new work; the pending PRs are the next reviewer's.
+  if (action === 'list' && io.handoff !== undefined && agentId !== undefined) {
+    const name = await io.handoff.name(agentId)
+    if (name !== undefined && handedOff(await currentBreaker(io.handoff.breaker), name)) return { result: HANDED_OFF_LIST }
+  }
   if (action === 'list') await io.reconcile()
   const all = await io.handovers()
   // While a batch exists the reviewer sees it, not the pending handovers: they go in after the push run.
@@ -134,7 +143,39 @@ export async function reviewerToolRun(io: ReviewerIo, settings: Settings, input:
   const filed = action === 'back' ? await io.suggestGuardTests(input, next.pr, rows.find(a => a.id === agentId)?.name ?? 'reviewer', agentId, settings.guardTests) : ''
   const size = action === 'back' ? await io.sizeBackNote(next.branch) : undefined
   const sizeLine = size === undefined ? '' : `\nPut this line in your message to ${next.reportTo}: ${size}`
-  return { result: `PR #${key}: ${next.status}.${verify}${filed}${sizeLine}` }
+  const handoff = action === 'done' || action === 'back' ? await handoffLine(io, settings, agentId) : ''
+  return { result: `PR #${key}: ${next.status}.${verify}${filed}${sizeLine}${handoff}` }
+}
+
+export const HANDED_OFF_LIST = 'You are past your handoff point: take no new PR. Finish the batch you are on, then end with your final report; a fresh reviewer takes the pending handovers.'
+
+// Whether the reviewer is between batches with nothing pending, where it may hand off. A taken PR or a push or rebuild
+// run is a batch in flight. A batch that awaits the user's push does not hold it: the batch lives in the plugin, the
+// handovers behind it wait for the push run, and that run is a fresh reviewer's anyway.
+export function atHandoffPoint(all: Handover[], batch: PushState['batch']): boolean {
+  if (batch !== undefined && batch.state !== 'ready') return false
+  if (all.some(h => h.status === 'taken')) return false
+  return batch !== undefined || !all.some(h => h.status === 'pending')
+}
+
+// After a done or back: a reviewer past reviewer_handoff at a handoff point is told, once per run, to end (#236). With
+// handovers pending it keeps working and hands off at a later done or back with none pending. The breaker records it,
+// so its end counts as planned, not as a short or failed run.
+async function handoffLine(io: ReviewerIo, settings: Settings, agentId: string | undefined): Promise<string> {
+  const limit = settings.reviewerHandoff ?? 0
+  if (io.handoff === undefined || agentId === undefined || limit <= 0) return ''
+  if (!atHandoffPoint(Object.values(await io.handovers()), await io.batch())) return ''
+  const percent = await io.handoff.percent(agentId)
+  if (percent === undefined || percent < limit) return ''
+  const name = await io.handoff.name(agentId)
+  if (name === undefined) return ''
+  const marked = await withBreaker(io.handoff.breaker, cur => {
+    const r = markHandedOff(cur, name)
+    return { breaker: r.breaker, out: r.marked }
+  })
+  if (!marked) return ''
+  io.toast(`Reviewer ${name}: past ${limit}% context after its batch, handing off`)
+  return `\n${reviewerHandoffText(percent, limit, agentId.startsWith('session:'))}`
 }
 
 // What startQueue works through: the roster, the push batch, the handovers, the deploy targets and the
@@ -290,7 +331,13 @@ export const WANTED_LINE = 'A reviewer is starting.'
 // to it again, since a PR typed in while it worked may have been missed.
 export async function startQueue(io: QueueIo, why: QueueWhy = 'other', reported?: string): Promise<string> {
   const list = await io.agents()
-  const live = list.filter(a => isReviewer(a.type) && LIVE.has(a.status))
+  // A reviewer told to hand off gets no new work. One that ended its turn and only waits on background work is done
+  // with its batch, so it no longer counts; one still finishing holds the start, and its end starts the next one.
+  const before = await currentBreaker(io.breaker)
+  const leaving = (a: { name?: string }) => a.name !== undefined && handedOff(before, a.name)
+  const live = list.filter(a => isReviewer(a.type) && LIVE.has(a.status) && !(a.status === 'waiting' && leaving(a)))
+  const ending = live.find(leaving)
+  if (ending !== undefined) return `The reviewer ${ending.name} is handing off; a fresh reviewer starts when it ends.`
   if (live.length > 0) {
     // A reviewer agent held on background work (`waiting`) does not come back to list on its own: it is told.
     // One still running a turn lists at its next step. One that cannot be messaged is replaced below.
@@ -314,6 +361,10 @@ export async function startQueue(io: QueueIo, why: QueueWhy = 'other', reported?
   let session = io.reviewerSession === undefined ? undefined : await io.reviewerSession()
   let again: string[] = []
   if (session !== undefined && await unreached(io, session, reported)) session = undefined
+  // A reviewer terminal told to hand off is typed nothing: its report stops it, and that end starts the next one.
+  if (session !== undefined && handedOff(await currentBreaker(io.breaker), session.name)) {
+    return `The reviewer ${session.name} is handing off; a fresh reviewer starts after its report.`
+  }
   if (session !== undefined) {
     // Forget what is no longer true before any early return: a PR that went back to pending (approved, handed
     // over again) has another key and is typed again; a target or push run that was cleared can be due anew.
@@ -510,6 +561,11 @@ async function nudgeReviewer(io: QueueIo, s: Session, pending: Handover[], dueTa
   if (dueTargets.length > 0) sigNudged.set(`${s.name}|deploy`, deploySig)
   if (push !== undefined) sigNudged.set(`${s.name}|push`, pushSig)
   return `${where} picks it up.`
+}
+
+// Whether the reviewer `name` was told to end at its handoff point.
+export async function isHandedOff(io: BreakerIo, name: string): Promise<boolean> {
+  return handedOff(await currentBreaker(io), name)
 }
 
 // The breaker as the disk has it (the atom when there is no state dir).

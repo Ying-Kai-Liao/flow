@@ -79,6 +79,16 @@ export function wrapUpText(role: string, percent: number, limit: string): string
     : `flow: WRAP UP: your context is at ${percent}% (past the ${limit} limit). Stop new work, ${handoff}`
 }
 
+// The reviewer's handoff point (#236): past reviewer_handoff after a batch, with nothing pending, it ends so a fresh
+// reviewer takes the next handover. Its worklist and batch live in the plugin, so nothing is lost. A terminal reviewer
+// reports and the plugin stops its session; an agent ends its run.
+export function reviewerHandoffText(percent: number, limit: number, terminal: boolean): string {
+  const end = terminal
+    ? 'write your final report to your report file (replace it) and wait: the plugin then stops this session'
+    : 'stop any background task you started and end with your final report now'
+  return `flow: HAND OFF: your context is at ${percent}% (past the reviewer_handoff ${limit}%) and no handover is pending, so this batch is your last. Finish its remaining steps (each done line to its report_to, the status file if there is one, mcp__flow__clean), skip the final list and take no new PR, then ${end}. A fresh reviewer takes the next handover.`
+}
+
 export function tokensLabel(n: number): string {
   if (n >= 1_000_000) return `${+(n / 1_000_000).toFixed(1)}M`
   return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)

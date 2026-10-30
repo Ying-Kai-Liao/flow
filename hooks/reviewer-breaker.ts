@@ -25,6 +25,9 @@ export const NOT_NOW_ANSWER = 'not now'
 
 export const EMPTY_BREAKER: Breaker = { streak: 0 }
 
+// How many handed-off reviewer names the breaker keeps: enough for one that lingers while the next hands off too.
+export const HANDED_OFF_KEPT = 5
+
 // State written before the breaker existed, or damaged, reads as an empty history.
 export function normalizeBreaker(raw: unknown): Breaker {
   if (typeof raw !== 'object' || raw === null) return EMPTY_BREAKER
@@ -43,6 +46,10 @@ export function normalizeBreaker(raw: unknown): Breaker {
   if (Array.isArray(r.starts)) out.starts = r.starts.filter(num)
   if (num(r.unreachable) && r.unreachable > 0) out.unreachable = Math.floor(r.unreachable)
   if (r.unreachableTold === true) out.unreachableTold = true
+  if (Array.isArray(r.handedOff)) {
+    const names = r.handedOff.filter((x): x is string => typeof x === 'string')
+    if (names.length > 0) out.handedOff = names.slice(-HANDED_OFF_KEPT)
+  }
   const halt = r.halt as Record<string, unknown> | undefined | null
   if (halt && num(halt.at)) {
     out.halt = { at: halt.at, error: typeof halt.error === 'string' ? halt.error : 'unknown', ...(typeof halt.qid === 'string' ? { qid: halt.qid } : {}) }
@@ -126,9 +133,15 @@ export const isFailure = (e: RunEnd): boolean => e.answer.trim() === '' || e.rea
 // An agent spawned outside a tool.call hook (frame 'other') has its tool calls left unanswered by the host: that end is
 // the plugin's doing, not the reviewer's, so it counts toward no streak and the next one starts at once; the hourly cap
 // still bounds the starts.
+// A reviewer told to end at its handoff point did a batch and ended as asked: however it ended, that is no short,
+// failed or unreachable run, and the next one starts at once.
 export function endRun(b: Breaker, e: RunEnd): { breaker: Breaker; halted: boolean; unreachable?: true } {
   if (b.run === undefined || b.run.name !== e.name) return { breaker: b, halted: false }
   const lived = e.now - b.run.startedAt
+  if (handedOff(b, e.name)) {
+    const { run: _run, error: _error, ...rest } = b
+    return { breaker: { ...rest, streak: 0, endedAt: e.now }, halted: false }
+  }
   if (b.run.reached === false && !isFailure(e) && b.run.frame === 'other') {
     const { run: _run, ...kept } = b
     return { breaker: kept, halted: false }
@@ -148,6 +161,15 @@ export function endRun(b: Breaker, e: RunEnd): { breaker: Breaker; halted: boole
   const error = failed ? errorText(e) : `ended after ${Math.round(lived / 1000)}s: ${errorText(e)}`
   const halted = streak >= HALT_AFTER
   return { breaker: { ...rest, streak, endedAt: e.now, error, ...(halted ? { halt: { at: e.now, error } } : {}) }, halted }
+}
+
+// The reviewer `name` was told to end at its handoff point (#236).
+export const handedOff = (b: Breaker, name: string): boolean => (b.handedOff ?? []).includes(name)
+
+// Records that `name` was told to end at its handoff point; once per run, so the second call says false.
+export function markHandedOff(b: Breaker, name: string): { breaker: Breaker; marked: boolean } {
+  if (handedOff(b, name)) return { breaker: b, marked: false }
+  return { breaker: { ...b, handedOff: [...(b.handedOff ?? []), name].slice(-HANDED_OFF_KEPT) }, marked: true }
 }
 
 // Retry, /flow resume and a new session: the halt and the wait go, one more short run halts again.

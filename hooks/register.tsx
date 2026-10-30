@@ -86,7 +86,7 @@ import { releaseTool } from './release-run'
 import type { ReleaseIo } from './release-run'
 import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
 import type { Forwarded, RouteIo } from './reviewer-route'
-import { noteReached, noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue, WANTED_LINE } from './reviewer-run'
+import { isHandedOff, noteReached, noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue, WANTED_LINE } from './reviewer-run'
 import { reconcileStale } from './stale-handovers'
 import type { StaleIo } from './stale-handovers'
 import type { BreakerIo, QueueIo, QueueWhy, ReviewerIo } from './reviewer-run'
@@ -110,7 +110,7 @@ import { statusTool } from './status-run'
 import type { StatusIo, Unhanded } from './status-run'
 import { flowCommand } from './command'
 import type { CommandIo } from './command'
-import { elapsed, tokensDown, labelOf, thresholdOf, wrapUpText } from './meter'
+import { elapsed, tokensDown, labelOf, thresholdOf, windowOf, wrapUpText } from './meter'
 export { elapsed, tokensDown } from './meter'
 import { afterToolCall, beforeToolCall, guardTestsCase, mainCheckoutGuard as mainCheckoutGuardTo } from './toolcall-run'
 import type { GuardIo, GuardTestsCaseIo, ToolCallIo } from './toolcall-run'
@@ -1566,7 +1566,9 @@ function staleIoOf($: EngineInterface, base: string): StaleIo {
   }
 }
 
-function reviewerIoOf($: EngineInterface, base: string): ReviewerIo {
+// `main`: main's model and window, to size an agent reviewer that runs the same model (absent for a relayed call: a
+// terminal reviewer's window is its own).
+function reviewerIoOf($: EngineInterface, base: string, main?: { model?: string; window?: number }): ReviewerIo {
   return {
     reconcile: () => reconcileStale(staleIoOf($, base)),
     run: argv => $.process.run(argv),
@@ -1590,6 +1592,7 @@ function reviewerIoOf($: EngineInterface, base: string): ReviewerIo {
     captureChecks: (ho, verifyPaths, live) => captureChecks($, ho, verifyPaths, live),
     suggestGuardTests: (input, pr, queueName, agentId, map) => suggestGuardTests(standingIoOf($), input, pr, queueName, agentId, map),
     sizeBackNote: branch => sizeBackNote($, branch),
+    handoff: { name: id => reviewerNameOf($, id), percent: id => reviewerPercent($, id, main), breaker: breakerIoOf($) },
   }
 }
 
@@ -1776,6 +1779,23 @@ async function noteReviewerReached($: EngineInterface, agentId: string | undefin
   } catch (err) {
     await warn($, 'noting the reviewer reached the plugin', err)
   }
+}
+
+// The name of the reviewer behind `agentId`: an agent's from the roster, a terminal's from its session key.
+async function reviewerNameOf($: EngineInterface, agentId: string): Promise<string | undefined> {
+  if (agentId.startsWith('session:')) return agentId.slice('session:'.length)
+  const all = await $.agent.list()
+  return all.find(a => a.id === agentId)?.name
+}
+
+// The reviewer's context share as its meter shows it: an agent's from its last step, a terminal's from its digest.
+async function reviewerPercent($: EngineInterface, agentId: string, main: { model?: string; window?: number } | undefined): Promise<number | undefined> {
+  const acts = await read($, activity)
+  const a = acts[agentId]
+  const u = a?.usage
+  if (u === undefined) return undefined
+  const window = u.window ?? windowOf(u.model, main?.model, main?.window, u.tokens, a?.spawnWindow)
+  return Math.min(100, Math.round(u.tokens / window * 100))
 }
 
 function onReviewerAnswer($: EngineInterface, answer: string, by: string): Promise<string> { return onReviewerAnswerTo(breakerIoOf($), () => ensureQueue($), answer, by) }
@@ -2107,6 +2127,7 @@ function roleIoOf($: EngineInterface): RoleIo {
     heldMergeMode: () => heldSettings?.mergeMode,
     heldSettings: () => heldSettings !== undefined,
     batchReady: async () => (await read($, pushState)).batch?.state === 'ready',
+    handedOff: name => isHandedOff(breakerIoOf($), name),
     stopTerminal: async name => void await sessionToolTo(sessionIoOf($), { action: 'stop', name, remove_worktree: true }, { id: 'main', name: 'main' }, heldSettings!),
     reviewerRan: (id, name, end, ended) => reviewerRan($, id, name, end, ended),
     relayReviewerReport: (id, name, answer) => relayReviewerReport($, id, name, answer),
@@ -2781,7 +2802,7 @@ export const register: Register = (on, options) => {
       const input = e as unknown as FlowCall
       const refused = reviewerToolAccess(await toolCallerOf($, e.agentId), input, await read($, handovers))
       if (refused !== undefined) return { result: refused }
-      const out = await reviewerToolRun(reviewerIoOf($, kept.settings.base), kept.settings, input, e.agentId)
+      const out = await reviewerToolRun(reviewerIoOf($, kept.settings.base, { model: kept.mainModel, window: kept.mainWindow }), kept.settings, input, e.agentId)
       return out!
     }).catch(toolCatch)
   }
