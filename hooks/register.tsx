@@ -2357,7 +2357,7 @@ const PUSH_REFUSED = 'Refused: only main releases a ready batch, on the user\'s 
 
 // The generic tool.call hook's io (bodies in toolcall-run.ts). The settings and main's model are read live
 // through `held`: register() reassigns them.
-function toolCallIoOf($: EngineInterface, held: Pick<ToolCallIo, 'settings' | 'explicitEffort' | 'mainModel' | 'mainWindow'>): ToolCallIo {
+function toolCallIoOf($: EngineInterface, held: Pick<ToolCallIo, 'settings' | 'explicitEffort' | 'agentCalls' | 'mainModel' | 'mainWindow'>): ToolCallIo {
   // Bound first, then spread: the plugin directory flags a call passing $ spread into an object.
   const guard = guardIoOf($)
   return {
@@ -2629,6 +2629,8 @@ export const register: Register = (on, options) => {
   const effortSeen = new Set<string>()
   // Agent tool calls that named an `effort` themselves (by tool_use_id): an explicit effort wins over flow's.
   const explicitEffort = new Set<string>()
+  // Agent tool calls under way (by tool_use_id; toolcall-run.ts adds and drops them): a spawn without one is a resume.
+  const agentCalls = new Set<string>()
   // What /flow resume already handed to managers in this session.
   const resumed = new Set<string>()
 
@@ -2750,6 +2752,7 @@ export const register: Register = (on, options) => {
       noContinue: () => kept.noContinue,
       setNoContinue: () => { kept.noContinue = true },
       takeExplicit: id => explicitEffort.delete(id),
+      takeAgentCall: id => agentCalls.delete(id),
       setEffort: (id, effort) => { agentEffort.set(id, effort) },
       spawn: spawnIoOf($),
       now: () => $.clock.now(),
@@ -2799,7 +2802,7 @@ export const register: Register = (on, options) => {
   // before `next`, so the catch passes the call on only when the hook failed before it ran: a
   // broken guard must not block every call. A failure beneath `next` (a flow tool's own hook throwing)
   // reaches this catch, not the tool hook's own, so a flow tool that did not finish is answered here too.
-  const toolCallHeld = { settings: () => kept.settings, explicitEffort, mainModel: () => kept.mainModel, mainWindow: () => kept.mainWindow }
+  const toolCallHeld = { settings: () => kept.settings, explicitEffort, agentCalls, mainModel: () => kept.mainModel, mainWindow: () => kept.mainWindow }
   on('tool.call', async ($, e, next) => {
     if (relay !== undefined) return (await relayToolCallTo(relayRunIoOf($), kept.settings, e)) ?? next(e)
     if (e.tool.startsWith('mcp__flow__')) await noteReviewerReached($, e.agentId)

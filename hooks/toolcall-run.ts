@@ -46,6 +46,9 @@ export type ToolCallIo = GuardIo & {
   updateActivity: (fn: (acts: Record<string, Activity>) => Record<string, Activity>) => Promise<void>
   // Agent spawns whose effort the caller set explicitly (read by agent.spawn).
   explicitEffort: Set<string>
+  // Agent tool calls let through, by tool_use_id, until the call is over: agent.spawn tells main's new start under a
+  // listed manager name (an Agent call) from a resume by main's message (SendMessage, no Agent call) by it.
+  agentCalls: Set<string>
   wokenByOthers: Set<string>
   best: (what: string, fn: () => Promise<void>) => Promise<void>
   // The reviewer-send guard's refusal text, if it handles the message.
@@ -209,6 +212,11 @@ export async function beforeToolCall(io: ToolCallIo, e: Call & { tool: string })
       else if (target.status !== 'running') io.wokenByOthers.add(target.id)
     })
   }
+  if (e.tool === 'Agent' && typeof e.tool_use_id === 'string' && e.tool_use_id !== '') {
+    // Bounded: a call whose afterToolCall never ran (its tool threw) cannot keep it growing.
+    if (io.agentCalls.size >= AGENT_CALLS_MAX) io.agentCalls.delete(io.agentCalls.values().next().value as string)
+    io.agentCalls.add(e.tool_use_id)
+  }
   if (id !== undefined) {
     const t = await io.now()
     const line = describeCall(e)
@@ -220,9 +228,13 @@ export async function beforeToolCall(io: ToolCallIo, e: Call & { tool: string })
   return undefined
 }
 
+const AGENT_CALLS_MAX = 64
+
 // An agent past the threshold reads the wrap-up after a tool result: on its first tool call
 // past it, every 10th after, and when usage rises another 10 points. The result passes untouched.
-export async function afterToolCall(io: ToolCallIo, e: { agentId?: string }, r: any): Promise<any> {
+// An Agent call is over here: its id leaves agentCalls, spawned or not.
+export async function afterToolCall(io: ToolCallIo, e: { agentId?: string; tool?: string; tool_use_id?: unknown }, r: any): Promise<any> {
+  if (e.tool === 'Agent' && typeof e.tool_use_id === 'string') io.agentCalls.delete(e.tool_use_id)
   const settings = io.settings()
   try {
     const id = e.agentId

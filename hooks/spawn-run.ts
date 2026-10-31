@@ -70,6 +70,8 @@ export type SpawnHookIo = {
   noContinue: () => boolean
   setNoContinue: () => void
   takeExplicit: (toolUseId: string) => boolean
+  // Whether the spawn's tool_use_id is an Agent tool call under way (toolcall-run.ts agentCalls), taking it out.
+  takeAgentCall: (toolUseId: string) => boolean
   setEffort: (agentId: string, effort: string) => void
 }
 
@@ -95,7 +97,7 @@ async function armSpawnCheck(io: SpawnHookIo, e: AgentSpawnInput, settings: Sett
 // main's flow:manager spawn as a terminal session (mode orca or tmux), after the model routing. Undefined: the
 // agent starts as usual (agent mode); a terminal that cannot start is a refusal, not an agent. The bookkeeping an in-process manager gets (pre-flight record, lite record, size
 // decision) is done here; the session's own start logs the spawn and opens its activity card.
-async function startManagerSession(io: SpawnHookIo, e: AgentSpawnInput, ctx: { routed: Routed | undefined; liteMode: boolean }): Promise<{ deny: string } | undefined> {
+async function startManagerSession(io: SpawnHookIo, e: AgentSpawnInput, ctx: { routed: Routed | undefined; liteMode: boolean; again: boolean }): Promise<{ deny: string } | undefined> {
   const settings = io.terminalSettings()
   if (settings === undefined) return undefined
   const name = (e as { name?: string }).name ?? e.description
@@ -119,7 +121,7 @@ async function startManagerSession(io: SpawnHookIo, e: AgentSpawnInput, ctx: { r
     return { deny: `flow: could not start manager ${name} in a terminal: ${r.text}` }
   }
   const id = sessionKey(name)
-  if (mirror.preflightOn) await io.best('recording a pre-flight', () => recordManager(io, name, e.prompt, ctx.liteMode))
+  if (mirror.preflightOn) await io.best('recording a pre-flight', () => recordManager(io, name, e.prompt, ctx.liteMode, ctx.again))
   await io.best('recording an agent in the cost ledger', () => io.changeLedger((l, now) => setIdentity(l, id, {
     role: 'manager', name,
     ...(typeof model === 'string' && { spawnModel: model }),
@@ -220,13 +222,23 @@ async function recordStart(io: SpawnHookIo, e: AgentSpawnInput, id: string, s: S
   }
 }
 
-// Main's manager already on the roster: main's message resumes it (#239), or main starts a new manager under that
-// name. The input tells the two apart by nothing before the start, only the answer does: the listed agent's own id
-// is a resume. So main's message goes through as main wrote it, past the plan gate and the checks, with no routing,
-// LITE rules or size digest: a resume (the common case) never gets them again, and a new manager under a listed name
-// goes without them. A resume keeps its start's bookkeeping: the activity card only moves its lastAt; the ledger
-// row, size decision, spawn log line, lite record, effort and family are left alone. A new id gets the bookkeeping of
-// any start. Either way the pre-flight keeps what the name filed (recordSpawn's again).
+// A resumed manager keeps its start's bookkeeping: the activity card only moves its lastAt; the ledger row, size
+// decision, spawn log line, lite record, effort and family are left alone. The pre-flight keeps what the name filed
+// (recordSpawn's again).
+async function keepResumed(io: SpawnHookIo, e: AgentSpawnInput, name: string, id: string, liteMode: boolean): Promise<void> {
+  const t = await io.now()
+  await io.updateActivity(acts => (acts[id] === undefined ? acts : { ...acts, [id]: { ...acts[id], lastAt: t } }))
+  await io.refresh()
+  if (mirror.preflightOn) await io.best('recording a pre-flight', () => recordManager(io, name, e.prompt, liteMode, true))
+}
+
+// Main's manager already on the roster, with no Agent tool call behind the spawn: main's message (SendMessage)
+// resumes it (#239). A new manager main starts under a listed name comes from an Agent call, whose tool_use_id the
+// tool.call hook recorded (agentCalls), and takes onSpawn's full start path instead. Here main's message goes
+// through as main wrote it, past the plan gate and the checks, with no routing, LITE rules or size digest: a resume
+// never gets them again. The host's answer still decides the bookkeeping: the listed agent's own id is a resume
+// (keepResumed); a new id (a new agent with no Agent call seen) gets the bookkeeping of any start, with the
+// pre-flight the name filed kept.
 async function resumeManager<R extends { agentId?: string }>(io: SpawnHookIo, e: AgentSpawnInput, name: string, listed: string[], next: (ev: AgentSpawnInput) => Promise<R>): Promise<R> {
   const started = await next(e)
   const id = started.agentId
@@ -240,10 +252,7 @@ async function resumeManager<R extends { agentId?: string }>(io: SpawnHookIo, e:
     await recordStart(io, e, id, { used, model: e.model, targetEffort, routed: undefined, sizeFed: false, sizeArm: undefined, arm: undefined, liteMode, again: true })
     return started
   }
-  const t = await io.now()
-  await io.updateActivity(acts => (acts[id] === undefined ? acts : { ...acts, [id]: { ...acts[id], lastAt: t } }))
-  await io.refresh()
-  if (mirror.preflightOn) await io.best('recording a pre-flight', () => recordManager(io, name, e.prompt, liteMode, true))
+  await keepResumed(io, e, name, id, liteMode)
   return started
 }
 
@@ -261,10 +270,13 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
   if (e.subagentType === CONTINUE) return { deny: 'flow: flow:continue is started by the plugin only; spawn a flow:worker with "Continue on branch: <branch>" in the brief.' }
   // Main's manager already on the roster (see resumeManager). Read before the start: after it, the roster lists this
   // spawn too. Before the family too, so a resume writes no families.json: a name keeps the family of its first start.
+  // The signal is the spawn's tool_use_id: an Agent call main made (a new start) is in agentCalls, a resume by main's
+  // message is not. Taken only here; afterToolCall drops the ids of every other Agent call.
+  let listed: string[] = []
   if (e.subagentType === MANAGER && e.parentAgentId === undefined) {
     const name = (e as { name?: string }).name ?? e.description
-    const listed = (await io.agentList()).filter(a => a.name === name && a.type === MANAGER && a.parentId === undefined).map(a => a.id)
-    if (listed.length > 0) return resumeManager(io, e, name, listed, next)
+    listed = (await io.agentList()).filter(a => a.name === name && a.type === MANAGER && a.parentId === undefined).map(a => a.id)
+    if (listed.length > 0 && !io.takeAgentCall(e.tool_use_id)) return resumeManager(io, e, name, listed, next)
   }
   // A node whose dependencies are not done yet is not started: the owner is told when it is ready.
   const plans = await io.plans()
@@ -349,7 +361,7 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
   // mode orca/tmux: main's manager runs as a claude in a terminal. The Agent tool is answered with a refusal that
   // says it started, or why it did not: a failed start is a refusal, never an agent.
   if (e.subagentType === MANAGER && e.parentAgentId === undefined) {
-    const started = await startManagerSession(io, e, { routed, liteMode })
+    const started = await startManagerSession(io, e, { routed, liteMode, again: listed.length > 0 })
     if (started !== undefined) return started
   }
   // A flow agent on a [1m] model: if sub-agents refuse it, retry on the plain model once and
@@ -396,8 +408,12 @@ export async function onSpawn<R extends { agentId?: string }>(io: SpawnHookIo, i
     await io.best('logging a continuation fallback', async () => io.spawn.appendLog({ event: 'continue', agent: name, owner: await io.spawn.ownerName(e.parentAgentId), branch, text: 'new worktree (flow:continue refused)' }))
     return { deny: `flow: the host refused the in-place continuation (flow:continue); spawn the same brief again and it starts as a plain flow:worker in a new worktree on ${branch}.` }
   }
-  if ('agentId' in started && started.agentId !== undefined) {
-    await recordStart(io, e, started.agentId, { used: ev.model ?? wanted, model: ev.model, targetEffort, routed, sizeFed, sizeArm, arm, liteMode, again: false })
+  // An Agent call under a listed name the host answered with a listed id resumed that agent after all: its bookkeeping
+  // stays. A new agent under a listed name keeps the pre-flight the name filed (again).
+  if ('agentId' in started && started.agentId !== undefined && listed.includes(started.agentId)) {
+    await keepResumed(io, e, (e as { name?: string }).name ?? e.description, started.agentId, liteMode)
+  } else if ('agentId' in started && started.agentId !== undefined) {
+    await recordStart(io, e, started.agentId, { used: ev.model ?? wanted, model: ev.model, targetEffort, routed, sizeFed, sizeArm, arm, liteMode, again: listed.length > 0 })
   }
   return started
 }
