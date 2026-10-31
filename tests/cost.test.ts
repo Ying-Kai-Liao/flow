@@ -1,5 +1,6 @@
 import type { AgentInfo } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { timedTest as test } from './support'
 import type { TestBody } from 'claude-code/testing'
 
 import { addStep, addTurn, epochOf, costBlock, costOf, hitRate, humanTokens, mergeLedgers, money, normalizeLedger, pruneLedger, prCost, priceOf, reportSuffix, ZERO } from '../hooks/cost'

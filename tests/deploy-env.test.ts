@@ -1,5 +1,6 @@
 import type { AgentInfo } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { timedTest as test } from './support'
 import type { TestBody } from 'claude-code/testing'
 import { currentEnvItem, decideEnv, envCommandFor, envRefusal, envSettledIn, openEnvItems, parseEnvInput, shellQuote, tidyEnvItems } from '../hooks/deploy'
 import type { Handover, Question } from '../types'

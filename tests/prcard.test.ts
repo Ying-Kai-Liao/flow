@@ -1,5 +1,6 @@
 import type { AgentInfo } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { timedTest as test } from './support'
 import type { TestBody } from 'claude-code/testing'
 import type { Handover } from '../types'
 import { detailsKey, detailsStale, DETAILS_RETRY_MS, DETAILS_TTL_MS, fetchDetails, openerFor, parseDetails, platformOfUname, prCardRows, whyAwaits } from '../hooks/prcard'

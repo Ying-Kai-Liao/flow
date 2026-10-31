@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { timedTest as test } from './support'
 import type { AgentInfo } from 'claude-code'
 
 import { settingsOf } from '../hooks/settings'

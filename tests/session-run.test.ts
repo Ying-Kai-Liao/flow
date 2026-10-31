@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { timedTest as test } from './support'
 import type { Activity, Session } from '../types'
 
 import { sendToSession, sessionTool, startRoleSession, stopIdleSessions, stopSession, watchSessions, withClaudeFlags } from '../hooks/session-run'
