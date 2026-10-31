@@ -165,7 +165,7 @@ test('a new manager main starts under a listed name gets its own start, and a re
 })
 
 // The activity card and the plan gate, seen through the hook's own io: every write is recorded.
-function fakeIo(agents: AgentInfo[], plans: Record<string, unknown> = {}, preflight: Preflight = EMPTY_PREFLIGHT) {
+function fakeIo(agents: AgentInfo[], plans: Record<string, unknown> = {}, preflight: Preflight = EMPTY_PREFLIGHT, agentCalls = new Set<string>()) {
   const acts: Record<string, Activity> = { a1: { startedAt: 1, lastAt: 2, log: ['started: csv', 'Edit hooks/x.ts'] } }
   const writes: string[] = []
   const efforts: string[] = []
@@ -210,9 +210,10 @@ function fakeIo(agents: AgentInfo[], plans: Record<string, unknown> = {}, prefli
     noContinue: () => false,
     setNoContinue: () => undefined,
     takeExplicit: () => false,
+    takeAgentCall: (id: string) => agentCalls.delete(id),
     setEffort: (_: string, effort: string) => { efforts.push(effort) },
   } as unknown as SpawnHookIo
-  return { io, acts, writes, efforts, pf }
+  return { io, acts, writes, efforts, pf, agentCalls }
 }
 const input = (name: string, prompt: string): AgentSpawnInput => ({ prompt, description: name, name, subagentType: 'flow:manager' } as never)
 
@@ -249,6 +250,94 @@ test('a new agent under a listed name gets its card, ledger row, family and spaw
   expect(seen).toEqual([input('csv', 'Size: large\nA new task')])
   expect(f.acts.a1).toEqual({ startedAt: 1, lastAt: 2, log: ['started: csv', 'Edit hooks/x.ts'] })
   expect(f.acts.a2).toMatchObject({ startedAt: 1000, lastAt: 1000, log: ['started: csv'] })
+  expect(f.writes).toEqual(expect.arrayContaining(['families', 'ledger', 'preflight', 'spawn.appendLog']))
+  expect(f.pf.state).toBe(filed)
+})
+
+// Main's Agent call as the host runs it: the tool.call hooks run first, the spawn under the same tool_use_id inside
+// the call (the mock holds the call open until the spawn is done), then the call ends. A call with no spawn never spawns.
+function agentCalls(on: On) {
+  let opened = (_end: () => void): void => undefined
+  on('tool.call', () => new Promise(done => opened(() => done({ result: 'ok' }))))
+  let n = 0
+  return async ($: Dollar, name: string, prompt: string, spawn = true) => {
+    const id = `tu${++n}`
+    const end = new Promise<() => void>(r => { opened = r })
+    const call = $.tool.call({ tool: 'Agent', tool_use_id: id, name, prompt } as never)
+    const finish = await end
+    const r = spawn ? await manager($, name, prompt, { tool_use_id: id }) : ''
+    finish()
+    await call
+    return { r, id }
+  }
+}
+
+test('main\'s Agent call under a listed name is a new start: routing, digest, LITE rules, size decision, ledger size and spawn line', async ($, on) => {
+  const w = world(on)
+  const agentCall = agentCalls(on)
+  history(w)
+  // A large manager files no size decision (fileManagerSizeFyi), so the new start's is the first.
+  await manager($, 'csv', 'Size: large\nTask')
+  expect(sizeItems(w).length).toBe(0)
+  w.fresh.add('csv')
+  expect((await agentCall($, 'csv', 'Size: small — a new task\nTask')).r).toContain('a2')
+  expect(w.spawned[1]!.model).toBe('sonnet')
+  expect(w.spawned[1]!.prompt).toContain(DIGEST_HEADER)
+  expect((await ledger(w)).a2).toMatchObject({ role: 'manager', name: 'csv', size: 'small', sizeFeedback: true })
+  expect(sizeItems(w).length).toBe(1)
+  expect(spawnLines(w).length).toBe(2)
+  // A lite new start under the name gets the LITE rules, its row and line, and files no size decision.
+  expect((await agentCall($, 'csv', 'Mode: lite\nSize: normal\nAnother task')).r).toContain('a3')
+  expect(w.spawned[2]!.prompt).toContain(LITE_MARK)
+  expect((await ledger(w)).a3).toMatchObject({ size: 'normal' })
+  expect(sizeItems(w).length).toBe(1)
+  expect(spawnLines(w).length).toBe(3)
+})
+
+test('a spawn with no Agent call behind it is a resume; an Agent call the host answers with the listed id keeps the bookkeeping', async ($, on) => {
+  const w = world(on)
+  const agentCall = agentCalls(on)
+  await manager($, 'csv', 'Size: small\nTask')
+  const first = (await ledger(w)).a1!
+  expect(await manager($, 'csv', RESUME)).toContain('"agentId":"a1"')
+  expect(w.spawned[1]).toEqual({ name: 'csv', model: undefined, prompt: RESUME })
+  // The host resumed a1 for main's Agent call: no new row, decision or line.
+  expect((await agentCall($, 'csv', 'Size: large\nGo on')).r).toContain('a1')
+  expect(w.spawned[2]!.model).toBe('opus')
+  expect((await ledger(w)).a1).toEqual({ ...first, lastAt: (await ledger(w)).a1!.lastAt })
+  expect(spawnLines(w).length).toBe(1)
+  expect(sizeItems(w).length).toBe(1)
+})
+
+test('an Agent call that never spawns leaves no id behind: a later spawn under it is a resume', async ($, on) => {
+  const w = world(on)
+  const agentCall = agentCalls(on)
+  await manager($, 'csv', 'Size: small\nTask')
+  const { id } = await agentCall($, 'csv', 'Size: large\nTask', false)
+  w.fresh.add('csv')
+  await manager($, 'csv', 'Size: large\nA new task', { tool_use_id: id })
+  expect(w.spawned[1]).toEqual({ name: 'csv', model: undefined, prompt: 'Size: large\nA new task' })
+})
+
+test('the plan gate holds main\'s Agent call starting a waiting node under a listed name', async () => {
+  const agents: AgentInfo[] = [{ id: 'a1', name: 'csv', description: 'csv', type: 'flow:manager', status: 'completed' }]
+  const plans = { main: { csv: { id: 'csv', after: ['schema'], state: 'waiting' }, schema: { id: 'schema', after: [], state: 'running' } } }
+  const f = fakeIo(agents, plans, EMPTY_PREFLIGHT, new Set(['tu1']))
+  const seen: AgentSpawnInput[] = []
+  const r = await onSpawn(f.io, { ...input('csv', 'Task'), tool_use_id: 'tu1' }, async ev => { seen.push(ev); return { agentId: 'a2' } })
+  expect(r).toMatchObject({ deny: expect.stringContaining('waits on schema') })
+  expect(seen).toEqual([])
+  expect(f.agentCalls.size).toBe(0)
+  // The same spawn with no Agent call is a resume, past the gate.
+  expect(await onSpawn(f.io, { ...input('csv', RESUME), tool_use_id: 'tu2' }, async () => ({ agentId: 'a1' }))).toEqual({ agentId: 'a1' })
+})
+
+test('main\'s Agent call under a listed name answered with a new id records its pre-flight again', async () => {
+  const agents: AgentInfo[] = [{ id: 'a1', name: 'csv', description: 'csv', type: 'flow:manager', status: 'completed' }]
+  const filed: Preflight = { next: 2, rounds: [], entries: { csv: { name: 'csv', phase: 'filed', round: 1, spawnedAt: 1, blocking: [], asked: [] } } } as never
+  const f = fakeIo(agents, {}, filed, new Set(['tu1']))
+  expect(await onSpawn(f.io, { ...input('csv', 'Size: large\nA new task'), tool_use_id: 'tu1' }, async () => ({ agentId: 'a2' }))).toEqual({ agentId: 'a2' })
+  expect(f.acts.a2).toMatchObject({ startedAt: 1000, log: ['started: csv'] })
   expect(f.writes).toEqual(expect.arrayContaining(['families', 'ledger', 'preflight', 'spawn.appendLog']))
   expect(f.pf.state).toBe(filed)
 })

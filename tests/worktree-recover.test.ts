@@ -41,6 +41,7 @@ function world(o: { agents: Partial<AgentInfo>[]; dirs?: string[]; listed?: stri
     seenAgents: async () => ({}),
     updateActivity: async () => undefined,
     explicitEffort: new Set<string>(),
+    agentCalls: new Set<string>(),
     wokenByOthers: new Set<string>(),
     best: async (_what: string, fn: () => Promise<void>) => { await fn() },
     reviewerSendGuard: async () => undefined,
