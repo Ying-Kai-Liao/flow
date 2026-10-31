@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { timedTest as test } from './support'
 
 import type { Activity, AgentRow, Ledger } from '../types'
 import { forgetLedgerLoad } from '../hooks/cost-run'

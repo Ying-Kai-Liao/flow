@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { timedTest as test } from './support'
 import { renderTable, termWidth, truncate } from '../hooks/table'
 import type { Column } from '../hooks/table'
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The full check no longer fails at random under heavy load with tests that "timed out after 5000 ms". 19 test files (prcard, checks-flow, attachments, deploy-env, cost and others) took `test` straight from the kit and kept its 5 s default, which includes loading the plugin. They now use `timedTest` from tests/support.ts, which adds only the 60 s per-test floor (no option defaults), and tests/test-floor.node-test.mjs, run by `npm run check`, fails a test file that imports `test` from 'claude-code/testing'.
+
 ## [0.6.128] - 2026-10-31
 
 ### Fixed

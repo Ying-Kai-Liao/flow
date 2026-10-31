@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { timedTest as test } from './support'
 
 import { deliver, flushAgent, holdForReviewer, resetDelivery, HOLD_CAP_MS, REVIEWER_HOLD_MS, WINDOW_MS, type DeliverIo } from '../hooks/deliver'
 

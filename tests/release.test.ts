@@ -1,4 +1,5 @@
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { timedTest as test } from './support'
 import type { TestBody } from 'claude-code/testing'
 
 import { fill, MANAGER_PROMPT, REVIEWER_PROMPT, REVIEWER_RULE, WORKER_PROMPT } from '../hooks/prompts'

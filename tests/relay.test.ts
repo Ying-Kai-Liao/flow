@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { timedTest as test } from './support'
 
 import { NO_ANSWER, NO_PICKUP, ownerVerdict, pumpRelay, subagentRefusal, relayCall, resetRelay, RELAY_STALE_MS, stripEngineFields, workerToolRefusal } from '../hooks/relay'
 import type { PumpIo, RelayCall } from '../hooks/relay'

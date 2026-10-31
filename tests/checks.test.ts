@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { timedTest as test } from './support'
 import {
   addChecks, anyMatch, closeChecks, compareVersions, dueForPrompt, EMPTY_CHECKS, groupOpen, inboxChecksSection, markStarted, normalizeChecks, paneChecksLine,
   parseNeeds, renderCheckDetail, renderChecksForAgents, renderChecksTable, versionInSteps,

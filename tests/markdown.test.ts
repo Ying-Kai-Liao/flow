@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { timedTest as test } from './support'
 import { clipLines, mdFit, mdFlat, mdLines, mdPlain, parseInline, rowLines, strWidth, textRows } from '../hooks/markdown'
 import type { Line, Span } from '../hooks/markdown'
 
