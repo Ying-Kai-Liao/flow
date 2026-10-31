@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.129] - 2026-10-31
+
 ### Fixed
 
 - A new manager main starts under a name already on the roster now gets the full start: the plan gate, the attachments check, the LITE rules, the Fable check, size routing, the size-feedback digest, a size decision and `size` in its ledger row. Since 0.6.128 it ran with main's prompt as written, because nothing before the start told it from a resume. The tool.call hook now records the tool_use_id of every Agent call, and a spawn under a listed name that belongs to one of main's Agent calls is a new start. A resume by main's message (no Agent call) is passed through as before. If the host still answers an Agent call with the listed manager's id, its bookkeeping stays as it was. The new start keeps the pre-flight the name filed.
