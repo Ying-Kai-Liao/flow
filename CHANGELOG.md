@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The reviewer's timeout rerun no longer calls a batch real when the rerun times out on different tests. Under load the full check's rerun could time out on a new set of tests, although every test passed in one of the two runs on the same sha. A test now counts as real only when it fails in both runs, or when a failure in either run is not a timeout. A rerun that fails only on timeouts in tests that passed the first time is load: the reviewer releases it as "pass" (the first run's tests are recorded as flaky), the batch passes and every test that failed in either run is reported as "flaky: <test>". Still one rerun, never a third.
+
 ## [0.6.128] - 2026-10-31
 
 ### Fixed
