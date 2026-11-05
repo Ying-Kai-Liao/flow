@@ -72,13 +72,21 @@ const clipLine = (s: string, n: number): string => (s.length > n ? `${s.slice(0,
 // reportMax clips only the reviewer's report, so the title and evidence of a finished line stay.
 function handoverLine(h: Handover, reportMax?: number): string {
   const tail = h.status === 'done' ? ` ${h.sha ?? ''} ${reportMax === undefined ? h.report ?? '' : clipLine(h.report ?? '', reportMax)}`
-    : h.status === 'returned' ? ` returned: ${h.reason ?? ''}`
+    : h.status === 'returned' ? ` returned: ${h.reason ?? ''}${h.pruned === undefined ? '' : `; pruned, the PR is ${h.pruned.reason}`}`
     : h.status === 'awaiting' ? ` awaiting the user's approval: /flow approve ${h.pr}`
     : h.status === 'ready' ? ' ready in a batch that awaits the user: /flow push' : ''
   return `#${h.pr} ${h.status} (${h.branch} @ ${h.head.slice(0, 8)}, from ${h.reportTo})${tail} — ${h.title} [${evidenceSummary(h.evidence)}]`
 }
 
 const unhandedLine = (u: Unhanded): string => `#${u.pr} ${u.title} (${u.branch}) — ${u.note}`
+
+// Pruned handovers as one line, grouped by reason: "Pruned handovers: #91, #181 (closed on GitHub), #200 (merged on GitHub)".
+export function prunedHandoversLine(list: Handover[]): string[] {
+  const byReason = new Map<string, number[]>()
+  for (const h of [...list].sort((a, b) => a.pr - b.pr)) byReason.set(h.pruned!.reason, [...(byReason.get(h.pruned!.reason) ?? []), h.pr])
+  if (byReason.size === 0) return []
+  return [`Pruned handovers: ${[...byReason].map(([why, prs]) => `${prs.map(n => `#${n}`).join(', ')} (${why})`).join(', ')}; mcp__flow__status pr:<n> shows one.`]
+}
 
 export async function statusTool(io: StatusIo, settings: Settings, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
     const asked = Number(input.pr)
@@ -130,7 +138,9 @@ export async function statusTool(io: StatusIo, settings: Settings, input: Record
       for (const c of byParent.get(a.id) ?? []) walk(c, depth + 1)
     }
     for (const a of rows.filter(r => r.parentId === undefined || !ids.has(r.parentId))) walk(a, 0)
-    const list = Object.values(hs).sort((a, b) => a.at - b.at)
+    // A returned handover whose PR GitHub closed or merged is pruned: one summary line, not a row each.
+    const list = Object.values(hs).filter(h => h.pruned === undefined).sort((a, b) => a.at - b.at)
+    const prunedHs = Object.values(hs).filter(h => h.pruned !== undefined)
     const { shown, hidden } = cappedHandovers(list)
     const plans = scope === 'worker' ? [] : Object.entries(await io.plans()).filter(([who, g]) => Object.keys(g).length > 0 && (scope === 'all' || baseName(who) === myBase))
     const slots = scope === 'worker' ? '' : [slotLine(await io.slots(), settings.testSlots, await io.now()), io.typecheckSlots ? typecheckLine(await io.typecheckSlots(), (settings.typecheckSlots ?? 1), await io.now()) : ''].filter(Boolean).join('\n')
@@ -152,9 +162,10 @@ export async function statusTool(io: StatusIo, settings: Settings, input: Record
         ...(slots ? [slots] : []),
         rows.length ? 'Agents:' : 'No agents in this session.', ...lines,
         ...(scope === 'worker' ? [] : [
-          list.length ? 'Handed-over PRs:' : 'No PRs handed over.',
+          list.length || prunedHs.length ? 'Handed-over PRs:' : 'No PRs handed over.',
           ...shown.map(h => `${handoverLine(h, FINISHED_REPORT_MAX)}${h.report?.includes('| cost:') ? '' : reportSuffix(prCost(led, h.branch))}`),
           ...(hidden > 0 ? [`+${hidden} earlier finished PRs (mcp__flow__status pr:<n> for one)`] : []),
+          ...prunedHandoversLine(prunedHs),
           ...(breaker === undefined ? [] : [breaker]),
         ]),
         ...(unhanded.length ? [

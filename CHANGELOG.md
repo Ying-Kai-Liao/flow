@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Stale inbox items are pruned. A guard suggestion whose PR has merged or closed (such as "PR #244 was sent back ... Add a guard mapping?" after #244 merged) is pruned. So is a question or decision whose owner has finished, when it is not addressed to an agent that still runs and every one of the owner's handovers is done or its PR merged or closed. A pruned item is not deleted: it stays in `inbox.json` as answered (a decision Keep, a question `Pruned`) with `pruned: {at, reason, by}`. Nobody is told, and the log gets a `prune` event. Flow prunes in `mcp__flow__status`, the reviewer's `list` and `/flow inbox`, never in the pane's draw, and prunes nothing when gh fails. Deploy, env, push and reviewer items, escalations and items whose PR is still open are never pruned. `/flow inbox` and `mcp__flow__status` show what was pruned in the last day, and the archive and the item card say "Pruned: <reason>". New guard suggestions record their PR (`pr`); older ones are linked by the `PR #N` their text opens with.
+- `/flow prune` lists what is stale and why, and prunes nothing. `/flow prune yes` prunes it. `/flow prune <id> [<id>...]` prunes those open items. Main has the same through `mcp__flow__answer` with `prune: true`: with `ids` (and an optional `reason`) it prunes those items, without ids everything stale. Managers and workers are refused. Both refuse deploy, env, push and reviewer items, which have their own commands. Standing-rule suggestions and `decide_eval` leave pruned items out, since a prune is nobody's answer.
+- A returned handover whose PR is closed or merged on GitHub is marked `pruned` (its file stays). `mcp__flow__status` lists such handovers in one line, e.g. `Pruned handovers: #91, #181, #182 (closed on GitHub)`, and `pr:<n>` still shows one in full. A returned handover whose PR is still open is never pruned. The check reuses the stale-handover `gh pr list` lookup: once a minute, shared by every caller, now also while a lookup is in flight. A PR older than the 50 that lookup lists (a returned handover's, or a linked inbox item's) is asked on its own with `gh pr view <n> --json state`, at most 10 per pass, each answer reused for a minute; a failed lookup prunes nothing.
+
 ## [0.6.129] - 2026-10-31
 
 ### Fixed

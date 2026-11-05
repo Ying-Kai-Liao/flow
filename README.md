@@ -103,6 +103,7 @@ fix X" is enough.
 | `/flow ok [d10 d11 \| owner \| topic]` | Keeps decisions (no words: every open decision) or takes the default of an ordinary question. Never answers a deploy, push, env or guard item. |
 | `/flow no d12 [what instead]` | Undoes a decision; the agent is told what to do instead. |
 | `/flow answer q3 <choice>` | Answers any question addressed to main (option letter, number, text, or your own words), deploy, push and env items included. |
+| `/flow prune` | Lists the stale questions and decisions (their PR merged or closed, or their owner finished with all its PRs merged or closed) and why; prunes nothing. `/flow prune yes` prunes them, `/flow prune q3 d12` prunes those. A pruned item is kept as answered and nobody is told; deploy, env, push and reviewer items are never pruned. Flow also prunes stale items itself on `/flow inbox` and in status. |
 | `/flow checks` | Lists the after-deploy checks that only a person can do as one table (id, PR, title, what it needs, age). `/flow checks <id>` shows one in full; `pass`, `fail` and `skip <id...> <why>` close them. |
 | `/flow approve <n>` | Approves PR `n` when it is waiting for you. |
 | `/flow reject <n> [reason]` | Turns down PR `n` while it awaits approval or is pending (alias `/flow drop`). The manager is told; the GitHub PR and branch are left alone. |

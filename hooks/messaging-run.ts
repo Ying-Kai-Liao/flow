@@ -129,6 +129,7 @@ async function answerOneTo(io: MessagingIo, wanted: string, choice: string | nul
 
 // The line for an answer that changes nothing: the earlier answer and how it was given.
 function answeredLine(q: Question): string {
+  if (q.pruned !== undefined) return `${q.id}: pruned (${q.pruned.reason}); it cannot be answered any more.`
   if (q.answeredBy === 'flow') return `${q.id}: closed by flow ("${q.answer ?? ''}"); it cannot be answered any more. Hand the PR over again with the change to ask for it anew.`
   if (q.state === 'open') return `${q.id}: already "${q.answer ?? ''}" (by ${archiveWho(q)}); it stays open, answer done when it is.`
   return `${q.id}: already answered ("${q.answer ?? ''}" by ${archiveWho(q)}).`
