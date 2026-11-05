@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.130] - 2026-11-05
+
 ### Added
 
 - Stale inbox items are pruned. A guard suggestion whose PR has merged or closed (such as "PR #244 was sent back ... Add a guard mapping?" after #244 merged) is pruned. So is a question or decision whose owner has finished, when it is not addressed to an agent that still runs and every one of the owner's handovers is done or its PR merged or closed. A pruned item is not deleted: it stays in `inbox.json` as answered (a decision Keep, a question `Pruned`) with `pruned: {at, reason, by}`. Nobody is told, and the log gets a `prune` event. Flow prunes in `mcp__flow__status`, the reviewer's `list` and `/flow inbox`, never in the pane's draw, and prunes nothing when gh fails. Deploy, env, push and reviewer items, escalations and items whose PR is still open are never pruned. `/flow inbox` and `mcp__flow__status` show what was pruned in the last day, and the archive and the item card say "Pruned: <reason>". New guard suggestions record their PR (`pr`); older ones are linked by the `PR #N` their text opens with.
