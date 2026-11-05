@@ -116,6 +116,9 @@ export type Handover = {
   sha?: string
   report?: string
   reason?: string
+  // A returned handover whose PR is closed or merged on GitHub (stale-handovers.ts): the record stays, mcp__flow__status
+  // lists it only in one summary line.
+  pruned?: { at: number; reason: string }
 }
 
 // An open PR as `gh pr list` returns it.
@@ -234,7 +237,7 @@ export type Session = {
 
 export type LogEvent = {
   ts: string
-  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff' | 'branch-delete' | 'tests-failed' | 'flaky' | 'decide' | 'arm-pick' | 'arm-lost'
+  event: 'spawn' | 'report' | 'handover' | 'take' | 'done' | 'back' | 'approve' | 'hold' | 'handoff' | 'continue' | 'note' | 'clean' | 'auto-answer' | 'fyi' | 'ready' | 'push' | 'main-ff' | 'branch-delete' | 'tests-failed' | 'flaky' | 'decide' | 'arm-pick' | 'arm-lost' | 'prune'
   // The manager that owns the work, or "main".
   owner: string
   agent?: string
@@ -304,6 +307,11 @@ export type Question = {
   forQ?: string
   // The worker's question a manager escalated: the manager's question id. Main answers either one; the answer closes both.
   viaQ?: string
+  // The PR the item is about: set on a guard_tests suggestion (guardtests.ts). Older suggestions name it in the text.
+  pr?: number
+  // Closed as stale (hooks/inbox-prune.ts) rather than answered: by "flow" (auto), "the user" or "main". The item is
+  // answered (a decision Keep, a question "Pruned") and nobody was told.
+  pruned?: { at: number; reason: string; by: string }
 }
 
 // next: the counter of question ids (q1 ...); nextD: the one of decisions (d1 ...), separate so the two never collide.

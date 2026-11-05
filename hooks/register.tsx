@@ -87,8 +87,10 @@ import type { ReleaseIo } from './release-run'
 import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
 import type { Forwarded, RouteIo } from './reviewer-route'
 import { isHandedOff, noteReached, noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue, WANTED_LINE } from './reviewer-run'
-import { reconcileStale } from './stale-handovers'
+import { reconcileStale, recentPrs } from './stale-handovers'
 import type { StaleIo } from './stale-handovers'
+import { autoPrune, prunePreview, pruneIds } from './inbox-prune'
+import type { PruneIo } from './inbox-prune'
 import type { BreakerIo, QueueIo, QueueWhy, ReviewerIo } from './reviewer-run'
 import { EMPTY_BREAKER, REVIEWER_KIND } from './reviewer-breaker'
 import { handoverTool } from './handover-run'
@@ -485,6 +487,7 @@ function inboxIoOf($: EngineInterface): InboxIo {
     submitLater: text => { toMain($, text) },
     paneOpen: () => flowPaneOpen($),
     net: decideIoOf($),
+    prune: pruneIoOf($),
   }
 }
 
@@ -537,7 +540,7 @@ function migrationsIoOf($: EngineInterface): MigrationsIo {
 
 function statusIoOf($: EngineInterface, options: Record<string, unknown>, base: string): StatusIo {
   return {
-    reconcile: () => reconcileStale(staleIoOf($, base)),
+    reconcile: () => reconcileAll($, base),
     now: () => $.clock.now(),
     handovers: () => read($, handovers),
     readLog: () => readLog($),
@@ -579,6 +582,9 @@ function commandIoOf($: EngineInterface): CommandIo {
     roster: () => read($, roster),
     endedManagers: (state, rows, hs) => doneManagers(state, rows, hs),
     endedOwners: () => endedOwnersOf($),
+    autoPrune: by => autoPrune(pruneIoOf($), by),
+    prunePreview: () => prunePreview(pruneIoOf($)),
+    pruneIds: (ids, by, reason) => pruneIds(pruneIoOf($), ids, by, reason),
     panes: () => panesOf($),
     close: () => $.ui.close({ id: PANE }),
     home: () => paneHome($),
@@ -1588,14 +1594,41 @@ function staleIoOf($: EngineInterface, base: string): StaleIo {
       })
       if (ho.status === 'returned') await closeReturnedEnv($, ho)
     },
+    savePruned: async ho => {
+      await update($, handovers, hs => ({ ...hs, [String(ho.pr)]: ho }))
+      await best($, 'saving a handover', async () => {
+        await saveHandover($, ho)
+        await appendLog($, { event: 'prune', owner: ho.reportTo, pr: ho.pr, branch: ho.branch, text: ho.pruned?.reason })
+      })
+    },
   }
+}
+
+// Pruning stale inbox items (inbox-prune.ts): its gh lookup is reconcileStale's, throttled together.
+function pruneIoOf($: EngineInterface): PruneIo {
+  return {
+    now: () => $.clock.now(),
+    inbox: () => read($, inbox),
+    withInbox: fn => withInbox($, fn),
+    handovers: () => read($, handovers),
+    agents: () => agentsOf($),
+    seen: () => read($, seenAgents),
+    prs: () => recentPrs(staleIoOf($, mirror.cleanupBase)),
+    appendLog: event => appendLog($, event),
+  }
+}
+
+// Where stale handovers are reconciled (status, the reviewer's list), stale inbox items are pruned too. Neither throws.
+async function reconcileAll($: EngineInterface, base: string): Promise<void> {
+  await reconcileStale(staleIoOf($, base))
+  await autoPrune(pruneIoOf($))
 }
 
 // `main`: main's model and window, to size an agent reviewer that runs the same model (absent for a relayed call: a
 // terminal reviewer's window is its own).
 function reviewerIoOf($: EngineInterface, base: string, main?: { model?: string; window?: number }): ReviewerIo {
   return {
-    reconcile: () => reconcileStale(staleIoOf($, base)),
+    reconcile: () => reconcileAll($, base),
     run: argv => $.process.run(argv),
     handovers: () => read($, handovers),
     putHandover: async (pr, ho) => { await update($, handovers, hs => ({ ...hs, [pr]: ho })) },

@@ -20,6 +20,8 @@ function world(on: On) {
   const sent: { to: string; text: string }[] = []
   const toasts: string[] = []
   const submitted: string[] = []
+  // What `gh pr list --state <state>` prints; unset, gh prints nothing (an unreadable answer, as a failure).
+  const gh: Record<string, string> = {}
   on('prompt.submit', (_, e) => { submitted.push(e.text); return { text: e.text } })
   on('agent.list', () => ({ value: agents }))
   const pane = { open: false, throws: false }
@@ -42,13 +44,14 @@ function world(on: On) {
   on('process.run', (_, e) => {
     const a = e.argv
     if (a[0] === 'git' && a[1] === 'rev-parse') return ok('/r/.git\n')
+    if (a[0] === 'gh' && a[1] === 'pr' && a[2] === 'list') return ok(gh[a[a.indexOf('--state') + 1] ?? ''] ?? '')
     if (a[0] === 'mv') {
       const t = files.get(a[1] ?? '')
       if (t !== undefined) { files.set(a[2] ?? '', t); files.delete(a[1] ?? '') }
     }
     return ok()
   })
-  return { pane, agents, files, sent, toasts, submitted, clock }
+  return { pane, agents, files, sent, toasts, submitted, clock, gh }
 }
 
 const ask = ($: Dollar, agentId: string | null, questions: unknown[]) =>
@@ -479,4 +482,66 @@ test('ask_cards off: a blocking ask to main sends no notice, the toast stays', {
   await w.clock.advance(1); await w.clock.settle()
   expect(w.submitted).toEqual([])
   expect(w.toasts.join('\n')).toContain('/flow inbox')
+})
+
+const stored = (files: Map<string, string>, id: string) =>
+  (JSON.parse(files.get(`${DIR}/inbox.json`) ?? '{"items":[]}') as { items: Array<Record<string, unknown>> }).items.find(i => i.id === id)
+
+test('answer prune: main only; a manager or worker is refused and nothing changes', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [SOFT])
+  for (const who of ['m1', 'w1']) expect(await answer($, who, { prune: true, ids: ['q1'] })).toContain('Refused: only main prunes inbox items')
+  expect(stored(w.files, 'q1')!.state).toBe('open')
+  expect(await answer($, null, { prune: true, ids: ['q1'], answers: [{ id: 'q1', choice: 'no' }] })).toContain('Refused, nothing changed: prune is a call of its own')
+  expect(stored(w.files, 'q1')!.state).toBe('open')
+})
+
+test('answer prune by main: recorded, nobody told, shown in /flow inbox and the archive; answering it after says it was pruned', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [SOFT])
+  const before = w.sent.length
+  expect(await answer($, null, { prune: true, ids: ['q1', 'q9'], reason: 'asked again as q2' })).toBe('Pruned q1 (asked again as q2); nobody is told.\nq9: no such question or decision.')
+  expect(w.sent.length).toBe(before)
+  expect(stored(w.files, 'q1')).toMatchObject({ state: 'answered', answer: 'Pruned', answeredBy: 'main', via: 'main', delivered: true, pruned: { reason: 'asked again as q2', by: 'main' } })
+  const text = await inbox($)
+  expect(text).toContain('No open questions.')
+  expect(text).toContain('Pruned in the last day: q1 (asked again as q2)')
+  const archive = (await $.command.run({ command: 'flow', args: 'inbox archive' } as never)).text ?? ''
+  expect(archive).toContain('q1 Pruned: asked again as q2')
+  expect(await answer($, 'm1', { answers: [{ id: 'q1', choice: 'no' }] })).toContain('q1: pruned (asked again as q2); it cannot be answered any more.')
+  expect(w.sent.length).toBe(before)
+})
+
+// An old guard suggestion (no pr field: its PR is in the text), on disk before the worker's ask loads the inbox.
+const Q53 = {
+  id: 'q53', owner: 'reviewer-3', addressee: 'main', askedAt: 1, state: 'open', delivered: false, topic: 'guard-tests',
+  question: 'PR #244 was sent back: `tests/state.test.ts` failed. It changed hooks/a.ts. Add a guard mapping so workers run it?',
+  options: ['Add it to my personal flow config', 'No'], default: 'No', blocking: false, guard: { glob: 'hooks/**', test: 'tests/state.test.ts' },
+}
+
+test('answer prune without ids: nothing stale, or a gh failure that prunes nothing', async ($, on) => {
+  const w = world(on)
+  await ask($, 'w1', [SOFT])
+  // The asker still runs: nothing could be pruned, so gh is not asked.
+  expect(await answer($, null, { prune: true })).toBe('Nothing to prune.')
+  w.files.set(`${DIR}/inbox.json`, JSON.stringify({ ...JSON.parse(w.files.get(`${DIR}/inbox.json`)!), items: [...JSON.parse(w.files.get(`${DIR}/inbox.json`)!).items, Q53] }))
+  await ask($, 'w1', [BLOCK])
+  expect(await answer($, null, { prune: true })).toBe('Could not check the PRs on GitHub (gh failed): nothing pruned.')
+  expect(stored(w.files, 'q53')!.state).toBe('open')
+})
+
+test('/flow inbox prunes an old guard suggestion once GitHub closed its PR, and tells nobody', async ($, on) => {
+  const w = world(on)
+  w.files.set(`${DIR}/inbox.json`, JSON.stringify({ next: 54, items: [Q53] }))
+  await ask($, 'w1', [SOFT])
+  const before = w.sent.length
+  w.gh.merged = '[]'
+  w.gh.closed = JSON.stringify([{ number: 244 }])
+  const text = await inbox($)
+  expect(text).toContain('Pruned in the last day: q53 (PR #244 closed)')
+  expect(text).toContain('q54')
+  expect(stored(w.files, 'q53')).toMatchObject({ state: 'answered', answer: 'Pruned', answeredBy: 'flow', via: 'flow', pruned: { reason: 'PR #244 closed', by: 'flow' } })
+  expect(stored(w.files, 'q54')!.state).toBe('open')
+  expect(w.sent.length).toBe(before)
+  expect(w.toasts.filter(t => t.includes('q53'))).toEqual([])
 })

@@ -122,6 +122,8 @@ export function suggestionQuestion(pr: number, s: GuardSuggestion) {
     blocking: false,
     topic: 'guard-tests',
     guard: { glob: s.glob, test: s.test },
+    // Links the suggestion to its PR: once that PR is merged or closed, the question is pruned (inbox-prune.ts).
+    pr,
   }
 }
 

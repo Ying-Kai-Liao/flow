@@ -153,7 +153,7 @@ export const PREFLIGHT_TOOL: ToolSpec = {
 
 export const ANSWER_TOOL: ToolSpec = {
   name: 'answer',
-  description: 'Answer questions addressed to you in the decision inbox. Decisions (mcp__flow__fyi) work the same way: choice Keep, or defaults: true, keeps them; any other choice or free text undoes the decision and messages the owner. Main may answer any decision. choice: an option\'s letter, number or text, or free text. defaults: true takes the default of your open decisions and non-blocking questions; a blocking question needs an explicit answer or its id in ids.',
+  description: 'Answer questions addressed to you in the decision inbox. Decisions (mcp__flow__fyi) work the same way: choice Keep, or defaults: true, keeps them; any other choice or free text undoes the decision and messages the owner. Main may answer any decision. choice: an option\'s letter, number or text, or free text. defaults: true takes the default of your open decisions and non-blocking questions; a blocking question needs an explicit answer or its id in ids. Main only: prune: true closes stale items as pruned instead of answering them (nobody is told; the archive says why): with ids those open items (optional reason), without ids every item flow finds stale (its PR merged or closed, or its owner finished with all its PRs merged or closed). Deploy, env, push and reviewer items are never pruned.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -169,7 +169,9 @@ export const ANSWER_TOOL: ToolSpec = {
         },
       },
       defaults: { type: 'boolean', description: 'Answer with the defaults' },
-      ids: { type: 'array', items: { type: 'string' }, description: 'With defaults: only these question ids (naming a blocking question takes its default)' },
+      ids: { type: 'array', items: { type: 'string' }, description: 'With defaults: only these question ids (naming a blocking question takes its default). With prune: the items to prune' },
+      prune: { type: 'boolean', description: 'Main only: prune stale items instead of answering (a call of its own, without answers or defaults)' },
+      reason: { type: 'string', description: 'With prune and ids: why, recorded on each item (default "pruned by main")' },
     },
   },
   isDeferred: false,

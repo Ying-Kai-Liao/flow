@@ -32,11 +32,12 @@ export type TranscriptEvent =
   | { t: 'owner'; name: string }
   | { t: 'flow'; tool: 'plan' | 'ask'; owner?: string; ids?: string[]; blocking?: boolean }
 
-type InboxItem = { id: string; owner?: string; question?: string; context?: string; options?: string[]; default?: string; blocking?: boolean; kind?: string; topic?: string; state?: string; answer?: string }
+type InboxItem = { id: string; owner?: string; question?: string; context?: string; options?: string[]; default?: string; blocking?: boolean; kind?: string; topic?: string; state?: string; answer?: string; pruned?: unknown }
 const recOf = (i: InboxItem) => ({ question: i.question ?? '', ...(i.context !== undefined ? { context: i.context } : {}), options: i.options ?? [], ...(i.default !== undefined ? { default: i.default } : {}), ...(i.owner !== undefined ? { owner: i.owner } : {}), ...(i.topic !== undefined ? { topic: i.topic } : {}), ...(i.blocking !== undefined ? { blocking: i.blocking } : {}), ...(i.kind !== undefined ? { kind: i.kind } : {}) })
 
 export function inboxData(items: InboxItem[]): Dataset {
-  const answered = items.filter(i => i.state === 'answered')
+  // A pruned item was closed as stale, not answered by anyone: it is no label.
+  const answered = items.filter(i => i.state === 'answered' && i.pruned === undefined)
   const fyi = answered.filter(i => i.kind === 'fyi')
   const labelled = fyi.filter(i => typeof i.answer === 'string' && i.answer.trim() !== '')
   const records = labelled.map(i => ({ id: i.id, text: textOfInbox(recOf(i)), label: (i.answer ?? '').trim() === 'Keep' ? 'keep' : 'undo' }))

@@ -24,6 +24,8 @@ export type AskedQuestion = {
   guard?: { glob: string; test: string }
   // The worker's open question this one escalates to main (validated by the ask handler).
   forQ?: string
+  // The PR the question is about (a guard suggestion's).
+  pr?: number
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
@@ -296,6 +298,17 @@ export const recentKept = (inbox: Inbox | undefined, now: number): Question[] =>
   (inbox?.items ?? []).filter(q => q.state === 'answered' && q.auto !== undefined && now - (q.answeredAt ?? 0) <= DAY)
     .sort((a, b) => (b.answeredAt ?? 0) - (a.answeredAt ?? 0))
 
+// The items pruned as stale (inbox-prune.ts) in the last 24 h, newest first.
+export const recentPruned = (inbox: Inbox | undefined, now: number): Question[] =>
+  (inbox?.items ?? []).filter(q => q.state === 'answered' && q.pruned !== undefined && now - q.pruned.at <= DAY)
+    .sort((a, b) => b.pruned!.at - a.pruned!.at)
+
+// "Pruned in the last day: q53 (PR #244 merged), d109 (...)" on one line of the width; none: no line.
+export const prunedLine = (inbox: Inbox | undefined, now: number, width = DEFAULT_WIDTH): string[] => {
+  const p = recentPruned(inbox, now)
+  return p.length === 0 ? [] : [fit(`Pruned in the last day: ${p.map(q => `${q.id} (${q.pruned!.reason})`).join(', ')}`, width)]
+}
+
 // --- The person's view (/flow inbox) and the commands behind it (/flow ok, no, answer). ---
 // Everything that decides what is grouped, collapsed or refused is a pure function here, so the Flow pane can reuse it.
 
@@ -552,9 +565,11 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?:
     `Kept by the decision API (last 24 h, ${kept.length}; undo: /flow no <id> <what instead>):`,
     ...kept.slice(0, 10).map(q => `  ${q.id} ${q.owner}: ${clip(q.question)} -> kept by ${autoWho(q)}`),
   ]
+  const pruned = prunedLine(inbox, now, opts.width)
+  const prunedLines = pruned.length === 0 ? [] : ['', ...pruned]
   const archived = archiveOf(inbox).length
   const archiveLine = archived === 0 ? [] : [`Archive: ${plural(archived, 'answered item')} (/flow inbox archive).`]
-  if (open.length === 0 && allDecisions.length === 0) return ['No open questions.', ...archiveLine, ...autoLines, ...keptLines].join('\n')
+  if (open.length === 0 && allDecisions.length === 0) return ['No open questions.', ...archiveLine, ...autoLines, ...keptLines, ...prunedLines].join('\n')
   const lines = [summary(inbox)]
   if (open.length > 0) {
     lines.push('', 'Questions')
@@ -571,7 +586,7 @@ export function renderInbox(inbox: Inbox | undefined, now: number, opts: { all?:
     ...(open.length > 0 ? ['Answer a question: /flow answer q1 <letter or your own words>; its default: /flow ok q1 (not for NEEDS YOU items).'] : []),
   ]
   lines.push('', ...cmds, ...archiveLine)
-  return [...lines, ...autoLines, ...keptLines].join('\n')
+  return [...lines, ...autoLines, ...keptLines, ...prunedLines].join('\n')
 }
 
 // The archive: answered questions and kept or undone decisions, newest answer first.
@@ -589,16 +604,20 @@ export const autoWho = (q: Question): string => `${q.auto?.by ?? '?'} (${(q.auto
 
 // One archived item as a line: id, answer, who and when, then the question.
 // A decision's answer read as a statement: Keep (or its default) is kept, anything else is what to do instead.
+// A pruned item (a question too) says why it was pruned.
 export const decisionOutcome = (q: Question): string => {
+  if (q.pruned !== undefined) return `Pruned: ${q.pruned.reason}`
   const a = (q.answer ?? '').trim()
   if (a === '' || a.toLowerCase() === KEEP.toLowerCase() || a === q.default) return q.auto !== undefined ? `Kept by ${autoWho(q)}` : 'Kept'
   return a.toLowerCase() === OVERTURN.toLowerCase() ? 'Undone' : `Undone: ${a}`
 }
 export const decisionOutcomeText = (q: Question, now: number): string =>
+  q.pruned !== undefined ? `${decisionOutcome(q)} (by ${q.pruned.by}, ${age(now - q.pruned.at)} ago)` :
   q.auto !== undefined ? `${decisionOutcome(q)}${q.answeredAt === undefined ? '' : ` (${age(now - q.answeredAt)} ago)`}` :
   `${decisionOutcome(q)} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`
 
 export const archiveRowText = (q: Question, now: number): string =>
+  q.pruned !== undefined ? `${q.id} ${clip(decisionOutcome(q), 70)} (${age(now - q.pruned.at)} ago): ${clip(mdPlain(q.question), 80)}` :
   isFyi(q) && q.auto !== undefined ? `${q.id} ${clip(decisionOutcome(q), 40)} (${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(mdPlain(q.question), 80)}` :
   isFyi(q) ? `${q.id} ${clip(decisionOutcome(q), 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(mdPlain(q.question), 80)}` :
   `${q.id} ${clip(q.answer ?? '', 40)} (by ${archiveWho(q)}, ${age(now - (q.answeredAt ?? q.askedAt))} ago): ${clip(mdPlain(q.question), 80)}`
@@ -630,7 +649,8 @@ export function renderItem(inbox: Inbox | undefined, id: string, now: number): s
     '',
     ...optionLines(q, '  '),
   ]
-  if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`)
+  if (q.pruned !== undefined) lines.push('', `${decisionOutcomeText(q, now)}; nobody was told.`)
+  else if (q.state === 'answered') lines.push('', `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`})`)
   else {
     if (q.answer !== undefined) lines.push('', `Last answer: ${q.answer} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}); still open.`)
     lines.push('', isFyi(q) ? `Keep: /flow ok ${q.id}. Undo: /flow no ${q.id} <what instead>.` : `Answer: /flow answer ${q.id} <letter or your own words>${needsExplicitAnswer(q) ? '' : `, or /flow ok ${q.id} for the default`}.`)
@@ -650,7 +670,9 @@ export function inboxHead(inbox: Inbox | undefined, now = Date.now()): string[] 
   const keptBy = [...new Set(kept.map(q => q.auto?.by ?? '?'))].join(', ')
   const keptLine = kept.length === 0 ? [] : [`Inbox: ${plural(kept.length, 'decision')} kept by ${keptBy} (undo with mcp__flow__answer).`]
   const fyiLine = fyi === 0 ? [] : [`Inbox: ${plural(fyi, 'decision')} (made by agents, non-blocking; /flow inbox lists them, mcp__flow__answer defaults true keeps them).`]
-  if (open.length === 0) return [...fyiLine, ...keptLine, ...autoLine]
+  const pruned = recentPruned(inbox, now).length
+  const prunedHead = pruned === 0 ? [] : [`Inbox: ${plural(pruned, 'stale item')} pruned in the last 24 h (PR merged or closed, or owner finished; nobody was told; /flow inbox).`]
+  if (open.length === 0) return [...fyiLine, ...keptLine, ...autoLine, ...prunedHead]
   const blocking = open.filter(q => q.blocking).length
   return [
     `Inbox: ${open.length} open${blocking ? `, ${blocking} blocking` : ''} (/flow inbox shows them with options):`,
@@ -661,6 +683,7 @@ export function inboxHead(inbox: Inbox | undefined, now = Date.now()): string[] 
     ...fyiLine,
     ...keptLine,
     ...autoLine,
+    ...prunedHead,
   ]
 }
 

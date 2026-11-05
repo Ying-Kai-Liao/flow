@@ -15,7 +15,8 @@ const DIR = '/r/.git/flow'
 const handover = (pr: number, reportTo: string, status: Handover['status'], at: number, extra: Partial<Handover> = {}): Handover =>
   ({ pr, title: `Title ${pr}`, head: `head${pr}000000`, branch: `flow/b${pr}`, reportTo, verified: '', pending: 'none', afterDeploy: 'none', status, at, ...extra }) as Handover
 
-function world(on: On, hs: Handover[], onTool?: (e: unknown) => void) {
+// gh: the stdout for a `gh pr list` call (by its --state), else gh prints nothing (an unreadable answer: a failure).
+function world(on: On, hs: Handover[], onTool?: (e: unknown) => void, gh: Record<string, string> = {}) {
   mock.clock(on, { now: 1_000_000 })
   const agents: AgentInfo[] = [
     { id: 'm1', name: 'csv-export', description: 'm', type: 'flow:manager', status: 'running' },
@@ -46,7 +47,10 @@ function world(on: On, hs: Handover[], onTool?: (e: unknown) => void) {
     if (t === undefined) throw new Error('ENOENT')
     return { value: t }
   })
-  on('process.run', (_, e) => ({ value: { exitCode: 0, stdout: e.argv[1] === 'rev-parse' ? '/r/.git\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.run', (_, e) => {
+    const state = e.argv[0] === 'gh' && e.argv[1] === 'pr' && e.argv[2] === 'list' ? e.argv[e.argv.indexOf('--state') + 1] ?? '' : ''
+    return { value: { exitCode: 0, stdout: e.argv[1] === 'rev-parse' ? '/r/.git\n' : gh[state] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   return { agents, files }
 }
 
@@ -127,6 +131,36 @@ test('old handovers with fields missing still render', async ($, on) => {
   expect(text).toContain('#3 done')
   expect(text).toContain('#4 returned')
   expect(cappedHandovers([old, bare]).hidden).toBe(0)
+})
+
+test('pruned handovers leave the list for one summary line; pr:<n> still shows one in full; a manager sees only its own', async ($, on) => {
+  world(on, [
+    ...FIXTURE,
+    handover(91, 'other-task', 'returned', 600, { reason: 'fix it', pruned: { at: 1, reason: 'closed on GitHub' } }),
+    handover(181, 'csv-export', 'returned', 601, { reason: 'tests', pruned: { at: 1, reason: 'closed on GitHub' } }),
+    handover(182, 'csv-export', 'returned', 602, { reason: 'tests', pruned: { at: 1, reason: 'merged on GitHub' } }),
+  ])
+  await start($)
+  const all = await status($)
+  expect(all).toContain('Pruned handovers: #91, #181 (closed on GitHub), #182 (merged on GitHub)')
+  expect(all).not.toContain('#91 returned')
+  expect(all).toContain('#21 returned')
+  const mine = await status($, { agentId: 'm1' })
+  expect(mine).toContain('Pruned handovers: #181 (closed on GitHub), #182 (merged on GitHub)')
+  expect(mine).not.toContain('#91')
+  expect(await status($, { agentId: 'w1' })).not.toContain('Pruned handovers')
+  expect(await status($, { pr: 91 })).toContain('#91 returned (flow/b91 @ head9100, from other-task) returned: fix it; pruned, the PR is closed on GitHub')
+})
+
+test('status prunes a returned handover whose PR GitHub closed; one still open stays in the list', async ($, on) => {
+  world(on, [handover(91, 'csv-export', 'returned', 1, { reason: 'fix it' }), handover(92, 'csv-export', 'returned', 2, { reason: 'fix it' })], undefined,
+    { closed: JSON.stringify([{ number: 91 }]), merged: '[]' })
+  await start($)
+  const text = await status($)
+  expect(text).toContain('Pruned handovers: #91 (closed on GitHub)')
+  expect(text).toContain('#92 returned')
+  expect(await status($, { pr: 91 })).toContain('returned: fix it; pruned, the PR is closed on GitHub')
+  expect(await status($, { pr: 92 })).not.toContain('pruned')
 })
 
 test('the main-only standing and push tools and the old-name queue are deferred; status, ask, reviewer and check stay loaded', async ($, on) => {

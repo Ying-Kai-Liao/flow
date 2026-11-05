@@ -264,3 +264,42 @@ test('init goes to the init command: usage on a bad part, and the repo check', a
   expect((await run(io, 'init')).text).toContain('needs a git repository')
   expect(calls).toContain('initDetect')
 })
+
+test('/flow inbox prunes what is stale before it draws the list', async () => {
+  const { io, calls } = fake({ autoPrune: async () => [], endedOwners: async () => new Set<string>() })
+  await run(io, 'inbox')
+  expect(calls.indexOf('autoPrune')).toBeLessThan(calls.lastIndexOf('inbox'))
+  // A failing prune never fails the command.
+  const boom = fake({ autoPrune: async () => { throw new Error('gh') } })
+  expect((await run(boom.io, 'inbox')).text).toContain('No open questions')
+})
+
+test('/flow prune lists what is stale with reasons and prunes nothing; yes prunes it; ids prune those', async () => {
+  const inbox = { next: 60, items: [
+    { id: 'q53', owner: 'reviewer-3', addressee: 'main', question: 'PR #244 was sent back: `t` failed.', options: ['a', 'No'], default: 'No', blocking: false, askedAt: 1, state: 'open', delivered: false },
+    { id: 'q50', owner: 'reviewer-3', addressee: 'main', question: 'old one', options: ['a', 'b'], default: 'a', blocking: false, askedAt: 1, state: 'answered', delivered: true, answer: 'Pruned', answeredAt: 999_000, pruned: { at: 999_000, reason: 'PR #240 merged', by: 'flow' } },
+  ] }
+  const seen: unknown[][] = []
+  const { io, calls } = fake({
+    inbox: async () => inbox,
+    prunePreview: async () => [{ id: 'q53', reason: 'PR #244 merged', pr: 244 }],
+    autoPrune: async (...a: unknown[]) => { seen.push(['auto', ...a]); return [{ ...inbox.items[0], pruned: { at: 1, reason: 'PR #244 merged', by: 'the user' } }] },
+    pruneIds: async (...a: unknown[]) => { seen.push(['ids', ...a]); return ['Pruned q1 (pruned by the user); nobody is told.'] },
+  })
+  const list = (await run(io, 'prune')).text
+  expect(list).toContain('/flow prune yes prunes it')
+  expect(list).toContain('  q53 reviewer-3: PR #244 merged - PR #244 was sent back')
+  expect(list).toContain('Pruned in the last day: q50 (PR #240 merged)')
+  expect(calls).not.toContain('autoPrune')
+  expect(calls).not.toContain('pruneIds')
+  expect((await run(io, 'prune yes')).text).toContain('Pruned q53 (PR #244 merged); nobody is told.')
+  expect((await run(io, 'prune q1 D2')).text).toContain('Pruned q1')
+  expect(seen).toEqual([['auto', 'the user'], ['ids', ['q1', 'D2'], 'the user', 'pruned by the user']])
+  for (const bad of ['prune now', 'prune q1 yes', 'prune yes please']) expect((await run(io, bad)).text).toMatch(/^Usage: \/flow prune/)
+})
+
+test('/flow prune: nothing stale, or gh failed', async () => {
+  expect((await run(fake({ prunePreview: async () => [] }).io, 'prune')).text).toBe('Nothing to prune.')
+  expect((await run(fake({ prunePreview: async () => undefined }).io, 'prune')).text).toContain('gh failed')
+  expect((await run(fake({ autoPrune: async () => undefined }).io, 'prune yes')).text).toContain('gh failed): nothing pruned.')
+})

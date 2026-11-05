@@ -8,6 +8,8 @@ import type { DecideUseSettings } from './decide-use'
 import { MANAGER } from './core'
 import type { DeliverOptions } from './deliver'
 import { addQuestions, checkEscalations, fyiAsked, isFyi, findItem, KEEP, linkEscalations, markAnswered, needsExplicitAnswer, notesOwner, openFor, parseAsk, parseFyi } from './inbox'
+import { autoPrune, pruneIds, pruneResult } from './inbox-prune'
+import type { PruneIo } from './inbox-prune'
 import { followUp, FILE_HELP, parseFiling, recordFiling, renderFollowUp } from './preflight'
 import type { Preflight } from './preflight'
 import { alwaysRule, autoAnswer, loadRules, offerSuggestionsOnce, recordAutoAnswers } from './standing-run'
@@ -31,6 +33,8 @@ export type InboxIo = {
   paneOpen: () => Promise<boolean>
   // The decision API's fetch and timer (decide.ts), for decide_inbox.
   net: DecideIo
+  // Inbox pruning (inbox-prune.ts), for answer's prune option.
+  prune: PruneIo
 }
 
 export async function askTool(io: InboxIo, options: Record<string, unknown>, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
@@ -172,7 +176,19 @@ export async function preflightTool(io: InboxIo, options: Record<string, unknown
   }
 }
 
+// answer with prune: true. Main only: closes items as stale instead of answering them, so no asker is told and no
+// standing-rule suggestion follows (a prune is not main's answer).
+async function pruneTool(io: InboxIo, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
+  if (agentId !== undefined) return { result: 'Refused: only main prunes inbox items. Answer your own items; flow prunes stale ones itself.' }
+  if (Array.isArray(input.answers) && input.answers.length > 0 || input.defaults === true) return { result: 'Refused, nothing changed: prune is a call of its own, without answers or defaults.' }
+  const ids = Array.isArray(input.ids) ? input.ids.map(String).filter(id => id.trim() !== '') : []
+  if (ids.length === 0) return { result: pruneResult(await autoPrune(io.prune, 'main')) }
+  const reason = typeof input.reason === 'string' && input.reason.trim() !== '' ? input.reason.trim() : 'pruned by main'
+  return { result: (await pruneIds(io.prune, ids, 'main', reason)).join('\n') }
+}
+
 export async function answerTool(io: InboxIo, options: Record<string, unknown>, input: Record<string, unknown>, agentId: string | undefined): Promise<{ result: string }> {
+  if (input.prune === true) return pruneTool(io, input, agentId)
   const by = agentId === undefined ? 'main' : await io.ownerNameOf(agentId)
   const todo = new Map<string, string | null>()
   const lines: string[] = []

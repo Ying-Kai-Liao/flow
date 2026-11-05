@@ -1077,7 +1077,7 @@ export function cardView(x: InboxCtx & { id: string | null }) {
   ]
   const overrideText = open && overridesManager(q) ? `It is for ${q.addressee}: answering it overrides ${q.addressee}, who is told.` : undefined
   const optText = (o: string, k: number) => `${k + 1}) ${o}${o === q.default ? ' (default)' : ''}`
-  const doneText = open ? undefined : isFyi(q) ? decisionOutcomeText(q, now) : `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). ${answerable ? 'Press another option to change it.' : 'Nothing more to answer.'}`
+  const doneText = open ? undefined : isFyi(q) || q.pruned !== undefined ? decisionOutcomeText(q, now) : `Answered: ${q.answer ?? ''} (by ${archiveWho(q)}${q.answeredAt === undefined ? '' : `, ${age(now - q.answeredAt)} ago`}). ${answerable ? 'Press another option to change it.' : 'Nothing more to answer.'}`
   const protectedText = open && x.id !== null && protectedWhy(q) !== undefined ? 'Needs an explicit choice: y never answers it.' : undefined
   const inputLabel = isFyi(q) ? 'instead ' : 'answer '
   const inputHint = isFyi(q) ? 'what instead (n, or Enter): undoes the decision' : 'your own words, then Enter'

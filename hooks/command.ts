@@ -1,7 +1,9 @@
 import type { AgentRow, Handover, LogEvent } from '../types'
 import type { settingsOf } from './settings'
-import type { Inbox } from './inbox'
-import { expandOk, findItem, isFyi, OVERTURN, renderArchive, renderInbox, renderItem, stillOpen } from './inbox'
+import type { Inbox, Question } from './inbox'
+import { clip, expandOk, findItem, isFyi, OVERTURN, prunedLine, renderArchive, renderInbox, renderItem, stillOpen } from './inbox'
+import { pruneResult, USER_PRUNE } from './inbox-prune'
+import type { PruneCandidate } from './inbox-prune'
 import { termWidth } from './table'
 import { CHECKS_USAGE, closeChecks, inboxChecksSection, renderCheckDetail, renderChecksTable, resumeChecksLines } from './checks'
 import type { Checks } from './checks'
@@ -29,6 +31,11 @@ export type CommandIo = {
   inbox: () => Promise<Inbox>
   // The noteKeys of agents that are over, to fold their decisions in /flow inbox.
   endedOwners?: () => Promise<Set<string>>
+  // Inbox pruning (inbox-prune.ts): prune what is stale now (by flow, or the person who asked), list what that would
+  // prune (undefined: gh failed), and prune named items.
+  autoPrune?: (by?: string) => Promise<Question[] | undefined>
+  prunePreview?: () => Promise<PruneCandidate[] | undefined>
+  pruneIds?: (ids: string[], by: string, reason: string) => Promise<string[]>
   checks: () => Promise<Checks>
   answerQuestion: (wanted: string, choice: string | null, by: string, options: Record<string, unknown>, user: boolean) => Promise<string>
   // Standing-rule suggestions the answers just completed, each offered once (standing-run.ts).
@@ -81,6 +88,8 @@ export async function flowCommand(
     const arg = (args ?? '').trim()
     if (arg === 'inbox' || arg.startsWith('inbox ')) {
       const w = arg.split(/\s+/).slice(1)
+      // Stale items go before the list is drawn; it never throws, and a gh failure prunes nothing.
+      await io.autoPrune?.().catch(() => undefined)
       const box = await io.inbox()
       const now = await io.now()
       if (w.length === 1 && /^[qd]\d+$/i.test(w[0]!)) return { text: renderItem(box, w[0]!, now) }
@@ -225,6 +234,28 @@ export async function flowCommand(
     if (words[0] === 'init') {
       return initCommand({ detect: () => io.initDetect(options), markDone: io.initMark, demoStart: io.demoStart, demoStop: io.demoStop, after: io.after, submit: io.submit }, words.slice(1))
     }
+    if (words[0] === 'prune') {
+      // A person's command: the bare form only lists, `yes` prunes what it listed, ids prune those items.
+      const rest = words.slice(1)
+      if (rest.length === 0) {
+        const cands = await io.prunePreview?.()
+        const box = await io.inbox()
+        const head = cands === undefined ? ['Could not check the PRs on GitHub (gh failed): nothing to prune now.']
+          : cands.length === 0 ? ['Nothing to prune.']
+          : [`Stale, nothing more can come of ${cands.length === 1 ? 'it' : 'them'} (/flow prune yes prunes ${cands.length === 1 ? 'it' : 'them'}; nobody is told):`,
+            ...cands.map(c => { const q = findItem(box, c.id); return `  ${c.id} ${q?.owner ?? '?'}: ${c.reason} - ${clip(q?.question ?? '', 70)}` })]
+        return { text: [...head, ...prunedLine(box, await io.now(), termWidth(columns))].join('\n') }
+      }
+      if (rest.length === 1 && rest[0]!.toLowerCase() === 'yes') {
+        const pruned = await io.autoPrune?.(USER_PRUNE)
+        return { text: [pruneResult(pruned), stillOpen(await io.inbox())].join('\n') }
+      }
+      if (io.pruneIds !== undefined && rest.every(w => /^[qd]\d+$/i.test(w))) {
+        const lines = await io.pruneIds(rest, USER_PRUNE, 'pruned by the user')
+        return { text: [...lines, stillOpen(await io.inbox())].join('\n') }
+      }
+      return { text: 'Usage: /flow prune (what is stale, and why), /flow prune yes (prune it), /flow prune <id> [<id>...] (prune those open items)' }
+    }
     if (words[0] === 'clean' && words.slice(1).every(w => w === '--yes')) {
       // A person's command: --yes removes whatever the cleanup setting says.
       return { text: await io.sweep(settings.base, words.length > 1, 'Run /flow clean --yes to remove them.') }
@@ -260,7 +291,7 @@ export async function flowCommand(
       await io.refreshBehind()
       return { text }
     }
-    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and the decisions agents made, /flow ok keeps decisions, /flow no <id> undoes one, /flow answer <id> <choice> answers a question, /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (or /flow drop) turns a handover down, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them), /flow init walks you through flow, runs a demo and sets your settings.` }
+    if (arg !== '') return { text: `Unknown argument "${arg}". /flow opens the Flow pane, /flow inbox lists the open questions and the decisions agents made, /flow ok keeps decisions, /flow no <id> undoes one, /flow answer <id> <choice> answers a question, /flow prune lists the stale questions and decisions (/flow prune yes prunes them, /flow prune <id> one), /flow checks lists the after-deploy checks that need a person, /flow preflight shows the pre-flight round, /flow close closes it, /flow resume picks up unfinished work, /flow approve <pr> lets the reviewer merge a PR that awaits your approval, /flow reject <pr> [reason] (or /flow drop) turns a handover down, /flow push starts the push of the batch the reviewer checked (/flow push back <pr> sends one PR back, /flow push drop returns them all), /flow hold <target> [batch|released] keeps a deploy target from deploying and /flow release <target> lets it, /flow clean lists leftover worktrees and branches (/flow clean --yes removes them), /flow init walks you through flow, runs a demo and sets your settings.` }
     await io.open()
     return { text: 'Flow pane opened.' }
 }

@@ -221,7 +221,8 @@ export function suggest(inbox: Inbox, rules: Resolved[]): Suggestion[] {
   const keyOf = (q: Question) => `${q.kind === 'fyi' ? 'fyi' : 'ask'}:${q.topic !== undefined && q.topic !== '' ? `topic:${normTopic(q.topic)}` : `text:${lower(q.question)}`}`
   for (const q of inbox.items) {
     if (hardItem(q)) tainted.add(keyOf(q))
-    if (q.state !== 'answered' || q.answeredBy !== 'main' || q.answer === undefined) continue
+    // A prune is not main's answer: it never counts toward a rule.
+    if (q.state !== 'answered' || q.answeredBy !== 'main' || q.answer === undefined || q.pruned !== undefined) continue
     groups.set(keyOf(q), [...(groups.get(keyOf(q)) ?? []), q])
   }
   const out: Suggestion[] = []
