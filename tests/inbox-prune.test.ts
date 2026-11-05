@@ -155,7 +155,7 @@ test('explicit candidates: deploy, env, push and reviewer items are refused one 
 function world(start: Inbox, over: Partial<PruneIo> = {}) {
   let inbox = start
   const log: Array<Omit<LogEvent, 'ts'>> = []
-  const calls = { writes: 0, prs: 0 }
+  const calls = { writes: 0, prs: 0, lookups: [] as number[] }
   const io: PruneIo = {
     now: async () => NOW,
     inbox: async () => inbox,
@@ -164,6 +164,7 @@ function world(start: Inbox, over: Partial<PruneIo> = {}) {
     agents: async () => [{ name: 'w', status: 'completed' }, { name: 'mgr', status: 'completed' }],
     seen: async () => ({}),
     prs: async () => { calls.prs++; return { merged: new Map(), closed: new Set() } },
+    lookup: async prs => { calls.lookups.push(...prs); return new Map() },
     appendLog: async e => { log.push(e) },
     ...over,
   }
@@ -253,4 +254,19 @@ test('a prune is nobody\'s answer: no standing-rule suggestion counts it and dec
   const answered = markAnswered(kept, 'd2', KEEP, 'main', NOW)
   const items = answered.kind === 'ok' ? answered.inbox.items : []
   expect(inboxData(items).records.map(r => r.id)).toEqual(['d2'])
+})
+
+test('a linked item whose PR is older than the recent lists is pruned through its own lookup; a failed or open lookup keeps it', async () => {
+  const items = () => box(oldGuard('q60', 120), item('q61', { pr: 121 }), item('q62', { pr: 122 }), item('q63', { pr: 244 }), item('q64', { kind: 'deploy', pr: 123 }))
+  const w = world(items(), { lookup: async prs => { w.calls.lookups.push(...prs); return new Map([[120, 'MERGED'], [121, 'CLOSED'], [122, 'OPEN']] as const) } })
+  const pruned = await autoPrune(w.io)
+  expect(pruned?.map(q => [q.id, q.pruned?.reason])).toEqual([['q60', 'PR #120 merged'], ['q61', 'PR #121 closed'], ['q63', 'PR #244 merged']])
+  // #244's handover is done, so only the unsettled linked PRs are asked; a protected item's PR never is.
+  expect(w.calls.lookups).toEqual([120, 121, 122])
+  expect(findItem(w.box(), 'q62')!.state).toBe('open')
+  // The lookup failed (no answers): unknown, nothing pruned for it.
+  const failed = world(items())
+  const p2 = await autoPrune(failed.io)
+  expect(p2?.map(q => q.id)).toEqual(['q63'])
+  expect(findItem(failed.box(), 'q60')!.state).toBe('open')
 })

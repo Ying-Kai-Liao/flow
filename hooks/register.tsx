@@ -87,7 +87,7 @@ import type { ReleaseIo } from './release-run'
 import { FORWARDED_RIDS, mainHasAnswer as mainHasAnswerTo, managerFinished as managerFinishedTo, RELAY_DELAY_MS, resolveReportTo as resolveReportToTo, reviewerReport, reviewerSendGuard } from './reviewer-route'
 import type { Forwarded, RouteIo } from './reviewer-route'
 import { isHandedOff, noteReached, noteReviewerEnd, onReviewerAnswer as onReviewerAnswerTo, releaseHalt as releaseHaltTo, reviewerToolRun, startQueue, WANTED_LINE } from './reviewer-run'
-import { reconcileStale, recentPrs } from './stale-handovers'
+import { lookupPrs, reconcileStale, recentPrs } from './stale-handovers'
 import type { StaleIo } from './stale-handovers'
 import { autoPrune, prunePreview, pruneIds } from './inbox-prune'
 import type { PruneIo } from './inbox-prune'
@@ -1575,6 +1575,14 @@ function staleIoOf($: EngineInterface, base: string): StaleIo {
         return new Map((list as { number: number; mergeCommit?: { oid?: string } | null }[]).filter(p => typeof p?.number === 'number').map(p => [p.number, p.mergeCommit?.oid ?? '']))
       } catch { return undefined }
     },
+    prState: async pr => {
+      const r = await runCmd($, ['gh', 'pr', 'view', String(pr), '--json', 'state'])
+      if (r.exitCode !== 0) return undefined
+      try {
+        const state = (JSON.parse(r.stdout) as { state?: unknown } | null)?.state
+        return state === 'MERGED' || state === 'CLOSED' || state === 'OPEN' ? state : undefined
+      } catch { return undefined }
+    },
     closedPrs: async () => {
       // gh's closed state excludes merged PRs.
       const r = await runCmd($, ['gh', 'pr', 'list', '--state', 'closed', '--limit', '50', '--json', 'number'])
@@ -1614,6 +1622,7 @@ function pruneIoOf($: EngineInterface): PruneIo {
     agents: () => agentsOf($),
     seen: () => read($, seenAgents),
     prs: () => recentPrs(staleIoOf($, mirror.cleanupBase)),
+    lookup: prs => lookupPrs(staleIoOf($, mirror.cleanupBase), prs),
     appendLog: event => appendLog($, event),
   }
 }

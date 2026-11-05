@@ -1,6 +1,6 @@
 import { expect } from 'claude-code/testing'
 import { test } from './support'
-import { reconcileStale, recentPrs, resetStaleThrottle } from '../hooks/stale-handovers'
+import { lookupPrs, MAX_LOOKUPS, reconcileStale, recentPrs, resetStaleThrottle } from '../hooks/stale-handovers'
 import type { StaleIo } from '../hooks/stale-handovers'
 import type { Handover } from '../types'
 
@@ -9,7 +9,7 @@ const h = (pr: number, status: Handover['status']): Handover =>
 
 function world(list: Handover[], extra: Partial<StaleIo> = {}, roster: { id: string; type: string; status: string }[] = []) {
   const db: Record<string, Handover> = Object.fromEntries(list.map(x => [String(x.pr), x]))
-  const calls = { gh: 0, git: 0, now: 0, pruned: 0 }
+  const calls = { gh: 0, git: 0, now: 0, pruned: 0, views: [] as number[] }
   const io: StaleIo = {
     now: async () => calls.now,
     handovers: async () => ({ ...db }),
@@ -17,6 +17,7 @@ function world(list: Handover[], extra: Partial<StaleIo> = {}, roster: { id: str
     isAncestor: async () => { calls.git++; return false },
     mergedPrs: async () => { calls.gh++; return new Map() },
     closedPrs: async () => new Set<number>(),
+    prState: async pr => { calls.views.push(pr); return 'OPEN' },
     save: async x => { db[String(x.pr)] = x },
     savePruned: async x => { calls.pruned++; db[String(x.pr)] = x },
     ...extra,
@@ -167,4 +168,58 @@ test('recentPrs: callers within the gap share one gh lookup, also while it is in
   now = 61_000
   await recentPrs(io)
   expect(gh).toBe(2)
+})
+
+test('an old returned PR outside the recent lists is looked up on its own and pruned; an open one stays; the lists failing asks nothing', async () => {
+  resetStaleThrottle()
+  const w = world([h(91, 'returned'), h(181, 'returned'), h(182, 'returned'), h(240, 'returned')], {
+    closedPrs: async () => new Set([240]),
+    prState: async pr => { w.calls.views.push(pr); return pr === 91 ? 'CLOSED' : pr === 181 ? 'MERGED' : 'OPEN' },
+  })
+  await reconcileStale(w.io)
+  expect(w.calls.views).toEqual([91, 181, 182])
+  expect(w.db['91']!.pruned?.reason).toBe('closed on GitHub')
+  expect(w.db['181']!.pruned?.reason).toBe('merged on GitHub')
+  expect(w.db['182']!.pruned).toBeUndefined()
+  expect(w.db['240']!.pruned?.reason).toBe('closed on GitHub')
+  // Inside the gap the open answer is reused, not asked again.
+  w.calls.now = 30_000
+  await reconcileStale(w.io)
+  expect(w.calls.views).toEqual([91, 181, 182])
+  resetStaleThrottle()
+  const down = world([h(91, 'returned')], { mergedPrs: async () => undefined })
+  await reconcileStale(down.io)
+  expect(down.calls.views).toEqual([])
+})
+
+test('a failed single-PR lookup is unknown: nothing is pruned, and it is asked again next pass', async () => {
+  resetStaleThrottle()
+  const w = world([h(91, 'returned'), h(92, 'returned')], {
+    prState: async pr => { w.calls.views.push(pr); if (pr === 92) throw new Error('gh'); return undefined },
+  })
+  await reconcileStale(w.io)
+  expect(w.db['91']!.pruned).toBeUndefined()
+  expect(w.db['92']!.pruned).toBeUndefined()
+  await reconcileStale(w.io)
+  expect(w.calls.views).toEqual([91, 92, 91, 92])
+})
+
+test('lookupPrs asks at most 10 per pass, reuses answers inside the gap and asks again after it', async () => {
+  resetStaleThrottle()
+  let now = 0
+  const asked: number[] = []
+  const io = { now: async () => now, prState: async (pr: number) => { asked.push(pr); return 'CLOSED' as const } }
+  const prs = Array.from({ length: 13 }, (_, i) => i + 1)
+  const first = await lookupPrs(io, prs)
+  expect(MAX_LOOKUPS).toBe(10)
+  expect(asked).toEqual(prs.slice(0, 10))
+  expect([...first.keys()]).toEqual(prs.slice(0, 10))
+  // The next pass: the 10 known come from memory, the 3 left are asked.
+  now = 20_000
+  const second = await lookupPrs(io, prs)
+  expect(asked.length).toBe(13)
+  expect(second.size).toBe(13)
+  now = 90_000
+  await lookupPrs(io, [1])
+  expect(asked.length).toBe(14)
 })

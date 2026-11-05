@@ -13,6 +13,8 @@ export type StaleIo = {
   mergedPrs: () => Promise<Map<number, string> | undefined>
   // PR numbers closed without a merge on GitHub (gh's closed state); undefined when gh failed.
   closedPrs: () => Promise<Set<number> | undefined>
+  // One PR's state from `gh pr view <n> --json state`, for a PR older than the lists above; undefined when gh failed.
+  prState: (pr: number) => Promise<PrState | undefined>
   // Saves the handover, mirrors it and appends the log event.
   save: (h: Handover) => Promise<void>
   // Saves a returned handover just marked pruned and logs a prune event: no `back` event, no env close (it was
@@ -21,12 +23,38 @@ export type StaleIo = {
 }
 
 export type RecentPrs = { merged?: Map<number, string>; closed?: Set<number> }
+export type PrState = 'MERGED' | 'CLOSED' | 'OPEN'
 
 const MIN_GAP_MS = 60_000
 let lastFetchAt = -Infinity
 let lastFetch: Promise<RecentPrs> | undefined
 
-export const resetStaleThrottle = (): void => { lastFetchAt = -Infinity; lastFetch = undefined }
+// The most single-PR lookups one pass makes; the rest wait for a later pass.
+export const MAX_LOOKUPS = 10
+// Single-PR answers, each kept for the gap: a known state is not asked again inside it. A failure is not kept.
+const lookedUp = new Map<number, { at: number; state: PrState }>()
+
+export const resetStaleThrottle = (): void => { lastFetchAt = -Infinity; lastFetch = undefined; lookedUp.clear() }
+
+// The states of PRs the recent lists do not hold (older than their 50), each asked on its own: an answer from inside
+// the gap is reused, at most MAX_LOOKUPS are asked per call, and a failed or thrown lookup is left out (unknown, so
+// it prunes nothing).
+export async function lookupPrs(io: Pick<StaleIo, 'now' | 'prState'>, prs: number[]): Promise<Map<number, PrState>> {
+  const out = new Map<number, PrState>()
+  const now = await io.now()
+  let asked = 0
+  for (const pr of [...new Set(prs)]) {
+    const known = lookedUp.get(pr)
+    if (known !== undefined && now - known.at <= MIN_GAP_MS) { out.set(pr, known.state); continue }
+    if (asked >= MAX_LOOKUPS) continue
+    asked++
+    const state = await io.prState(pr).catch(() => undefined)
+    if (state === undefined) continue
+    lookedUp.set(pr, { at: now, state })
+    out.set(pr, state)
+  }
+  return out
+}
 
 // The recent merged and closed PRs on GitHub, fetched at most once a minute for every caller (reconcileStale and
 // the inbox prune share it); a caller inside the gap gets the last answer, or awaits the one in flight. A failed
@@ -78,8 +106,13 @@ export async function reconcileStale(io: StaleIo): Promise<void> {
         if (!reviewerAlive) await io.save({ ...cur, status: 'pending' })
       }
     }
+    // A returned PR the recent lists do not hold is looked up on its own (only when the lists themselves were read).
+    const known = (pr: number) => prs.merged?.has(pr) === true || prs.closed?.has(pr) === true
+    const older = prs.merged === undefined || prs.closed === undefined ? new Map<number, PrState>()
+      : await lookupPrs(io, returned.filter(h => !known(h.pr)).map(h => h.pr))
     for (const h of returned) {
-      const how = prs.merged?.has(h.pr) === true ? 'merged' : prs.closed?.has(h.pr) === true ? 'closed' : undefined
+      const one = older.get(h.pr)
+      const how = prs.merged?.has(h.pr) === true || one === 'MERGED' ? 'merged' : prs.closed?.has(h.pr) === true || one === 'CLOSED' ? 'closed' : undefined
       if (how === undefined) continue
       const cur = (await io.handovers())[String(h.pr)]
       if (cur === undefined || cur.status !== 'returned' || cur.pruned !== undefined) continue

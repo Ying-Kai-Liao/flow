@@ -15,7 +15,8 @@ const DIR = '/r/.git/flow'
 const handover = (pr: number, reportTo: string, status: Handover['status'], at: number, extra: Partial<Handover> = {}): Handover =>
   ({ pr, title: `Title ${pr}`, head: `head${pr}000000`, branch: `flow/b${pr}`, reportTo, verified: '', pending: 'none', afterDeploy: 'none', status, at, ...extra }) as Handover
 
-// gh: the stdout for a `gh pr list` call (by its --state), else gh prints nothing (an unreadable answer: a failure).
+// gh: the stdout for a `gh pr list` call (by its --state) or `gh pr view <n>` (key view:<n>), else gh prints nothing
+// (an unreadable answer: a failure).
 function world(on: On, hs: Handover[], onTool?: (e: unknown) => void, gh: Record<string, string> = {}) {
   mock.clock(on, { now: 1_000_000 })
   const agents: AgentInfo[] = [
@@ -48,7 +49,8 @@ function world(on: On, hs: Handover[], onTool?: (e: unknown) => void, gh: Record
     return { value: t }
   })
   on('process.run', (_, e) => {
-    const state = e.argv[0] === 'gh' && e.argv[1] === 'pr' && e.argv[2] === 'list' ? e.argv[e.argv.indexOf('--state') + 1] ?? '' : ''
+    const state = e.argv[0] === 'gh' && e.argv[1] === 'pr' && e.argv[2] === 'list' ? e.argv[e.argv.indexOf('--state') + 1] ?? ''
+      : e.argv[0] === 'gh' && e.argv[1] === 'pr' && e.argv[2] === 'view' ? `view:${e.argv[3]}` : ''
     return { value: { exitCode: 0, stdout: e.argv[1] === 'rev-parse' ? '/r/.git\n' : gh[state] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   return { agents, files }
@@ -161,6 +163,15 @@ test('status prunes a returned handover whose PR GitHub closed; one still open s
   expect(text).toContain('#92 returned')
   expect(await status($, { pr: 91 })).toContain('returned: fix it; pruned, the PR is closed on GitHub')
   expect(await status($, { pr: 92 })).not.toContain('pruned')
+})
+
+test('status prunes an old returned handover outside the recent lists through gh pr view', async ($, on) => {
+  world(on, [handover(91, 'csv-export', 'returned', 1, { reason: 'fix it' }), handover(92, 'csv-export', 'returned', 2, { reason: 'fix it' })], undefined,
+    { closed: '[]', merged: '[]', 'view:91': JSON.stringify({ state: 'CLOSED' }), 'view:92': JSON.stringify({ state: 'OPEN' }) })
+  await start($)
+  const text = await status($)
+  expect(text).toContain('Pruned handovers: #91 (closed on GitHub)')
+  expect(text).toContain('#92 returned')
 })
 
 test('the main-only standing and push tools and the old-name queue are deferred; status, ask, reviewer and check stay loaded', async ($, on) => {

@@ -6,7 +6,7 @@ import type { Handover, Inbox, LogEvent, Question } from '../types'
 import { endedOwners, findItem, isFyi, KEEP, notesOwner } from './inbox'
 import { baseName } from './cost'
 import { noteKey } from './state'
-import type { RecentPrs } from './stale-handovers'
+import type { PrState, RecentPrs } from './stale-handovers'
 
 // A pruned question's answer; a pruned decision is kept (KEEP).
 export const PRUNED = 'Pruned'
@@ -157,6 +157,8 @@ export type PruneIo = {
   seen: () => Promise<Record<string, { status: string }>>
   // stale-handovers' recentPrs: the throttled gh lookup reconcileStale uses.
   prs: () => Promise<RecentPrs>
+  // stale-handovers' lookupPrs: single-PR states for PRs older than the recent lists (capped, cached for the gap).
+  lookup: (prs: number[]) => Promise<Map<number, PrState>>
   appendLog: (event: Omit<LogEvent, 'ts'>) => Promise<void>
 }
 
@@ -170,7 +172,18 @@ async function factsOf(io: PruneIo, box: Inbox): Promise<PruneFacts | 'none' | u
   if (!mayPrune(box, local)) return 'none'
   const prs = await io.prs()
   if (prs.merged === undefined || prs.closed === undefined) return undefined
-  return { ...local, merged: new Set(prs.merged.keys()), closed: prs.closed }
+  const merged = new Set(prs.merged.keys())
+  const closed = new Set(prs.closed)
+  // A linked item's PR that neither the handovers nor the recent lists settle is asked on its own.
+  const missing = box.items.filter(q => q.state === 'open' && !autoProtected(q)).map(linkedPr)
+    .filter((pr): pr is number => pr !== undefined && handovers[String(pr)]?.status !== 'done' && !merged.has(pr) && !closed.has(pr))
+  if (missing.length > 0) {
+    for (const [pr, state] of await io.lookup(missing)) {
+      if (state === 'MERGED') merged.add(pr)
+      else if (state === 'CLOSED') closed.add(pr)
+    }
+  }
+  return { ...local, merged, closed }
 }
 
 // What auto-prune would close now, without closing it; undefined when the PRs could not be checked.
